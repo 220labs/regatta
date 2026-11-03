@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # plumb's check: crew-report's suite (synthetic transcripts under a scratch HOME; no network), then
-# usage-report's (with every plumb file's no-peer cases), interruptions' and trim's, then the benches' own
+# usage-report's (with every plumb file's no-peer cases), interruptions', trim's, asks' and tier-check's, then the benches' own
 # tests (G37). Every suite writes its own config dir and names no overlay (the plumb scrub,
 # 2026-10-22), so the Macs, CI and the public twin run the same cases. A case whose peer is a module
 # this copy lacks (an install of plumb alone) is skipped in one line. A core
@@ -16,7 +16,7 @@ p = common.tool(sys.argv[2]); print(p or "")' "$M/lib" "$1"; }
 if ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.path.insert(0, find_core.hooks()); import common' "$M/lib"; then
   echo "FAIL: the core does not load here (its line above)"; rc=1
 fi
-for s in crew-report crew-report-attribution usage-report interruptions trim; do
+for s in crew-report crew-report-attribution usage-report interruptions trim asks tier-check; do
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  skip: $s not in this copy"; continue; fi
   bash "$D/$s.sh" || rc=1

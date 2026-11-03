@@ -15,5 +15,8 @@
     "laptop": ["banner"],
     "buildbox": [],
     "cloud": []
+  },
+  "hail": {
+    "roads": ["socket", "codex", "orca", "talk", "mailbox", "file"]
   }
 }

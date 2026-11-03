@@ -235,6 +235,44 @@ else
   state typed 5e55-run
   sw run "$T/sw-typed.out" ready --title t --body-file /dev/null
   has "$T/sw-typed.out" "READIED" "a /finish the owner typed launches a gate as before"
+  # task-shape S2 (D1-C): a hand-over is judged by autofinish's handed_held, whose slice is empty
+  state handed 5e55-run
+  sw run "$T/sw-handed-gate.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-gate.out" "pr: NOT readied — this /finish was started by a dispatch hand-over (by handed), and the curated diff touches a gate (held: the launcher's own gate (hooks/x.py))" \
+    "a handed run's own edit into the launcher's gate: held by handed_held, naming the hand-over"
+  printf '{"by": "handed", "session": "5e55-run", "ended": null, "hold": "the launcher'"'"'s own gate (hooks/x.py)"}\n' > "$ST"
+  sw run "$T/sw-handed-startheld.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-startheld.out" "READIED" "  a start handed_held held already: readied, not left a draft (the landing review)"
+  has "$T/sw-handed-startheld.out" "API POST /repos/o/r/issues/7/labels" "    with the hold label"
+  PR_HEAD=$(g rev-parse HEAD) sw run "$T/sw-handed-startheldm.out" merge
+  has "$T/sw-handed-startheldm.out" "pr: NOT merged — this launch is held at a ready PR (the launcher's own gate" "    and its merge refused by held_launch"
+  lacks "$T/sw-handed-startheldm.out" "MERGE CALLED" "    before asking GitHub"
+  state handed 5e55-run
+  hw() { AUTOFINISH_LAUNCHER=elsewhere CLAUDE_CODE_SESSION_ID=5e55-run PLANS_DIR="$T/mplans" "$@"; }
+  mplan default
+  hw run "$T/sw-handed.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed.out" "READIED" "  outside the launcher's repo the same hook edit readies (D1-C: no slice)"
+  mplan ask
+  hw run "$T/sw-handed-ask.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-ask.out" "touches a gate (held: mode ask — nothing lands by itself)" "  a mode lowered to ask since the start: held (handed is no person)"
+  printf '{"by": "handed", "session": "5e55-run", "ended": null, "hold": "mode ask — nothing lands by itself"}\n' > "$ST"
+  hw run "$T/sw-handed-held.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-held.out" "READIED" "  a start held under ask already: readied, not left a draft"
+  has "$T/sw-handed-held.out" "API POST /repos/o/r/issues/7/labels" "    with the hold label"
+  PR_HEAD=$(g rev-parse HEAD) hw run "$T/sw-handed-heldm.out" merge
+  has "$T/sw-handed-heldm.out" "pr: NOT merged — this launch is held at a ready PR (mode ask" "    and its merge refused by held_launch"
+  lacks "$T/sw-handed-heldm.out" "MERGE CALLED" "    before asking GitHub"
+  AUTOFINISH_LAUNCHER=elsewhere CLAUDE_CODE_SESSION_ID= PLANS_DIR="$T/mplans" run "$T/sw-handed-noid.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-noid.out" "touches a gate (held: mode ask — nothing lands by itself)" "    with no session id held_launch says nothing, so the mode is re-read: held"
+  state handed 5e55-run
+  mplan default
+  PR_HELM=raise hw run "$T/sw-handed-torn.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-torn.out" "touches a gate (held: the mode is unreadable now" "  a mode that cannot be read now: held"
+  mplan default
+  printf '{"by": "handed", "rule": "M", "session": "5e55-run", "ended": null}\n' > "$ST"
+  hw run "$T/sw-handed-m.out" ready --title t --body-file /dev/null
+  has "$T/sw-handed-m.out" "touches a gate (held: mode default — a taken answer never lands there" "  a handed run with rule M is re-judged as a mode launch, by the mode now"
+  rm -f "$T/mplans/ms/plan.json"
   state sweep 01d-run
   sw run "$T/sw-old.out" ready --title t --body-file /dev/null
   has "$T/sw-old.out" "READIED" "an earlier sweep run's record does not bind this session"

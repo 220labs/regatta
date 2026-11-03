@@ -121,6 +121,27 @@ echo "surfaces"
 check "$(python3 -c "import sys; sys.path.insert(0,'$B'); import surfaces; print(surfaces.row('ask.relay'))")" "['talk', 'sendmessage', 'file']" "the relay row's default order"
 check "$(python3 -c "import sys; sys.path.insert(0,'$B'); import surfaces; print(surfaces.validate(surfaces.load()))")" "[]" "the committed file is valid"
 "$B/ask" backends --set relay=bogus > /dev/null 2>&1; check "$?" "1" "an unknown backend is refused"
+"$B/ask" backends --set hail.roads=socket,pigeon > /dev/null 2>&1; check "$?" "1" "an unknown hail road is refused (the charterer design's S2)"
+check "$(python3 -c "import sys; sys.path.insert(0,'$B'); import surfaces; print([len(surfaces.validate(dict(surfaces.load(), hail=h))) for h in ({'roads': 'talk'}, 'talk', {'roads': ['talk']})])")" "[1, 1, 0]" \
+  "  hail.roads must be a list, hail an object: hail reads any other shape as no road"
+printf '{"hail": "talk", "ask": 3}\n' > "$T/surf-bad.json"
+check "$(SURFACES_FILE="$T/surf-bad.json" python3 -c "import sys; sys.path.insert(0,'$B'); import surfaces; print(surfaces.row('ask.relay'), surfaces.row('hail.roads')[0])")" "['talk', 'sendmessage', 'file'] socket" \
+  "  a seam that is no object reads as its defaults, never a traceback in every reader"
+out=$(SURFACES_FILE="$T/surf-bad.json" "$B/ask" backends 2>&1); has "$out" "  ! hail: an object (read as its defaults; hail takes no road)" "  ask backends names it, as hail reads it"
+has "$out" "  ! ask: an object" "  …each seam"
+out=$(SURFACES_FILE="$T/surf-bad.json" "$B/ask" backends --set hail.roads=talk 2>&1); check "$?" "1" "  --set on a seam that is no object: refused"
+has "$out" "hail is no object: fix it by hand first" "  …in one line, no traceback"
+printf '{"hail": {"roads": ["talk", 5]}}\n' > "$T/surf-num.json"
+out=$(SURFACES_FILE="$T/surf-num.json" "$B/ask" backends 2>&1); check "$?" "0" "  a road that is no name: ask backends still prints, no traceback"
+has "$out" "unknown backend 5" "  …naming it"
+printf '{"hail": {"roads": [["socket"]]}, "ask": {"relay": [{"a": 1}]}}\n' > "$T/surf-nest.json"
+out=$(SURFACES_FILE="$T/surf-nest.json" "$B/ask" backends 2>&1); check "$?" "0" "  a road that is a list, a relay that is an object: named, no traceback"
+has "$out" "hail.roads: unknown backend ['socket']" "  …each"
+printf '{"hail": {"roads": ["talk"]}, "ask": {"relay": ["talk"]}\n' > "$T/surf-torn.json"
+out=$(SURFACES_FILE="$T/surf-torn.json" "$B/ask" backends --set relay=file 2>&1); check "$?" "1" "  --set on a file that does not parse: refused, never written over (it may hold hail.roads)"
+check "$(cat "$T/surf-torn.json")" '{"hail": {"roads": ["talk"]}, "ask": {"relay": ["talk"]}' "  …the file as it was"
+ln -s "$T/nowhere.json" "$T/surf-dangling.json"
+out=$(SURFACES_FILE="$T/surf-dangling.json" "$B/ask" backends 2>&1); has "$out" "cannot be read" "  a dangling link: named, as hail takes no road"
 "$B/ask" backends --set relay=file,talk > /dev/null; check "$(python3 -c "import json; print(json.load(open('$T/surfaces.json'))['ask']['relay'])")" "['file', 'talk']" "--set flips a row in the file"
 cp "$TD/surfaces.json" "$T/surfaces.json"
 echo "  finding 18: --set refuses a primary checkout"
@@ -696,6 +717,90 @@ has "$out" "ask poll: 2 open, 2 new" "counted"
 out=$("$B/ask" poll --repos "$R")
 has "$out" "ask poll: 2 open, 0 new" "a second poll raises nothing new"
 check "$(python3 -c "import json; print(len(json.load(open('$T/cache/asks.json'))['asks']))")" "2" "the cache the statusline and board read"
+echo "  helm-board S2: each row carries what the Decide feed reads"
+check "$(python3 -c "import json; d={a['item']: a for a in json.load(open('$T/cache/asks.json'))['asks']}; a, c = d['D2'], d['D3']; print(a['section']['crumb'], a['line'], len(a['hash']), a['options'], a['doc_title'], a.get('worktree'), a['step_waits'], '|', c['section']['crumb'], c['line'], c['doc_title'])")" \
+  "Decisions 5 16 [['A', 'hourly'], ['B', 'daily']] Demo None [] | Cloud 3 Cloud" \
+  "  section's heading, the item's line, a 16-hex hash, the options, the doc's title; no worktree outside HOME; a trailer's row too"
+check "$(HOME="$T" python3 -c "import sys; sys.path.insert(0, '$B'); import helmlib; print(helmlib.branch_worktrees('$R').get('claude/laptop/2026-10-10-asker'))")" "repo" \
+  "  the worktree on this host, relative to HOME (the VS Code link's root is the browser's)"
+cat > "$T/s2doc.md" <<'MD'
+# Pick a road (design, 2026-11-01)
+
+## Summary
+
+The board reads one doc at a time.
+
+## The road
+
+The hard trade-off: speed against a second host.
+
+| Option | Attention | Cost |
+| --- | --- | --- |
+| A — the fast road | none | one host |
+| B — the safe road | a look | two hosts |
+
+- **D1 — Which road**
+  - A — the fast road
+  - B — the safe road
+
+  Reversible: no
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+- **D2 — Which colour**
+  - A — red
+  - B — blue
+
+  ➤ Recommended: B
+
+  ➤ Answer: B
+
+## Action plan
+
+- **S1 — Build it** · after: D1 · status: not started
+- **S2 — Ship it** · after: D1, S1 · status: done 2026-11-01
+MD
+cat > "$T/s2.py" <<'PY'
+import sys, json
+from importlib.machinery import SourceFileLoader
+sys.path.insert(0, sys.argv[1])
+import helmlib
+k = SourceFileLoader("keel_t", sys.argv[2]).load_module()
+text = open(sys.argv[3]).read()
+doc, items = helmlib.doc_decisions(k, text)
+d = items["D1"]
+sec = d["section"]
+print(sorted(items), doc["summary"], "|", sec["crumb"], "|", sec["above"], "|", sec["table"]["head"], len(sec["table"]["rows"]),
+      "|", d["step_waits"], d["line"], sec["item"].splitlines()[-1].strip())
+same = helmlib.doc_decisions(k, text.replace("  ➤ Answer:\n\n- **D2", "  ➤ Answer: A\n\n- **D2"))[1]
+moved = helmlib.doc_decisions(k, text.replace("| one host |", "| one host, then two |"))[1]["D1"]["hash"]
+print(same == {}, moved != d["hash"], helmlib.doc_decisions(k, text.replace("speed", "pace"))[1]["D1"]["hash"] != d["hash"])
+# the review's three: a reply under the answered item before is not the next one's; the old inline shape
+# keeps its question; an edit past the card's caps still moves the hash
+two = "# T\n\n## D\n\n- **D1 — One**\n\n  ➤ Recommended: A\n\n  ➤ Answer: A\n\n- **D2 — Two**\n\n  ➤ Recommended: B\n\n  ➤ Answer:\n"
+d2 = helmlib.doc_decisions(k, two)[1]["D2"]
+r2 = helmlib.doc_decisions(k, two.replace("Answer: A\n", "Answer: A\n\n  > **Done.** Applied in S1.\n"))[1]["D2"]
+inl = helmlib.doc_decisions(k, "# T\n\n- **D1 — Which road?** A or B. ➤ Answer:\n")[1]["D1"]
+inl2 = helmlib.doc_decisions(k, "# T\n\n- **D1 — Which lane?** A or B. ➤ Answer:\n")[1]["D1"]
+long = "# T\n\n- **D1 — Long**\n" + "".join("  - %s — %s\n" % (chr(65 + i % 6), "word " * 120) for i in range(12)) + "\n  ➤ Recommended: A\n\n  ➤ Answer:\n"
+l1 = helmlib.doc_decisions(k, long)[1]["D1"]
+l2 = helmlib.doc_decisions(k, long.replace("Recommended: A", "Recommended: B"))[1]["D1"]
+print(r2["section"]["above"] == "" and r2["hash"] == d2["hash"], inl["section"]["item"], inl["hash"] != inl2["hash"],
+      len(l1["section"]["item"]) <= 4002, l1["hash"] != l2["hash"])
+PY
+check "$(python3 "$T/s2.py" "$B" "$(peer keel)" "$T/s2doc.md")" \
+  "['D1'] The board reads one doc at a time. | The road | The hard trade-off: speed against a second host. | ['Option', 'Attention', 'Cost'] 2 | ['S1'] 16 ➤ Recommended: A
+True True True
+True - **D1 — Which road?** A or B. True True True" \
+  "  doc_decisions: the open item's heading, prose, table and own lines; the Summary; the open step waiting on it (a done one is not); an answer drops the item; an edit to its table or prose moves the hash; a reply under the item before is not its prose and moves nothing; the inline shape keeps its question; an edit past the card's caps still moves it"
+echo "  helm-board S2, finish review: a hand-edited asks.json row is skipped; asked kept from the last poll"
+python3 -c "import json; p='$T/cache/asks.json'; d=json.load(open(p)); d['asks'][0]['asked']=1; d['asks'].append({'repo': ['x'], 'rel': 'r', 'item': 'D1', 'asked': 5}); json.dump(d, open(p, 'w'))"
+out=$("$B/ask" poll --repos "$R")
+has "$out" "ask poll: 2 open, 0 new" "  the poll runs past a row whose repo is a list"
+check "$(python3 -c "import json, os; print(sorted(a['asked'] for a in json.load(open('$T/cache/asks.json'))['asks'])[0], [f for f in os.listdir('$T/cache') if f.endswith('.tmp')])")" "1 []" \
+  "  the first sight's time kept; asks.json written whole, no tmp left"
 # S6 landing review 20: a repo whose scan fails keeps its last rows (marked carried) and the file names
 # it partial, so the lookout does not drop the keys it watches; the next good scan clears both
 out=$(python3 -c "
@@ -806,20 +911,22 @@ def J(dry=False, repos=None):
 for h in buildbox laptop; do
   check "$(cd "$T" && SURFACES_HOST=$h ASK_KEEL="$T/keelstub" ASK_HAIL="$T/hailstub" python3 -c "$LH
 J(); J(dry=True); J(repos=['x'])" | tr '\n' '|')" \
-    "hail stub: subs --fulfil|$([ $h = laptop ] && echo 'keel stub: stand --sweep --if-armed|keel stub: sheep drain --if-due|')keel stub: lookout --if-due|" \
-    "$h: the fulfil first$([ $h = laptop ] && echo ', the stand sweep and the drain (laptop only)'), the lookout last, once each; not on a dry run or with --repos"
+    "hail stub: subs --fulfil|hail stub: mail --pull|$([ $h = laptop ] && echo 'keel stub: stand --sweep --if-armed|keel stub: sheep drain --if-due|')keel stub: lookout --if-due|" \
+    "$h: the fulfil and the mailbox's pull first$([ $h = laptop ] && echo ', the stand sweep and the drain (laptop only)'), the lookout last, once each; not on a dry run or with --repos"
 done
 out=$(cd "$T" && SURFACES_HOST=buildbox ASK_KEEL="$T/nokeel" ASK_HAIL="$T/hailstub" python3 -c "$LH
 J()" 2>&1)
 check "$out" "ask poll: keel not installed — the lookout skipped
-hail stub: subs --fulfil" "no keel: one line, and hail still runs"
+hail stub: subs --fulfil
+hail stub: mail --pull" "no keel: one line, and hail still runs"
 out=$(cd "$T" && SURFACES_HOST=laptop ASK_KEEL="$T/nokeel" ASK_HAIL="$T/hailstub" python3 -c "$LH
 J()" 2>&1)
 check "$out" "ask poll: keel not installed — the stand sweep, the pages' drain, the lookout skipped
-hail stub: subs --fulfil" "S6 landing review 22: on the laptop no keel is one line, and ASK_KEEL at a missing file is absent to every job"
+hail stub: subs --fulfil
+hail stub: mail --pull" "S6 landing review 22: on the laptop no keel is one line, and ASK_KEEL at a missing file is absent to every job"
 out=$(cd "$T" && SURFACES_HOST=buildbox ASK_KEEL="$T/keelstub" ASK_HAIL="$T/nohail" python3 -c "$LH
 J()" 2>&1)
-check "$out" "ask poll: hail not installed — the subscriptions' fulfil skipped
+check "$out" "ask poll: hail not installed — the subscriptions' fulfil, the mailbox's pull skipped
 keel stub: lookout --if-due" "no hail: one line, the lookout ran"
 out=$(cd "$T" && SURFACES_HOST=buildbox ASK_KEEL="$T/keelstub" ASK_HAIL="$T/hailbad" PYTHONUNBUFFERED=1 python3 -c "$LH
 m.poll_repos = lambda r: []; m.poll_tick = lambda d=None: None
@@ -829,7 +936,7 @@ has "$out" "hail stub failing" "  …its output is the log line"
 has "$out" "the subscriptions' fulfil exited 3" "  …and its exit is named"
 has "$out" "keel stub: lookout --if-due" "  …the lookout still runs"
 check "$(printf '%s\n' "$out" | grep -n 'hail stub failing\|ask poll: 0 open\|keel stub: lookout' | cut -d: -f2- | tr '\n' '|')" \
-  "hail stub failing|ask poll: 0 open, 0 new|keel stub: lookout --if-due|" "S6 landing review 21: the fulfil runs first, before the repos' scan; the lookout last"
+  "hail stub failing|hail stub failing|ask poll: 0 open, 0 new|keel stub: lookout --if-due|" "S6 landing review 21: the fulfil (and the pull) run first, before the repos' scan; the lookout last"
 out=$(cd "$T" && SURFACES_HOST=buildbox ASK_KEEL="$T/keelbad" ASK_HAIL="$T/hailkept" python3 -c "$LH
 J()" 2>&1)
 has "$out" "the lookout exited 3" "a failing lookout is named"
@@ -1054,6 +1161,102 @@ check "$(SURFACES_HOST=elsewhere-x N8 "print(m.stall_road('yardhost-x'), m.stall
   "stall_road(host) reads the named host's row, and notice(host=) sends by it, whatever surfaces.host() says"
 check "$(CFG8="$T/cfg8-none" N8 "print(m.stall_road('yardhost-x'))")/$(( $(wc -l < "$T/gh8.calls" | tr -d ' ') - n0 ))" \
   "(False, 'github-issue: no helm/logbook-repo value in the config dir')/1" "  no logbook value: no road, said, and stall_road calls nothing (the one call is the notice above)"
+
+echo "the notify ladder's config (charterer S3): ladders per kind, quiet hours, a cap, beside the host rows"
+cat > "$T/surf-l.json" <<'EOF'
+{"ask": {"parked": true}, "notify": {"buildbox": ["github-issue"],
+  "update": [{"via": "charterer"}],
+  "question": [{"via": "charterer"}, {"via": "vscode-question", "when": "present"}, {"via": "claude-app", "after": "5m"}, {"via": "github-issue", "after": "10m"}],
+  "stall": [{"via": "github-issue", "after": "10m"}],
+  "quiet": {"hours": "22:00-07:00", "except": ["stall"]}, "cap": {"per_hour": 6}}}
+EOF
+cat > "$T/surf-lbad.json" <<'EOF'
+{"ask": {"parked": true}, "notify": {"question": [{"via": "pager"}, {"via": "banner", "after": "soon"}, {"via": "claude-app", "when": "away"}, {"via": ["github-issue"]}, {"via": "banner"}],
+  "quiet": {"hours": "25:00-07:00"}, "cap": {"per_hour": 0}, "stall": "github-issue", "buildbox": ["pager", {"x": 1}]}}
+EOF
+check "$(python3 - "$B" "$T" <<'PY'
+import sys; sys.path.insert(0, sys.argv[1]); import surfaces as s
+p, bad = sys.argv[2] + "/surf-l.json", sys.argv[2] + "/surf-lbad.json"
+print(s.validate(s.load(p)))
+print([(r["via"], r["after"], r["when"]) for r in s.ladder("question", "buildbox", p)])
+print(s.quiet(p)["hours"], sorted(s.quiet(p)["except"]), s.cap(p))
+for line in s.validate(s.load(bad)):
+    print(line)
+print([r["via"] for r in s.ladder("question", "buildbox", bad)], s.quiet(bad)["bad"], s.in_quiet(0, "stall", bad), s.cap(bad))
+PY
+)" "[]
+[('charterer', 0.0, None), ('vscode-question', 0.0, 'present'), ('claude-app', 300.0, None), ('github-issue', 600.0, None)]
+(1320, 420) ['stall'] 6
+notify.buildbox: unknown backend 'pager' (known: banner, github-issue, telegram)
+notify.buildbox: unknown backend {'x': 1} (known: banner, github-issue, telegram)
+notify.question[0]: unknown channel 'pager' (known: banner, charterer, claude-app, github-issue, orca-app, spacesheep-app, telegram, vscode-question)
+notify.question[1]: after 'soon' is no duration (\"10m\", \"90s\", \"1h\" or seconds, at most a year)
+notify.question[2]: when 'away' (known: present)
+notify.question[3]: unknown channel ['github-issue'] (known: banner, charterer, claude-app, github-issue, orca-app, spacesheep-app, telegram, vscode-question)
+notify.question[4]: banner named twice in notify.question (one rung per channel: only the first is read, and none while it does not read)
+notify.stall: a list of rungs
+notify.quiet: {\"hours\": \"HH:MM-HH:MM\", \"except\": [kind…]}
+notify.cap: {\"per_hour\": <a whole number above 0>}, nothing else
+[] True True 0" \
+  "the design's ladder validates and reads (durations in seconds); a host row is still a host row; each bad rung (a list or dict where a word goes included, never a TypeError), a channel named twice, quiet, cap and a ladder that is no list named; an unreadable quiet or cap holds every phone rung (quiet always, cap 0)"
+out=$(cp "$T/surf-l.json" "$T/surf-lset.json"; SURFACES_FILE="$T/surf-lset.json" "$B/ask" backends --set notify.question=github-issue 2>&1); rc=$?
+check "$rc/$(python3 -c "import json; print(json.load(open('$T/surf-lset.json'))['notify']['question'][0]['via'])")" "1/charterer" "--set refuses a ladder key (it is JSON), the file untouched"
+has "$out" "notify.question is JSON" "  and says to edit the file"
+out=$(SURFACES_FILE="$T/surf-l.json" "$B/ask" backends 2>&1)
+has "$out" 'notify.question      [{"via": "charterer"}' "ask backends prints a ladder as JSON"
+hasnt "$out" "  ! " "  a valid file: no problem line"
+has "$(SURFACES_FILE="$T/surf-lbad.json" "$B/ask" backends 2>&1)" "! notify.cap:" "  a bad one: each problem said"
+ln -s "$T/no-such-surfaces.json" "$T/surf-link.json"
+has "$(SURFACES_FILE="$T/surf-link.json" "$B/ask" backends 2>&1)" "! surf-link.json is a link to a missing file" "  a link whose target moved: said (unreadable, not absent)"
+out=$(SURFACES_FILE="$T/surf-link.json" "$B/ask" backends --set ask.relay=file 2>&1); rc=$?
+check "$rc/$([ -e "$T/no-such-surfaces.json" ] && echo made || echo absent)" "1/absent" "  --set refuses it, never writing a new file through the link"
+printf '{"notify": {"quiet": {"hours": "22:00-07:00"}, "question": [' > "$T/surf-torn.json"
+out=$(SURFACES_FILE="$T/surf-torn.json" "$B/ask" backends --set ask.relay=file 2>&1); rc=$?
+check "$rc/$(head -c 30 "$T/surf-torn.json")" '1/{"notify": {"quiet": {"hours":' "--set refuses a torn file, never rewriting it without its quiet hours, cap or ladders"
+has "$out" "does not read" "  and says it does not read"
+echo '{"notify": {}}' > "$T/surf-newrow.json"
+SURFACES_FILE="$T/surf-newrow.json" "$B/ask" backends --set notify.newhost-x=github-issue > /dev/null 2>&1
+check "$?/$(python3 -c "import json; print(json.load(open('$T/surf-newrow.json'))['notify']['newhost-x'])")" "0/['github-issue']" "--set writes a new host row as a list, as the ladder reads it"
+echo '{"notify": {"oldhost-x": "github-issue"}}' > "$T/surf-strrow.json"
+SURFACES_FILE="$T/surf-strrow.json" "$B/ask" backends --set notify.oldhost-x=github-issue > /dev/null 2>&1
+check "$?/$(python3 -c "import json; print(json.load(open('$T/surf-strrow.json'))['notify']['oldhost-x'])")" "0/['github-issue']" "  and a string row an older --set wrote comes back a list"
+printf '{"ask": {"relay": ["caf\351"]}}\n' > "$T/surf-latin.json"
+out=$(SURFACES_FILE="$T/surf-latin.json" "$B/ask" backends 2>&1); rc=$?
+has "$out" "! surf-latin.json does not read (UnicodeDecodeError)" "a file that is no UTF-8: named, never a traceback"
+hasnt "$out" "Traceback" "  no traceback"
+cp "$T/surf-lbad.json" "$T/surf-lbad2.json"
+SURFACES_FILE="$T/surf-lbad2.json" "$B/ask" backends --set ask.relay=file > /dev/null 2>&1
+check "$?/$(python3 -c "import json; print(json.load(open('$T/surf-lbad2.json'))['ask']['relay'])")" "0/['file']" "  --set of another row passes a file whose ladder already had problems"
+check "$(python3 -c "import sys; sys.path.insert(0, '$B'); import surfaces as s; q = dict(hours=(0, 0), bad=False); q['except'] = set(); print(s.in_quiet(0, 'stall', q=q), s.in_quiet(43200, 'stall', q=q))")" "True True" "  00:00-00:00 is quiet the whole day"
+check "$(python3 - "$B" "$T" <<'PY'
+import calendar, json, sys
+sys.path.insert(0, sys.argv[1]); import surfaces as s
+p = sys.argv[2] + "/surf-tz.json"
+t = calendar.timegm((2026, 11, 2, 12, 0, 0))   # 12:00 UTC: 04:00 in Los Angeles
+out = []
+for tz in ("America/Los_Angeles", "UTC", "Mars/Base"):
+    open(p, "w").write(json.dumps({"notify": {"quiet": {"hours": "22:00-07:00", "tz": tz}}}))
+    out.append("%s %s" % (s.in_quiet(t, "stall", p), s.validate(s.load(p))))
+print(" | ".join(out))
+PY
+)" "True [] | False [] | True ['notify.quiet.tz: \'Mars/Base\' is no time zone (an IANA name, \"America/Los_Angeles\")']" \
+  "  quiet hours in their tz: 04:00 in Los Angeles is quiet, 12:00 UTC is not; a zone that does not load holds and is named"
+printf '{"notify": {"question": [' > "$T/surf-torn.json"
+has "$(SURFACES_FILE="$T/surf-torn.json" "$B/ask" backends 2>&1)" "! surf-torn.json is no JSON" "  a torn file: said (the stall road then holds every phone rung)"
+check "$(python3 -c "import sys, json; sys.path.insert(0, '$B'); import surfaces as s; open('$T/surf-c.json', 'w').write(json.dumps({'notify': {'cap': {'per_hour': 6.0}}})); print(s.cap('$T/surf-c.json'), s.validate(s.load('$T/surf-c.json')))")" "6 []" "  a whole-number float cap reads as its int"
+check "$(N8 "
+for v in ('charterer', 'vscode-question', 'claude-app', 'orca-app', 'telegram', 'spacesheep-app', 'pager'):
+    print(m.push(v, 't', 'b'))
+print(m.push('github-issue', 't', 'b')['road'], m.push('banner', 't', 'b')['road'], m.withdraw('banner', {}))")" \
+  "{'road': 'none', 'issue': None, 'said': 'charterer: no road yet: the charter pass hails charterers (charterer S4)'}
+{'road': 'none', 'issue': None, 'said': 'vscode-question: no road yet: the charterer asks it while the owner is at the Mac (charterer S5)'}
+{'road': 'none', 'issue': None, 'said': \"claude-app: no road yet: the charterer's call that makes the Claude app notify (charterer S5)\"}
+{'road': 'none', 'issue': None, 'said': \"orca-app: no road: Orca's CLI names no call that notifies the app (probed on 1.4.245)\"}
+{'road': 'none', 'issue': None, 'said': 'telegram: no sender here (a word the row may hold)'}
+{'road': 'none', 'issue': None, 'said': 'spacesheep-app: not built: reserved until the spacesheep app exists'}
+{'road': 'none', 'issue': None, 'said': 'pager: unknown channel'}
+github-issue banner None" \
+  "push(): one channel each — the unbuilt ones say why and call nothing; github-issue and banner deliver; withdraw takes nothing back yet"
 
 echo "board-cleanup S1: the poll skips a merged or closed branch, a template and a test's fixture; one banner per doc item"
 BC="$T/bc"; mkdir -p "$BC"

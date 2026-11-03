@@ -79,6 +79,22 @@ check "$(echo "$out" | grep -c '^✓')" "0" "a second run: nothing to do"
 
 check "$(ls "$T/out" | wc -l | tr -d ' ')" "1" "  and no duplicate note"
 
+# Two passes of one user given the same recording at once shared $TMPDIR/memo-<its hash>.wav, and afconvert
+# failed -48 or -54 in one: two CI jobs on one Mac (every runner is one login, one TMPDIR) ran this suite in
+# lockstep, `say` made the same bytes in both, and 8 cases failed (regatta#388; docs/runner-interference-2026-11-02.md).
+# The other pass's file stands here as a directory at that shared name. Its own inbox, notes and state: the
+# later cases count the notes in $T/out.
+mkdir -p "$T/tmpdir" "$T/tw/in" "$T/tw/out" "$T/tw/archive"
+say -o "$T/tw/in/twin.aiff" "The same memo in two passes at once" 2>/dev/null
+k=$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; from pathlib import Path
+l = m.SourceFileLoader("sparks", sys.argv[1]); r = u.module_from_spec(u.spec_from_loader("sparks", l)); l.exec_module(r)
+print(r.digest(Path(sys.argv[2])))' "$B/sparks" "$T/tw/in/twin.aiff")
+mkdir "$T/tmpdir/memo-$k.wav"
+out=$(TMPDIR="$T/tmpdir" SPARKS_IN="$T/tw/in" SPARKS_OUT="$T/tw/out" SPARKS_ARCHIVE="$T/tw/archive" \
+  SPARKS_STATE="$T/tw/state.json" python3 "$B/sparks")
+check "$(echo "$out" | grep -c '^✓')" "1" "another pass converting the same recording meanwhile: still filed (the WAV is this pass's own)"
+check "$(ls "$T/tmpdir")" "memo-$k.wav" "  and this pass's WAV is gone after it"
+
 # Now drive it from the config file alone — no SPARKS_* in the environment at all.
 say -o "$T/in/from config.aiff" "A memo routed by the config file" 2>/dev/null
 out=$(env -u SPARKS_IN -u SPARKS_OUT -u SPARKS_ARCHIVE -u SPARKS_STATE -u SPARKS_COMMIT \

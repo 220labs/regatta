@@ -3,6 +3,7 @@
 "Berth", step S6b).
 
     berth REPO [--json] [--no-log]
+    berth --load-key KEY        a load key as the rule reads it (`1.5`, `1.5 log`): `regatta limit`'s trial read
 
 Privacy first: the repo's scope's ordered `berths` (repos.json `scopes.<name>.berths`, read through
 the core's scope_of_repo — editable data, because "these rules may change", the owner, 2026-10-21),
@@ -33,6 +34,7 @@ and BERTH_SLOTS ("<busy> <max>") stand in for the tests. Python 3.9, stdlib only
 """
 import argparse
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -73,6 +75,8 @@ def load_key(name):
         value = float(words[0]) if words else DEFAULTS[name]
     except ValueError:
         value = DEFAULTS[name]
+    if not math.isfinite(value) or value < 0:   # nan never compares, so the rule would be off unsaid (live-limits review)
+        value = DEFAULTS[name]
     return value, (not words) or "log" in words[1:], bool(words)
 
 
@@ -90,7 +94,7 @@ def candidates(repo, me):
     compare lower-cased."""
     key = common.repo_key(repo)
     reg, torn = common.read_registry()
-    if torn:
+    if torn:   # a confidential scope's `repos` no list reads as torn too (read_registry; S6's fourth and fifth reviews)
         return [], {"repo": key, "scope": None, "berths": None, "hosts": None, "source": None,
                     "unreadable": "the registry (%s) will not read" % common.repos_json()}
     reg = reg or {}
@@ -232,6 +236,11 @@ def berth(repo, write_log=True):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--load-key"] and len(argv) == 2 and argv[1] in DEFAULTS:
+        value, log_only, set_ = load_key(argv[1])
+        print("%g%s" % (value, " log" if set_ and log_only else ""))
+        return 0
     ap = argparse.ArgumentParser(prog="berth", description=__doc__.split("\n\n")[0])
     ap.add_argument("repo", help="a registry key, or a path under the projects folder")
     ap.add_argument("--json", action="store_true")

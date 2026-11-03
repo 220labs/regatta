@@ -2,6 +2,187 @@
 
 ## Unreleased
 
+- `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
+  nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
+  table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged
+  against the start's lists and what agy offers against the last run. An arm a case broke is refused by every later
+  council verb on this Mac until a fences run holds, row C named as the way out. Off macOS every arm is refused.
+  The verdict is the CLI's (antigravity-claude follows antigravity; a broken arm of a CLI wins over a held one in the
+  same run); a case counts only as asked, never batched with another, every run of it judged; a timed-out arm's
+  log is still read; an arm not judged exits 3; a verdict file that does not read refuses every arm. Every copy
+  also loses its `.mcp.json`.
+- node-road (2026-11-02): the pre-push template reads its refs from a pipe, never a heredoc, and
+  fails closed: under macOS's bash 3.2 a heredoc is a temp file, and in a sandbox that cannot make one the old
+  loop never ran and every push passed. `repos --hooks` carries it into each clone.
+- `/finish` step 1 off a Mac (node-lands round 1, carried by node-lands-base): the macOS-only suites' `not run on this
+  host` lines are the check passing, and a publish gate with no word list is a failed check, never a skipped one; the
+  host name is `hostname -s` there.
+- sync: a landing whose last `autofinished` line is a stop and whose PR into main merged after it gets a
+  `launched <branch> #N` line, once (`settle_landed`): helm's stalls raised such a branch for good, 83 of them
+  settled by hand on 2026-10-31. Only a branch whose GitHub copy the fetch pruned is asked (TODO.md [arm-yard]).
+- `bin/list-merge`, git's merge driver for `TODO.md` and `CHANGELOG.md` (todo-driver, 2026-11-02; the owner: "apply
+  this to release notes as well"): by item, three-way, so a done stands when main appended, a line stays under its
+  item, a CHANGELOG line stays under `## Unreleased` when main cut a release, and two edits of one item stop as a
+  conflict around it alone; any other union file, a file it cannot judge, or a result that lost an added line
+  merges as union, and so does a result whose line counts differ from a three-way merge's. It is each repo's
+  own `merge.union.driver` (`list-merge install <repo>`, the main checkout's copy, never over a driver the repo
+  set), so `.gitattributes` keeps `merge=union` and anywhere without it (GitHub, CI) merges as before; sync.py
+  installs it in each repo it tends. Replayed on main's last 387 list merges: 366 exact, 17 the same lines in
+  another order, 3 placed elsewhere, 1 a true conflict, none lost; of about 64,000 fuzzed merges (section placement
+  only) 3 placed an item worse than union, each a release cut with a new section on both sides, 1 of the
+  12,000 after the last fix round.
+- `todo-md`: `lint` wants `CHANGELOG.md merge=union` where a repo has a CHANGELOG.md, and `migrate` writes it; a
+  list ending on `and <n>` keeps its last number; a bare `TODO:` before `item <n>` is a code comment; an id in a
+  fenced example is never done; a handoff brief may cite the item its own branch did; a module's templates and
+  skills are not judged against this repo's list; `check-id <id>` says whether an id may name a new item. check.yml's
+  line runs the lint, so a docs-only pull request is judged too.
+- fork-read-token (2026-11-02): the fork-PR setting and the runner list, both answered to repo admins only, are read
+  with `WHARF_READ_TOKEN` when the gh login cannot (`gh_read`; the desk's machine login refused the Mac lane on every
+  pass). ci-provider pops the variable at its start, so no child inherits it; the token serves those two reads, as
+  `GH_TOKEN` on that call alone; unread by both is still a refusal.
+- `/todo`'s items are unnumbered, each with an id cited as `TODO.md [<id>]` (todo-ids, 2026-10-31): `bin/todo-md`
+  lints the shape (an item without an id, a duplicate id, a numbered citation, a live file citing an id
+  `TODO.md` lacks, no `TODO.md merge=union` in `.gitattributes`), lists, deletes an item by id and migrates a
+  numbered list. The union line is what lets two branches that each append an item merge: without numbers two
+  appends still conflicted; `lint --base origin/main` (the core's check passes it) names an item done on main that
+  a union merge brought back, judged from the merge-base so a branch merely behind main is not. The template's `TODO.md` and a `.gitattributes` take the shape, and `/new-project`
+  copies the latter.
+
+- linux-on-actions (2026-11-02): the Linux share may run on GitHub's hosted ubuntu. An Actions lane in
+  `ci-lanes.json` names a repo's share target `actions` in its `projects`; while it does, it alone runs the
+  share and the CircleCI lanes are read and said, never chosen (with it out, the share goes off). The variable is
+  `CI_LINUX_TARGET` now (was `CI_CIRCLECI_PROJECT`, never set on GitHub; an old log row of it is no runs-on flip).
+  main's requirement is read from the branch first (any reader) when it lists checks, else the protection
+  endpoint (admins only): the desk's 404, logbook #6. The Actions matrix runs only the suites a PR reaches
+  (`share.sh linux-ids <base>`).
+
+- `sr-architect`'s description says its effort is its frontmatter's `high`, and that a parent passes `effort` on the
+  Agent call only when the owner names one or for the escalation re-run (xhigh-warning, 2026-11-01: a parent passed `xhigh` on three calls).
+- `review-gate skipped --why TEXT [--base REF]` logs a landing whose review `/finish` skipped: `phase` finish, no
+  agents, no `diff` or `models`; it asks `build-review covers` first and logs nothing on a no. A merge's line names
+  the commit it reviewed (`head`). `/finish` asks `covers` again after step 11.1's rebase. `/finish` step 1 asks `build-review covers` first and skips its review on a tip the build's own
+  loop reviewed clean (TODO.md [second-review]'s D1-B, the owner, 2026-11-02).
+- `review-gate merge --phase build|finish` marks its log line as a build round's or the landing's (TODO.md [second-review]); `/finish`
+  passes `finish`. A line without it, written before, reads by its time as before.
+- `review-gate plan`'s principal hold routes (the principal tier's S6): with the week holding the top tier, it
+  asks lighthouse's `account pick --repo <repo>` and says spawn here (this session's login has room), run the
+  review from the login it names, or wait for the reset each reason names (no login has room, each one's reason
+  said); a login account could not read is read once more, a minute on, then needs `account check` (a tenancy
+  file that does not read: `account refresh --force`); the JSON's `principal.route` carries it. Pick's own
+  room, not `--room fable`: /finish spawns both reviews on Opus, so a login without Fable room is a route, and an unread primary runs as for any pick, said as
+  unread (`principal.route.unread`). A reviewer a project puts on Fable is outside the route: /finish stops on it. No answer (no lighthouse, no registry) keeps the plain advice.
+  `$REVIEW_GATE_ACCOUNT` names another `account`, for tests. /finish step 1 reads the line so.
+- The architects' shared body sizes a step by the block rule (trim S4, 2026-11-02): the longest run of consecutive
+  work inside 300–999 expected code lines and one module's suite, cut at any owner answer, live deploy or
+  `autofinish_exclude` path; under 300 merged with a neighbour, over 1,000 split; each step line carries
+  `· lines: <n>`, which `wharf check <doc>` reads. architect, sr-architect, principal-architect (and sextant's sounder).
+- `bin/council` records each CLI's own `--version` as its arm starts (the isolation design's S4, finding 15), read
+  once per binary outside the box with no model call: per arm in run.json (`version`) and one line of the Receipt;
+  a `--version` with no version number in it reads "unknown (…)", saying why.
+- `bin/council` (the isolation design's S3): a run's id is a uuid, never the run dir's basename; `examine` judges
+  every source the run recorded again (a brief's repo that became confidential refuses it); the Codex arm hands
+  harness `--deadline`, so harness's start waits come out of the arm's bound; the dot rule in `fence_root` is gone
+  (the seatbelt quotes paths); the unattended rule and the marker are the core's `common`. Its header names the
+  fences F1–F7 in order. Its live table, `settings/models.json`, is on `autofinish_exclude` and `autofinish_leaks`.
+- `bin/council`'s copies are written by git (the isolation design's S2): one pack of the commit's trees from
+  the home, indexed in the arm's box, a commit made by `commit-tree` and checked out with `core.protectHFS` and
+  `core.protectNTFS`, so a `.GIT` folder or a `GIT~1` name fails the arm, named. No attribute of the tree
+  applies (an export-ignore path is there, an `eol=crlf` file byte for byte), and the copy is the arm's to write.
+  The review's repo is the same with two commits, the merge base and HEAD's tree (never a clone);
+  `make_copy`, `tree_matches` and the review's chmod walk are gone. The copy's own `.codex/`, `.agents/`,
+  `.gemini/` and `.claude/settings*.json` are stripped (skip-worktree in the review's repo, so its diff is
+  untouched) and named in the Receipt. `examine` writes the papers and the draft into each arm's box and names
+  them in its prompt, never inlining them.
+- `bin/council`'s Codex arm keeps its shell (the owner keeps the account's connectors, 2026-10-30): the
+  `codex plugin list` gate, the text-only road and its inline files are gone, and F7 holds instead — every arm's
+  login off the disk from its first vendor request (Claude's on a pipe), read at its first tool call, its strings
+  looked for in everything the arm leaves; an arm failing F7 is failed and its paper withheld. The Receipt says
+  where each login was. The Codex arm's proxy record now has the shape the Receipt reads (a real run would have
+  crashed `council receipt`).
+- `bin/council`'s arms keep their tools, fenced by where they run (the isolation design's S1): each arm in a
+  box of its own under the core's `fence.py` — the seatbelt, a proxy, a scratch home, an allowlisted
+  environment — with the Claude arm's Bash, Write, Edit and web tools on (no `--restricted`; Bash only while
+  `claude mcp list` names no connector but Anthropic's docs), the Gemini arm reading its copy with its tools on
+  under our PreToolUse hook, and the Codex arm text-only while the ChatGPT login has a plugin of the owner's
+  installed (`codex plugin list`: Gmail, Google Drive, Google Calendar, Google Contacts today; the review is
+  refused meanwhile, needing the shell). The record from each CLI's own log replaces the command witness;
+  the Receipt prints what each arm did and the hosts its proxy saw. `--research` opens each proxy to the web.
+  A commit holding an env file or a vault folder refuses every arm; a paper holding a credential's shape is
+  withheld from examine. Off macOS every arm is refused (no seatbelt).
+- `bin/council run|examine|review|receipt` (principal tier S3, docs/principal-tier-2026-10-26.md): blind
+  position papers from an Opus arm (`claude -p --restricted`, Read, Glob and Grep), a Codex arm
+  (wharf-runs' `harness` research mode) and a Gemini arm (`agy` headless, Gemini 3.8 Flash High, the
+  brief and named files inline, "Do not use any tools" first), each on its own read-only copy of the
+  commit's tree (from git's objects: no `.gitattributes` export rule applies) outside ~; a blind, shuffled cross-examination; the build path's `codex exec review` on a
+  two-commit scratch repo; and the Receipt (requested and observed, login, cost, completion state). A
+  confidential scope's repo or an unreadable registry is refused before any copy; a guarded home, brief
+  or draft needs each vendor's quote (the gate's `vet`, per source); the Claude arm's login is judged by
+  lighthouse's `account allowed` first; an arm without its fence is refused (the Gemini arm's includes
+  agy's PreToolUse hook answering ask or deny when run); a Codex command naming a path outside the copy,
+  a Codex item the witness does not read (an MCP call, a web search) and agy's empty SUCCESS each fail
+  their arm. The rows `council.opus`,
+  `council.codex`, `council.antigravity` and `council.antigravity-claude` (off) ship in this module's own
+  `settings/models.json`; the config dir's `wharf/models.json` wins over it.
+  The landing review's fences (2026-10-28): `--approved` refused from an unattended caller; the run dir
+  0700 and marked `.council-run`, each whole-repo copy removed when its verb ends, the Gemini arm given no
+  copy (its named files read from the commit, capped in UTF-8 bytes) and its prompt on agy's stdin as one
+  stream-json message, never argv; a tool step agy did not deny fails its arm; agy's settings holding an
+  unknown key or not reading refuse it, and the stand-ins' settings paths count only beside a stand-in
+  agy; the Codex witness also flags a bare `/`, `$TMPDIR`, `$OLDPWD`, a cut `${PWD…}`, `cd -` and
+  pushd; the Receipt's login read back (`account which`, the config dir's `.claude.json`, `codex login
+  status`; "unknown" for agy), its observed model from claude's modelUsage and agy's init event, "not
+  reported by <cli>" for the rest, and `codex exec review`'s all-zero usage said so; a review's scratch
+  repo failing records a failed arm, and `receipt` of a dir with no run.json is refused.
+- `pr`'s sweep-gate re-judge takes a `handed` run (task-shape S2): judged by wharf-runs' `handed_held`, as its
+  start was, so its own edit into a gated path readies (D1-C), and by the mode now: ask, or a mode that will not read,
+  holds it, unless its start held it already, on the mode or by `handed_held` (then readied with the `hold` label); with rule M it is re-judged as a
+  mode launch. Its stop names the hand-over, not the sweep. The brief and handed roads read no `--name-only` diff
+  they never use.
+- `ci-provider --pick` (ci-two-orgs, 2026-11-01): the Linux share runs on the CircleCI lane with the most month left
+  above its reserve, moved by the repository variable `CI_CIRCLECI_PROJECT` to the project the lane's `projects` names
+  for the repo; off when no lane has any, or when it may stand on a lane that is out and cannot be moved or told. An unread lane is never chosen, a move waits an hour unless the lane it
+  leaves is out, and the project is written before the share comes on. With no lane naming a project the first is
+  judged as before, unless the variable holds a project no lane names, which turns the share off.
+- `ci-provider --runner caps` (2026-10-31): each runner's custom labels set to its capabilities in
+  `wharf/ci-runner-caps.json`, one PUT per runner, additions before removals, each write's rollback printed
+  even when its read-back differs; refused before any write when a runs-on, a variable's or a literal one,
+  would be left with no runner, or when `--name` names no runner.
+- `--runner install` registers a runner listed in that table with its capabilities, plus any own label of the
+  labels key a runs-on or a variable in any workflow still asks for or a file no reader judges names, said; the
+  variable it routes never takes that label. A label the runner would not carry is warned of. An already
+  configured runner's labels are set by `caps` before the wait for it online.
+- `--to self-hosted`'s literal form names what the repo needs, not a machine (2026-10-31): `[self-hosted, macOS,
+  <capabilities>]` from ci.json's `needs`, which now takes capabilities beside the lanes' words (no OS named:
+  macOS; another OS is refused, for the variable form) and crosses a switch; a literal naming the labels key's labels stays the tool's own,
+  and a re-run replaces it, saying so. A `needs` label no runner in the table lists is warned of. The labels key
+  keeps the runner's name. The pick meets a capability only on a self-hosted lane naming it, and reads a
+  literal on the lane whose list holds it.
+- `--runner caps` judges runs-on it did not (2026-10-31): `[macOS, x]`, the label alone, a block list, a quoted
+  key and a variable holding one label, in the checkout and on origin's default branch, fetched, which GitHub runs
+  until a branch lands, and unread is a refusal; anything but plain labels is unreadable, which refuses a change
+  taking a label its text names off every runner, and is said otherwise. Status reads such a literal before the
+  labels key, and claims nothing of one it cannot read. The host-write scan reads a literal naming `macOS`.
+- The self-hosted kind is `self-hosted` everywhere (2026-10-31): `wharf/ci-runner-kind` now lists older names,
+  which ci.json and `--to` read as the kind and `--to` writes back as `self-hosted`. An overlay's key needs no
+  change.
+- `test_ci_provider.sh` reads YAML with PyYAML rather than ruby, which a Linux node may lack.
+- checkpoint's vendor guard denies the kick roads dispatch's deny list names (`dispatch --kick`, `dispatch-queue
+  kick`, `dispatch-rc kick-listen`): queue S8 and the Codex guard landed side by side, and the suite's count of the
+  list failed on main (the fix landed on main by itself, with no entry; this line records it).
+- The finish skill removes a `pickup seed --from` `.review` with its brief on both roads (`git rm` and `git mv`):
+  a `.review` left alone made every later dispatch of the branch refused for good (S6's sixth landing review).
+- `ci-provider --pick` switches a repo's Linux share by the CircleCI lane's budget (ci-budgets, 2026-10-31): where
+  check.yml reads `CI_LINUX_ELSEWHERE`, an over-budget or unread CircleCI account turns it off (the runner takes the
+  whole line, and check-linux.yml posts check-linux green itself), and an account under budget turns it back on only
+  while main requires check-linux, an hour after the last off; it goes off too when main stops requiring it.
+  Same `--apply` guards and log as the runs-on flip; a refused share write exits 3 and leaves the runs-on half running. `gh` missing from PATH is an
+  unread answer, not a traceback.
+- The Codex and Antigravity guard (`hooks/checkpoint.py`, `vendor_denied`) denies `dispatch-queue kicked`, the kick's
+  receiver, which is on no list of dispatch's but which Claude's substring rule `*dispatch-queue kick*` denies (queue-rank,
+  2026-10-31).
+- `ci-circleci rerun JOB` reruns a job's workflow from failed: once, only a workflow that ended failed or error
+  and neither has a rerun nor is one; its pipeline ran on the checkout's branch (or `--branch`'s; job numbers are per project); it returns once the rerun is listed (up to `$CIRCLECI_LISTED_WAIT` s, 0 to 600, read before any request), and a POST that failed says the rerun may have started. `wait` judges the newest workflow of each name, so a green rerun beside its failed
+  original exits 0.
 - The finish and evacuate skills state their lines with their marks (✅, ⏳, 🛑); checkpoint's declared-line
   refusal suggests the marked WAITING FOR SOMETHING line.
 - `session_status` reads WAITING FOR NOTHING (the core's `idle` kind) as done.
@@ -14,7 +195,7 @@
   from dispatch and fails on an entry it does not deny. A vendor call remembers no claim either.
 
 - checkpoint denies every session, attended or not, a hand write of the force mark
-  (`force/` in run-seed's cache folder, dispatch-queue S4): it stands for the owner saying "use the force";
+  (`force/` in run-seed's cache folder, dispatch-queue S4): it stands for the owner asking for "force" (any wording since 2026-10-30);
   only wharf-runs' `force_mark` hook writes it and only dispatch spends it. Reading it stays allowed.
 
 - `finish-stuck-rebase` says it needs git 2.40 or newer at its start (exit 1, nothing changed), and its

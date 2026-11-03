@@ -36,6 +36,11 @@ echo "privacy: the scope's berths, in order, crossed with the clone hosts"
 check "$(python3 "$B/berth" pub --json --no-log | python3 -c 'import json, sys; print(json.load(sys.stdin)["candidates"])')" "['h2', 'h1']" "berths in the scope's order"
 check "$(python3 "$B/berth" solo --json --no-log | python3 -c 'import json, sys; print(json.load(sys.stdin)["candidates"])')" "['h1']" "  a host the repo is not cloned on is left out"
 python3 "$B/berth" far --no-log > "$T/out" 2>&1; check "$?" "3" "berths and clone hosts that share none: no berth, exit 3"
+# S6's sixth landing review: an open scope whose `repos` is a string is no member, as on main — never a TypeError
+# out of the core's scope_of_repo that crashed candidates() (a confidential one reads as torn: read_registry)
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["scopes"]["odd"] = {"repos": "pub"}; json.dump(d, open(sys.argv[2], "w"))' "$T/repos.json" "$T/odd.json"
+check "$(CLAUDE_REPOS_JSON="$T/odd.json" python3 "$B/berth" pub --json --no-log 2>&1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["candidates"])' 2>&1)" "['h2', 'h1']" \
+  "an open scope whose repos is a string beside it: no crash, the berths as before"
 grep -q "no host may take far" "$T/out"; check "$?" "0" "  …saying why"
 check "$(python3 "$B/berth" free --json --no-log | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["candidates"], d["source"])')" \
   "['h2', 'h1'] no berths: each peer, then this Mac" "a scope with no berths: dispatch's order before berth (each peer, then here)"

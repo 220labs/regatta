@@ -1,0 +1,4 @@
+# The build: npm ci's packages, tsc's output and vsce's package (`npm run check` makes all three).
+node_modules/
+out/
+*.vsix

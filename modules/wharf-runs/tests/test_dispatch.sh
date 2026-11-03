@@ -9,7 +9,7 @@ set -u
 unset WEEKLY_RUN CLAUDE_UNATTENDED REGATTA_UNATTENDED AUTOFINISH_CALLER_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS DISPATCH_DEPTH DISPATCH_BRIEF DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR \
       DISPATCH_MAX_DEPTH DISPATCH_MAX_RUNS DISPATCH_MAX_H \
       RUN_SEED_DEPTH RUN_SEED_BRIEF RUN_SEED_LABEL RUN_SEED_LOG RUN_SEED_YEAR \
-      DISPATCH_MANAGER DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_REPO DISPATCH_PIN DISPATCH_HOST_PIN CLAUDE_CODE_SESSION_ID \
+      DISPATCH_MANAGER DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_REPO DISPATCH_PIN DISPATCH_HOST_PIN DISPATCH_HOST_PREFER CLAUDE_CODE_SESSION_ID \
       DISPATCH_SKIPPER DISPATCH_SKIPPER_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_SHIP DISPATCH_MODE \
       DISPATCH_ORIGIN DISPATCH_LOADED_AT DISPATCH_QUEUE_NOW DISPATCH_HOST DISPATCH_EVENT_AT
 # (the last two lines: a run's own skipper — session-asks R1 — would name itself the skipper of every test run)
@@ -49,7 +49,7 @@ FUT=$(date -v+30d +%Y-%m-%d); FY=${FUT%%-*}; FM=$((10#$(date -v+30d +%m))); FD=$
 E2=$(date -v+60d +%Y-%m-%d); EM=$((10#$(date -v+60d +%m))); ED=$((10#$(date -v+60d +%d)))
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
-hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
+hasnt() { if [ ! -f "$1" ]; then echo "  FAIL $3: no file $1 to read"; fails=$((fails+1)); elif grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 # a blueprint's front matter is read by PyYAML, installed per user on these Macs: keep its site when HOME
 # moves below (bin/blueprintlib.py; dispatch --next and pickup seed read blueprints, wharf-on-orca S5)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
@@ -71,8 +71,21 @@ git add .; git commit -qm seed
 git checkout -q main
 git branch -q $BR.copy $BR
 git update-ref refs/heads/claude/laptop/2026-10-02-nobrief main
-# publish both branches to the scratch origin without a push verb in this file's text
-git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$BR:refs/heads/$BR" "main:refs/heads/claude/laptop/2026-10-02-nobrief" >/dev/null 2>&1 \
+# a spawn out of confidential scope `node` (confidential-reach S5, S6): a seed whose .review vouches for its
+# brief, its origin the scope's marker — kept local too, as `pickup seed --from` leaves it
+NM="confidential:$(printf node | shasum -a 256 | cut -c1-8)"; PM="confidential:$(printf pub | shasum -a 256 | cut -c1-8)"
+RB=claude/laptop/2026-10-02-spawn
+review() {   # BRIEF ORIGIN [JUDGE]: a .review's JSON for BRIEF, as pickup's review_brief writes it
+  printf '{"review": "confidential-reach S5", "origin": "%s", "sha256": "%s", "scan": "clean", "judge": "%s"}\n' \
+    "$2" "$(shasum -a 256 "$1" | cut -d' ' -f1)" "${3:-clean}"
+}
+git checkout -q -b $RB main
+mkdir -p docs/handoff; echo "# spawn brief" > docs/handoff/2026-10-02-spawn.md
+review docs/handoff/2026-10-02-spawn.md "$NM" > docs/handoff/2026-10-02-spawn.review
+git add docs/handoff/2026-10-02-spawn.md docs/handoff/2026-10-02-spawn.review; git commit -qm "seed: spawn"
+git checkout -q main
+# publish the branches to the scratch origin without a push verb in this file's text
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$BR:refs/heads/$BR" "$RB:refs/heads/$RB" "main:refs/heads/claude/laptop/2026-10-02-nobrief" >/dev/null 2>&1 \
   || cp -R "$T/repo/.git/." "$T/origin.git/"
 git branch -q -D $BR $BR.copy
 # the contract dispatch requires; untracked on main, so the seed commit above never carries it
@@ -91,6 +104,7 @@ cat > "$T/ssh" <<EOF
 #!/bin/sh
 echo "ssh \$*" >> "$T/ssh.calls"
 case "\$*" in *ConnectTimeout*) exit \${STUB_PROBE_RC:-0};; esac
+[ -z "\${STUB_SSH_OUT:-}" ] || echo "\$STUB_SSH_OUT"
 exit \${STUB_SSH_RC:-0}
 EOF
 chmod +x "$T/launchctl" "$T/claude" "$T/ssh"
@@ -137,7 +151,16 @@ echo "account \$*" >> "$T/acct.calls"
 [ -n "\${STUB_NOISE:-}" ] && echo "\$STUB_NOISE" >&2
 case "\$1" in
   which) [ -n "\${STUB_WHICH:-}" ] && echo "\$STUB_WHICH"; exit 0;;
-  pick) case "\${STUB_ACCT:-none}" in
+  pick) case "\$*" in *"--room fable"*)   # the principal tier's S6: STUB_ROOM answers a Fable pick
+          case "\${STUB_ROOM:-room}" in
+            room) echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 10% < 90%; Fable'"'"'s week 37%", "skipped": [["acct-p", "no Fable on its plan (pro): --room fable"]]}';;
+            full) echo '{"account": null, "skipped": [["acct-p", "no Fable on its plan (pro): --room fable"], ["acct-a", "Fable'"'"'s week 100% ≥ 95% (week ceiling); resets Fri 08:00"]]}'; exit 3;;
+            week) echo '{"account": null, "skipped": [["acct-a", "Fable'"'"'s week 100% ≥ 95% (week ceiling); resets Fri 08:00"]]}'; exit 3;;
+            pro) echo '{"account": null, "skipped": [["acct-a", "no Fable on its plan (pro): --room fable"]]}'; exit 3;;
+            mixed) echo '{"account": null, "skipped": [["acct-c", "extra usage on: work here may bill past the plan; Fable room unknown (no reading)"]]}'; exit 3;;
+            none) echo "account: no registry" >&2; exit 4;;
+          esac; exit 0;; esac
+        case "\${STUB_ACCT:-none}" in
           f) echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 10% < 90%", "skipped": []}';;
           acct-a) echo '{"account": "acct-a", "primary": true, "env": {}, "reason": "week 20% < 95%", "skipped": [["acct-c", "repo is on its deny list"]]}';;
           short) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"], ["acct-a", "week 99% ≥ 95%"]]}'; exit 3;;
@@ -145,13 +168,23 @@ case "\$1" in
           none) echo "account: no registry" >&2; exit 4;;
           junk) echo "account: probe timed out" >&2; echo "not json"; exit 1;;
         esac;;
-  limits) case "\${STUB_LIMITS:-ok}" in
+  # limits --all (dispatch's login_free): STUB_ALL says whether the primary row may run the repo
+  limits) [ "\$2" = --all ] && case "\${STUB_ALL:-none}" in
+          free) echo '[{"label": "acct-a", "primary": true, "denied": null}, {"label": "acct-c", "primary": false, "denied": null}]'; exit 0;;
+          denied) echo '[{"label": "acct-a", "primary": true, "denied": "repo"}, {"label": "acct-c", "primary": false, "denied": null}]'; exit 0;;
+          noprimary) echo '[{"label": "acct-c", "primary": false, "denied": null}]'; exit 0;;
+          empty) echo '[]'; exit 0;;   # no registry file: the real limits prints an empty list
+          *) echo "account: the overlay does not read" >&2; exit 1;;
+        esac
+        case "\${STUB_LIMITS:-ok}" in
           ok) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is on its deny list\", \"denied\": \"repo\"}]";;
           overage) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"extra usage on\", \"overage\": true}]";;
           short) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"week 95% over its 90% ceiling\"}]";;
           same) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"same login as acct-a (a@b), so its limits are acct-a\", \"same_as\": \"acct-a\"}]";;
           unknown) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"limits unknown (no probe answered, none cached)\"}]";;
+          fable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"max\", \"fable\": true, \"fable_week\": 37, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
+          nofable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"pro\", \"fable\": false, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
@@ -170,8 +203,8 @@ has "$T/ssh.calls" "DISPATCH_DEPTH=2 $RBIN" "  the chain's depth travels (the pe
 has "$T/ssh.calls" "--at @$EP" "epoch, not a clock time, crosses the wire"
 has "$T/ssh.calls" "note" "note quoted through"
 printf '{"repos": {"k": {}, "o": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "pub": {"repos": ["o"]}}}\n' > "$T/origin-repos.json"
-env -u DISPATCH_LABEL DISPATCH_DEPTH=2 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$HOME/projects/other" --on buildbox --at "@$EP" --origin node >/dev/null
-has "$T/ssh.calls" "--origin node" "--origin travels to the dispatch host (S5)"
+env -u DISPATCH_LABEL DISPATCH_DEPTH=2 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$HOME/projects/other" --on buildbox --at "@$EP" --origin node >/dev/null
+has "$T/ssh.calls" "--origin $NM" "--origin travels to the dispatch host (S5), as the marker its review names (S6: never the name)"
 # scheduled there: the asking session is recorded as handed off, so tidy closes its window once idle
 HO="$HOME/Library/Caches/run-seed/handoffs"; rm_own "$HO"
 # the asking session sits on the branch it hands off, in the repo it names: its own repo, on $BR
@@ -180,6 +213,10 @@ git init -q "$T/elsewhere" && git -C "$T/elsewhere" checkout -q -b "$BR"
 hand() { local dir=$1 sid=$2; shift 2; (cd "$dir" && CLAUDE_CODE_SESSION_ID=$sid env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$HOME/projects/caller" --on buildbox --at "@$EP" "$@" >/dev/null 2>"$T/hand.$sid.err"); }
 rec() { [ -f "$HO/$1.json" ] && echo recorded || echo none; }
 TP="$HOME/Library/LaunchAgents/org.example.claude.dispatch-tidy.plist"
+# the peer only raised a landing waiting there (force-any): no build was sent, so no dispatched record and no hand-off
+STUB_SSH_OUT="dispatch: $BR's finish waits in the queue: raised in place, no build queued (dispatch --queue)" hand "$T/caller" sess-raised --priority high
+check "$(rec sess-raised) $(ls "$(git -C "$T/caller" rev-parse --absolute-git-dir)/claude/dispatched" 2>/dev/null | wc -l | tr -d ' ')" "none 0" \
+  "a peer's raise in place: no hand-off and no dispatched record here"
 hand "$T/caller" sess-none
 check "$(grep -c dispatch-tidy-soon "$T/calls")" "0" "  a Mac with no tidier installed gets no tidy-soon (opt-in per Mac)"
 touch "$TP"   # the tidier installed (schedule-tidy); taken away again below, before any run reads it
@@ -236,7 +273,15 @@ echo "the hosts are config: wharf-runs/ssh, wharf-runs/dispatch-host, wharf-runs
 KEYS="$REGATTA_CONFIG/wharf-runs"
 printf 'buildbox:buildbox-ssh\nStudio2:studio2-ssh\n' > "$KEYS/ssh"; : > "$T/ssh.calls"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on STUDIO2 --at "@$EP" >/dev/null 2>"$T/err"; check "$?" "0" "a second host the ssh key names is taken, case-blind"
-has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_HOST_PIN=1 DISPATCH_DEPTH=0 $RBIN" "  over its own alias, to its own core (a typed host: its one-shot pinned there, S3's review item 8)"
+has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_HOST_PREFER=1 DISPATCH_ARM=- DISPATCH_DEPTH=0 $RBIN" "  over its own alias, to its own core (a typed --on: its one-shot prefers that host, S12)"
+: > "$T/ssh.calls"
+"$B/dispatch" $BR --repo "$HOME/projects/other" --pin studio2 --at "@$EP" >/dev/null 2>&1; check "$?" "0" "S12: --pin HOST schedules there as --on does"
+has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_HOST_PIN=1 DISPATCH_ARM=- DISPATCH_DEPTH=0 $RBIN" "  …its one-shot pinned there (S3's review item 8's pin, now --pin's)"
+"$B/dispatch" $BR --repo "$HOME/projects/other" --pin studio2 --on here --at "@$EP" > /dev/null 2> "$T/err12"; check "$?" "2" "S12: --on with --pin is refused"
+has "$T/err12" "give one of --on and --pin" "  …saying so"
+"$B/dispatch" $BR --repo "$HOME/projects/other" --pin auto --at "@$EP" > /dev/null 2> "$T/err12"; check "$?" "2" "  --pin auto is no pin: refused"
+"$B/dispatch" $BR --repo "$HOME/projects/other" --pin studio2 --pin here --at "@$EP" > /dev/null 2> "$T/err12"; check "$?" "2" "  --pin given twice: refused (a gated flag twice, as --at)…"
+has "$T/err12" "--pin given twice" "  …saying so"
 has "$T/err" "scheduling on Studio2" "  named as the key spells it"
 : > "$T/ssh.calls"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on nowhere --at "@$EP" >/dev/null 2>"$T/err"; check "$?" "2" "a host the key does not name is refused"
@@ -250,7 +295,7 @@ mv "$KEYS/dispatch-host" "$KEYS/dispatch-host.off"; : > "$T/ssh.calls"
 # key's order, then this Mac — here, in the log-only week, the first that answers (a stub peer)
 printf '#!/bin/sh\nprintf "1.00 10\\n0 10\\n"\n' > "$T/berth-ssh"; chmod +x "$T/berth-ssh"
 env -u DISPATCH_LABEL -u DISPATCH_DEFAULT_ON BERTH_SSH="$T/berth-ssh" DISPATCH_HOST=laptop "$B/dispatch" $BR --repo "$HOME/projects/other" >/dev/null 2>"$T/err"; check "$?" "0" "no dispatch-host key: a run with no host named…"
-has "$T/ssh.calls" "ssh buildbox-ssh DISPATCH_DEPTH=0 $RBIN" "  …goes to the first host the ssh key names (berth's order)"
+has "$T/ssh.calls" "ssh buildbox-ssh DISPATCH_AT_DEFAULT=1 DISPATCH_ARM=- DISPATCH_DEPTH=0 $RBIN" "  …goes to the first host the ssh key names (berth's order), its defaulted now marked (a peer's raise counts no --at)"
 has "$T/err" "dispatch: berth — buildbox" "  and says so on stderr"
 check "$(grep -c 'dispatch: berth' "$T/err")" "1" "  once"
 : > "$T/ssh.calls"
@@ -392,6 +437,14 @@ has "$T/claude.calls" "Read(/$PJ/vault-kb.dev/**)" "  …each by its own name"
 mkdir -p "$PJ"/grp/ov/bin "$PJ"/grp/other
 echo "$PJ/grp/ov" > "$REGATTA_CONFIG/regatta/overlay"
 fence_run "$T/fence-reg.json" "$FL.broken"
+# S6's gate under the same broken config has no core to judge by: a torn registry's rule, read with git alone —
+# the run above (asked from inside its own repo, no origin, no review) goes on, and whatever may be a spawn waits
+# (S6's fifth round, meeting this fence on main: S6 had refused every run here)
+has "$T/fence.out" "the spawn check could not run here (exit 1: no regatta core to judge by), and nothing here may be a spawn" "  S6's gate, no core: the run asked from inside its own repo goes on, said so"
+CLAUDE_REPOS_JSON="$T/fence-reg.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "  …a branch carrying its topic's review: refused for now"
+has "$T/err" "the spawn check could not run here (exit 1), so whether this run leaves a confidential scope cannot be told (fails closed)" "    saying so"
+has "$T/err" "the next step waits for a run to end" "    in the cap's waiting words (a fixed config fixes it)"
+(cd "$T" && CLAUDE_REPOS_JSON="$T/fence-reg.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "  …an open branch asked from outside its repo: refused for now"
 rm -f "$REGATTA_CONFIG/regatta/overlay"
 has "$T/fence.out" "== the fence's registry check exited 1 (a crash, or a config the core will not load): every other checkout in the projects folder is denied to this run (the fence)" "  a broken config: the wide deny, said so…"
 hasnt "$T/fence.out" "FAILED" "  …never FAILED"
@@ -568,14 +621,20 @@ has "$T/claude.calls" "review your own build until it is clean" "build-review: t
 has "$T/claude.calls" "bin/review-gate plan" "  the reviewers /finish step 1 runs, through wharf's review-gate"
 has "$T/claude.calls" "refs/remotes/origin/main\`, then \`git -C $T/repo/.claude/worktrees/demo merge --no-edit --no-ff origin/main" "  (a) main merged in first"
 has "$T/claude.calls" "a merge, never a rebase" "    never a rebase: the branch is on origin and the push never forces"
-has "$T/claude.calls" "bin/build-review round $T/repo/.claude/worktrees/demo --found" "  (e) each round recorded by the module's build-review"
-has "$T/claude.calls" "at most 5 rounds (" "  the round cap's words"
+has "$T/claude.calls" "bin/build-review round $T/repo/.claude/worktrees/demo --verdicts" "  (e) each round recorded by the module's build-review, its count from the verifier's file"
+has "$T/claude.calls" "spawn one fresh reviewer-high with model opus (none of this round's reviewers, never yourself)" "  (c) the round's S1, S2 and WRONG items verified by a fresh reviewer before any fix (verified-rounds)"
+has "$T/claude.calls" "the brief $T/repo/.claude/worktrees/demo/docs/handoff/" "  the verifier reads the brief, so what it asks for is never a defect (verified-rounds landing review)"
+has "$T/claude.calls" "a refuted item included (never a cleared list)" "  every item gets a block, so an all-refuted report still records"
+has "$T/claude.calls" "[S1|S2|S3] <claim>\` keeping the item's severity as given" "  an S3 keeps its tag, so build-review leaves it out of the count"
+has "$T/claude.calls" "an S? item, a merge that could not read severity, goes as S2" "  a failed merge's S? items are verified, not skipped"
+has "$T/claude.calls" "only while the round before confirmed a real finding or its check was red" "  a further round only on a confirmed finding or a red check"
+has "$T/claude.calls" "at most 3 rounds (" "  the round cap's words: build-review cap's default (TODO.md [second-review]'s D2-B)"
 has "$T/claude.calls" "bin/build-review end $T/repo/.claude/worktrees/demo --outcome clean" "  (f) the record ended clean"
 has "$T/claude.calls" "never a new dispatch" "  every round in this session"
 has "$T/claude.calls" "plan --base origin/main\` in the worktree" "  reviewed against origin/main, which (a) merged in, not a local main that may be behind"
-has "$T/claude.calls" "merge --base origin/main --reviewer" "    the merge too"
+has "$T/claude.calls" "merge --phase build --base origin/main --reviewer" "    the merge too, its log line marked a build round's (TODO.md [second-review])"
 has "$T/claude.calls" "changes no code or config (prose only)" "  a prose-only diff skips the reviewers, as /finish step 1 does"
-has "$T/claude.calls" "--found <real S1, S2 and WRONG findings>" "  found counts the real findings only, so a round of S3s ends the loop"
+has "$T/claude.calls" "--found 0\` in place of --verdicts when the merged list held no S1, S2, S? or WRONG item" "  found counts the verified findings only, so a round of S3s ends the loop"
 has "$T/claude.calls" "never the hand-over line, whatever your mode says below" "  a capped or held loop ends on WAITING, so no launch starts on unfixed findings"
 has "$T/claude.calls" "fetch origin +refs/heads/main:refs/remotes/origin/main" "  (a) fetches origin's main by its refspec, as after_merge does"
 has "$T/claude.calls" "leave the brief's steps open" "  a stopped loop leaves its steps open"
@@ -583,10 +642,12 @@ has "$T/claude.calls" "once it ended clean) — " "  and the Steps: sentence wai
 has "$T/claude.calls" "--outcome held --why 'D<n> open'" "  a decision left open ends the record held, and goes the D-item road"
 has "$T/claude.calls" "schedules no next step" "  a stopped loop schedules no next step"
 has "$T/claude.calls" "first, once, (a) merge" "  (a) once at the start; each round repeats (b) to (e)"
-has "$T/claude.calls" "repeat (b) to (e) until" "    and never re-merges a moving main"
+has "$T/claude.calls" "repeat (b) to (e) only while" "    and never re-merges a moving main"
 has "$T/claude.calls" "never in a repo whose .claude/workflow.json has in_place" "  the prose-only skip keeps /finish's in_place exception"
 has "$T/claude.calls" "bin/build-review round*)" "  build-review's verbs have allow rules, by the path the prompt names (AGENTS.md Traps)"
 has "$T/claude.calls" "bin/review-gate merge*)" "    and review-gate's plan and merge"
+check "$(grep -c '\[ "\$start" = 0 \] && tools+=("Bash(\$p_review round\*)" "Bash(\$p_review end\*)")' "$B/dispatch")" "1" \
+  "  round and end for a build only: a --start run (the finish) may not write the record covers trusts (the landing review)"
 has "$T/claude.calls" "only after (f)" "  a next step's brief is written after the loop, so dispatch --next does not refuse it"
 check "$(grep -c 'python3 "$p_review" gate "$wt" --session "$sid"' "$B/dispatch")" "1" "  yolo_launch asks build-review gate before a launch (a stopped loop never lands; its cases: test_build_review.sh)"
 check "$(python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d.get("manager"), d.get("plan"), d.get("plan_space"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "mgr-x mgr-x sp-1" "the run's record names its skipper, plan and page"
@@ -673,10 +734,13 @@ has "$HOME/allow.log" "== background allow (--background)" "  the log says which
 check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("background"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "allow" "  so does the run's record"
 
 echo "--origin: the confidential scope a seed came out of (confidential-reach S5), carried and recorded"
-rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
-CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
-has "$P" "<string>--origin</string><string>node</string>" "it travels to the scheduled job"
-CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin node
+# a reviewed seed ($RB, the fixture's): S6 refuses an --origin run whose seed carries no review (below)
+plr() { ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.spawn.[0-9]*.plist 2>/dev/null; }
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.spawn.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --origin node >/dev/null; P=$(plr); PL=$(basename "$P" .plist)
+has "$P" "<string>--origin</string><string>$NM</string>" "it travels to the scheduled job, as its marker"
+hasnt "$P" "<string>node</string>" "  the plist carries no scope's name"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin.log" DISPATCH_LABEL=$PL "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM"
 has "$T/origin.log" "== exit 0" "  the fired run ran"
 check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("origin"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node" "  its record names the origin"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
@@ -688,12 +752,11 @@ has "$T/err" "--origin takes a scope's name" "  saying so"
 has "$T/err" "--origin given twice" "  saying so"
 # the seed commit's marker (S5's landing review): read back by this host's registry, never pushed as a name
 printf '{"repos": {"k": {}, "o": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "pub": {"repos": ["o"]}}}\n' > "$T/origin-repos.json"
-NM="confidential:$(printf node | shasum -a 256 | cut -c1-8)"; PM="confidential:$(printf pub | shasum -a 256 | cut -c1-8)"
-rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
-CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.spawn.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(plr); PL=$(basename "$P" .plist)
 has "$P" "<string>--origin</string><string>$NM</string>" "a marker travels to the scheduled job as given"
 hasnt "$P" "<string>node</string>" "  the plist carries no name it was not given"
-CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin-mark.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/origin-mark.log" DISPATCH_LABEL=$PL "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM"
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("origin"), d.get("origin_mark"))' "$(ls -t "$HOME/Library/Logs/claude-weekly/run-seed-runs"/*.json | head -1)")" "node $NM" \
   "  the fired run's record: the scope this host's registry reads it as, and the marker"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$PM" > /dev/null 2> "$T/err"; check "$?" "2" "an open scope's marker: refused"
@@ -701,6 +764,7 @@ has "$T/err" "names no confidential scope in this host's registry" "  saying so"
 printf '{"repos": {"x": ' > "$T/origin-torn.json"
 CLAUDE_REPOS_JSON="$T/origin-torn.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" > /dev/null 2> "$T/err"; check "$?" "2" "a marker with a torn registry: refused (fails closed)"
 has "$T/err" "the registry cannot be read here" "  saying why"
+has "$T/err" "the next step waits for a run to end" "  for now, in the cap's waiting words: a wait fixes a torn registry (the sixth review)"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "confidential:xyz" > /dev/null 2> "$T/err"; check "$?" "2" "a malformed marker: refused"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$T/repo" demo --origin node --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "--start takes no --origin"
 WEEKLY_RUN=sextant "$B/dispatch" $BR --repo "$T/repo" --at reset --if-room --origin node > /dev/null 2>&1; check "$?" "2" "  nor does the weekly Sextant's one shape"
@@ -709,10 +773,377 @@ WEEKLY_RUN=sextant "$B/dispatch" $BR --repo "$T/repo" --at reset --if-room --ori
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin pub > /dev/null 2> "$T/err"; check "$?" "2" "an open scope's name: refused"
 has "$T/err" "names no confidential scope in this host's registry" "  saying so"
 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin nosuch > /dev/null 2> "$T/err"; check "$?" "2" "an unknown name: refused"
-rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.demo.[0-9]*.plist
-CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
-CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1; check "$?" "2" "a fired job whose marker no longer reads: refused"
-check "$([ -e "$P" ] && echo left || echo gone)" "gone" "  and its plist removed (the trap is not set yet)"
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.spawn.[0-9]*.plist
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(plr); PL=$(basename "$P" .plist)
+CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired.log" DISPATCH_LABEL=$PL "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1; check "$?" "2" "a fired job whose marker no longer reads: refused"
+check "$([ -e "$P" ] && echo left || echo gone)" "gone" "  and its own plist removed"
+# held for the fire path, where the queue would take it back (S6's third landing review, item 4); no queue
+# home here, so the one-shot is re-armed ten minutes on, its flags and caller kept, never FAILED (the fourth
+# landing review, item 5)
+NP=$(plr); NPL=$(basename "$NP" .plist)
+check "$(plr | wc -l | tr -d ' '):$([ "$NPL" != "$PL" ] && echo new)" "1:new" "  re-armed under a new label, minutes on"
+check "$(python3 -c 'import plistlib, sys; a = plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"]; print(a[a.index("--origin") + 1])' "$NP")" "$NM" "  its flags kept"
+check "$(python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]["DISPATCH_SPAWN_HELD"])' "$NP")" "1" "  counted: handed back once"
+has "$T/origin-fired.log" "rescheduled $NPL" "  saying so, judged again then"
+check "$(grep -c '^FAILED' "$T/origin-fired.log")" "0" "  and no FAILED, which helm would start again"
+CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired2.log" DISPATCH_LABEL=$NPL DISPATCH_SPAWN_HELD=6 "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1
+check "$(plr | wc -l | tr -d ' ')" "0" "  handed back six times already: not re-armed again"
+has "$T/origin-fired2.log" "FAILED: a run out of a confidential scope this host could not judge" "  FAILED then, said so"
+hasnt "$T/origin-fired2.log" "refused for good" "  not for good: a later start may judge it"
+# the sixth landing review: the re-arm names its label and says its time through dateat — GNU's `date -r` takes a file,
+# so a bare `date -r <epoch>` made the label `<base>.` and the next re-arm overwrote it (AGENTS.md's sed/date trap)
+mkdir -p "$T/gnudate"; DREAL=$(command -v date)
+printf '#!/bin/sh\ncase "$1" in -r) echo "date: $2: No such file or directory" >&2; exit 1;; -d) e="${2#@}"; shift 2; "%s" -r "$e" "$@" 2>/dev/null || exec "%s" -d "@$e" "$@"; exit;; esac\nexec "%s" "$@"\n' "$DREAL" "$DREAL" "$DREAL" > "$T/gnudate/date"
+chmod +x "$T/gnudate/date"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" >/dev/null; P=$(plr); PL=$(basename "$P" .plist)
+PATH="$T/gnudate:$PATH" CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_LOG="$T/origin-fired3.log" DISPATCH_LABEL=$PL "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1
+NP=$(plr); NPL=$(basename "$NP" .plist)
+check "$(printf '%s' "$NPL" | grep -cE '\.[0-9]{12}$')" "1" "sixth review: under GNU date the re-armed label still ends in its time (dateat)"
+check "$(grep -cE "rescheduled $NPL for [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:" "$T/origin-fired3.log")" "1" "  and the log says when"
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.spawn.[0-9]*.plist
+
+echo "confidential-reach S6: dispatch refuses the unreviewed, and starts a reviewed spawn unconfined (outward D5 is A)"
+# the projects folder as the core reads it under this suite's HOME (common.PROJECTS): scope node's checkout
+PJ=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.PROJECTS)' "$B/../lib")
+git init -q "$PJ/k"   # a caller there is inside the node
+S6LA="$HOME"/Library/LaunchAgents
+s6clear() { rm_own "$S6LA"/org.example.claude.dispatch.repo.demo.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.spawn.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.stale.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.leak.[0-9]*.plist; }
+s6none() { ls "$S6LA"/org.example.claude.dispatch.repo.demo.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.spawn.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.stale.[0-9]*.plist "$S6LA"/org.example.claude.dispatch.repo.leak.[0-9]*.plist 2>/dev/null | wc -l | tr -d ' '; }
+s6words() { check "$(grep -ciE 'the next step waits for|nothing to do|weekly reset' "$1")" "0" "  in its own words, never the cap's waiting words (CAP_RE, ASK_EXEMPT_RE)"; }
+s6clear
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node --dry-run > /dev/null 2> "$T/err"
+check "$?" "2" "G2: dispatch --dry-run of an unreviewed seed with a confidential --origin exits 2"
+has "$T/err" "no review that vouches for its brief" "  saying why"
+has "$T/err" "its seed carries no docs/handoff/*.review" "  and what is missing"
+s6words "$T/err"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --origin node > /dev/null 2> "$T/err"; check "$?:$(s6none)" "2:0" "  for real too, before any write: no plist"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "a caller inside a confidential scope, an open repo, no review: refused, nothing written"
+has "$T/err" "no review that vouches for its brief" "  saying why"
+s6words "$T/err"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$PJ/k" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err")
+hasnt "$T/err" "no review that vouches" "  the scope's own repo from inside it is no spawn: never refused as one"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "a reviewed seed from inside the node: scheduled"
+has "$(plr)" "<string>--origin</string><string>$NM</string>" "  its origin taken from its review, unasked (a --next or re-dispatch carries it)"
+s6clear
+# the sixth review's first pass: a typed node session that dispatches a reviewed spawn is not made its skipper — its
+# answers to the run's asks are node-written text that `ask apply` commits in the open repo, unreviewed
+(cd "$PJ/k" && env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=s6-node-typed DISPATCH_ACCOUNT="$T/acct" CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err")
+check "$?" "0" "sixth review: a typed node session's reviewed spawn: scheduled"
+hasnt "$(plr)" "<key>DISPATCH_SKIPPER</key>" "  with no skipper: the node session never answers its asks"
+has "$T/err" "no session is made its skipper" "  saying so"
+s6clear
+# the second pass: nor one inherited from the node's own run (DISPATCH_SKIPPER), whose answers would reach it the same way
+(cd "$PJ/k" && env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=s6-node-run DISPATCH_SKIPPER=s6-node-skipper DISPATCH_ACCOUNT="$T/acct" CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1)
+check "$?" "0" "  a skipper inherited from inside the node: the spawn still scheduled…"
+hasnt "$(plr)" "<key>DISPATCH_SKIPPER</key>" "  a skipper inherited from inside the node: dropped too"
+s6clear
+(cd "$T/repo" && env -u DISPATCH_LABEL CLAUDE_CODE_SESSION_ID=s6-open-typed DISPATCH_ACCOUNT="$T/acct" CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1)
+has "$(plr)" "<key>DISPATCH_SKIPPER</key><string>s6-open-typed</string>" "  the same spawn from an open typed session: that session is its skipper, as before"
+s6clear
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null; P=$(plr); PL=$(basename "$P" .plist)
+has "$P" "<string>--origin</string><string>$NM</string>" "a reviewed seed from an open caller, no --origin: the review's marker rides along"
+: > "$T/claude.calls"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LOG="$T/s6-fired.log" DISPATCH_LABEL=$PL "$B/dispatch" $RB --repo "$T/repo" --headless --origin "$NM" > /dev/null 2>&1
+check "$([ -s "$T/claude.calls" ] && echo started)" "started" "the fired spawn, its review vouching for its brief: started"
+hasnt "$T/claude.calls" "--settings" "  with no inward --settings (outward D5 is A, not E: its ssh stays for its own --next)"
+hasnt "$T/s6-fired.log" "== confined" "  and its log says nothing of a confinement"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("origin"))' "$(ls -t "$HOME"/Library/Logs/claude-weekly/run-seed-runs/*.json | head -1)")" "node" "  its record names the origin"
+: > "$T/claude.calls"
+DISPATCH_LOG="$T/s6-open.log" DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" --headless > /dev/null 2>&1
+hasnt "$T/claude.calls" "--settings" "an open run starts unconfined"
+# a brief edited after its review, a review that judged a leak, an origin no scope here has, a target in a scope
+git -C "$T/repo" branch -q claude/laptop/2026-10-02-stale "$RB"
+git -C "$T/repo" worktree add -q "$T/wt-stale" claude/laptop/2026-10-02-stale
+git -C "$T/wt-stale" mv docs/handoff/2026-10-02-spawn.md docs/handoff/2026-10-02-stale.md
+git -C "$T/wt-stale" mv docs/handoff/2026-10-02-spawn.review docs/handoff/2026-10-02-stale.review
+echo "and one more line" >> "$T/wt-stale/docs/handoff/2026-10-02-stale.md"; git -C "$T/wt-stale" commit -qam "an edit after the review"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-stale --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?:$(s6none)" "2:0" "a brief edited after its review: refused, nothing written"
+has "$T/err" "its sha256 differs" "  saying the review vouches for other text"
+git -C "$T/repo" branch -q claude/laptop/2026-10-02-leak main
+git -C "$T/repo" worktree add -q "$T/wt-leak" claude/laptop/2026-10-02-leak
+mkdir -p "$T/wt-leak/docs/handoff"; echo "# leak" > "$T/wt-leak/docs/handoff/2026-10-02-leak.md"
+review "$T/wt-leak/docs/handoff/2026-10-02-leak.md" "$NM" leak > "$T/wt-leak/docs/handoff/2026-10-02-leak.review"
+git -C "$T/wt-leak" add docs; git -C "$T/wt-leak" commit -qm "seed: leak"
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-leak --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?" "2" "a review that did not say clean: refused"
+has "$T/err" "does not say clean by both the scan and the judge" "  saying so"
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k"]}}}\n' > "$T/s6-open-reg.json"
+CLAUDE_REPOS_JSON="$T/s6-open-reg.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?" "2" "a review whose origin no confidential scope here has: refused"
+has "$T/err" "names no confidential scope in this host's registry" "  saying so"
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k", "%s"], "confidential": true}}}\n' "$(cd "$T/repo" && pwd -P)" > "$T/s6-in-reg.json"
+CLAUDE_REPOS_JSON="$T/s6-in-reg.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?" "2" "a spawn into a repo of a confidential scope: refused (a bridge waives nothing)"
+has "$T/err" "its repo is in a confidential scope" "  saying so"
+# a torn registry: whatever may be a spawn refuses; a run asked from inside its own repo goes on (mode_unread)
+CLAUDE_REPOS_JSON="$T/origin-torn.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?" "2" "a torn registry and a reviewed branch: refused (fails closed)"
+has "$T/err" "cannot be told (fails closed)" "  saying why"
+(cd "$T" && CLAUDE_REPOS_JSON="$T/origin-torn.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "  so does an open branch asked from outside its repo"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-torn.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "0" "  and an open branch asked from inside its repo goes on, as the mode's torn read does"
+# --start is judged the same: the lander, whose /finish pushes over ssh
+# the fired spawn's own worktree, made above: as git lists it
+WTS=$(git -C "$T/repo" worktree list --porcelain | sed -n 's/^worktree //p' | grep '/spawn$' | head -1)
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$WTS" "finish · spawn" --dry-run > "$T/out" 2>&1; check "$?" "0" "a --start on a reviewed spawn's worktree: judged and let through"
+hasnt "$T/out" "--settings" "  and started with no inward --settings"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$T/wt-stale" "finish · stale" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "  a --start from inside the node on an unvouched tree: refused"
+echo "confidential-reach S6's landing review: whose brief needs the review, whose scope the caller is in"
+s6pl() { ls "$S6LA"/org.example.claude.dispatch.repo."$1".[0-9]*.plist 2>/dev/null; }
+s6rm() { local t; for t in "$@"; do rm_own "$S6LA"/org.example.claude.dispatch.repo."$t".[0-9]*.plist; done; }
+s6seed() {   # TOPIC: a branch of $T/repo seeded as pickup seed --from leaves it, in its own worktree $T/wt-TOPIC
+  git -C "$T/repo" branch -q "claude/laptop/2026-10-02-$1" main
+  # where dispatch runs it: beside the fired spawn's worktree, as git lists it (the publish gate)
+  git -C "$T/repo" worktree add -q "$(dirname "$WTS")/$1" "claude/laptop/2026-10-02-$1"
+  ln -s "$(dirname "$WTS")/$1" "$T/wt-$1"
+  mkdir -p "$T/wt-$1/docs/handoff"; echo "# $1 brief" > "$T/wt-$1/docs/handoff/2026-10-02-$1.md"
+  review "$T/wt-$1/docs/handoff/2026-10-02-$1.md" "$NM" > "$T/wt-$1/docs/handoff/2026-10-02-$1.review"
+  git -C "$T/wt-$1" add docs; git -C "$T/wt-$1" commit -qm "seed: $1"
+}
+s6pub() { git --git-dir="$T/repo/.git" send-pack --force "$T/origin.git" "claude/laptop/2026-10-02-$1:refs/heads/claude/laptop/2026-10-02-$1" >/dev/null 2>&1; }   # as the fixture publishes
+# S1: a caller in a repo the registry does not list, which a confidential glob takes, is inside that scope
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k", "gl*"], "confidential": true}}}\n' > "$T/s6-glob.json"
+git init -q "$PJ/glx"; mkdir -p "$PJ/glx/sub"
+s6clear
+(cd "$PJ/glx" && CLAUDE_REPOS_JSON="$T/s6-glob.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "S1: a caller in an unregistered repo a confidential glob takes, an open repo, no review: refused, nothing written"
+has "$T/err" "no review that vouches for its brief" "  saying why"
+(cd "$PJ/glx/sub" && CLAUDE_REPOS_JSON="$T/s6-glob.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "  from a folder inside that repo too"
+(cd "$PJ/glx" && CLAUDE_REPOS_JSON="$T/s6-glob.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  a reviewed seed from there: scheduled"
+s6clear
+# S1: an older reviewed brief and a newer unreviewed one — a confidential caller hands the run the newest
+s6seed twob
+echo "# a later step, never reviewed" > "$T/wt-twob/docs/handoff/2026-10-03-twob.md"
+git -C "$T/wt-twob" add docs; git -C "$T/wt-twob" commit -qm "a newer brief"
+s6pub twob
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-twob --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6pl twob | wc -l | tr -d ' ')" "2:0" "S1: a reviewed older brief and a newer unreviewed one, from inside the node: refused, nothing written"
+has "$T/err" "its newest brief docs/handoff/2026-10-03-twob.md carries no 2026-10-03-twob.review" "  naming the brief no review read"
+s6words "$T/err"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-twob --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  the same branch from an open caller: its seed's own brief judged, scheduled"
+has "$(s6pl twob)" "<string>--origin</string><string>$NM</string>" "  its origin from the seed's review"
+s6rm twob
+# S2: the spawned run's next brief, written the same day over the reviewed path: its own --next, a
+# re-dispatch and the lander's --start come from open callers and judge the seed's brief, never the tip's
+s6seed sameday
+echo "# step 2, written by the spawned run" > "$T/wt-sameday/docs/handoff/2026-10-02-sameday.md"
+git -C "$T/wt-sameday" commit -qam "step 1 built; step 2 brief"
+s6pub sameday
+(cd "$T/wt-sameday" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-sameday --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "S2: a same-day next brief over the reviewed path, from the spawned run's own worktree: scheduled"
+has "$(s6pl sameday)" "<string>--origin</string><string>$NM</string>" "  carrying the seed's origin"
+s6rm sameday
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-sameday --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  a re-dispatch from the open repo: scheduled"
+s6rm sameday
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$T/wt-sameday" "finish · sameday" --dry-run > /dev/null 2> "$T/err"; check "$?" "0" "  the lander's --start on it: let through"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-sameday --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "2" "  from inside the node, the newest brief judged: refused"
+has "$T/err" "its sha256 differs" "  saying the review vouches for other text"
+# S2: what a caller inside the node sends beside a reviewed brief is unreviewed: a --note, a --start prompt
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --note "from the node" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "S2: a --note from inside the node to a reviewed spawn: refused, nothing written"
+has "$T/err" "a --note from inside a confidential scope" "  saying why"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --note "open" > /dev/null 2> "$T/err"); check "$?" "0" "  from an open caller: scheduled"
+s6clear
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$WTS" "finish · spawn" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "S2: a --start from inside the node on a reviewed spawn's worktree: refused (its prompt is unreviewed)"
+has "$T/err" "a --start from inside a confidential scope" "  saying why"
+# S2: the origin's scope comes back with the verdict, from the gate's one registry read
+check "$(sed -n '/^spawn_judge() {/,/^}/p' "$B/dispatch" | grep -c 'read_registry')" "0" "S2: spawn_judge reads the registry once, in the gate (no second read a torn write could empty)"
+s6clear
+echo "confidential-reach S6's third landing review: the target by its git checkout, the caller by its session too"
+# item 1: a worktree and a clone of the open repo inside the node's folder read as the node's by their path
+# while they push to the open repo: judged by the checkout git names, and refused where the two disagree
+git -C "$T/repo" worktree add -q -b claude/laptop/2026-10-02-plain "$PJ/k/wt-plain" main
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" --start "go" "$PJ/k/wt-plain" "finish · plain" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "item 1: a --start from inside the node on the open repo's worktree in the node's folder: refused"
+has "$T/err" "its folder and its git checkout are not in the same confidential scopes" "  naming the split"
+git clone -q "$T/origin.git" "$PJ/k/sub"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$PJ/k/sub" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "  a clone of the open repo nested in the node's folder, asked from the node: refused"
+has "$T/err" "its folder and its git checkout are not in the same confidential scopes" "  naming the split"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$PJ/k/sub" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" "  and asked from the open repo: refused too, as the queue's route refuses it"
+git -C "$T/repo" worktree remove --force "$PJ/k/wt-plain"; rm_own "$PJ/k/sub"
+# the caller by its session's own folder: a node session that runs `cd <open repo> && dispatch …` is inside
+# the sessions folder of the suite's own login dir, as the core names it (the publish gate)
+SD=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.Path.home() / ".claude" / "sessions")' "$B/../lib")
+mkdir -p "$SD"
+printf '{"pid": 99999, "sessionId": "s6-node-sess", "cwd": "%s"}\n' "$PJ/k" > "$SD/99999.json"
+(cd "$T/repo" && CLAUDE_CODE_SESSION_ID=s6-node-sess CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "a node session's dispatch from the open repo, no review: refused by its record's folder, nothing written"
+(cd "$T/repo" && CLAUDE_CODE_SESSION_ID=s6-node-sess CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --note "x" > /dev/null 2> "$T/err"); check "$?" "2" "  its --note to a reviewed spawn: refused"
+has "$T/err" "a --note from inside a confidential scope" "  saying why"
+(cd "$T/repo" && CLAUDE_CODE_SESSION_ID=s6-node-sess CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  a reviewed spawn from there: scheduled"
+has "$(plr)" "<key>DISPATCH_ORIGIN</key><string>$PJ/k</string>" "  its plist records the session's folder, so the fire-time judgement sees the same caller"
+s6clear
+(cd "$T/repo" && CLAUDE_CODE_SESSION_ID=s6-no-record CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  a session with no record: the shell's folder decides (a headless run may keep none)"
+rm_own "$S6LA"/org.example.claude.dispatch.repo.demo.[0-9]*.plist; rm -f "$SD/99999.json"
+# a repo in two confidential scopes, and a review out of another scope than the caller's
+git init -q "$PJ/k2"
+printf '{"repos": {"k": {}, "k2": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "node2": {"repos": ["k2", "k"], "confidential": true}}}\n' > "$T/s6-two.json"
+(cd "$PJ/k2" && CLAUDE_REPOS_JSON="$T/s6-two.json" "$B/dispatch" $BR --repo "$PJ/k" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err")
+hasnt "$T/err" "its repo is in a confidential scope" "a repo in two scopes, asked from its second: that scope's own run, never refused as a spawn"
+(cd "$PJ/k2" && CLAUDE_REPOS_JSON="$T/s6-two.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6none)" "2:0" "a caller in node2 handing on a brief reviewed out of node: refused, nothing written"
+has "$T/err" "its review names another confidential scope as its origin than the one it is asked from" "  saying why"
+s6clear
+echo "confidential-reach S6's fourth landing review: one rule of which review counts, the brief handed, the push"
+# item 1: a seed made beside a spawn keeps its source's review under the source's topic; by the core's one rule
+# (a review of the run's own topic) it is an open run, for the gate, the queue's has_review and pickup alike
+git -C "$T/repo" branch -q claude/laptop/2026-10-03-beside "$RB"
+git -C "$T/repo" worktree add -q "$(dirname "$WTS")/beside" claude/laptop/2026-10-03-beside
+WBS="$(dirname "$WTS")/beside"; echo "# beside brief" > "$WBS/docs/handoff/2026-10-03-beside.md"
+git -C "$WBS" add docs; git -C "$WBS" commit -qm "seed: beside"
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-03-beside:refs/heads/claude/laptop/2026-10-03-beside" >/dev/null 2>&1
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-03-beside --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "item 1: a seed beside a spawn, no --origin, from an open caller: scheduled, an open run"
+hasnt "$(s6pl beside)" "<string>--origin</string>" "  carrying no origin: its source's review is not its own"
+s6rm beside
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-03-beside --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" > /dev/null 2> "$T/err"); check "$?:$(s6pl beside | wc -l | tr -d ' ')" "2:0" "  with --origin: refused, nothing written (no review of its own vouches for its brief)"
+has "$T/err" "its seed carries no docs/handoff/*.review of its own topic" "  saying the review it carries is another topic's"
+check "$(python3 - "$B/dispatch-queue" "$T/repo" <<'PYQ'
+import sys, importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader("dq", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dq", l)); l.exec_module(m)
+print(m.has_review(sys.argv[2], "claude/laptop/2026-10-03-beside"), m.has_review(sys.argv[2], "claude/laptop/2026-10-02-spawn"))
+PYQ
+)" "False True" "  the queue's has_review reads it so: no spawn; the source is one"
+# item 3: one seed commit carrying a reviewed brief and a newer unreviewed one: dispatch would hand the run the
+# newer, so an open caller's run is refused, never started on text no review read
+git -C "$T/repo" branch -q claude/laptop/2026-10-02-dbl main
+git -C "$T/repo" worktree add -q "$(dirname "$WTS")/dbl" claude/laptop/2026-10-02-dbl
+WDB="$(dirname "$WTS")/dbl"; mkdir -p "$WDB/docs/handoff"; echo "# dbl brief" > "$WDB/docs/handoff/2026-10-02-dbl.md"
+review "$WDB/docs/handoff/2026-10-02-dbl.md" "$NM" > "$WDB/docs/handoff/2026-10-02-dbl.review"
+echo "# a newer brief, never reviewed" > "$WDB/docs/handoff/2026-10-03-dbl.md"
+git -C "$WDB" add docs; git -C "$WDB" commit -qm "seed: dbl, two briefs"
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-02-dbl:refs/heads/claude/laptop/2026-10-02-dbl" >/dev/null 2>&1
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-dbl --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6pl dbl | wc -l | tr -d ' ')" "2:0" "item 3: a seed carrying a newer unreviewed brief beside its reviewed one, from an open caller: refused, nothing written"
+has "$T/err" "its seed carries docs/handoff/2026-10-03-dbl.md, newer than the brief its review vouches for" "  naming the brief the run would be handed"
+has "$T/err" "refused for good" "  for good"
+s6words "$T/err"
+# item 4: a caller inside the node pushes its local branch: a commit past the reviewed seed is refused
+s6seed pushx; s6pub pushx
+echo "print('from the node')" > "$T/wt-pushx/code.py"; git -C "$T/wt-pushx" add code.py; git -C "$T/wt-pushx" commit -qm "code, never reviewed"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-pushx --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6pl pushx | wc -l | tr -d ' ')" "2:0" "item 4: from inside the node, a commit origin lacks past the reviewed seed: refused, nothing written"
+has "$T/err" "origin has not got beyond its seed's brief and review (code.py)" "  naming the path the push would carry"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-pushx --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" "  the same branch from an open caller: scheduled (an open session's own commits)"
+s6rm pushx
+# the sixth review's first pass: the same check where the only unpushed commit is the repo's own local main, ahead of
+# origin (`pickup seed --from` bases the seed on it): refused for now — pushing main fixes it — never dropped for good
+M0=$(git -C "$T/repo" rev-parse main)
+BL=$(printf 'local main\n' | git -C "$T/repo" hash-object -w --stdin)
+TR=$(GIT_INDEX_FILE="$T/mi.idx" sh -c 'git -C "$1" read-tree main && git -C "$1" update-index --add --cacheinfo 100644,"$2",ahead.txt && git -C "$1" write-tree' _ "$T/repo" "$BL")
+git -C "$T/repo" update-ref refs/heads/main "$(git -C "$T/repo" commit-tree "$TR" -p "$M0" -m "local main, ahead of origin")"
+s6seed mainah; s6pub mainah
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-mainah --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "sixth review: from inside the node, only the local main ahead of origin past the seed: refused…"
+has "$T/err" "they are all this repo's local main, ahead of origin: the owner pushes it, or resets it to origin's" "  saying what fixes it"
+git -C "$T/repo" update-ref refs/heads/main "$M0"; s6rm mainah
+# the smaller list: a bad `repos` type reads as torn (refused, never a crash); a symlinked absolute key is its repo
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": 5, "confidential": true}}}\n' > "$T/s6-badtype.json"
+CLAUDE_REPOS_JSON="$T/s6-badtype.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?:$(s6none)" "2:0" "a confidential scope whose repos is no list: refused as a torn registry, nothing written"
+has "$T/err" "cannot be told (fails closed)" "  saying why"
+hasnt "$T/err" "Traceback" "  never a crash"
+has "$T/err" "the next step waits for a run to end" "  a refusal a wait fixes says the cap's waiting words (AGENTS.md's dispatch-refusal trap)"
+ln -s "$(cd "$T/repo" && pwd -P)" "$T/repo-link"
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k", "%s"], "confidential": true}}}\n' "$T/repo-link" > "$T/s6-link-reg.json"
+CLAUDE_REPOS_JSON="$T/s6-link-reg.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"; check "$?" "2" "a confidential key spelled through a symlink takes its repo by real path: a spawn into it refused"
+has "$T/err" "its repo is in a confidential scope" "  as the plain spelling is"
+# --dry-run fetches nothing: an --origin branch on origin this host has not fetched is judged as not here yet
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-02-dbl:refs/heads/claude/laptop/2026-10-02-unfetched" >/dev/null 2>&1
+FH0=$(cat "$T/repo/.git/FETCH_HEAD" 2>/dev/null | shasum | cut -c1-12)
+CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-unfetched --repo "$T/repo" --at "$FUT 04:10" --origin "$NM" --dry-run > /dev/null 2> "$T/err"
+check "$?" "2" "  refused for now under --dry-run"
+has "$T/err" "no seed commit to judge here" "  as a branch not here yet"
+check "$(cat "$T/repo/.git/FETCH_HEAD" 2>/dev/null | shasum | cut -c1-12)" "$FH0" "--dry-run of an --origin branch not here: no fetch (FETCH_HEAD untouched)"
+s6clear
+echo "confidential-reach S6's fifth landing review: the accident roads (the owner's accident standard, 2026-10-30)"
+# item 2: a caller in two scopes is a scope's own run only where every scope it is in takes the repo — main refused
+# a caller in a repo node and node2 share, dispatching a repo of node alone (the narrowed-guard trap)
+git init -q "$PJ/sh"
+printf '{"repos": {"k": {}, "k2": {}, "sh": {}}, "scopes": {"node": {"repos": ["k", "sh", "%s"], "confidential": true}, "node2": {"repos": ["k2", "sh"], "confidential": true}}}\n' \
+  "$(cd "$T/repo" && pwd -P)" > "$T/s6-share.json"
+(cd "$PJ/sh" && CLAUDE_REPOS_JSON="$T/s6-share.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "item 2: a caller in a repo two scopes share, for a repo of one of them: refused, as main refused it"
+has "$T/err" "its repo is in a confidential scope" "  as a spawn into a confidential repo"
+printf '{"pid": 99994, "sessionId": "s6-two-sess", "cwd": "%s"}\n' "$PJ/k2" > "$SD/99994.json"
+(cd "$PJ/k" && CLAUDE_CODE_SESSION_ID=s6-two-sess CLAUDE_REPOS_JSON="$T/s6-share.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "  a shell in node's repo whose session folder is in node2, for node's repo: refused"
+rm -f "$SD/99994.json"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/s6-share.json" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err")
+hasnt "$T/err" "its repo is in a confidential scope" "  a caller in node alone, for node's repo: node's own run, as before"
+# the sixth landing review: a caller in two scopes with a review out of one carries the other's text unreviewed
+printf '{"repos": {"k": {}, "k2": {}, "sh": {}}, "scopes": {"node": {"repos": ["k", "sh"], "confidential": true}, "node2": {"repos": ["k2", "sh"], "confidential": true}}}\n' > "$T/s6-share2.json"
+(cd "$PJ/sh" && CLAUDE_REPOS_JSON="$T/s6-share2.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "sixth review: a caller in a repo node and node2 share, a spawn reviewed out of node alone: refused"
+has "$T/err" "the caller is in more than one confidential scope" "  saying why"
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/s6-share2.json" "$B/dispatch" $RB --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "0" \
+  "  the same spawn from node alone: passes"
+# item 10: a spawn branch this host never fetched, dispatched with no --origin: fetched, so its review is read and
+# its origin rides along — with no commit the gate saw no review and the queue's route sent it to the fleet
+git clone -q -b claude/laptop/2026-10-02-nobrief "$T/origin.git" "$T/cl-unf"
+git -C "$T/cl-unf" checkout -q -b claude/laptop/2026-10-02-unf; mkdir -p "$T/cl-unf/docs/handoff"
+echo "# unf brief" > "$T/cl-unf/docs/handoff/2026-10-02-unf.md"
+review "$T/cl-unf/docs/handoff/2026-10-02-unf.md" "$NM" > "$T/cl-unf/docs/handoff/2026-10-02-unf.review"
+git -C "$T/cl-unf" add docs; git -C "$T/cl-unf" -c user.email=t@t -c user.name=t commit -qm "seed: unf"
+git --git-dir="$T/cl-unf/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-02-unf:refs/heads/claude/laptop/2026-10-02-unf" >/dev/null 2>&1
+check "$(git -C "$T/repo" rev-parse --verify --quiet claude/laptop/2026-10-02-unf; git -C "$T/repo" rev-parse --verify --quiet origin/claude/laptop/2026-10-02-unf)" "" "  (the branch is on origin only)"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-unf --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "0" \
+  "item 10: a reviewed spawn on origin only, no --origin, from an open caller: scheduled"
+has "$(s6pl unf)" "<string>--origin</string><string>$NM</string>" "  its review read from the fetched tip: the origin rides along, as a spawn"
+check "$(git -C "$T/repo" rev-parse --verify --quiet origin/claude/laptop/2026-10-02-unf)" "$(git --git-dir="$T/origin.git" rev-parse claude/laptop/2026-10-02-unf)" \
+  "  fetched into the branch's own remote ref (the seventh review)"
+check "$(grep -c 'rev-parse[^#]*FETCH_HEAD' "$B/dispatch")" "0" \
+  "  and judged from it, never from FETCH_HEAD, the checkout's one file two dispatches at once overwrite (the seventh review)"
+s6rm unf
+# the sixth landing review: the same branch where origin does not answer — the fetch failed, the gate saw no commit and
+# passed it as an open run. Refused for now (a wait fixes it), nothing written; origin's own "no such branch" is not
+git clone -q --single-branch -b claude/laptop/2026-10-02-nobrief "$T/origin.git" "$T/cl-nofetch"
+git -C "$T/cl-nofetch" remote set-url origin "$T/gone.git"
+(cd "$T/cl-nofetch" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-unf --repo "$T/cl-nofetch" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?:$(s6pl unf | wc -l | tr -d ' ')" "2:0" \
+  "sixth review: a branch whose fetch fails (origin does not answer), from an open caller: refused, nothing written"
+has "$T/err" "origin did not answer for claude/laptop/2026-10-02-unf" "  saying why"
+has "$T/err" "the next step waits for a run to end" "  for now, in the cap's waiting words"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-nosuchbranch --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "1" \
+  "  a branch origin answers it has not: the not-on-origin refusal, as before"
+has "$T/err" "is not on origin" "  in its words"
+# item 9: a fired one-shot's first judgement refusing for good writes a FAILED line to its log, which helm's
+# follow-up reads as a spent retry (FOR_GOOD_RE); the stderr line alone left the retry pending for ever
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LABEL=org.example.claude.dispatch.repo.demo.209901010410 \
+  "$B/dispatch" $BR --repo "$T/repo" --headless --origin "$NM" > "$T/s6-f9.log" 2>&1); check "$?" "2" "item 9: a fired unreviewed one-shot with a confidential --origin: refused"
+check "$(grep -c '^FAILED: refused for good' "$T/s6-f9.log")" "1" "  one FAILED line saying \"refused for good\" in its log, for helm's follow-up"
+s6fetch() { local t; for t in "$@"; do git -C "$T/repo" fetch -q origin "refs/heads/claude/laptop/2026-10-02-$t:refs/remotes/origin/claude/laptop/2026-10-02-$t"; done; }   # what a push leaves
+# item 5: the node queue's claim road runs the unpushed check — its entry was asked from inside the node, and the
+# fired run reuses this host's local branch, which its checkpoint hook pushes
+s6seed clm; s6pub clm; s6fetch clm
+echo "print('from the node')" > "$T/wt-clm/code.py"; git -C "$T/wt-clm" add code.py; git -C "$T/wt-clm" commit -qm "code, never reviewed"
+cat > "$T/s6claim.py" <<'PYQ'
+import sys, importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader("dq", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dq", l)); l.exec_module(m)
+why, final = m.claim_refusal({"repo": sys.argv[2], "branch": "claude/laptop/2026-10-02-clm"}, "local=node")
+print(final, "origin has not got beyond its seed's brief and review (code.py)" in (why or ""))
+PYQ
+check "$(CLAUDE_REPOS_JSON="$T/origin-repos.json" python3 "$T/s6claim.py" "$B/dispatch-queue" "$T/repo")" "True True" "item 5: a node queue's claim of a reviewed seed with an unpushed commit past it: refused for good, naming the path"
+cat > "$T/s6gone.py" <<'PYQ'
+import sys, importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader("dq", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dq", l)); l.exec_module(m)
+for e, store in (({"repo": sys.argv[2], "branch": "claude/laptop/2026-10-02-gone", "args": ["--origin", sys.argv[3]]}, "local=_spawn"),
+                 ({"repo": sys.argv[2], "branch": "claude/laptop/2026-10-02-gone"}, "local=node")):
+    why, final = m.claim_refusal(e, store)
+    print(final, "this host has not got" in (why or ""))
+PYQ
+check "$(CLAUDE_REPOS_JSON="$T/origin-repos.json" python3 "$T/s6gone.py" "$B/dispatch-queue" "$T/repo" "$NM" | tr '\n' ' ')" "True True True True " \
+  "seventh review: a host-local entry whose branch is gone here (a spawn's with --origin, a node's): dropped for good, never handed back hourly"
+check "$(grep -c -- '-u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD' "$B/dispatch"):$(grep -c -- '-u DISPATCH_HOST_PIN' "$B/dispatch"):$(grep -c "^  echo 'unset .*DISPATCH_SPAWN_HELD" "$B/dispatch")" "4:4:1" \
+  "seventh review: every launch drops DISPATCH_SPAWN_HELD, so a re-armed run's count never reaches the dispatches it makes"
+# item 11: dispatch's after_merge merges origin/main into the step's branch, a local commit: what it brings is on
+# origin already, so a caller inside the node is not refused for it (-m listed every path main changed)
+git -C "$T/repo" branch -q claude/laptop/2026-10-02-mbase main; git -C "$T/repo" worktree add -q "$(dirname "$WTS")/mbase" claude/laptop/2026-10-02-mbase
+echo "main moved" > "$(dirname "$WTS")/mbase/moved.txt"; git -C "$(dirname "$WTS")/mbase" add moved.txt; git -C "$(dirname "$WTS")/mbase" commit -qm "main moves"
+s6pub mbase; s6seed mrg; s6pub mrg; s6fetch mbase mrg
+git -C "$T/wt-mrg" merge -q --no-edit origin/claude/laptop/2026-10-02-mbase
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-mrg --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "0" \
+  "item 11: from inside the node, a reviewed seed with a local merge of what origin has: not refused"
+hasnt "$T/err" "moved.txt" "  the merged path is no unpushed path"
+echo "an evil merge's own text" > "$T/wt-mrg/evil.txt"; git -C "$T/wt-mrg" add evil.txt; git -C "$T/wt-mrg" commit -q --amend --no-edit
+(cd "$PJ/k" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-mrg --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "  a merge that brings text of its own (an evil merge): refused"
+has "$T/err" "(evil.txt)" "  naming that path alone"
+# item 8: a review that arrived inside a merge commit has no plain add for seed_commit to find: the tip is judged as
+# the seed, with the newest-brief rule — a newer unreviewed brief beside it is refused, never passed on the review alone
+git -C "$T/repo" branch -q claude/laptop/2026-10-02-evm main; git -C "$T/repo" worktree add -q "$(dirname "$WTS")/evm" claude/laptop/2026-10-02-evm
+WEV="$(dirname "$WTS")/evm"; git -C "$WEV" merge -q --no-ff --no-commit claude/laptop/2026-10-02-mbase
+mkdir -p "$WEV/docs/handoff"; echo "# evm brief" > "$WEV/docs/handoff/2026-10-02-evm.md"
+review "$WEV/docs/handoff/2026-10-02-evm.md" "$NM" > "$WEV/docs/handoff/2026-10-02-evm.review"
+echo "# a newer brief, never reviewed" > "$WEV/docs/handoff/2026-10-03-evm.md"
+git -C "$WEV" add docs; git -C "$WEV" commit -qm "merge mbase, the review inside it"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-evm --repo "$T/repo" --at "$FUT 04:10" --dry-run > /dev/null 2> "$T/err"); check "$?" "2" \
+  "item 8: a review inside a merge, a newer unreviewed brief beside it, from an open caller: refused"
+has "$T/err" "its seed carries docs/handoff/2026-10-03-evm.md, newer than the brief its review vouches for" "  by the newest-brief rule"
+s6clear
 
 echo "a direct run goes through launchd (an orphaned watcher, 2026-10-05)"
 : > "$T/calls"; : > "$T/claude.calls"
@@ -747,6 +1178,13 @@ case "\${STUB_RUN:-work}" in
         echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}' > "\$HOME/.claude/projects/x/\$sid.jsonl";;
   busy) printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
         echo '{"type":"user","message":{"content":"the brief"},"timestamp":"2026-10-15T00:00:00Z"}' > "\$HOME/.claude/projects/x/\$sid.jsonl";;
+  # busy with its own check running on its worktree (checking), or that and a usage-limit stop (limited):
+  # the lifetime cap's spare and its cut (yard-followups, 2026-11-02)
+  checking|limited) printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
+        t="\$HOME/.claude/projects/x/\$sid.jsonl"
+        echo '{"type":"user","message":{"content":"the brief"},"timestamp":"2026-10-15T00:00:00Z"}' > "\$t"
+        [ "\$STUB_RUN" = limited ] && echo '{"type":"assistant","message":{"content":[{"type":"text","text":"You'"'"'ve hit your weekly limit · resets Nov 8, 11am (UTC)"}]}}' >> "\$t"
+        "$T/ckbin/bin/check" "\$PWD" --out "$T/ck-out" & echo \$! > "$T/ck.pid";;
   # busy with no prompt in the transcript: stuck in its UserPromptSubmit hooks (the build Mac, 2026-10-15)
   hooked) printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
           ( exec -a "$T/stuck-hook" sleep 30 ) &;;
@@ -886,7 +1324,8 @@ print(d.get("mode"), d.get("brief"), " ".join("%s:%s" % (k, type(d.get(k)).__nam
   "rc docs/handoff/2026-10-02-demo.md depth:int pid:int started:int watcher:int screen_pid:int" "  the rc record carries the chain fields, numbers typed by the time anyone reads it (B2)"
 has "$T/claude.calls" "claude You are an unattended session" "interactive, the prompt first (the tool lists take every word after them)"
 grep -q -- " -p " "$T/claude.calls"; check "$?" "1" "  no -p"
-has "$T/claude.calls" "--remote-control demo · laptop" "Remote Control named <topic> · <machine>"
+has "$T/claude.calls" "--remote-control build-demo · laptop" "Remote Control named <verb>-<topic> · <machine>: a brief with no tier builds"
+has "$T/claude.calls" "-n build-demo " "  the session named <verb>-<topic> (the owner, 2026-11-01), never run-<topic>"
 has "$T/claude.calls" "--session-id $SID" "the session id is dispatch's, recorded in the run's state"
 has "$T/claude.calls" "--model opus --effort high --permission-mode auto" "same tier and mode"
 has "$T/claude.calls" "Bash(*bin/pr merge*)" "same disallowed tools"
@@ -905,7 +1344,7 @@ grep -q "^CLAUDE_CONFIG_DIR=$HOME/.claude-pro$" "$T/env.calls"; check "$?" "0" "
 grep -q "^CLAUDE_CODE_OAUTH_TOKEN=tok$" "$T/env.calls"; check "$?" "0" "  and CLAUDE_CODE_OAUTH_TOKEN"
 grep -q "^DISPATCH_LABEL=" "$T/env.calls"; check "$?" "1" "  nor the plist's"
 has "$T/open.calls" "-a Terminal $HOME/Library/Caches/run-seed/run-repo-demo.command" "a Terminal window opened (laptop)"
-has "$HOME/Library/Caches/run-seed/run-repo-demo.command" "run · demo · repo" "  titled run · <topic> · <repo>"
+has "$HOME/Library/Caches/run-seed/run-repo-demo.command" "run · demo · repo" "  titled run · <topic> · <repo>: the whole topic, which dispatch-rc matches (never the fitted name)"
 grep -qE -- "-x [0-9]+\.run-repo-demo$" "$HOME/Library/Caches/run-seed/run-repo-demo.command"; check "$?" "0" "  attached to the run's screen, by <pid>.<name>"
 check "$(wc -l < "$T/open.calls" | tr -d ' ')" "1" "  one open: no bare open -a Terminal first (it switched nothing from launchd, D2)"
 has "$T/open.calls" "open -g -a Terminal" "  in the background: Terminal never activated, no desktop switch (the owner, 2026-10-07)"
@@ -1015,6 +1454,30 @@ pkill -f "$T/stuck-hook" 2>/dev/null
 STUB_RUN=busy DISPATCH_MAX_H=0.001 DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/maxh.log" "$B/dispatch" $BR --repo "$T/repo"
 has "$HOME/maxh.log" "still not idle after 0.0 h (DISPATCH_MAX_H)" "a session never idle is ended at DISPATCH_MAX_H"
 check "$(field end_reason)" "max lifetime 0.0 h" "  recorded"
+grep -q "spared while its check runs" "$HOME/maxh.log"; check "$?" "1" "  not spared by its own claude, whose prompt names bin/check and the worktree"
+
+# the cap spares a run whose own check still runs, up to DISPATCH_CHECK_GRACE_H, and records what it cut
+# (yard-followups, 2026-11-02: send-road-start was ended with its check waiting on a slot)
+mkdir -p "$T/ckbin/bin"; printf '#!/bin/sh\nsleep 30\n' > "$T/ckbin/bin/check"; chmod +x "$T/ckbin/bin/check"
+STUB_RUN=checking DISPATCH_MAX_H=0.0005 DISPATCH_CHECK_GRACE_H=0.005 DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/maxh-ck.log" "$B/dispatch" $BR --repo "$T/repo"
+has "$HOME/maxh-ck.log" "past DISPATCH_MAX_H, spared while its check runs" "a run past the cap with its check running is spared"
+has "$HOME/maxh-ck.log" "still not idle after 0.0 h (DISPATCH_MAX_H)" "  until the grace runs out, then ended"
+has "$HOME/maxh-ck.log" "cut: its check pid $(cat "$T/ck.pid") was running (out $T/ck-out)" "  the log names the check it cut"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cut"]["checks"][0]["out"])' "$(latest)")" "$T/ck-out" "  so does the record's cut"
+kill "$(cat "$T/ck.pid")" 2>/dev/null
+# a check that exits inside the grace: the session, still busy polling its summary, keeps
+# DISPATCH_CHECK_READ_S to read it, and an end after that names the check whose verdict went unread
+printf '#!/bin/sh\nsleep 6\n' > "$T/ckbin/bin/check"
+STUB_RUN=checking DISPATCH_MAX_H=0.0005 DISPATCH_CHECK_GRACE_H=0.01 DISPATCH_CHECK_READ_S=4 DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/maxh-rd.log" "$B/dispatch" $BR --repo "$T/repo"
+has "$HOME/maxh-rd.log" "past DISPATCH_MAX_H, spared while its check runs" "a run whose check ends inside the grace is spared"
+has "$HOME/maxh-rd.log" "cut: its check pid $(cat "$T/ck.pid") had ended, its summary unread (out $T/ck-out)" "  kept to read it, then ended naming the check it never read"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cut"]["checks_done"][0]["out"])' "$(latest)")" "$T/ck-out" "  the record's cut says so"
+printf '#!/bin/sh\nsleep 30\n' > "$T/ckbin/bin/check"
+STUB_RUN=limited DISPATCH_MAX_H=0.0005 DISPATCH_CHECK_GRACE_H=1 DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/maxh-lim.log" "$B/dispatch" $BR --repo "$T/repo"
+grep -q "spared while its check runs" "$HOME/maxh-lim.log"; check "$?" "1" "a run whose last turn hit a usage limit is not spared, check or not"
+has "$HOME/maxh-lim.log" "its last turn hit a usage limit: You've hit your weekly limit" "  its cut names the limit"
+check "$(field end_reason)" "max lifetime 0.0 h" "  and it ends at the cap as before"
+kill "$(cat "$T/ck.pid")" 2>/dev/null
 
 : > "$T/claude.calls"
 STUB_HANG=1 DISPATCH_MAX_H=0.0005 DISPATCH_LOG="$HOME/maxh2.log" "$B/dispatch" $BR --repo "$T/repo" --headless
@@ -1087,7 +1550,7 @@ echo "--probe takes the visible path"
 : > "$T/claude.calls"; : > "$T/screen.calls"
 STUB_RUN=work DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/probe.log" "$B/dispatch" $BR --repo "$T/repo" --probe
 has "$T/claude.calls" "claude reply with the single word ok --session-id" "interactive, the probe prompt"
-has "$T/claude.calls" "--remote-control demo-probe · buildbox" "  with Remote Control"
+has "$T/claude.calls" "--remote-control probe-demo · buildbox" "  with Remote Control, named probe-<topic>"
 has "$T/screen.calls" "-dmS run-repo-demo-probe" "  in a screen of its own"
 has "$HOME/probe.log" "probe answered: ok" "  the answer logged"
 has "$HOME/probe.log" "ended session" "  ended by the watcher once idle"
@@ -1206,6 +1669,83 @@ PY
 "$B/dispatch" --end endme > "$T/out" 2>&1; check "$?" "0" "--end ends a live run"
 grep -q '"end_reason": "ended by dispatch --end' "$RUNS/00000000-000003-repo.endme.json"; check "$?" "0" "  recorded as such"
 dead_ $EP2; kill -0 $EP2 2>/dev/null; check "$?" "1" "  its claude ended"
+# a loaded Mac's `ps` that prints no start time for a live pid: --end reads again, never "not provably" at once
+# (regatta#324's CI at load 12-35, 2026-10-31). proc_start stood in by a fixed sequence of reads: no clock in it
+cat > "$T/settle.py" <<'PY'
+import importlib.machinery, importlib.util, subprocess, sys, time
+src, case = sys.argv[1], sys.argv[2]
+loader = importlib.machinery.SourceFileLoader("rc_settle", src)
+spec = importlib.util.spec_from_loader("rc_settle", loader); m = importlib.util.module_from_spec(spec)
+sys.argv = [src]; loader.exec_module(m)
+p = subprocess.Popen(["sleep", "30"])
+real = "Sat Oct 31 12:00:00 2026"   # never read from `ps`: under the load this case is for, that read is blank too
+seq = {"blank-then-real": ["", "", real], "mismatch": ["Thu Jan  1 00:00:00 2020", real], "blank": ["", "", "", "", ""]}[case]
+reads, waits = [], []
+def stand_in(pid, timeout=10):
+    reads.append(pid); waits.append(float(timeout))
+    return seq[min(len(reads), len(seq)) - 1]
+m.proc_start = stand_in
+clock = [0.0]
+def nap(sec):   # the reads are the case, not the wait: a clock of its own, never the Mac's
+    clock[0] += sec
+ft = type(time)("time_stand_in"); ft.__dict__.update({k: getattr(time, k) for k in dir(time) if not k.startswith("_")})
+ft.sleep, ft.time = nap, (lambda: clock[0])
+m.time = ft
+ok = m.end_session({"pid": p.pid, "proc_start": real, "session": "settle"})
+try:   # a SIGTERM's end, waited for here: the stand-in clock ends end_session's own wait at once
+    p.wait(timeout=5 if ok else 0.5); alive = False
+except subprocess.TimeoutExpired:
+    alive = True
+p.kill(); p.wait()
+print("signalled=%s reads=%d alive=%s timeouts=%s" % (ok, len(reads), alive, ",".join("%g" % w for w in waits)))
+PY
+check "$(python3 "$T/settle.py" "$B/dispatch-rc" blank-then-real 2>/dev/null | tail -1)" "signalled=True reads=3 alive=False timeouts=10,3,2" \
+  "--end past a ps that prints no start time twice: read again, then signalled"
+check "$(python3 "$T/settle.py" "$B/dispatch-rc" mismatch 2>/dev/null | tail -1)" "signalled=False reads=1 alive=True timeouts=10" \
+  "  a start time that differs: one read, never signalled"
+check "$(python3 "$T/settle.py" "$B/dispatch-rc" blank 2>/dev/null | tail -1)" "signalled=False reads=4 alive=True timeouts=10,3,2,2" \
+  "  blank on every read: four reads within the budget at most, each re-read 2 s at least, never signalled"
+# the same blank read, the bash side: pstart reads again while the pid lives, and once for one that is gone
+sed -n '/^pstart() {/,/^}/p' "$B/dispatch" > "$T/pstart.sh"
+mkdir -p "$T/psb"
+cat > "$T/psb/ps" <<EOF
+#!/bin/sh
+n=\$(cat "$T/psb/n" 2>/dev/null || echo 0); echo \$((n + 1)) > "$T/psb/n"
+[ "\$n" -lt 2 ] || echo "Sat Oct 31 12:00:00 2026"
+EOF
+chmod +x "$T/psb/ps"
+check "$(PATH="$T/psb:$PATH" bash -c '. "$1"; pstart $$' _ "$T/pstart.sh") $(cat "$T/psb/n")" "Sat Oct 31 12:00:00 2026 3" \
+  "pstart past a ps that prints no start time twice: the third read's, the first two blank"
+echo 0 > "$T/psb/n"; sleep 0.1 & GONE=$!; wait "$GONE"
+check "$(PATH="$T/psb:$PATH" bash -c '. "$1"; pstart "$2"' _ "$T/pstart.sh" "$GONE")$(cat "$T/psb/n")" "1" \
+  "  a pid that is gone: one read, none again"
+# the watcher settles its own start before it reads the record: --end or --requeue may write during the settle
+cat > "$T/watchsave.py" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+src, d = sys.argv[1], sys.argv[2]
+loader = importlib.machinery.SourceFileLoader("rc_watch", src)
+spec = importlib.util.spec_from_loader("rc_watch", loader); m = importlib.util.module_from_spec(spec)
+sys.argv = [src]; loader.exec_module(m)
+p = os.path.join(d, "watchsave.json")
+json.dump({"mode": "rc", "session": "s", "pid": os.getpid(), "started": 1}, open(p, "w"))
+reads = []
+def stand_in(pid, timeout=10):
+    reads.append(pid)
+    if len(reads) == 1:   # a blank read; another writer's word lands inside the settle
+        cur = m.load(p); cur["ending"] = "requeued"; m.save(p, cur)
+        return ""
+    return "Sat Oct 31 12:00:00 2026"
+m.proc_start = stand_in
+m.time.sleep = lambda s: None
+m.hold_awake = lambda on: None
+m.power_start = lambda: None
+m.watch_loop = lambda path, st, start, busy, started: 0
+m.watch(p)
+r = json.load(open(p))
+print(len(reads), r.get("ending"), r.get("watcher_start"))
+PY
+check "$(python3 "$T/watchsave.py" "$B/dispatch-rc" "$T" 2>/dev/null | tail -1)" "2 requeued Sat Oct 31 12:00:00 2026" \
+  "the watcher's first save keeps a word written while it settled its own start"
 # a watched run: the watcher sees claude go first, and keeps --end's reason
 STUB_RUN=busy DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/end.log" "$B/dispatch" $BR --repo "$T/repo" &
 RS=$!; for _ in $(seq 1 150); do grep -q "== claude" "$HOME/end.log" 2>/dev/null && break; sleep 0.2; done
@@ -1242,7 +1782,7 @@ kill $WP 2>/dev/null; wait $WP 2>/dev/null; rm -f "$RUNS/00000000-000006-repo.de
 DISPATCH_HOST=studio HEADROOM_SAMPLE="50 1 500" DISPATCH_LOG="$HOME/mem.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$HOME/mem.log" "FAILED: studio: no room: 500 MB/s swapping, over 50 MB/s" "a start on a host swapping past its limit is refused, said in the log"
 check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  and starts no session"
-# three live runs of other topics: a fourth is refused, not queued (the laptop's cap; the dispatch host's is 6)
+# three live runs of other topics: a fourth is refused, not queued (the cap, 3 on every host since 2026-10-31)
 for i in 1 2 3; do
   sleep 60 & lp=$!
   printf '{"mode":"headless","repo":"%s","topic":"busy%s","pid":%s,"proc_start":"%s","session":"b%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00001$i-repo.busy$i.json"
@@ -1433,13 +1973,48 @@ own sess-A
 FIRE=" " STUB_WHICH=acct-c DISPATCH_PIN=bound DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1; check "$?" "0" "--next from a bound run (DISPATCH_PIN)…"
 grep -l "<string>--account</string><string>bound</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "0" "  …stays bound, whatever account which says (design_route)"
 own sess-A
+# a next step whose brief names a Fable tier inherits no login: the fire-time room pick chooses one (S6's landing review)
+printf '# step 2 brief\nTier: principal-architect\n' > "$W/docs/handoff/2026-10-04-step.md"; git -C "$W" commit -qam "step 2 is principal"
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist
+FIRE=" " STUB_WHICH=acct-p DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1; check "$?" "0" "--next into a principal-architect step from a session on acct-p…"
+grep -l "<string>--account</string><string>acct-p</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "1" "  …does not inherit acct-p: the fire-time pick --room fable chooses"
+echo "# step 2 brief" > "$W/docs/handoff/2026-10-04-step.md"; git -C "$W" commit -qam "step 2 back to plain"
+own sess-A
 FIRE=" " CLAUDE_UNATTENDED=dispatch DISPATCH_BRIEF=$(git -C "$W" rev-parse HEAD:docs/handoff/2026-10-04-step.md) nx > "$T/out" 2>&1
 check "$?" "2" "an unattended run's --next on the brief it started from, unchanged: refused"
 has "$T/out" "is the brief this run started from" "  saying why"
 own sess-A
 FIRE=" " CLAUDE_UNATTENDED=run-seed RUN_SEED_BRIEF=$(git -C "$W" rev-parse HEAD:docs/handoff/2026-10-04-step.md) nx > "$T/out" 2>&1
 check "$?" "2" "  RUN_SEED_BRIEF (a run started before the rename) is the same guard"
+# confidential-reach S6's landing review: the spawned run's own --next, its next brief written the same day
+# over the reviewed path (the S6 block's sameday seed), is judged by the seed's brief and goes on
+SDB=claude/laptop/2026-10-02-sameday; WSD="$(dirname "$WTS")/sameday"; OSD="$(git -C "$WSD" rev-parse --absolute-git-dir)/claude/owner.json"
+mkdir -p "$(dirname "$OSD")"; printf '{"session": "sess-A", "branch": "%s", "seen": %s}' $SDB "$(date +%s)" > "$OSD"
+(cd "$WSD" && FIRE=" " CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LAUNCHCTL="$T/launchctl-fire" DISPATCH_LOG="$T/next-sd.log" \
+  DISPATCH_NEXT_DELAY=65 DISPATCH_NEXT_SETTLE=0 DISPATCH_NEXT_WAIT=0 CLAUDE_CODE_SESSION_ID=sess-A "$B/dispatch" $SDB --repo "$T/repo" --next > "$T/out" 2>&1)
+hasnt "$T/out" "confidential-reach S6" "S6's landing review: a spawned run's same-day --next is never refused for its review"
+has "$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.sameday.[0-9]*.plist 2>/dev/null | head -1)" "<string>--origin</string><string>$NM</string>" "  its next step scheduled, carrying the seed's origin"
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.sameday.[0-9]*.plist
 check "$([ -f "$O" ] && echo kept || echo gone)" "kept" "  before anything was pushed or freed"
+# S6's fourth landing review, item 4: a node session's --next of its local checkout of a spawn pushes nothing
+# the review did not read — a seed made by hand inside the node whose own commit carries code beside its
+# reviewed brief, never on origin (a commit after the brief is the --next guard's: "work was committed after").
+# Typed, not fired: the suite's DISPATCH_LABEL would read as launchd's job, whose caller is no session
+PXB=claude/laptop/2026-10-02-pushy; WPX="$(dirname "$WTS")/pushy"
+git -C "$T/repo" branch -q $PXB main; git -C "$T/repo" worktree add -q "$WPX" $PXB
+mkdir -p "$WPX/docs/handoff"; echo "# pushy brief" > "$WPX/docs/handoff/2026-10-02-pushy.md"
+review "$WPX/docs/handoff/2026-10-02-pushy.md" "$NM" > "$WPX/docs/handoff/2026-10-02-pushy.review"
+echo "print('from the node')" > "$WPX/code.py"; git -C "$WPX" add docs code.py; git -C "$WPX" commit -qm "seed: pushy, and code beside it"
+OPX="$(git -C "$WPX" rev-parse --absolute-git-dir)/claude/owner.json"
+mkdir -p "$(dirname "$OPX")"; printf '{"session": "sess-N", "branch": "%s", "seen": %s}' $PXB "$(date +%s)" > "$OPX"
+SD=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.Path.home() / ".claude" / "sessions")' "$B/../lib")
+mkdir -p "$SD"; printf '{"pid": 99997, "sessionId": "sess-N", "cwd": "%s", "updatedAt": 5}\n' "$PJ/k" > "$SD/99997.json"
+(cd "$WPX" && FIRE=" " CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LAUNCHCTL="$T/launchctl-fire" DISPATCH_LOG="$T/next-px.log" \
+  DISPATCH_NEXT_DELAY=65 DISPATCH_NEXT_SETTLE=0 DISPATCH_NEXT_WAIT=0 CLAUDE_CODE_SESSION_ID=sess-N env -u DISPATCH_LABEL "$B/dispatch" $PXB --repo "$T/repo" --next > "$T/out" 2>&1)
+check "$?" "2" "item 4: a node session's --next of a seed whose commit carries code beside its reviewed brief: refused"
+has "$T/out" "origin has not got beyond its seed's brief and review (code.py): a push from inside a confidential scope would carry them" "  saying what the push would carry"
+check "$(git --git-dir="$T/origin.git" rev-parse --verify --quiet "refs/heads/$PXB")" "" "  nothing pushed: origin has no such branch"
+rm -f "$SD/99997.json"
 own sess-A
 FIRE=" " DISPATCH_HOST=studio HEADROOM_SAMPLE="3 15 200" nx > "$T/out" 2>&1; check "$?" "2" "--next on a host past its memory limits: refused, with every slot free"
 has "$T/out" "no room: 3 % free, under 10 %" "  saying which limit"
@@ -1453,25 +2028,35 @@ for i in 1 2 3; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","top
 FIRE=" " DISPATCH_HOST=laptop nx > "$T/out" 2>&1; check "$?" "2" "--next with three runs live: refused (the laptop)"
 has "$T/out" "3 runs are busy already" "  saying so"
 own sess-A
-FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  on the dispatch host three live runs leave room (its cap is 6)"
-for i in 4 5; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","topic":"cap%s","pid":%s,"proc_start":"%s","session":"c%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00002$i-repo.cap$i.json"; done
+FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "2" "  and on the dispatch host too (its cap is 3 since 2026-10-31)"
+has "$T/out" "3 runs are busy already" "    saying so"
 own sess-A
-FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  five: the last free slot is taken, not refused"
-for i in 6; do sleep 60 & lp=$!; printf '{"mode":"headless","repo":"%s","topic":"cap%s","pid":%s,"proc_start":"%s","session":"c%s","started":%s}' "$T/repo" $i $lp "$(pst $lp)" $i "$(date +%s)" > "$RUNS/00000000-00002$i-repo.cap$i.json"; done
+FIRE=" " DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=4 nx > "$T/out" 2>&1; check "$?" "0" "  one under the cap (DISPATCH_MAX_RUNS=4, three live): the run starts"
 own sess-A
-FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "2" "  and six are its cap: refused"
-has "$T/out" "6 runs are busy already" "    saying so"
+printf 'buildbox:4\n' > "$REGATTA_CONFIG/wharf-runs/run-cap"
+FIRE=" " DISPATCH_HOST=buildbox nx > "$T/out" 2>&1; check "$?" "0" "  one under this host's wharf-runs/run-cap line (4, three live, refused at the default above): the run starts"
+rm -f "$REGATTA_CONFIG/wharf-runs/run-cap"
 reap "$RUNS"/00000000-00002*
 # the cap has one home, dispatch's max_runs: wharf and stalls_tick.py ask `--cap` (their own copies
 # went stale at 5 -> 8 -> 10, and 8 -> 6 sat unmerged on a conflict; 2026-10-25)
 check "$(DISPATCH_HOST=buildbox "$B/dispatch" --cap) $(DISPATCH_HOST=elsewhere "$B/dispatch" --cap) $(DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=4 "$B/dispatch" --cap)" \
-  "6 3 4" "--cap: 6 on the dispatch host, 3 elsewhere, DISPATCH_MAX_RUNS over either"
+  "3 3 4" "--cap: 3 on the dispatch host and elsewhere, DISPATCH_MAX_RUNS over it"
+# wharf-runs/run-cap: a host's own number under DISPATCH_MAX_RUNS and over the default (the node's 4; the owner,
+# 2026-10-31); the start above met it
+printf 'nodehost:5\nbuildbox: 4\nbuildbox:9\n' > "$REGATTA_CONFIG/wharf-runs/run-cap"
+check "$(DISPATCH_HOST=buildbox "$B/dispatch" --cap) $(DISPATCH_HOST=NodeHost "$B/dispatch" --cap) $(DISPATCH_HOST=elsewhere "$B/dispatch" --cap) $(DISPATCH_HOST=buildbox DISPATCH_MAX_RUNS=2 "$B/dispatch" --cap)" \
+  "4 5 3 2" "run-cap: this host's first line, case-blind; any other host the default; DISPATCH_MAX_RUNS over it"
+printf 'buildbox:many\n' > "$REGATTA_CONFIG/wharf-runs/run-cap"
+check "$(DISPATCH_HOST=buildbox "$B/dispatch" --cap 2> "$T/err")" "3" "  a line that is no cap reads as none…"
+has "$T/err" 'wharf-runs/run-cap: `buildbox:many` is no cap' "  …said on stderr"
+rm -f "$REGATTA_CONFIG/wharf-runs/run-cap"
 # this host's own name as the core's host_name() spells it (the landing review): a LocalHostName with a character
-# outside [a-z0-9-] is the dispatch host `build-box` once each is a hyphen, as dispatch-queue reads it
+# outside [a-z0-9-] is `build-box` once each is a hyphen, as dispatch-queue reads it (read from the --host the queue
+# is handed: --cap told it apart until every Mac's cap became 3, 2026-10-31)
 mkdir -p "$T/hn"; printf '#!/bin/sh\necho Build_Box\n' > "$T/hn/scutil"; printf '#!/bin/sh\necho build_box\n' > "$T/hn/hostname"
-chmod +x "$T/hn/scutil" "$T/hn/hostname"; cp "$REGATTA_CONFIG/wharf-runs/dispatch-host" "$T/dh.keep"; echo build-box > "$REGATTA_CONFIG/wharf-runs/dispatch-host"
-check "$(PATH="$T/hn:$PATH" "$B/dispatch" --cap)" 6 "--cap: Build_Box is the dispatch host build-box (local_host sanitised as host_name)"
-mv "$T/dh.keep" "$REGATTA_CONFIG/wharf-runs/dispatch-host"
+printf 'import sys\nprint(" ".join(sys.argv[1:]))\n' > "$T/hn/queue"; chmod +x "$T/hn/scutil" "$T/hn/hostname" "$T/hn/queue"
+check "$(PATH="$T/hn:$PATH" DISPATCH_QUEUE_BIN="$T/hn/queue" "$B/dispatch" --queue | grep -o -- '--host [^ ]*')" "--host build-box" \
+  "--queue: Build_Box is handed to the queue as build-box (local_host sanitised as host_name)"
 check "$(grep -c -- '"--cap"' "$B/wharf") $(grep -c -- '"--cap"' "$STALLS_TICK" 2>/dev/null) $(grep -cE 'DISPATCH_MAX_RUNS"\) or \([0-9]' "$B/wharf" "$STALLS_TICK" 2>/dev/null | awk -F: '{n+=$NF} END {print n+0}')" \
   "1 1 0" "  wharf and stalls_tick.py ask dispatch --cap and carry no number of their own"
 own sess-A
@@ -1622,6 +2207,84 @@ STUB_ACCT=acct-a DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" -
 has "$(pl)" "<string>--account</string><string>bound</string>" "bound travels in the plist"
 STUB_NOISE="account: a warning" STUB_ACCT=short DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" --account bound > "$T/out" 2>&1; check "$?" "1" "bound scheduled with no room: refused now"
 has "$T/out" "the primary has no room now (account: a warning {\"account\": null" "  quoting the account's stderr, then its answer"
+
+echo "a principal tier on Fable picks a login with Fable room (the principal tier's S6)"
+# the first pick is the plain one (an early read may be stale either way); the brief read at fire time decides,
+# and a Fable tier picks again with --room fable
+PA=claude/laptop/2026-10-02-prin-architect; PW=claude/laptop/2026-10-02-prin-worker
+PR() { DISPATCH_ACCOUNT="$T/acct" DISPATCH_HOST=buildbox "$B/dispatch" "$@" --repo "$T/repo" --headless; }
+: > "$T/acct.calls"; : > "$T/env.calls"; : > "$T/claude.calls"
+STUB_ACCT=acct-a DISPATCH_LOG="$T/room1.log" PR $PA
+check "$(grep -c 'account pick' "$T/acct.calls")" "2" "principal-architect (Fable): two picks, the plain one first…"
+has "$T/acct.calls" "account pick --room fable --repo $T/repo --json" "  …then auto's pick --room fable"
+has "$T/room1.log" "names principal-architect on fable: the login is picked again with --room fable" "  …said in the log"
+has "$T/room1.log" "== account acct-c ($HOME/.acct-c): week 10% < 90%; Fable's week 37%" "  the login it picked, with its Fable week"
+has "$T/room1.log" "== tier principal-architect: fable xhigh; on acct-c, a login with Fable room (account pick --room fable)" "  the tier line names what ran: that login"
+grep -q "^CLAUDE_CONFIG_DIR=$HOME/.acct-c$" "$T/env.calls"; check "$?" "0" "  and the run's claude gets its config dir"
+: > "$T/acct.calls"
+STUB_ACCT=f DISPATCH_LOG="$T/room2.log" PR $PW
+check "$(grep -c -- '--room' "$T/acct.calls")" "0" "principal-worker runs Opus: the plain pick, no --room"
+check "$(grep -c 'Fable' "$T/room2.log")" "0" "  and its tier line says nothing of Fable"
+: > "$T/acct.calls"
+STUB_ACCT=acct-a DISPATCH_LOG="$T/room2b.log" PR $PA --account bound
+has "$T/acct.calls" "account pick --bound --room fable --repo $T/repo --json" "bound, on Fable: pick --bound --room fable"
+: > "$T/claude.calls"
+STUB_ACCT=f STUB_ROOM=full DISPATCH_LOG="$T/room3.log" PR $PA
+has "$T/room3.log" "FAILED: no account may run this now — acct-p: no Fable on its plan (pro): --room fable; acct-a: Fable's week 100% ≥ 95%" "no login with Fable room: refused, each login's reason"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
+: > "$T/acct.calls"
+STUB_LIMITS=nofable DISPATCH_LOG="$T/room4.log" PR $PA --account acct-c
+has "$T/room4.log" "== tier principal-architect: fable xhigh; asked, not what ran: acct-c has no Fable on its plan (pro), so this run is not Fable at xhigh as its tier asks" "a named --account whose plan lacks Fable: the tier line says what ran"
+has "$T/acct.calls" "account limits acct-c --repo $T/repo --json --cached" "  read from its cached limits"
+STUB_LIMITS=fable DISPATCH_LOG="$T/room5.log" PR $PA --account acct-c
+has "$T/room5.log" "== tier principal-architect: fable xhigh; on acct-c, Fable on its plan (its week 37%)" "a named --account with Fable on its plan: said so"
+STUB_ROOM=none DISPATCH_LOG="$T/room6.log" PR $PA
+has "$T/room6.log" "== tier principal-architect: fable xhigh; on the login this run was started with (no account pick), its Fable room unknown" "no registry: the tier line says the room is unknown"
+: > "$T/claude.calls"
+STUB_ACCT=f STUB_ROOM=junk DISPATCH_LOG="$T/room6b.log" PR $PA
+has "$T/room6b.log" "FAILED: docs/handoff/2026-10-02-prin-architect.md names principal-architect on fable, and account pick --room fable named no login; not running" "a room pick that names no login (an account without --room): refused, never the first login"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
+git --git-dir="$T/repo/.git" fetch -q "$T/origin.git" "$PA:refs/heads/$PA" 2>/dev/null || true   # the dry run reads the early tier
+STUB_ACCT=f DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --dry-run > "$T/out" 2>&1
+has "$T/out" "account acct-c (account pick --room fable)" "a dry run of a Fable tier names the room pick's login"
+STUB_ACCT=f STUB_ROOM=junk DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --dry-run > "$T/out" 2>&1
+has "$T/out" "DRY RUN: refused — account pick --room fable named no login" "  …and refuses where the run would (a room pick that names no login)"
+STUB_ACCT=f STUB_ROOM=mixed DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --dry-run > "$T/out" 2>&1; check "$?" "1" "  …and a refusal that mentions an unread room further on still refuses (only a SHORT leads with one)"
+hasnt "$T/out" "the fire-time pick decides" "  …never left to the fire-time pick"
+STUB_ACCT=junk DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --dry-run > "$T/out" 2>&1
+has "$T/out" "account acct-c (account pick --room fable)" "  …after a first pick that crashed, as the run would"
+: > "$T/claude.calls"
+DISPATCH_ACCOUNT="$T/no-account" DISPATCH_LOG="$T/room6e.log" "$B/dispatch" $PA --repo "$T/repo" --headless > /dev/null 2>&1
+has "$T/claude.calls" "--model fable --effort xhigh" "no account tool (lighthouse absent, an optional peer): the Fable head runs as before S6"
+has "$T/room6e.log" "its Fable room unknown" "  …and its tier line says the room is unknown"
+STUB_ACCT=junk DISPATCH_LOG="$T/room6d.log" PR $PA
+has "$T/room6d.log" "== tier principal-architect: fable xhigh; on acct-c, a login with Fable room (account pick --room fable)" "a first pick that crashed: the room pick still runs, and its login runs the head"
+: > "$T/env.calls"; STUB_ACCT=acct-a DISPATCH_LOG="$T/room6c.log" PR $PA --account bound > /dev/null 2>&1
+check "$(grep -c '^DISPATCH_PIN=bound$' "$T/env.calls")" "1" "bound picked twice: the pin carried once"
+# the early read missed the Fable tier (a fleet claim on a host that never fetched the branch: no ref here,
+# origin's brief says principal-architect): the fire-time read picks the login again with --room fable
+PL6=claude/laptop/2026-10-02-prin-late
+pblob=$(printf 'Task: build it\nTier: principal-architect\n' | git -C "$T/repo" hash-object -w --stdin)
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" read-tree main
+GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" update-index --add --cacheinfo "100644,$pblob,docs/handoff/2026-10-02-prin-late.md"
+ptree=$(GIT_INDEX_FILE="$T/prin.idx" git -C "$T/repo" write-tree); rm -f "$T/prin.idx"
+git -C "$T/repo" update-ref "refs/heads/$PL6" "$(git -C "$T/repo" commit-tree "$ptree" -p main -m seed)"
+git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$PL6:refs/heads/$PL6" >/dev/null 2>&1
+git -C "$T/repo" update-ref -d "refs/heads/$PL6"; git -C "$T/repo" update-ref -d "refs/remotes/origin/$PL6" 2>/dev/null
+: > "$T/acct.calls"
+STUB_ACCT=f DISPATCH_LOG="$T/room7.log" PR $PL6
+has "$T/acct.calls" "account pick --repo $T/repo --json" "no ref here, so the early read saw no tier: the plain pick first…"
+has "$T/room7.log" "names principal-architect on fable: the login is picked again with --room fable" "  …the fire-time read names Fable: picked again"
+has "$T/acct.calls" "account pick --room fable --repo $T/repo --json" "  …with --room fable"
+has "$T/room7.log" "== tier principal-architect: fable xhigh; on acct-c, a login with Fable room (account pick --room fable)" "  …and the tier line says it ran there"
+# --account bound scheduled now: a primary whose cached reading has no Fable room is said now, not at fire time
+git --git-dir="$T/repo/.git" fetch -q "$T/origin.git" "$PA:refs/heads/$PA" 2>/dev/null || true
+STUB_ACCT=acct-a STUB_ROOM=week DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --at "$FUT 04:10" --account bound > "$T/out" 2>&1; check "$?" "1" "bound scheduled for a Fable tier with its Fable week full: refused now"
+has "$T/out" "the primary has no room now" "  …said, as a full week is"
+hasnt "$T/out" "command not found" "  …every function it calls defined by then"
+STUB_ACCT=acct-a STUB_ROOM=pro DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PA --repo "$T/repo" --at "$FUT 04:10" --account bound > "$T/out" 2>&1; check "$?" "1" "bound scheduled for a Fable tier on a primary whose plan has no Fable: refused now"
+has "$T/out" "the primary's plan has no Fable, which principal-architect runs on" "  …and never told a reset waits for it"
+STUB_ACCT=acct-a STUB_ROOM=week DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $PW --repo "$T/repo" --at "$FUT 04:10" --account bound > /dev/null 2>&1; check "$?" "0" "  principal-worker (Opus) bound: scheduled, no Fable asked"
 
 echo "--fallback here: the peer first, this Mac when it cannot take it (2026-10-10)"
 export DISPATCH_ACCOUNT="$T/acct"   # never the real bin/account: bound picks --cached when scheduling
@@ -1963,6 +2626,111 @@ DISPATCH_LOG="$HOME/mode-none.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$HOME/mode-none.log" "== mode default" "no mode anywhere: default"
 "$B/dispatch" $BR --repo "$T/repo" --dry-run --mode ask 2>/dev/null | grep -qF ", mode ask" \
   && echo "  ok   a dry run names the mode" || { echo "  FAIL mode dry run"; fails=$((fails+1)); }
+echo "the landing switch (task-shape S3): a done default build hands its landing over, --by handed"
+newest_field() { python3 -c 'import glob, json, os, sys; f = max(glob.glob(sys.argv[1] + "/*.json"), key=os.path.getmtime); print(json.load(open(f)).get(sys.argv[2]))' "$HOME/Library/Logs/claude-weekly/run-seed-runs" "$1"; }
+HL="⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)"
+DW="$T/repo/.claude/worktrees/demo"; pre=$(git -C "$DW" rev-parse HEAD)
+rm -f "$AUTOFINISH_STATE_DIR/landings"; : > "$T/claude.calls"; : > "$T/af.calls"
+YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-off.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+grep -q "The landing switch is on" "$T/claude.calls"; check "$?" "1" "switch off: no hand-over text in a default run's prompt"
+has "$T/claude.calls" "no D-item for it — end with the WAITING line asking it" "  the landing is asked on the WAITING line, as before"
+check "$(newest_field handed):$(wc -c < "$T/af.calls" | tr -d ' ')" "None:0" "  no handed in its record, and no launch even on the hand-over line"
+git -C "$DW" reset -q --hard "$pre"
+echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"
+: > "$T/claude.calls"; : > "$T/af.calls"
+YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-on.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/handed-on.log" "== landings on: a done last step hands its landing to dispatch" "switch on: read at the prompt's build, logged"
+has "$T/claude.calls" "The landing switch is on on this Mac" "  the prompt hands the landing over"
+has "$T/claude.calls" "every step the brief names is done, the review loop above ended clean where one runs, nothing was relayed, no D-item is open and the work is committed, end on exactly \`$HL\`" "  and names the hand-over line for a done last step"
+has "$T/claude.calls" "Do not run /finish, whatever the brief says" "  and keeps it from running /finish itself"
+has "$T/claude.calls" "no WAITING line asks it — this Mac's landing switch hands a done build's landing to dispatch" "  the base text no longer asks about landing"
+check "$(newest_field handed)" "1" "  its record says handed=1, a number"
+has "$HOME/handed-on.log" "== handed: the build run ended clean — starting the launch: autofinish-run $DW --by handed" "  its mode re-read (default) passes: the launch starts"
+has "$T/af.calls" "afrun $DW --rule C --by handed" "  through autofinish-run --rule C --by handed, never rule M"
+check "$(newest_launch)" "started: autofinish-run --rule C --by handed" "  and the record says it started"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YREPLY="Built.
+SAM, THIS SESSION IS WAITING FOR YOU — D1 of docs/d.md" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-wait.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a handed=1 run ending on a WAITING line: no launch (today's road)"
+check "$(newest_launch | grep -cF 'no launch — its last reply stops for Sam')" "1" "  the record says why"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YREPLY="Built.
+✅ SAM, THIS SESSION IS WAITING FOR NOTHING — S3 built" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-idle.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a handed=1 run ending on WAITING FOR NOTHING: no launch, only the hand-over line hands it over (review round 2)"
+check "$(newest_launch | grep -cF 'no launch — its last reply is not the hand-over line')" "1" "  the record says why"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YREPLY="Built, all green." YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-bare.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  nor on a reply with no closing line"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YNODOC=1 YDEPLOY="the service" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-live.log" \
+  YREPLY="Built.
+$HL" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "afrun $DW --rule L --by handed" "a deployed hand-over: rule L, still --by handed (not the sweep's)"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+YLOWER="rm -f $AUTOFINISH_STATE_DIR/landings" YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-disarmed.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/handed-disarmed.log" "== handed: no launch — the landing switch is off on this Mac" "the switch turned off while it built: no launch, though armed is set"
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
+YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-alone.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "afrun $DW --rule C --by handed" "landings alone, the sweep disarmed (phase 1's build Mac): the hand-over launches"
+mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; : > "$T/claude.calls"
+echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
+YREPLY="Built.
+$HL" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-dnd.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$HOME/handed-dnd.log" "== dnd: no launch — autofinish is disarmed on this Mac" "a dnd run with only landings set: declined, dnd still needs armed"
+grep -q "The landing switch is on" "$T/claude.calls"; check "$?" "1" "  and its prompt is dnd's, not the hand-over's"
+check "$(newest_field handed)" "None" "  nor is it handed=1"
+mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+cat > "$T/afcap" <<EOF
+#!/bin/sh
+echo "afrun \$*" >> "$T/af.calls"
+if [ "\$(grep -c '^afrun' "$T/af.calls")" = 1 ] || [ -n "\${AFCAP_TWICE:-}" ]; then
+  echo "not started: \${AFCAP_WHY:-FAILED: 3 other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS) — the next step waits for a run to end (the sweep starts this tip again)}" >&2; exit 5
+fi
+echo "autofinish-run: started"
+EOF
+chmod +x "$T/afcap"
+DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-cap.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(grep -c "^afrun $DW --rule C --by handed" "$T/af.calls")" "2" "a cap refusal: tried once more"
+has "$HOME/handed-cap.log" "== handed: refused in the cap's waiting words — once more in 0.1 s" "  after NEXT_IDLE, logged"
+check "$(newest_launch)" "started: autofinish-run --rule C --by handed" "  the second try started it"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+AFCAP_TWICE=1 DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-cap2.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(grep -c '^afrun' "$T/af.calls")" "2" "refused twice: once more only, never a third"
+check "$(newest_launch | grep -cF 'no launch — refused twice, 0.1 s apart: ')" "1" "  then declined, the reason in the record's launch (helm's S6 card quotes it)"
+check "$(newest_launch | grep -cF 'the next step waits for a run to end')" "1" "  the cap's waiting words kept, for S4's count of declines by cause"
+check "$(newest_launch | grep -cF 'the sweep starts this tip again')" "1" "  the sweep's promise kept: armed is on too, so the sweep does start the tip again (the S3 landing review)"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
+AFCAP_TWICE=1 DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-cap3.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(newest_launch | grep -cF 'no launch — refused twice, 0.1 s apart: ')/$(newest_launch | grep -cF 'the sweep starts this tip again')" "1/0" "  with only the landing switch on: declined, and no sweep's promise, for there is no sweep"
+mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+AFCAP_TWICE=1 AFCAP_WHY="no account may run it now" DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-noacct.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(grep -c '^afrun' "$T/af.calls"):$(newest_launch)" "1:no launch — autofinish-run exit 5" "an exit 5 that is not the cap (no account): no retry"
+git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; rm -f "$AUTOFINISH_STATE_DIR/landings"
 
 echo "help"
 "$B/dispatch" --help | tail -1 | grep -q "DISPATCH_CLAUDE" && echo "  ok   --help prints the whole header" || { echo "  FAIL --help cut short"; fails=$((fails+1)); }
@@ -2057,6 +2825,39 @@ said(d.common.HANDOVER_LINE); out.append(int(d.idle_limit(a, st)))
 print(*out)
 PY2
 )" "600 60 600 3600 600 600 60" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its skipper (RELAYED) or its own work, as before (skipper, 2026-10-19); the hand-over line: 1 min (review D2)"
+kill $ENDP 2>/dev/null
+sleep 300 & ENDP=$!
+check "$(env -u DISPATCH_IDLE -u DISPATCH_NEXT_IDLE python3 - "$B/dispatch-rc" "$T/lim.json" "$ENDP" <<'PY2'
+import importlib.machinery as m, importlib.util as u, json, os, sys
+l = m.SourceFileLoader("d", sys.argv[1]); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+a, pid, sid = sys.argv[2], int(sys.argv[3]), "e0d00000-0000-4000-8000-0000000000aa"
+home = os.environ["HOME"]; os.makedirs(home + "/.claude/sessions", exist_ok=True); os.makedirs(home + "/.claude/projects/x", exist_ok=True)
+def reg(status):
+    json.dump({"pid": pid, "sessionId": sid, "status": status}, open("%s/.claude/sessions/%d.json" % (home, pid), "w"))
+def said(text):
+    with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}, separators=(",", ":")) + "\n")
+h = {"pid": pid, "session": sid, "handed": 1, "task_mode": "default"}
+plain = dict(h); plain.pop("handed")
+out = []
+reg("idle"); said("Built.\nSAM, THIS SESSION IS WAITING FOR YOU — D1 of docs/d.md")
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # WAITING: the hour, and claims at parking
+said("Built.\n" + d.common.HANDOVER_LINE)
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # the hand-over line: a minute, its slot to the landing
+with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:   # Claude Code's own entry after it: no reply of the run's
+    f.write(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "No response requested."}]}}, separators=(",", ":")) + "\n")
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # still the hand-over: a minute
+with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:   # woken, its next turn ends on an API error: no reply,
+    f.write(json.dumps({"type": "assistant", "isApiErrorMessage": True, "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "API Error: Connection dropped"}]}}, separators=(",", ":")) + "\n")
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # never the hand-over of the turn before: the hour
+out.append("%d/%s" % (d.idle_limit(a, plain), d.lands_after(plain)))   # the same line, switch off at its start: untouched
+reg("busy")
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # busy again: never ended, no hand-over read
+reg("idle"); said("RELAYED TO coding-7 — D1, the cadence")
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # waiting on its skipper: the hour
+print(*out)
+PY2
+)" "3600/False 60/True 60/True 3600/False 3600/False 3600/False 3600/False" "a handed=1 run (task-shape S3): a WAITING line keeps its hour and claims at parking; the hand-over line ends it in a minute and leaves its slot to the landing, a <synthetic> entry after it read past, a later turn ended on an API error not; a run started with the switch off, a busy one and a RELAYED one are untouched"
 kill $ENDP 2>/dev/null
 
 echo "an API-error end is nudged once, not ended as idle (the dropped connection of 2026-10-22)"
@@ -2252,10 +3053,10 @@ grep -q HUNG "$T/nudge.out"; check "$?" "1" "  no case hung"
 # (the same words as dispatch-rc's API_ERROR_END)
 sed -n "/why=\$(python3 - \"\$state\"/,/^PY\$/p" "$B/dispatch" | sed '1d;$d' > "$T/yolo_why.py"
 printf '{"mode":"rc","session":"x","end_reason":"idle 11 min, its last turn ended on an API error"}' > "$T/yolo.json"
-check "$(python3 "$T/yolo_why.py" "$T/yolo.json" "$B/.." main /nonexistent "$B/../lib" 2>&1)" "it ended idle on an API error, half done: idle 11 min, its last turn ended on an API error" \
+check "$(python3 "$T/yolo_why.py" "$T/yolo.json" "$B/.." main /nonexistent "$B/../lib" yolo 2>&1)" "it ended idle on an API error, half done: idle 11 min, its last turn ended on an API error" \
   "yolo_launch: a build run that ended idle on an API error is not launched from"
 printf '{"mode":"rc","session":"x","end_reason":"idle 11 min"}' > "$T/yolo.json"
-check "$(python3 "$T/yolo_why.py" "$T/yolo.json" "$B/.." main /nonexistent "$B/../lib" 2>&1 | grep -c "API error")" "0" "  and an ordinary idle end is not refused for it"
+check "$(python3 "$T/yolo_why.py" "$T/yolo.json" "$B/.." main /nonexistent "$B/../lib" yolo 2>&1 | grep -c "API error")" "0" "  and an ordinary idle end is not refused for it"
 
 echo "--start --resume [--fork] (bin/harness V2; option A of the orchestration doc's D9)"
 OLD=11111111-2222-4333-8444-555555555555; NEW=99999999-8888-4777-8666-555555555555
@@ -2266,6 +3067,18 @@ check "$(grep -c -- '--session-id' "$T/out")" "0" "  and no --session-id beside 
 has "$T/out" " -p go --session-id $NEW --resume $OLD --fork-session --model" "a fork: the caller's new id, --resume and --fork-session"
 "$B/dispatch" --start go "$T/repo" "again · demo" --resume $OLD --dry-run > "$T/out" 2>/dev/null
 has "$T/out" " go --resume $OLD --remote-control" "the visible path takes --resume the same way, in its screen's runner"
+# session names (the owner, 2026-11-01): a --start's NAME keeps the verb it leads with, else it is work
+"$B/dispatch" --start go "$T/repo" "finish · vendor-hooks-names" --dry-run > "$T/out" 2>/dev/null
+has "$T/out" "-n finish-vendor-hooks-names " "a landing's session is finish-<topic>, never the run-finish every landing shared"
+has "$T/out" "--remote-control finish-vendor-hooks-names\ ·\ " "  and its Remote Control name leads the same"
+"$B/dispatch" --start go "$T/repo" "principal-council-fences-round-two" --dry-run > "$T/out" 2>/dev/null
+has "$T/out" "-n work-principal-council " "a harness task's name with no verb: work-<topic>, whole words dropped to fit 27"
+"$B/dispatch" --start go "$T/repo" "finish · finish-stale-tip" --dry-run > "$T/out" 2>/dev/null
+has "$T/out" "-n finish-stale-tip " "  a landing whose topic repeats the verb says it once, as autofinish-run quotes it"
+"$B/dispatch" --start go "$T/repo" "linux-node-probe" --dry-run > "$T/out" 2>/dev/null
+has "$T/out" "-n work-linux-node-probe " "  a topic that ends in -probe keeps it: only a probe drops it"
+"$B/dispatch" --start go "$T/repo" "build-review" --dry-run > "$T/out" 2>/dev/null
+has "$T/out" "-n work-build-review " "  a slug that starts with a verb's word is a topic: only \"<verb> · \" leads"
 "$B/dispatch" --start go "$T/repo" "n" --resume $OLD --session-id $NEW --dry-run >/dev/null 2>&1; check "$?" "2" "--session-id with a plain --resume: refused"
 "$B/dispatch" --start go "$T/repo" "n" --fork --dry-run >/dev/null 2>&1; check "$?" "2" "--fork without --resume: refused"
 "$B/dispatch" $BR --repo "$T/repo" --resume $OLD --dry-run >/dev/null 2>&1; check "$?" "2" "--resume without --start: refused"
@@ -2668,7 +3481,7 @@ check "$(( $(qplists "$HA" | wc -l) + $(qplists "$HB" | wc -l) ))" "1" "two host
 check "$(qget repo--q3 claimed_by)" "$(grep -q claimed "$T/c-b" && echo buildbox || echo laptop)" "  the ref names the host that started it"
 qreset
 
-echo "  one branch, one host; the pin from a live run's --next"
+echo "  one branch, one host; a live run's --next (pinned before S12; that pin still honoured)"
 python3 "$QB" enqueue --repo "$T/repo" --branch $BR "${QC[@]}" >/dev/null
 HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
 env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
@@ -2684,13 +3497,44 @@ python3 "$QB" list --all > "$T/out"; has "$T/out" "not here: pinned to buildbox"
 HOME="$HB" python3 "$QB" ended --repo "$T/repo" --branch $BR --session sess-q --host buildbox "${QC[@]}" >/dev/null
 check "$(qget repo--demo state host running_on)" "queued buildbox None" "the run it follows ends: the pinned --next survives, its branch free"
 qreset
+# S12's put-time judge (dispatch-queue held_here) pins a put preferring this host when the branch's worktree here holds
+# what origin lacks; the cases before left the demo and step worktrees with commits a stub run made, never sent. These
+# cases are about the queue's roads, not that judge (test_queue's): the branches' work counts as on origin, as a run's
+# end leaves it, through the remote-tracking ref the judge reads first, and their worktrees clean
+s12clean() {
+  local b w
+  for b in $BR ${NB:-}; do
+    git -C "$T/repo" update-ref "refs/remotes/origin/$b" "refs/heads/$b" 2>/dev/null
+    w=$(git -C "$T/repo" worktree list --porcelain | awk -v x="branch refs/heads/$b" '/^worktree /{w=substr($0,10)} $0==x{print w}')
+    [ -n "$w" ] && git -C "$w" checkout -q -- . 2>/dev/null
+    [ -n "$w" ] && rm -f "$(git -C "$w" rev-parse --absolute-git-dir)/claude/pending-answers.jsonl"
+  done
+  return 0
+}
+echo "  S12: a live run's --next unpinned — running_on holds it on the run's host while the run lives; the run's end frees it"
+s12clean
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" started fleet:repo--demo --session sess-q --host buildbox "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" enqueue --repo "$T/repo" --branch $BR --host buildbox --prefer buildbox --by sess-q "${QC[@]}" > "$T/out"
+has "$T/out" '"result": "replaced"' "a live run's --next preferring its host replaces that run's entry…"
+check "$(qget repo--demo state host prefer running_on)" "queued  buildbox buildbox" "  …unpinned, preferring the run's host, the branch live there"
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim "${QC[@]}" >/dev/null
+check "$(qget repo--demo state)" "queued" "  another host never claims it while that run lives, the grace long past (after() keeps its order)"
+HOME="$HB" python3 "$QB" ended --repo "$T/repo" --branch $BR --session sess-q --host buildbox "${QC[@]}" >/dev/null
+check "$(qget repo--demo state host running_on)" "queued  None" "the run it follows ends: the --next survives, its branch free"
+python3 "$QB" claim "${QC[@]}" >/dev/null
+check "$(qget repo--demo state)" "queued" "  within the grace, still the run's host's"
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim "${QC[@]}" >/dev/null
+check "$(qget repo--demo state claimed_by)" "claimed laptop" "  past it, another host with room claims it: no pin outlives the run"
+qreset
 NB=claude/laptop/2026-10-04-step
 # a fresh brief, committed last: the suite's earlier --next cases left work after the old one
 rm -f "$W/scratch"; echo "# step 3 brief" > "$W/docs/handoff/2026-10-04-step.md"
 git -C "$W" add docs; git -C "$W" commit -qm "step 3 brief"; own sess-A
 FIRE=" " CLAUDE_UNATTENDED=dispatch nx > "$T/out" 2>&1; check "$?" "0" "an unattended run's --next, the queue on: enqueued, claimed here, confirmed from its log"
 has "$T/out" "started: claude is running $NB" "  said as before"
-check "$(qget repo--step state host by)" "claimed laptop sess-A" "  its entry pinned to this host, by the run's session"
+check "$(qget repo--step state host prefer by)" "claimed  laptop sess-A" "  its entry unpinned, preferring this host, by the run's session (S12: no pin)"
 qreset; own sess-A
 FIRE=" " DISPATCH_MAX_RUNS=0 nx > "$T/out" 2>&1; check "$?" "0" "--next on a full host, the queue on: exit 0 (S3; S1 kept exit 2)…"
 has "$T/out" "queued as fleet:repo--step (normal)" "  …queued, not refused"
@@ -2705,6 +3549,53 @@ has "$T/ssh.calls" '--claim --full laptop --from laptop' "  …and the peer kick
 check "$(grep -c 'step\|claude/' "$T/ssh.calls")" "0" "  no branch or topic crosses the wire"
 check "$(qget repo--step state)" "queued" "  the entry still waits: the peer's sweep claims it"
 rm -f "$REGATTA_CONFIG/wharf-runs/kick-roads"
+qreset
+
+echo "  an inherited login pins nothing (attended-dispatch-unpinned, the owner 2026-10-31)"
+# a session on a secondary login (account which: acct-c), the queue on, a full host so the entry stays to be read
+own sess-A; : > "$T/acct.calls"
+FIRE=" " DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c STUB_ALL=free DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1
+check "$?:$(qget repo--step state host)" "0:queued " "an attended --next on a secondary login, a repo the primary may run: queued for the fleet, no pin…"
+check "$(qget repo--step args | grep -c -- '--account')" "0" "  …and no inherited label: the fired run's pick is auto, on any host"
+has "$T/acct.calls" "account limits --all --repo $T/repo --json --cached" "  …judged by the registry's denied, cached (no probe), on this repo"
+for sa in none empty denied noprimary; do
+  qreset; own sess-A
+  FIRE=" " DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c STUB_ALL=$sa DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1
+  check "$?:$(qget repo--step state host):$(qget repo--step args | grep -c -- "'--account', 'acct-c'")" "0:queued laptop:1" \
+    "  a registry that does not say the primary may run it ($sa) keeps the label and main's pin (fails closed)"
+done
+qreset; own sess-A
+: > "$T/acct.calls"
+FIRE=" " DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c DISPATCH_ACCOUNT="$T/acct" nx --account acct-a > "$T/out" 2>&1
+check "$?:$(qget repo--step state host)" "0:queued laptop" "a typed --account LABEL still pins the entry to the host that named it"
+check "$(qget repo--step args | grep -c -- "'--account', 'acct-a'"):$(qget repo--step args | grep -c -- 'acct-c')" "1:0" \
+  "  the typed label rides, never the session's own"
+check "$(grep -c 'limits --all' "$T/acct.calls")" "0" "  …and the registry is not asked (only an inherited label is judged)"
+qreset; own sess-A
+: > "$T/acct.calls"
+FIRE=" " DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c STUB_ALL=free DISPATCH_ACCOUNT="$T/acct" nx --on here > "$T/out" 2>&1
+check "$?:$(qget repo--step state host):$(qget repo--step args | grep -c -- "'--account', 'acct-c'")" "0:queued laptop:1" \
+  "an attended --next with a typed --on here: preferred here, its inherited label with it, which pins it (as on main)…"
+check "$(grep -c 'limits --all' "$T/acct.calls")" "0" "  …a pinned entry is never judged (the registry would have dropped it: STUB_ALL=free)"
+qreset; own sess-A
+FIRE=" " DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c DISPATCH_PIN=bound DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1
+check "$?:$(qget repo--step state host):$(qget repo--step args | grep -c -- "'--account', 'bound'")" "0:queued :1" \
+  "a bound run's --next rides bound and pins no host (bound is the primary on every host)"
+qreset; own sess-A
+: > "$T/acct.calls"
+FIRE=" " CLAUDE_UNATTENDED=dispatch DISPATCH_MAX_RUNS=0 STUB_WHICH=acct-c STUB_ALL=free DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1
+check "$?:$(qget repo--step state host)" "0:queued laptop" "an unattended run's --next stays pinned to its host, as on main…"
+check "$(qget repo--step args | grep -c -- "'--account', 'acct-c'"):$(grep -c 'limits --all' "$T/acct.calls")" "1:0" \
+  "  …its inherited label with it (E5, where the step runs only here), never judged"
+qreset; own sess-A
+# a plain dispatch never inherits the login (header, --account: only --next's two `account which` lines do; read on
+# main, 2026-10-31: it was unpinned there already, so this case guards it, it fixes nothing)
+: > "$T/acct.calls"
+CLAUDE_CODE_SESSION_ID=sess-P STUB_WHICH=acct-c DISPATCH_ACCOUNT="$T/acct" env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 \
+  "$B/dispatch" $BR --repo "$T/repo" --headless > "$T/out" 2>&1
+check "$?:$(qget repo--demo state host):$(qget repo--demo args | grep -c -- '--account')" "0:queued :0" \
+  "a plain attended dispatch from a secondary login: queued for the fleet, no pin, no label…"
+check "$(grep -c 'account which' "$T/acct.calls")" "0" "  …its login never asked (account which)"
 qreset
 
 echo "  a claim whose running write fails, past the lease: never re-claimed"
@@ -2755,6 +3646,7 @@ git init -q "$T/vaultrepo"
 printf '{"repos": {}, "scopes": {"vault": {"confidential": true, "repos": ["%s"]}}}' "$(cd "$T/vaultrepo" && pwd -P)" > "$T/reg-cwd.json"
 CLAUDE_REPOS_JSON="$T/reg-cwd.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-conf2 --cwd "$T/vaultrepo" "${QC[@]}" > "$T/out"
 has "$T/out" '"store": "local=vault"' "  so does an open repo's branch sent from a confidential scope's checkout (the caller's cwd)"
+has "$T/out" '"confined": true' "  confined: from inside a node to an open repo is a spawn (S6), its review judged again at claim"
 echo '{"repos": ' > "$T/reg-torn.json"
 CLAUDE_REPOS_JSON="$T/reg-torn.json" env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
 check "$?" "2" "a torn registry refuses the enqueue (torn reads as no scopes: the fence trap)"
@@ -2765,7 +3657,7 @@ mkdir -p docs/handoff; echo "# brief" > docs/handoff/2026-10-26-spawn.md; echo "
 git add docs; git commit -qm "a reviewed spawn"; git checkout -q main
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-spawn "${QC[@]}" > "$T/out"
 has "$T/out" '"store": "local=_spawn"' "an unreviewed-at-claim seed (a .review: a spawn out of a node) waits node-local…"
-has "$T/out" '"confined": true' "  …confined, until spawn_review_ok() checks it at claim (confidential-reach S6)"
+has "$T/out" '"confined": true' "  …confined; the claim judges its review again (claim_refusal: test_queue.sh's S6 cases)"
 check "$(qtree)" "" "  never the fleet ref"
 qreset
 
@@ -2782,12 +3674,20 @@ PAST=$(( $(date +%s) - 3600 )); PASTL="org.example.claude.dispatch.repo.demo.$(d
 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qage.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
 check "$(qget repo--demo queued_at)" "$(( PAST / 60 * 60 ))" "  its entry aged from WHEN, its label's minute (late by an hour, it keeps its place)"
 qreset
-# S3's landing review, item 8: a one-shot sent to a typed host stays pinned there when it enters the queue
-"$B/dispatch" $BR --repo "$T/repo" --on here --at "$FUT 04:10" >/dev/null; P=$(pl)
-check "$(qenv "$P" DISPATCH_HOST_PIN 2>/dev/null)" "1" "item 8 (S3 review): a typed --on's one-shot carries its pin…"
+# S3's landing review, item 8: a one-shot sent to a typed host stays there when it enters the queue — a pin for
+# --pin, a preference for --on (S12)
+"$B/dispatch" $BR --repo "$T/repo" --pin here --at "$FUT 04:10" >/dev/null; P=$(pl)
+check "$(qenv "$P" DISPATCH_HOST_PIN 2>/dev/null):$(qenv "$P" DISPATCH_HOST_PREFER 2>/dev/null)" "1:" "item 8 (S3 review): a typed --pin's one-shot carries its pin…"
 rm -f "$P"
 DISPATCH_HOST_PIN=1 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qpin.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
-check "$(qget repo--demo host)" "laptop" "  …and its fire-time entry is pinned to the host it fired on"
+check "$(qget repo--demo host prefer)" "laptop " "  …and its fire-time entry is pinned to the host it fired on (a plist from before S12 carries the same)"
+qreset
+"$B/dispatch" $BR --repo "$T/repo" --on here --at "$FUT 04:10" >/dev/null; P=$(pl)
+check "$(qenv "$P" DISPATCH_HOST_PIN 2>/dev/null):$(qenv "$P" DISPATCH_HOST_PREFER 2>/dev/null)" ":1" "S12: a typed --on here's one-shot carries a preference, no pin…"
+rm -f "$P"
+s12clean
+DISPATCH_HOST_PREFER=1 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qpref.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
+check "$(qget repo--demo host prefer)" " laptop" "  …and its fire-time entry prefers the host it fired on, unpinned"
 qreset
 DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qnopin.log" DISPATCH_LABEL=$PASTL "$B/dispatch" $BR --repo "$T/repo" --headless
 check "$(qget repo--demo host)" "" "  one sent by default or a load pick stays unpinned"
@@ -2864,15 +3764,9 @@ check "$?" "1" "  a note past its pattern: exit 1 too"
 # item 11: a claim holds only for the entry it looked at
 check "$(qload 'q.apply_op({"k": {"state": "queued", "id": "B"}}, {"op": "claim", "key": "k", "host": "laptop", "at": 1, "cond": {"id": "A"}})[1]')" "taken" \
   "item 11: a claim of an entry a put replaced meanwhile (another id) takes nothing"
-# item 12: a landing peer counts only with the ssh alias autofinish-run's launch needs
-echo "laptop:elsewhere" > "$REGATTA_CONFIG/wharf-runs/finish-on"
-check "$(qload 'q.landing_peer("laptop")')" "False" "item 12: a finish-on peer with no ssh alias is no landing peer"
-echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/finish-on"
-check "$(qload 'q.landing_peer("laptop")')" "True" "  one with an alias is"
 check "$(qload '(setattr(q.common, "autofinish_armed", lambda: None), q.claimable({"state": "queued", "branch": "claude/laptop/2026-10-27-y4", "repo": q.repo_word("'"$T/repo"'"), "mode": "yolo"}, "laptop"))[1]')" \
   "a yolo run's launch cannot run here (autofinish disarmed here)" \
-  "fourth review: a disarmed host with a landing peer still may not claim a yolo entry (autofinish-run keeps mode launches here)"
-rm -f "$REGATTA_CONFIG/wharf-runs/finish-on"
+  "fourth review: a disarmed host may not claim a yolo entry (autofinish-run pins mode launches to their host)"
 # item 20: an entry naming a login is this host's, where that login is
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-acct --arg=--account --arg=acct-x "${QC[@]}" > /dev/null
 check "$(qget repo--acct host)" "laptop" "item 20: an entry with --account LABEL is pinned to the host that named it"
@@ -2912,6 +3806,16 @@ printf '{"mode":"headless","repo":"%s","topic":"chain7","branch":"claude/laptop/
 check "$(python3 "$B/dispatch-rc" unfinished "$(cd "$T/repo" && pwd -P)" chain7)" "1" "a run recorded under one spelling of its repo is found by its real path (after(): the queue's job names it resolved)"
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-other7 --claim "${QC1[@]}" > "$T/out"
 has "$T/out" '"claimed": []' "cap 1, a run of another topic live: no room for this one"
+# rank() ties on queued_at (whole seconds), then the key: put in one second, repo--chain7 sorts ahead of
+# repo--other7 and is claimed (PR 337's CI, a fast runner). A second between makes other7 the older entry.
+sleep 1
+python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-chain7 --pin laptop --by s-c7 --claim "${QC1[@]}" > "$T/out"
+has "$T/out" '"claimed": []' "queue-rank: the live run's own --next waits while an older entry waits for a slot (rank holds, test_rank.sh)"
+# item 7 starts from no chain7 entry, whatever the case above left (queued, or claimed if rank failed)
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-10-26-other7 "${QC1[@]}" > /dev/null
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-10-26-chain7 "${QC1[@]}" > /dev/null
+check "$(qget repo--chain7 state)|$(qget repo--other7 state)|$(cat "$HA/Library/Caches/run-seed/queue/claims/"*.json 2>/dev/null | grep -c 'repo--chain7')" "||0" \
+  "  item 7's start: neither entry left, no claim file naming chain7 (reserved skips a waiting one while its run lives)"
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-chain7 --pin laptop --by s-c7 --claim "${QC1[@]}" > "$T/out"
 has "$T/out" '"claimed": ["fleet:repo--chain7"]' "item 7: the live run's own --next is claimed: the run it waits for is not counted"
 check "$(python3 "$QB" reserved "${QC[@]}")" "0" "  its claim is reserved waiting: the live run it follows holds the one slot, never both (the fourth review)…"
@@ -2928,7 +3832,7 @@ python3 "$QB" started fleet:repo--re19 --session s19 "${QC[@]}" > /dev/null
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-26-re19 "${QC[@]}" > "$T/out"; rc=$?
 check "$rc" "0" "item 19: a re-dispatch on the host the branch runs on is taken, not refused busy"
 has "$T/out" '"result": "replaced"' "  it replaces the live entry"
-check "$(qget repo--re19 state host running_on)" "queued laptop laptop" "  queued, pinned to that host, so after() waits for the earlier run"
+check "$(qget repo--re19 state host prefer running_on)" "queued  laptop laptop" "  queued, held on that host while its run lives (running_on), so after() waits for the earlier run; preferring it, unpinned (S12)"
 : > "$T/claude.calls"; QL19=$(qenv "$QP19" DISPATCH_LOG)
 qfire "$QP19"
 has "$QL19" "== a stale queue job: fleet:repo--re19 is not this job's claim now (it is queued); not running" "item 3: the replaced entry's job fires: not its claim, not run"
@@ -2966,14 +3870,78 @@ check "$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.[
 qreset
 
 echo "  item 4: a one-shot refused at fire time queues where its caller's cwd says"
-(cd "$T/vaultrepo" && env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1); P=$(pl); PL=$(basename "$P" .plist)
+# a run from inside the vault for an open repo is a spawn (S6), so a seed reviewed out of the vault ($VB):
+# a review out of another scope than the caller's is refused (S6's third landing review), and the plain $BR
+# from there is refused, as the S6 block's cases say
+printf '{"repos": {"k": {}}, "scopes": {"vault": {"confidential": true, "repos": ["%s"]}, "node": {"repos": ["k"], "confidential": true}}}' \
+  "$(cd "$T/vaultrepo" && pwd -P)" > "$T/reg-cwd-node.json"
+VM="confidential:$(printf vault | shasum -a 256 | cut -c1-8)"; VB=claude/laptop/2026-10-02-vspawn
+git clone -q "$T/origin.git" "$T/vseed"
+vseedbr() {   # TOPIC: a seed reviewed out of the vault, published as the fixture publishes, and fetched here
+  git -C "$T/vseed" checkout -q -b "claude/laptop/2026-10-02-$1" origin/claude/laptop/2026-10-02-nobrief
+  mkdir -p "$T/vseed/docs/handoff"; echo "# $1 brief" > "$T/vseed/docs/handoff/2026-10-02-$1.md"
+  review "$T/vseed/docs/handoff/2026-10-02-$1.md" "$VM" > "$T/vseed/docs/handoff/2026-10-02-$1.review"
+  git -C "$T/vseed" add docs; git -C "$T/vseed" -c user.email=t@t -c user.name=t commit -qm "seed: $1"
+  git --git-dir="$T/vseed/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-02-$1:refs/heads/claude/laptop/2026-10-02-$1" >/dev/null 2>&1
+  git -C "$T/repo" fetch -q origin "claude/laptop/2026-10-02-$1:claude/laptop/2026-10-02-$1"
+}
+vseedbr vspawn
+vpl() { ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.vspawn.[0-9]*.plist 2>/dev/null; }
+(cd "$T/vaultrepo" && CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" env -u DISPATCH_LABEL "$B/dispatch" $VB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1); P=$(vpl); PL=$(basename "$P" .plist)
 has "$P" "<key>DISPATCH_ORIGIN</key>" "the one-shot records its caller's cwd"
-DISPATCH_ORIGIN="$(qenv "$P" DISPATCH_ORIGIN)" CLAUDE_REPOS_JSON="$T/reg-cwd.json" DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/q4.log" DISPATCH_LABEL=$PL \
-  "$B/dispatch" $BR --repo "$T/repo" --headless
-has "$HA/q4.log" "== into the queue at its time: queued as local=vault:repo--demo" "  at its fire time, on a full host, it is queued…"
-check "$(qlocal repo--demo state)" "queued" "  …in the caller's confidential scope"
+DISPATCH_ORIGIN="$(qenv "$P" DISPATCH_ORIGIN)" CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/q4.log" DISPATCH_LABEL=$PL \
+  "$B/dispatch" $VB --repo "$T/repo" --headless --origin "$VM"
+has "$HA/q4.log" "== into the queue at its time: queued as local=vault:repo--vspawn" "  at its fire time, on a full host, it is queued…"
+check "$(qlocal repo--vspawn state)" "queued" "  …in the caller's confidential scope"
 check "$(qtree)" "" "  never on the fleet ref"
-env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --cancel > /dev/null 2>&1
+env -u DISPATCH_LABEL "$B/dispatch" $VB --repo "$T/repo" --cancel > /dev/null 2>&1
+qreset
+
+echo "  S6's third landing review, items 3 and 4: a fired one-shot this host cannot judge yet is handed back, never lost"
+(cd "$T/vaultrepo" && CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" env -u DISPATCH_LABEL "$B/dispatch" $VB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1); P=$(vpl); PL=$(basename "$P" .plist)
+check "${P:+scheduled}" "scheduled" "a reviewed spawn from inside the vault: scheduled"
+# at its fire time this host's registry reads the review's origin back as no confidential scope (another host's may)
+printf '{"repos": {}, "scopes": {"vault": {"repos": ["%s"]}}}' "$(cd "$T/vaultrepo" && pwd -P)" > "$T/reg-vault-open.json"
+DISPATCH_ORIGIN="$(qenv "$P" DISPATCH_ORIGIN)" CLAUDE_REPOS_JSON="$T/reg-vault-open.json" DISPATCH_MAX_RUNS=5 DISPATCH_LOG="$HA/q4b.log" DISPATCH_LABEL=$PL \
+  "$B/dispatch" $VB --repo "$T/repo" --headless --origin "$VM" > "$T/out" 2>&1
+check "$?" "2" "  refused at fire time, exit 2"
+has "$HA/q4b.log" "queued again: the spawn check cannot judge it here yet" "  handed back: queued again, as queue_refused says it…"
+check "$(grep -c '^FAILED' "$HA/q4b.log")" "0" "  …and no FAILED beside it, which helm would start again (item 3)"
+check "$(python3 "$T/qget.py" state < "$HA/Library/Caches/run-seed/queue-local/_spawn/repo--vspawn.json" 2>&1)" "queued" "  the entry waits in the spawn queue for a host that can judge it"
+check "$([ -f "$P" ] && echo kept || echo gone)" "gone" "  the one-shot's plist gone, its run held by the queue"
+qreset
+echo "  S6's fourth landing review, item 5: a torn registry with a queue home — the queue's route refuses it too, so the one-shot is re-armed"
+(cd "$T/vaultrepo" && CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" env -u DISPATCH_LABEL "$B/dispatch" $VB --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1); P=$(vpl); PL=$(basename "$P" .plist)
+QO5="$(qenv "$P" DISPATCH_ORIGIN)"
+DISPATCH_ORIGIN="$QO5" CLAUDE_REPOS_JSON="$T/origin-torn.json" DISPATCH_MAX_RUNS=5 DISPATCH_LOG="$HA/q5t.log" DISPATCH_LABEL=$PL \
+  "$B/dispatch" $VB --repo "$T/repo" --headless --origin "$VM" > "$T/out" 2>&1
+check "$?" "2" "  refused at fire time, exit 2"
+check "$(grep -c '^FAILED' "$HA/q5t.log")" "0" "  no FAILED: the run is handed back, as the comment and the CHANGELOG say"
+hasnt "$HA/q5t.log" "this run is lost" "  never said lost"
+NP=$(vpl); NPL=$(basename "$NP" .plist)
+has "$HA/q5t.log" "rescheduled $NPL" "  re-armed, judged again minutes on"
+check "$([ "$NPL" != "$PL" ] && qenv "$NP" DISPATCH_ORIGIN)" "$QO5" "  under a new label, the caller's cwd kept (its queue's route sees the same caller)"
+check "$(qtree)" "" "  nothing on the fleet ref"
+env -u DISPATCH_LABEL "$B/dispatch" $VB --repo "$T/repo" --cancel > /dev/null 2>&1
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.vspawn.[0-9]*.plist
+qreset
+
+echo "  S6's third landing review, item 2: a claimed run of a node's queue is judged at launch as asked from inside it"
+vseedbr vnext
+CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-02-vnext --cwd "$T/vaultrepo" "${QC[@]}" > "$T/out"
+has "$T/out" '"store": "local=vault"' "a reviewed spawn asked from inside the vault queues in the vault's queue"
+CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+QP=$(qplists "$HA" | head -1)
+check "$(qlocal repo--vnext state)" "claimed" "  claimed here: its review vouches for its newest brief"
+# a newer brief reaches origin after the claim, never reviewed; the launch reads the tree it fetches
+echo "# a later step, never reviewed" > "$T/vseed/docs/handoff/2026-10-03-vnext.md"
+git -C "$T/vseed" add docs; git -C "$T/vseed" -c user.email=t@t -c user.name=t commit -qm "a newer brief"
+git --git-dir="$T/vseed/.git" send-pack "$T/origin.git" "claude/laptop/2026-10-02-vnext:refs/heads/claude/laptop/2026-10-02-vnext" >/dev/null 2>&1
+: > "$T/claude.calls"; QLOG=$(qenv "$QP" DISPATCH_LOG)
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/reg-cwd-node.json" DISPATCH_MAX_RUNS=5 qfire "$QP" > /dev/null 2>&1)
+check "$([ -s "$T/claude.calls" ] && echo started || echo held)" "held" "  at launch, judged as from inside the vault (its queue), the newest brief unreviewed: not started"
+has "$QLOG" "its newest brief docs/handoff/2026-10-03-vnext.md carries no 2026-10-03-vnext.review" "  naming the brief no review read"
+check "$([ -f "$HA/Library/Caches/run-seed/queue-local/vault/repo--vnext.json" ] && echo kept || echo dropped)" "dropped" "  final: the entry failed (dropped, carded), never handed back for an hourly retry"
 qreset
 
 echo "  item 18: a node-local queue writes its claims"
@@ -3162,10 +4130,12 @@ check "$?" "0" "item 20: a dispatch of a branch whose entry is claimed here: exi
 has "$T/out" "is claimed here already (queue entry fleet:repo--demo)" "  …said as such, never 'no room … queued'"
 qreset
 # --origin through the queue (confidential-reach S5 beside dispatch-queue S1, the rebase's review): a
-# confidential origin is a spawn, `.review` or not — node-local, never the fleet ref — and the entry
-# carries the scope's marker, never the name the run was given
-QSP="$HA/Library/Caches/run-seed/queue-local/_spawn/repo--demo.json"
+# confidential origin is a spawn — node-local, never the fleet ref — and the entry carries the scope's
+# marker, never the name the run was given. The reviewed seed: S6 refuses one whose seed has no review
+QSP="$HA/Library/Caches/run-seed/queue-local/_spawn/repo--spawn.json"
 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --on here --headless --origin node > "$T/out" 2>&1
+check "$?:$(qtree)" "2:" "an --origin run whose seed carries no review: refused at enqueue (S6), nothing queued"
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --on here --headless --origin node > "$T/out" 2>&1
 check "$?" "0" "--origin through the queue: queued and claimed here…"
 check "$(qtree)" "" "  …never on the fleet ref, though the repo is open…"
 check "$(python3 -c 'import json, sys; a = json.load(open(sys.argv[1])).get("args") or []; print(a[a.index("--origin") + 1] if "--origin" in a else "none")' "$QSP" 2>&1)" "$NM" \
@@ -3182,7 +4152,7 @@ qreset
 # a claimed job whose origin no longer reads here (the scope gone from the registry, or torn) hands its
 # entry back rather than leaving it claimed with no job and its slot held for the lease
 printf '{"repos": {"o": {}}, "scopes": {"pub": {"repos": ["o"]}}}\n' > "$T/origin-gone.json"
-env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $BR --repo "$T/repo" --on here --headless --origin "$NM" > "$T/out" 2>&1
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" $RB --repo "$T/repo" --on here --headless --origin "$NM" > "$T/out" 2>&1
 QP=$(qplists "$HA" | head -1)
 check "$(python3 "$T/qget.py" state < "$QSP" 2>&1)" "claimed" "an --origin entry claimed here…"
 CLAUDE_REPOS_JSON="$T/origin-gone.json" DISPATCH_MAX_RUNS=5 qfire "$QP" > "$T/out" 2>&1
@@ -3391,18 +4361,34 @@ check "$(q3 lock-wait "$T/queue.git")" "unreachable bounded" "item 12: the clone
 kill $LK 2>/dev/null; wait $LK 2>/dev/null
 check "$(q3 down-memo "$T/no-such.git")" "1 0 fast" "item 13: a home that did not answer is not fetched again in the same process"
 check "$(qload 'q.Local("acme corp").name')" "local=acme_corp" "item 14: a scope's queue has one name, its folder's"
-echo "laptop:laptop" > "$REGATTA_CONFIG/wharf-runs/finish-on"; echo "laptop:buildbox" > "$REGATTA_CONFIG/wharf-runs/orca-pairs"
-check "$(qload 'q.landing_peer("laptop")')" "False" "item 16: the landing peer is autofinish-run's peer_of(): its first line names this host, so none"
-rm -f "$REGATTA_CONFIG/wharf-runs/finish-on" "$REGATTA_CONFIG/wharf-runs/orca-pairs"
 python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-27-nr17 --claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > "$T/out"
 has "$T/out" '"no_room": "the run cap (0 of 0 busy on laptop)"' "item 17: an enqueue left queued says why (the cap, or memory)"
 qreset
 check "$(q3 headroom)" "0" "item 18: an empty queue samples no memory"
 qreset
 
-echo "  items 21 and 22: --on here pins; a run the queue did not start asks it"
+echo "  items 21 and 22: --pin here pins, --on here prefers (S12); a run the queue did not start asks it"
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $BR --repo "$T/repo" --pin here --headless > "$T/out" 2>&1
+check "$(qget repo--demo state host prefer)" "queued laptop " "item 21: a typed --pin here is pinned here: no other host's claim takes it"
+HOME="$HB" DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--demo state)" "queued" "  …two hours on"
+qreset
+echo "S12: --on here is a preference — this host first, another host once the grace passes or this host finds no room"
+s12clean
+env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=1 "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
+check "$(qget repo--demo state claimed_by host prefer)" "claimed laptop  laptop" "--on here with room: enqueued unpinned, preferring this host, and claimed here first"
+qreset
 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=0 "$B/dispatch" $BR --repo "$T/repo" --on here --headless > "$T/out" 2>&1
-check "$(qget repo--demo state host)" "queued laptop" "item 21: a typed --on here is pinned here: no other host's claim takes it"
+check "$?:$(qget repo--demo state host prefer)" "0:queued  laptop" "--on here on a full host: queued, unpinned, preferring this host…"
+check "$([ "$(qget repo--demo prefer_off)" != None ] && echo released)" "released" "  …and released by this host's own claim, which found no room"
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--demo state claimed_by)" "claimed buildbox" "  another host with room claims it at once"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --prefer laptop "${QC[@]}" > /dev/null
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--demo state)" "queued" "preferring a host that has not answered yet: another host waits…"
+HOME="$HB" DISPATCH_QUEUE_NOW=$(( $(date +%s) + 660 )) python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--demo state claimed_by)" "claimed buildbox" "  …and claims it once the grace (a sweep) has passed"
 qreset
 env -u DISPATCH_LABEL "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2>&1; P22=$(pl); PL22=$(basename "$P22" .plist)
 HOME="$HB" python3 "$QB" enqueue --repo "$T/repo" --branch $BR --host buildbox "${QC[@]}" > /dev/null
@@ -3437,7 +4423,7 @@ env -u DISPATCH_LABEL "$B/dispatch" --watch fleet:repo--step --for 0 > "$T/out" 
 check "$?" "1" "--watch of a queued entry, --for 0: one read, exit 1 (S3's second review: 2 is a refusal's)…"
 has "$T/out" "fleet:repo--step: queued" "  …printing its state"
 has "$T/out" "it stays in the queue" "  …and that it stays queued"
-# an entry another host may claim: the --wait one above is pinned here (a typed --on here, item 21), and a
+# an entry another host may claim: the --wait one above prefers this host (a typed --on here, S12), and a
 # watch with no --for on an entry nobody claims never ends (--for 1 bounds the case, never the suite)
 qreset; python3 "$QB" enqueue --repo "$T/repo" --branch $NB "${QC[@]}" >/dev/null
 HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
@@ -3454,22 +4440,31 @@ check "$(sed -n '/^def watch_read/,/^# ---- the jobs/p' "$B/dispatch-queue" | gr
 # --replace: a running entry elsewhere, queued behind it there; refused without
 CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
 check "$?" "2" "a run of a branch running on another host, no --replace: refused (one branch, one host)…"
-has "$T/out" "--replace queues this step behind it here, to start once it ends there" "  …naming --replace, which keeps the typed --on here"
+has "$T/out" "--replace queues this step behind it there" "  …naming --replace (a typed --on here is a preference: the step may start there, S12)"
+CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --pin here --headless > "$T/out" 2>&1
+has "$T/out" "--replace queues this step behind it here, to start once it ends there" "  with --pin here: behind it here, which the pin keeps"
 CLAUDE_UNATTENDED=dispatch CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless > "$T/out" 2>&1
 check "$?" "2" "  an unattended caller: refused the same (S3's third landing review, item 6)…"
 grep -q -- "--replace" "$T/out"; check "$?" "1" "  …never offered --replace, which it is refused"
 has "$T/out" "one branch, one host" "  …the busy refusal itself, not an earlier one"
 CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > "$T/out" 2>&1
 check "$?" "0" "  with --replace: exit 0…"
-check "$(qget repo--step state host running_on by)" "queued laptop buildbox sess-R" \
-  "  …the step queued behind the run (running_on kept), pinned where the typed --on here pins it (S3's second review, item 4)"
+check "$(qget repo--step state host prefer running_on by)" "queued  laptop buildbox sess-R" \
+  "  …the step queued behind the run (running_on kept), preferring this Mac as the typed --on here asks (S12)"
 HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1; python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
-check "$(qget repo--step state)" "queued" "  no claim takes it while the run there is live: not there (its pin), not here (one branch, one host)"
+check "$(qget repo--step state)" "queued" "  no claim takes it while the run there is live, within the grace: not there (its preference here), not here (one branch, one host)"
+HOME="$HB" DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim --host buildbox "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--step state)" "queued" "  past a grace counted from the put, still not the run's own host: the grace starts when the run ends (the S12 finish review)"
+qreset; python3 "$QB" enqueue --repo "$T/repo" --branch $NB "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
+HOME="$HB" python3 "$QB" started fleet:repo--step --session s-w --host buildbox "${QC[@]}" >/dev/null
+CLAUDE_CODE_SESSION_ID=sess-R env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 "$B/dispatch" $NB --repo "$T/repo" --pin here --headless --replace > /dev/null 2>&1
+check "$(qget repo--step state host prefer running_on)" "queued laptop  buildbox" "  --pin here --replace over a running entry there: pinned here, behind it (S3's second review, item 4)"
 qreset; python3 "$QB" enqueue --repo "$T/repo" --branch $NB "${QC[@]}" >/dev/null
 HOME="$HB" python3 "$QB" claim --host buildbox "${QC[@]}" >/dev/null
 HOME="$HB" python3 "$QB" started fleet:repo--step --session s-w --host buildbox "${QC[@]}" >/dev/null
 python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-R2 --replace "${QC[@]}" > /dev/null
-check "$(qget repo--step state host by)" "queued buildbox sess-R2" "  an unpinned --replace: pinned to the host it runs on, as before"
+check "$(qget repo--step state host prefer running_on by)" "queued  buildbox buildbox sess-R2" "  an unpinned --replace: held on the host it runs on while the run lives, preferring it after (S12: no pin)"
 python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-R3 --replace --arg=--account --arg=acct-x "${QC[@]}" > /dev/null
 check "$(qget repo--step host by)" "laptop sess-R3" "  a host-local --account keeps its host: moved, its login was not set up there"
 qreset
@@ -3691,6 +4686,8 @@ check "$?" "2" "item 3: dispatch-queue enqueue --replace, unattended, with a DIS
 check "$(qget repo--step by)" "sess-dead" "  …the entry untouched"
 AUTOFINISH_CALLER_UNATTENDED=1 env -u CLAUDE_UNATTENDED python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-U --replace "${QC[@]}" > /dev/null 2>&1
 check "$?" "2" "  a peer job's unattended caller (AUTOFINISH_CALLER_UNATTENDED): refused too"
+REGATTA_UNATTENDED=1 python3 "$QB" enqueue --repo "$T/repo" --branch $NB --by sess-U --replace "${QC[@]}" > /dev/null 2>&1
+check "$?" "2" "  the marker's vendor-neutral name alone (REGATTA_UNATTENDED): refused too"
 CLAUDE_UNATTENDED=dispatch DISPATCH_LABEL=made.up.label CLAUDE_CODE_SESSION_ID=sess-O DISPATCH_MAX_RUNS=0 \
   "$B/dispatch" $NB --repo "$T/repo" --on here --headless --replace > "$T/out" 2>&1
 check "$?" "2" "  dispatch --replace, unattended, with a DISPATCH_LABEL set: refused"
@@ -3989,7 +4986,7 @@ for topic, owe in (("strand", False), ("owed", True)):
     out.append("%s=%s" % (topic, (f.entries().get(k) or {}).get("state")))
 print(" ".join(out))
 PYRQ3
-mkdir -p "$T/rq3/home" "$T/rq3/cfg/wharf-runs" && git init -q --bare "$T/rq3/queue.git" && echo "$T/rq3/queue.git" > "$T/rq3/cfg/wharf-runs/queue-repo"
+mkdir -p "$T/rq3/home" "$T/rq3/cfg/wharf-runs" && git init -q --bare "$T/rq3/queue.git" && echo "$T/rq3/queue.git" > "$T/rq3/cfg/wharf-runs/queue-repo" && echo off > "$T/rq3/cfg/wharf-runs/hosts-sample"   # no real sampler from the sweep
 check "$(cd "$T/rq3" && HOME="$T/rq3/home" REGATTA_CONFIG="$T/rq3/cfg" DISPATCH_HOST=laptop DISPATCH_POWER=off python3 "$T/rq3.py" "$QB" "$T/rq3/queue.git" 2>&1 | tail -1)" \
   "strand=None owed=running" "  …a requeued run whose op was dropped is removed by its host's sweep; one whose op is owed stays running"
 RQX=own; w=$(rq tipword 2>&1 | grep "^W ")

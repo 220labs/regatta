@@ -8,7 +8,10 @@
 // antigravity from orca … automate this"), its quota buckets as bars: one signed in to Orca shows
 // up here by itself, and `account orca off <agent>` hides its card. A plan draws the windows it
 // has: Codex prolite has a week and no 5-hour window. The file keeps its old name: Übersicht keys a
-// widget's position and state by it, and bootstrap.sh links it by name.
+// widget's position and state by it, and bootstrap.sh links it by name. A card leaves this Mac's widget, and
+// a login's probe stops, by its label (or an Orca agent's name: `cursor`) on a line of the config dir's
+// `plumb/widget-hide` (the owner, 2026-11-01: Cursor hidden); the walk still reads the login. A line
+// `<agent>:<family>` there hides one bucket family of an agent's card, in this widget only (`antigravity:Claude/GPT`).
 // Seen with the Show Desktop gesture (thumb and three fingers spread), no click (the owner, 2026-10-07:
 // "free, desktop only" over a paid Notification Center widget). Übersicht runs `command`;
 // bootstrap.sh links this file into its widgets folder when Übersicht is installed.
@@ -37,10 +40,14 @@
 // server's /run/ answers 500 at the first stderr byte), so the command must keep stderr quiet.
 import { css } from "uebersicht";
 
+// A line `<agent>:<family>` of the hide file (`antigravity:Claude/GPT`, the owner 2026-11-01: "they're miniscule
+// anyways") drops that bucket family from this call's answer only (account's hide_families, its 5h and week taken
+// again from what is left); lighthouse's desk never passes --hide and still reads every bucket.
 export const command =
   'PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" /usr/bin/python3 ' +
   '"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home")/modules/regatta/bin/regatta" ' +
-  'account limits --all --parked --orca --json';
+  'account limits --all --parked --orca --json ' +
+  '--hide "$(cat "${REGATTA_CONFIG:-$HOME/.config/regatta}/plumb/widget-hide" 2>/dev/null)"';
 
 export const refreshFrequency = 10 * 60 * 1000;
 
@@ -69,13 +76,24 @@ const row = css`margin: 4px 0 12px;`;
 const head = css`display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 6px;`;
 const dim = css`color: #9a9aa0; font-weight: 400; font-size: 11px;`;
 const line = css`display: grid; grid-template-columns: 38px 1fr 40px; align-items: center; gap: 8px; margin: 3px 0;`;
-// An Orca agent's buckets carry names ("Claude and GPT models"), wider than "5h" or "week".
-const wide = css`display: grid; grid-template-columns: 96px 1fr 40px; align-items: center; gap: 8px; margin: 3px 0;`;
+// An Orca agent's buckets carry a family beside the window ("Gemini 5h", "Claude/GPT week"), wider than "5h".
+const wide = css`display: grid; grid-template-columns: 100px 1fr 40px; align-items: center; gap: 8px; margin: 3px 0;`;
 const track = css`position: relative; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.14);`;
 const tick = css`position: absolute; top: -3px; width: 2px; height: 12px; background: #f2f2f2; opacity: 0.7;`;
 const pct = css`text-align: right; font-variant-numeric: tabular-nums;`;
 
 const WEEK = 7 * 24 * 3600;
+
+// Orca's bucket names in the Claude and Codex cards' words: "Gemini Models · Five Hour Limit Remaining"
+// is { family: "Gemini", win: "5h" }, "Claude and GPT models · Weekly Limit Remaining" is
+// { family: "Claude/GPT", win: "week" } (Antigravity's, 2026-11-01), Cursor's "Other Models" { family: "Other" }.
+const bucketName = (n) => {
+  const [fam, w = ""] = String(n).split(/\s*·\s*/);
+  const family = fam.replace(/\s+models$/i, "").replace(/\s+and\s+/gi, "/");
+  const win = /five.?hour|\b5.?h\b/i.test(w) ? "5h" : /week/i.test(w) ? "week" : /month/i.test(w) ? "month"
+    : w.replace(/\s*limit.*$/i, "");
+  return { family, win, label: win ? `${family} ${win}` : family };
+};
 // Red at 90 % and up; amber at any point ahead of the clock — earlier than the tier check, which
 // calls a week tight only 10 points ahead of pace or at 80 % (hooks/tier_check.py).
 const colour = (p, pace) => (p >= 90 ? "#ff5f57" : pace != null && p > pace ? "#febc2e" : "#28c840");
@@ -136,12 +154,33 @@ export const render = ({ output, error }) => {
         const l = a.limits || {};
         // How far through its window a bar is (a week, or a bucket's own span): the tick it is judged against.
         const paceOf = (resets, span = WEEK) => (resets ? Math.max(0, Math.min(100, Math.round((100 * (now - (resets - span))) / span))) : null);
-        // An Orca agent's quota buckets stand in for its week (Antigravity's week is its fuller bucket).
-        const bs = Array.isArray(l.buckets) ? l.buckets.filter((b) => b && b.name) : [];
-        const short = (n) => String(n).replace(/\s+models$/i, "");
-        const bucketResets = bs.length && new Set(bs.map((b) => b.resets)).size === 1 ? [["quota", bs[0].resets]] : bs.map((b) => [short(b.name), b.resets]);
+        // An Orca agent's quota buckets stand in for its week (Antigravity's week is its fuller bucket);
+        // each family's shorter window first, as a Claude card's 5h before its week.
+        // account names each bucket's family and window (bucket_words); an older answer without them, by bucketName
+        const named = (Array.isArray(l.buckets) ? l.buckets.filter((b) => b && b.name) : [])
+          .map((b) => ({ ...b, ...(typeof b.family === "string" ? { family: b.family, win: String(b.win || "") } : bucketName(b.name)) }))
+          .map((b) => ({ ...b, label: b.win ? `${b.family} ${b.win}` : b.family }));
+        const fams = [...new Set(named.map((b) => b.family))];
+        const bs = named.sort((x, y) => fams.indexOf(x.family) - fams.indexOf(y.family) || (x.window_s || 0) - (y.window_s || 0));
+        // One family left: its bars read as a Claude card's ("5h", "week"), the family named on its reset line;
+        // a window word of Orca's own (anything else) keeps the wide label, which fits it.
+        const single = fams.length === 1;
+        const short = (b) => single && ["5h", "week", "month"].includes(b.win);
+        // a 5h bucket stands in for the agent's 5-hour window; without one its own 5h bar stays
+        const five = bs.some((b) => b.win === "5h");
+        const resetsOf = (pairs) => pairs.filter(([, t]) => t).map(([n, t]) => `${n ? n + " " : ""}resets ${until(t)}`).join(" · ");
+        // One reset line per family ("Gemini: 5h resets 14:35 · week resets Fri 17:12"); one line in all when every
+        // bucket resets together (Cursor's month), within two minutes, as account's SAME_RESET judges one.
+        const bucketLines = !bs.length ? []
+          : bs.every((b) => Math.abs((b.resets || 0) - (bs[0].resets || 0)) <= 120) && !bs.some((b) => b.win) ? [resetsOf([["", bs[0].resets]])].filter(Boolean)
+          : fams.map((f) => [f, resetsOf(bs.filter((b) => b.family === f).map((b) => [b.win, b.resets]))]).filter(([, s]) => s).map(([f, s]) => `${f}: ${s}`);
+        // A plan with no 5-hour window at all, as bin/account's no_five_hour judges it, unlike a lost figure.
+        const noFive = a.no_five_hour === true;
         // Any other window Orca reads for it (a month), beside the week, never in its place.
         const ws = Array.isArray(l.windows) ? l.windows.filter((w) => w && w.name) : [];
+        // The windows that are no bucket: a login's 5h and week, an agent's month.
+        const otherLine = [noFive ? "no 5h window" : "", resetsOf((five ? [] : [["5h", l.five_hour_resets]])
+          .concat(bs.length ? [] : [["week", l.seven_day_resets]], ws.map((w) => [w.name, w.resets])))].filter(Boolean).join(" · ");
         return (
           <div key={a.label} className={row}>
             <div className={head}>
@@ -149,19 +188,21 @@ export const render = ({ output, error }) => {
               <span className={dim}>{a.sampled ? ago(a.sampled) : "never sampled"}</span>
             </div>
             {l.five_hour == null && l.seven_day == null && !bs.length && !ws.length ? (
-              <div className={dim}>unknown — {a.why || "no reading"}</div>
+              <div className={dim}>{Array.isArray(l.hidden) && l.hidden.length ? "every bucket hidden here (plumb/widget-hide)" : `unknown — ${a.why || "no reading"}`}</div>
             ) : (
               <div>
                 {/* Only the windows the plan has: Codex prolite has no 5-hour one (bin/account parse_codex). */}
-                {l.five_hour != null && <Bar name="5h" p={l.five_hour} resets={l.five_hour_resets} />}
-                {/* A Claude login always has a 5-hour window: a missing one is a lost reading, said so. */}
-                {l.five_hour == null && a.provider === "claude" && <div className={dim}>5h unknown</div>}
+                {/* An agent with a 5h bucket has its 5h among them (Antigravity's session is its fuller 5h bucket). */}
+                {l.five_hour != null && !five && <Bar name="5h" p={l.five_hour} resets={l.five_hour_resets} />}
+                {/* A Claude plan with a session window and no figure for it is a lost reading, said so. */}
+                {l.five_hour == null && a.provider === "claude" && !noFive && <div className={dim}>5h unknown</div>}
                 {l.seven_day != null && !bs.length && <Bar name="week" p={l.seven_day} resets={l.seven_day_resets} pace={paceOf(l.seven_day_resets)} />}
-                {bs.map((b) => <Bar key={b.name} cls={wide} name={short(b.name)} p={b.percent} resets={b.resets} pace={paceOf(b.resets, b.window_s || WEEK)} />)}
+                {bs.map((b) => <Bar key={b.name} cls={short(b) ? line : wide} name={short(b) ? b.win : b.label} p={b.percent} resets={b.resets} pace={paceOf(b.resets, b.window_s || WEEK)} />)}
                 {ws.map((w) => <Bar key={w.name} name={w.name} p={w.percent} resets={w.resets} pace={paceOf(w.resets, w.window_s || WEEK)} />)}
                 {l.fable_week != null && <Bar name="Fable" p={l.fable_week} resets={l.fable_week_resets} pace={paceOf(l.fable_week_resets)} />}
                 {/* A rolled window has no reset time (bin/account rolled()): name only the ones known. */}
-                <div className={dim}>{[["5h", l.five_hour_resets]].concat(bs.length ? bucketResets : [["week", l.seven_day_resets]], ws.map((w) => [w.name, w.resets])).filter(([, t]) => t).map(([n, t]) => `${n} resets ${until(t)}`).join(" · ")}</div>
+                {bucketLines.map((s) => <div key={s} className={dim}>{s}</div>)}
+                {otherLine ? <div className={dim}>{otherLine}</div> : null}
               </div>
             )}
           </div>

@@ -70,6 +70,7 @@ export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" P
 unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED REGATTA_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
+unset $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p')   # every DISPATCH_* a dispatched run carries, by pattern (AGENTS.md: a fixed list goes stale)
 export CLAUDE_CODE_SESSION_ID=mgr-1
 mkdir -p "$T/home" "$T/sess"
 # The moved HOME drops check.yml's git identity, and the pinned-doc block commits without -c: a runner
@@ -356,6 +357,128 @@ bad "a tier that is a YAML list (a problem, not a traceback)" "block probe: tier
 bad "a principal claude-code block naming its effort" "block remote: a claude-code block runs tier principal-worker at opus xhigh from its brief; name no model or effort" "t = t.replace('    provider: claude-code\n', '    provider: claude-code\n    tier: principal-worker\n    effort: max\n', 1).replace('Tier: Opus 5.5 high', 'Tier: principal-worker')"
 bad "a section that says principal unclearly" "\`## remote\` says principal on its Tier: line but names no principal tier exactly" "t = t.replace('Tier: Opus 5.5 high', 'Tier: principal, Opus xhigh')"
 
+echo "  the block rule's sizes (trim S4): a warning past 1,000 expected code lines or for a chain with no depends_on, never a refusal"
+# blocks of the given ids and sizes (`-` for none), chained with depends_on when $2 is chain
+sizebp() {  # <file> <chain|flat> <id:lines>...
+  local f=$1 how=$2 prev= id n; shift 2
+  { printf -- '---\nship: sizes\nrepo: shop\ncreated: 2026-11-01\nblocks:\n'
+    for b in "$@"; do id=${b%%:*}; n=${b#*:}
+      printf '  - id: %s\n    provider: shell\n    command: "true"\n' "$id"
+      [ "$n" = - ] || printf '    lines: %s\n' "$n"
+      [ "$how" = chain ] && [ -n "$prev" ] && printf '    depends_on: [%s]\n' "$prev"
+      prev=$id
+    done
+    printf -- '---\n'; } > "$f"
+}
+sizebp "$T/size.md" chain big:1200 small:800
+out=$(SW check "$T/size.md" 2>&1); check "$?" "0" "a 1,200-line block: check still exits 0"
+has "$out" "warning: block big: 1,200 expected code lines, past the block rule's 1,000 — split it" "  …and warns of it"
+hasnt "$out" "block small:" "  an 800-line block: no warning"
+has "$out" "big    shell \`true\` · 1,200 lines expected" "  the graph line shows the size"
+hasnt "$out" "none waits on another" "  a chain with depends_on: no chain warning"
+check "$(SW check "$T/size.md" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['warnings']), d['blocks'][0]['lines'])")" "1 1200" "  --json: the warning and the key"
+sizebp "$T/size.md" chain big:1000 small:-
+out=$(SW check "$T/size.md" 2>&1); check "$?" "0" "  exactly 1,000 lines, and a block with no size: valid"
+hasnt "$out" "warning:" "  …and no warning (over 1,000 is the gate's xhigh)"
+sizebp "$T/size.md" flat one:400 two:500
+out=$(SW check "$T/size.md" 2>&1); check "$?" "0" "a chain of two blocks with no depends_on: exit 0"
+has "$out" "warning: 2 work blocks and none waits on another (depends_on, directly or through a decision): nothing orders their work" "  …and a warning"
+sizebp "$T/size.md" flat one:400
+out=$(SW check "$T/size.md" 2>&1); check "$?" "0" "  one block alone: valid"
+hasnt "$out" "none waits on another" "  …and no chain to name"
+printf '  - id: pick\n    kind: decision\n    doc: docs/d.md\n    items: [D1]\n---\n' > "$T/size2.md"; sed '$d' "$T/size.md" >> "$T/size2.md.h"
+cat "$T/size2.md.h" "$T/size2.md" > "$T/size3.md"; rm -f "$T/size2.md" "$T/size2.md.h"
+out=$(SW check "$T/size3.md" 2>&1); check "$?" "0" "  one work block and a decision block: valid"
+hasnt "$out" "none waits on another" "  …and no chain warning: a decision is no block of work"
+sizebp "$T/size.md" flat probe:400 build:900
+sed '$d' "$T/size.md" > "$T/size3.md"; printf '  - id: pick\n    kind: decision\n    doc: docs/d.md\n    items: [D1]\n    depends_on: [probe]\n---\n' >> "$T/size3.md"
+has "$(SW check "$T/size3.md" 2>&1)" "warning: 2 work blocks and none waits on another" "  a decision's own depends_on does not chain the work blocks: build would start beside probe, still warned"
+# through a decision: two work blocks both after one decision start together; probe, then a decision, then build is a chain
+dbp() {  # <file> <build's depends_on> <second's depends_on>
+  printf -- '---\nship: sizes\nrepo: shop\ncreated: 2026-11-01\nblocks:\n  - id: probe\n    provider: shell\n    command: "true"\n    depends_on: [%s]\n  - id: pick\n    kind: decision\n    doc: docs/d.md\n    items: [D1]\n    depends_on: [%s]\n  - id: build\n    provider: shell\n    command: "true"\n    depends_on: [pick]\n---\n' "$2" "$3" > "$1"
+}
+dbp "$T/size3.md" pick ""
+has "$(SW check "$T/size3.md" 2>&1)" "warning: 2 work blocks and none waits on another" "  two work blocks both after one decision start together: warned"
+dbp "$T/size3.md" "" probe
+out=$(SW check "$T/size3.md" 2>&1); check "$?" "0" "  probe, a decision after it, build after the decision: valid"
+hasnt "$out" "none waits on another" "  …a chain through the decision, no warning"
+unset -f dbp
+# probe free, build after a decision that waits on nothing: build is a wave later, yet nothing orders the work
+printf -- '---\nship: sizes\nrepo: shop\ncreated: 2026-11-01\nblocks:\n  - id: probe\n    provider: shell\n    command: "true"\n  - id: pick\n    kind: decision\n    doc: docs/d.md\n    items: [D1]\n  - id: build\n    provider: shell\n    command: "true"\n    depends_on: [pick]\n---\n' > "$T/size3.md"
+out=$(SW check "$T/size3.md" 2>&1); check "$?" "0" "  probe, and build after a decision of its own: valid"
+has "$out" "warning: 2 work blocks and none waits on another (depends_on, directly or through a decision): nothing orders their work" "  …warned in words true where the waves differ"
+sizebp "$T/size.md" chain one:~ two:800
+out=$(SW check "$T/size.md" 2>&1); check "$?" "0" "  lines: ~ (YAML null) is no size, never a refusal"
+check "$(printf '%s\n' "$out" | grep '^  one ')" "  one  shell \`true\`" "  …and its graph line shows none"
+sizebp "$T/size.md" chain big:lots
+out=$(SW check "$T/size.md" 2>&1); check "$?" "2" "a lines: that is no whole number is refused, as every bad key is"
+has "$out" "block big: lines is the block's expected code lines, a whole number" "  …naming it"
+# a Course doc's Action plan: each step's `· lines: <n>`
+cat > "$T/plan-doc.md" <<'EOF'
+# A design — what it is (design, 2026-11-01)
+
+Status: proposed — 0 of 0 decisions answered · action plan: 0 of 4 steps done
+
+```
+- **S9 — a fenced skeleton** · session `worker` | project `shop` | — · after: — · lines: 5000 · status: not started
+```
+
+## Action plan — the steps, in order, with their status
+
+- **S1 — the reader** · session `worker` | project `shop` | — · after: — · lines: ~1,200 · status: not started
+- **S2 — the writer** · session `worker` | project `shop` | — · after: S1 · lines: 800 · status: not started
+- **S3 — a probe** · session `worker` | project `shop` | — · after: — · status: not started
+- **S4 — the rest** · session `worker` | project `shop` | — · after: S3 · lines: many · status: not started
+
+````md
+```
+```
+- **S6 — inside a four-backtick fence** · lines: 7000
+````
+
+---
+
+- **S7 — after a rule, keel's end of the section** · lines: 8000
+
+## Risks — and the check that catches each
+
+- **S5 — not a step** · lines: 9000
+EOF
+out=$(SW check "$T/plan-doc.md" 2>&1); check "$?" "0" "wharf check <doc>: a Course doc's Action plan is read, exit 0"
+has "$out" "4 steps in its Action plan, 2 with expected code lines" "  the steps inside the Action plan only (not a fence, not a later section)"
+has "$out" "warning: step S1: 1,200 expected code lines, past the block rule's 1,000" "  a 1,200-line step warns"
+hasnt "$out" "step S2:" "  an 800-line step does not"
+has "$out" "S3  no size" "  a step with no expected size is listed, not an error"
+has "$out" "step S4 (line 14): lines: 'many' is no plain number of code lines" "  a size that names no number: a warning"
+# the ids, not the output: the doc's path in the first line may hold any letters (mktemp)
+check "$(SW check "$T/plan-doc.md" --json | python3 -c "import json,sys; print(' '.join(s['id'] for s in json.load(sys.stdin)['steps']))")" "S1 S2 S3 S4" \
+  "  only the Action plan's own steps: not a fenced one (S9), one in a four-backtick fence (S6), one past a --- (S7) or a later section (S5)"
+check "$(SW check "$T/plan-doc.md" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['window'], [s['lines'] for s in d['steps']], len(d['warnings']))")" \
+  "[300, 1000] [1200, 800, None, None] 2" "  --json: the window, each step's size, the warnings"
+out=$(SW check "$T/plan-doc.md" --plan cp 2>&1); check "$?" "2" "  --plan on a doc: refused, a plan takes a blueprint"
+for v in 1.2k "1 200" 1,2000 "700 to 1,400" "900 / 1,300"; do
+  sed "s|lines: ~1,200|lines: $v|" "$T/plan-doc.md" > "$T/plan-doc2.md"
+  has "$(SW check "$T/plan-doc2.md" 2>&1)" "step S1 (line 11): lines: '$v' is no plain number" "  lines: $v is no plain number, never read as its first digits"
+done
+sed "s/lines: ~1,200/lines: about 1,200 (tests included)/" "$T/plan-doc.md" > "$T/plan-doc2.md"
+has "$(SW check "$T/plan-doc2.md" 2>&1)" "warning: step S1: 1,200 expected code lines" "  lines: about 1,200 (tests included) reads as 1,200"
+# the window in one place: the architects' body states BLOCK_LINES' numbers, and a move of one without the other fails here
+win=$(python3 -c "import sys; sys.path.insert(0, '$B'); import blueprintlib as b; lo, hi = b.BLOCK_LINES; print('%d–%d|over %s|under %d|past %s' % (lo, hi - 1, format(hi, ','), lo, format(hi, ',')))")
+ARCH="$B/../../wharf/agents/architect.md"
+if [ -f "$ARCH" ]; then
+  body_=$(awk '/^<!-- shared:/{f=1} f' "$ARCH" | tr '\n' ' ' | tr -s ' ')
+  check "${body_:+read}" "read" "the architects' shared body is found below its marker"
+  has "$body_" "inside ${win%%|*} expected code lines" "the architects' body states BLOCK_LINES' window"
+  IFS='|' read -r w_in w_over w_under w_past <<< "$win"
+  has "$body_" "${w_over}, split it" "  …and its split"
+  has "$body_" "${w_under}, merge it" "  …and its merge"
+  has "$body_" "warns on one ${w_past}" "  …and what wharf check warns on"
+else echo "  --   wharf's agents/ not in this checkout: the window's prose case skipped"; fi
+printf '# no plan here\n\nJust prose.\n' > "$T/plain.md"
+out=$(SW check "$T/plain.md" 2>&1); check "$?" "2" "a file with no front matter and no Action plan: refused as before"
+has "$out" "a blueprint starts with a \`---\` front matter" "  …with the blueprint's own words"
+unset -f sizebp
+
 echo "  accept, then a changed file is refused"
 P $SHIP blueprints --id cp > /dev/null
 check "$(SW check "$CF" --plan cp | tail -1)" "plan cp: no digest of demo recorded (wharf check --accept)" "plan chain (now wharf check's shim) with a plan: nothing accepted yet"
@@ -454,7 +577,7 @@ has "$out" "ok       probe   task_p completed" "  a completed block is ok"
 check "$(echo "$out" | grep '^  resolve\|^  ok       pick')" "  ok       pick    gate gate_1 waits on docs/d.md#D1, D2" "  a decision with its gate pending waits while D2 is unanswered"
 has "$out" "stalled  build   dispatch ctx_b1 exited with no worker_done (S1: the tick's)" "  a dispatch Orca calls exited, no worker_done: stalled"
 has "$out" "changed  remote  spec differ from task_r (ready) — re-spec: fail it cancelled, create it again" "  Orca's spec is not the brief: changed"
-has "$out" "start    remote  dispatch claude/buildbox/2026-10-16-remote --on buildbox --account auto" "  a ready claude-code block starts through dispatch --on buildbox"
+has "$out" "start    remote  dispatch claude/buildbox/2026-10-16-remote --pin buildbox --account auto" "  a ready claude-code block starts through dispatch --pin buildbox (a named host: S12's pin)"
 has "$out" "create   launch  task-create --task-title launch --deps build,remote" "  a block Orca lacks: create"
 has "$out" "orphan   —       Orca task task_x (gone-block, pending) is in the Run but no block of the file" "  a Task no block names: orphan"
 has "$out" "ok       probe   plan task as the file says" "  the plan side: a task as declared"
@@ -595,6 +718,23 @@ check "$r" "capped" "  the run cap full: an Orca codex block waits, in the cap's
 out=$(vf env STUB_OWNS=1 STUB_SLOTS_FAIL=1 bash -c "$(declare -f wsr); B='$B' VR='$VR' wsr codex")
 case "$out" in *"run cap did not read"*) r=held;; *) r="$out";; esac
 check "$r" "held" "  a cap that does not read holds it: the tick carries no marker"
+# S6's fifth landing review, item 4: an Orca block starts a worker around dispatch, so `wharf apply` asks the spawn
+# gate as `harness run --runner orca` does — a node session's apply never starts an open repo's block
+WN="$T/s6wnode"; git init -q -b main "$WN"; WN=$(cd "$WN" && pwd -P)
+printf '{"repos": {}, "scopes": {"node": {"confidential": true, "repos": ["%s"]}}}\n' "$WN" > "$T/s6w-repos.json"
+WO="$T/s6wopen"; git init -q -b main "$WO"; printf -- '- physical: none\n' > "$WO/AGENTS.md"; WO=$(cd "$WO" && pwd -P)
+s6w() { (cd "$1" && env -u CLAUDE_UNATTENDED -u REGATTA_UNATTENDED -u CLAUDE_CODE_SESSION_ID WHARF_NO_WEEK=1 CLAUDE_REPOS_JSON="$T/s6w-repos.json" \
+         python3 - "$B/wharf" "$2" "$WO" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+w = SourceFileLoader("wharf_s6", sys.argv[1]).load_module()
+print(w.start_refusal({"meta": {}}, {"raw": {"provider": "orca", "agent": sys.argv[2]}}, sys.argv[3]) or "None")
+PY
+); }
+out=$(s6w "$WN" claude)
+case "$out" in *"refused for good, a run out of a confidential scope"*"a --start from inside a confidential scope"*) r=gated;; *) r="$out";; esac
+check "$r" "gated" "item 4 (S6's fifth review): an Orca block of an open repo, applied from inside a node: refused by the spawn gate"
+check "$(s6w "$WO" claude)" "None" "  the same block applied from an open caller: the start passes"
 # the refusal an apply writes reaches plan.json: Ship.save reloads the plan and copies back only what it
 # names, and dropped mode_refused, so the next tick recorded the run's mode (the follow-ups' landing review)
 mkdir -p "$T/wplans/ms"; echo '{"id": "ms", "tasks": {}}' > "$T/wplans/ms/plan.json"
@@ -975,7 +1115,7 @@ has "$out" "its first compile is an attended \`wharf apply\`" "  says whose it i
 GB="$WR/docs/blueprints/2026-10-17-gated.md"
 out=$(W env CLAUDE_UNATTENDED=dispatch "$WH" apply "$GB" --plan wp); check "$?" "0" "a ship whose blocks may not start: exit 0"
 has "$out" "orca  refuse   o1   refused: a session start is attended only (CLAUDE_UNATTENDED=dispatch)" "  unattended: an Orca start refused"
-has "$out" "orca  refuse   rem  refused: host: buildbox — a claude-code block there starts by \`dispatch --on buildbox\`" "  a claude-code block on another host: dispatch's, not apply's"
+has "$out" "orca  refuse   rem  refused: host: buildbox — a claude-code block there starts by \`dispatch --pin buildbox\`" "  a claude-code block on another host: dispatch's, not apply's"
 has "$out" "orca  refuse   ro   refused: host: buildbox — no Orca environment paired as buildbox" "  an Orca block on an unpaired host: refused, naming the pairing"
 out=$(W env CLAUDE_UNATTENDED=dispatch STUB_ENVS=buildbox "$WH" apply "$GB" --plan wp --once)
 has "$out" "ro   refused: a session start is attended only" "  paired: past the host's gate, to the next one (attended only)"
@@ -1624,6 +1764,194 @@ check "$(yp yp6 "p['blueprints']['ysix']['merge']")" "{'value': 'no', 'why': 'ke
 out=$(Y "$WH" apply --yard "$Y7" --plan yp7 2>&1); check "$?" "0" "a blueprint saying merge: no, sent_by and skipper: scope: laid"
 check "$(yp yp7 "p['blueprints']['yseven']['merge']")" "{'value': 'no', 'why': 'blueprint'}" "  merge no, why blueprint"
 
+echo "  a sent ship's block starts on the branch it was sent on (send-road-start): dispatch, never a second seed"
+# The stubs check what the real tools check (AGENTS.md: a stub that takes any argument hides a refusal).
+# dispatch: a claude/* branch, --repo a checkout, only the flags wharf passes; plain, the branch on origin (its
+# brief is read at fire time); --next, the brief the branch's last commit, as the real one asks. It prints only
+# the plain road's own answers, and writes dispatch's mark (mark_dispatched) where the real one would. pickup
+# seed: refuses a topic open on any branch, here or on origin, as the real one does. Each records its argv and
+# the ship's env.
+cat > "$YD/dispatch" <<'SH'
+#!/bin/bash
+printf '%s | ship=%s task=%s\n' "$*" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-none}}" "${DISPATCH_TASK:-none}" >> "$YD/dispatch.calls"
+br=$1; shift
+case "$br" in claude/*) ;; *) echo "dispatch: BRANCH must be claude/*" >&2; exit 2;; esac
+repo=; next=0
+while [ $# -gt 0 ]; do case "$1" in
+  --repo) repo=$2; shift 2;; --account|--model|--effort) [ -n "${2:-}" ] || exit 2; shift 2;; --next) next=1; shift;;
+  --needs) n=$(printf '%s' "${2:-}" | tr 'A-Z' 'a-z'); [[ $n =~ ^[a-z0-9][a-z0-9._-]{0,39}(,[a-z0-9][a-z0-9._-]{0,39})*$ ]] \
+             || { echo "dispatch: --needs takes lower-case feature names, a,b (wharf-runs/features names each host's)" >&2; exit 2; }; shift 2;;
+  *) echo "dispatch: unknown option $1" >&2; exit 2;; esac; done
+git -C "$repo" rev-parse --git-dir > /dev/null 2>&1 || { echo "dispatch: --repo $repo is no checkout" >&2; exit 2; }
+topic=$(echo "${br##*/}" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-//'); re="^docs/handoff/[0-9]{4}-[0-9]{2}-[0-9]{2}-$topic\.md\$"
+if [ "$next" = 1 ]; then
+  brief=$(git -C "$repo" ls-tree -r --name-only "refs/heads/$br" -- docs/handoff 2>/dev/null | grep -E "$re" | tail -1)
+  [ -n "$brief" ] || { echo "dispatch: no local $br in $repo" >&2; exit 2; }
+  since=$(git -C "$repo" diff --name-only "$(git -C "$repo" log -1 --format=%H "refs/heads/$br" -- "$brief")" "refs/heads/$br" -- . ':!docs/handoff')
+  [ -z "$since" ] || { echo "dispatch: work was committed after $brief ($since)" >&2; exit 2; }
+fi
+git -C "$repo" ls-remote --exit-code origin "$br" > /dev/null 2>&1 || { echo "dispatch: $br is not on origin" >&2; exit 1; }
+mark() { d="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/claude/dispatched"; mkdir -p "$d"; printf '%s yardhost %s\n' "$(date +%s)" "$br" > "$d/$topic"; }
+case "${STUB_DISPATCH:-}" in
+  unread) echo "dispatch: the queue does not read (dispatch-queue exit $(( $$ % 7 + 3 ))) — refused, not scheduled: a one-shot beside an entry it cannot see could run $br twice. End with the WAITING line — the next step waits for a run to end and for the queue to read" >&2; exit 2;;
+  never) echo "dispatch: $br is refused, never queued — end with the WAITING line — the next step waits for a run to end and for a host to meet it" >&2; exit 2;;
+  queued) mark; echo "queued as yardhost:q1 (normal), rank 1: no room on this Mac now — it starts once a slot frees"; exit 0;;
+  nomark) exit 0;;
+  busy) echo "dispatch: $br is queued already (queue entry yardhost:q3), waiting for a slot — the next step waits for a run to end" >&2; exit 2;;
+  fail1) echo "dispatch: launchctl bootstrap failed (plist removed)" >&2; exit 1;;
+  late1) mark; echo "dispatch: a step after the schedule failed" >&2; exit 1;;
+  sig) mark; exit 3;;
+esac
+mark; echo "started from the queue: yardhost:q2 (normal) on this Mac, at once; log /dev/null"
+SH
+cat > "$YD/pickup" <<'SH'
+#!/bin/bash
+printf '%s | ship=%s task=%s\n' "$*" "${DISPATCH_SHIP:-${DISPATCH_PLAN:-none}}" "${DISPATCH_TASK:-none}" >> "$YD/pickup.calls"
+[ "$1" = seed ] || exit 2; topic=$2; shift 2; repo=
+while [ $# -gt 0 ]; do case "$1" in --file) [ -f "$2" ] || exit 2; shift 2;; --repo) repo=$2; shift 2;; --no-blueprint) shift;; --account) shift 2;; *) exit 2;; esac; done
+open=$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/claude refs/remotes/origin/claude | grep -E -- "-$topic\$" | head -1)
+[ -z "$open" ] || { echo "pickup: $topic is already open as ${open#origin/} — pick that up, or choose another topic" >&2; exit 1; }
+b="claude/yardhost/$(date +%F)-$topic"; git -C "$repo" branch "$b" main
+echo "seeded $b in yardrepo — brief docs/handoff/$(date +%F)-$topic.md; pushed"
+echo "  dispatched $b: a fresh session runs it unattended, not a tab"
+SH
+chmod +x "$YD/dispatch" "$YD/pickup"; : > "$YD/dispatch.calls"; : > "$YD/pickup.calls"
+# each apply names --gen 0: a session on the yard rejoins only at the yard's gen (the lease, S4)
+YS() { YH env YD="$YD" WHARF_DISPATCH="$YD/dispatch" WHARF_PICKUP="$YD/pickup" "$@"; }
+# sentbr <topic> <blocks> [<brief front matter>]: what helm send --text leaves on origin — pickup's seed commit (the brief, a blueprint
+# whose block id is the topic), then helm send's own commit of the blueprint as sent, after the brief. Its
+# checkout is a worktree in the scratch dir, so the file it echoes is a committed, pushed blueprint
+sentbr() {
+  local br="claude/testhost/2026-11-01-$1" wt="$YD/sent-$1"
+  gt "$YR" worktree add -q "$wt" -b "$br" main; mkdir -p "$wt/docs/handoff" "$wt/docs/blueprints"
+  { [ -z "${3:-}" ] || printf '%b' "$3"; brief "$1" "do $1" "done" | sed 1d; } > "$wt/docs/handoff/2026-11-01-$1.md"
+  { printf -- '---\nship: %s\nrepo: yardrepo\ncreated: 2026-11-01\nblocks:\n' "$1"; printf "$2"; printf -- '---\n'
+    for id in $(printf "$2" | sed -n 's/^  - id: //p'); do brief "$id" "do $id" "done"; done; } > "$wt/docs/blueprints/2026-11-01-$1.md"
+  gt "$wt" add -A; gt "$wt" commit -qm "Seed: $1"
+  echo "<!-- sent -->" >> "$wt/docs/blueprints/2026-11-01-$1.md"
+  gt "$wt" commit -qam "Send: $1 (helm send)"; gt "$wt" push -q -u origin "$br" 2>/dev/null
+  echo "$wt/docs/blueprints/2026-11-01-$1.md"
+}
+ccblock() { printf '%s' '  - id: '"$1"'\n    provider: claude-code\n'; }
+ledger() { yp "$1" "[(e['state'], e.get('id'), e.get('waited')) for e in p['blueprints']['$2']['ledger'] if e['op'] == 'seed' and e['block'] == '$2']"; }   # <plan> <ship>, its block of the same name
+SJ=$(sentbr sentjob "$(ccblock sentjob)$(ccblock plainjob)")
+SJB=claude/testhost/2026-11-01-sentjob
+has "$(cd "$YR" && YD="$YD" "$YD/dispatch" "$SJB" --repo "$YR" --next 2>&1)" "work was committed after docs/handoff/2026-11-01-sentjob.md" "(the fixture: dispatch --next refuses a sent branch, helm send's commit after its brief: so the yard dispatches it plain)"
+: > "$YD/dispatch.calls"
+out=$(YS "$WH" apply --yard "$SJ" --plan yps --gen 0 2>&1); check "$?" "0" "a sent ship laid on its yard: exit 0"
+has "$out" "sentjob   started $SJB by dispatch, the branch it was sent on (started)" "  its block started by dispatch on the sent branch"
+check "$(grep -c . "$YD/dispatch.calls")" "1" "  one dispatch"
+check "$(head -1 "$YD/dispatch.calls")" "$SJB --repo $YR | ship=yps task=none" "  plain dispatch <branch> --repo, the ship's env (DISPATCH_SHIP, no DISPATCH_TASK)"
+check "$(grep -c '^seed sentjob ' "$YD/pickup.calls")" "0" "  pickup seed never ran for it"
+check "$(yp yps "p['tasks']['sentjob']['seeded_branch'], p['tasks']['sentjob']['branch']")" "$SJB $SJB" "  seeded_branch and branch: the sent branch, which branch() reads back"
+check "$(ledger yps sentjob)" "[('done', '$SJB', None)]" "  one settled seed line naming the branch: started() reads it"
+has "$(Y "$HM" state yps | python3 -c "import json, sys; print([t.get('progress') for t in json.load(sys.stdin)['tasks'] if t['id'] == 'sentjob'])")" "dispatched $SJB, the branch it was sent on" "  the plan says running on it"
+has "$out" "plainjob  seeded and dispatched claude/yardhost/" "a block of the same ship whose id is not the branch's topic: seeded, as before"
+check "$(grep -c "^seed plainjob --file .* --repo $YR --no-blueprint | ship=yps task=none\$" "$YD/pickup.calls")" "1" "  pickup seed <id> --no-blueprint, the ship's env"
+out=$(YS "$WH" apply --yard "$SJ" --plan yps --gen 0 2>&1); check "$?" "0" "the pass again (a rejoin): exit 0"
+has "$out" "sentjob   started already (the ledger)" "  the sent block: started already"
+check "$(grep -c . "$YD/dispatch.calls")/$(grep -c . "$YD/pickup.calls")" "1/1" "  nothing dispatched or seeded twice"
+
+SC=$(sentbr sentwait "$(ccblock sentwait)"); SCB=claude/testhost/2026-11-01-sentwait; : > "$YD/dispatch.calls"
+out=$(YS env STUB_DISPATCH=unread "$WH" apply --yard "$SC" --plan ypc --gen 0 2>&1); check "$?" "0" "dispatch saying the queue does not read: exit 0"
+has "$out" "sentwait  not started: dispatch refused $SCB — dispatch: the queue does not read" "  not started, dispatch's reason said"
+check "$(yp ypc "sorted(set((e['state'], e.get('waited')) for e in p['blueprints']['sentwait']['ledger'] if e['op'] == 'seed'))")" "[('failed', True)]" \
+  "  each line failed, as waited: it spends none of the block's starts"
+for _ in 1 2 3; do YS env STUB_DISPATCH=unread "$WH" apply --yard "$SC" --plan ypc --gen 0 > /dev/null 2>&1; done
+check "$(yp ypc "[(e['state'], e.get('waits', 0) >= 4) for e in p['blueprints']['sentwait']['ledger'] if e['op'] == 'seed']")" "[('failed', True)]" \
+  "  the same wait, pass after pass, its words changing (dispatch's counts): one ledger line, its waits counted"
+hasnt "$(Y "$HM" state ypc | python3 -c "import json, sys; print([t['status'] for t in json.load(sys.stdin)['tasks'] if t['id'] == 'sentwait'])")" "failed" "  three more answers in those words: the block is not failed"
+n0=$(grep -c . "$YD/dispatch.calls")
+out=$(YS env STUB_DISPATCH=queued "$WH" apply --yard "$SC" --plan ypc --gen 0 2>&1)
+has "$out" "sentwait  started $SCB by dispatch, the branch it was sent on (queued as yardhost:q1)" "  the next pass dispatches it again: queued, said"
+check "$(grep -c . "$YD/dispatch.calls")" "$((n0 + 1))" "  one dispatch, and the queue took it…"
+YS "$WH" apply --yard "$SC" --plan ypc --gen 0 > /dev/null 2>&1; check "$(grep -c . "$YD/dispatch.calls")" "$((n0 + 1))" "  …and none on the pass after"
+
+SV=$(sentbr sentnever "$(ccblock sentnever)")
+for _ in 1 2 3; do YS env STUB_DISPATCH=never "$WH" apply --yard "$SV" --plan ypv --gen 0 > /dev/null 2>&1; done
+check "$(yp ypv "sorted(set(e.get('waited') for e in p['blueprints']['sentnever']['ledger'] if e['op'] == 'seed'))")" "[None]" \
+  "\"refused, never queued\" (no host may take it): no wait, each refusal counted"
+has "$(Y "$HM" state ypv | python3 -c "import json, sys; print([t['status'] for t in json.load(sys.stdin)['tasks'] if t['id'] == 'sentnever'])")" "failed" \
+  "  so the block fails once its starts are spent, as any start that keeps failing"
+
+SN=$(sentbr sentnob "$(ccblock sentnob)"); SNB=claude/testhost/2026-11-01-sentnob
+gt "$YD/sent-sentnob" rm -q docs/handoff/2026-11-01-sentnob.md; gt "$YD/sent-sentnob" commit -qm "no brief"
+gt "$YD/sent-sentnob" push -q origin "$SNB" 2>/dev/null; : > "$YD/dispatch.calls"; : > "$YD/pickup.calls"
+out=$(YS "$WH" apply --yard "$SN" --plan ypn2 --gen 0 2>&1)
+has "$out" "sentnob  raised: not started — $SNB is on origin with no docs/handoff/<date>-sentnob.md, the brief dispatch starts it from" "a sent branch with no brief: not started, raised to the skipper"
+SW=$(sentbr sentwork "$(ccblock sentwork)"); SWB=claude/testhost/2026-11-01-sentwork
+echo built > "$YD/sent-sentwork/built.txt"; gt "$YD/sent-sentwork" add -A; gt "$YD/sent-sentwork" commit -qm work; gt "$YD/sent-sentwork" push -q origin "$SWB" 2>/dev/null
+out=$(YS "$WH" apply --yard "$SW" --plan ypw --gen 0 2>&1)
+has "$out" "sentwork  raised: not started — $SWB holds work past its brief (built.txt): not started on it — the skipper decides" "a sent branch that holds work past its brief: not dispatched again, raised"
+check "$(grep -c . "$YD/dispatch.calls")/$(grep -c . "$YD/pickup.calls")" "0/0" "  neither dispatched nor seeded, either one (pickup would refuse the open topic)"
+check "$(yp ypn2 "len([e for e in p['blueprints']['sentnob'].get('ledger') or [] if e.get('op') == 'seed'])")/$(yp ypw "len([e for e in p['blueprints']['sentwork'].get('ledger') or [] if e.get('op') == 'seed'])")" "0/0" "  and no start spent"
+has "$(Y "$HM" state ypw | python3 -c "import json, sys; print([t.get('progress') for t in json.load(sys.stdin)['tasks'] if t['id'] == 'sentwork'])")" "holds work past its brief" "  the plan says why"
+
+SK=$(sentbr sentcut "$(ccblock sentcut)"); SKB=claude/testhost/2026-11-01-sentcut; : > "$YD/dispatch.calls"
+YS env WHARF_CRASH=seed:sentcut "$WH" apply --yard "$SK" --plan ypk --gen 0 > /dev/null 2>&1; check "$?" "9" "a crash after dispatch answered, before its record: exit 9"
+out=$(YS "$WH" apply --yard "$SK" --plan ypk --gen 0 2>&1)
+has "$out" "sentcut  started already (the ledger)" "  the next pass: dispatch's mark names the branch since the line, so it started"
+check "$(grep -c . "$YD/dispatch.calls")/$(yp ypk "p['tasks']['sentcut']['seeded_branch']")" "1/$SKB" "  dispatched once, its branch recorded"
+SM=$(sentbr sentlost "$(ccblock sentlost)"); : > "$YD/dispatch.calls"
+YS env STUB_DISPATCH=nomark WHARF_CRASH=seed:sentlost "$WH" apply --yard "$SM" --plan ypsl --gen 0 > /dev/null 2>&1
+out=$(YS "$WH" apply --yard "$SM" --plan ypsl --gen 0 2>&1)
+has "$out" "sentlost  started claude/testhost/2026-11-01-sentlost by dispatch" "  a cut-off line dispatch marked no start of: failed, and the next pass dispatches it"
+check "$(yp ypsl "[e['state'] for e in p['blueprints']['sentlost']['ledger'] if e['op'] == 'seed']")" "['failed', 'done']" "  (the cut-off line marked failed, then the start)"
+
+echo "  the sent road's other answers: held, refused, marked, raised; --needs; the tick's budget"
+# sentone <topic> <stub> [<brief front matter>]: a one-block sent ship laid on the yard under STUB_DISPATCH, its output
+sentone() { local f; f=$(sentbr "$1" "$(ccblock "$1")" "${3:-}"); YS env STUB_DISPATCH="$2" "$WH" apply --yard "$f" --plan "yp-$1" --gen 0 2>&1; }
+: > "$YD/dispatch.calls"
+has "$(sentone sentbusy busy)" "sentbusy  started claude/testhost/2026-11-01-sentbusy by dispatch, the branch it was sent on (the queue holds it already)" \
+  "an exit 2 naming the branch's queue entry: it holds, a start"
+check "$(ledger yp-sentbusy sentbusy)" "[('done', 'claude/testhost/2026-11-01-sentbusy', None)]" "  settled done"
+has "$(sentone sentfail fail1)" "sentfail  not started: dispatch refused claude/testhost/2026-11-01-sentfail — dispatch: launchctl bootstrap failed" \
+  "an exit 1 with no mark (refused before anything was scheduled): not started"
+check "$(yp yp-sentfail "sorted(set((e['state'], e.get('waited')) for e in p['blueprints']['sentfail']['ledger'] if e['op'] == 'seed'))")" "[('failed', None)]" \
+  "  a failed start, counted (no wait), tried again on the next pass"
+has "$(sentone sentlate late1)" "sentlate  started claude/testhost/2026-11-01-sentlate by dispatch, the branch it was sent on (scheduled: dispatch exited 1 after its mark)" \
+  "an exit 1 after dispatch's mark: it was scheduled, a start — never dispatched twice"
+has "$(sentone sentsig sig)" "sentsig  raised: dispatched claude/testhost/2026-11-01-sentsig, not confirmed started" \
+  "any other exit (a signal): a start, raised to the skipper"
+check "$(ledger yp-sentsig sentsig)" "[('done', 'claude/testhost/2026-11-01-sentsig', None)]" "  settled done: never sent twice"
+sentone sentneed "" '---\nneeds: [GPU, docker]\n---\n' > /dev/null
+has "$(grep '^claude/testhost/2026-11-01-sentneed ' "$YD/dispatch.calls")" "--repo $YR --needs docker,gpu | ship=yp-sentneed" "the brief's needs: line, as pickup reads it: --needs docker,gpu"
+out=$(sentone sentbadneed "" '---\nneeds: gpu!!\n---\n')
+has "$out" "sentbadneed  not started: dispatch refused claude/testhost/2026-11-01-sentbadneed — dispatch: --needs takes lower-case feature names" \
+  "a needs: line that is not names goes on as written, and dispatch refuses it: not started"
+check "$(ledger yp-sentbadneed sentbadneed | cut -c1-23)" "[('failed', None, None)" "  a failed start, counted: no host is guessed for it"
+f=$(sentbr senttask "$(ccblock senttask)")
+YS env DISPATCH_TASK=other-block "$WH" apply --yard "$f" --plan yp-senttask --gen 0 > /dev/null 2>&1
+check "$(grep '^claude/testhost/2026-11-01-senttask ' "$YD/dispatch.calls" | sed 's/.* task=//')" "none" "  a caller that is itself a block (DISPATCH_TASK): the start carries none"
+f=$(sentbr senttick "$(ccblock senttick)")
+out=$(YS env STALLS_DEADLINE=$(( $(date +%s) + 545 )) "$WH" apply --yard "$f" --plan yp-senttick --gen 0 2>&1)
+has "$out" "senttick  started claude/testhost/2026-11-01-senttick by dispatch" "the yard's tick (about 545 s left when wharf begins): a sent block starts"
+f=$(sentbr sentmodel '  - id: sentmodel\n    provider: claude-code\n    model: claude-opus-5-5\n    effort: high\n')
+YS "$WH" apply --yard "$f" --plan yp-sentmodel --gen 0 > /dev/null 2>&1
+has "$(grep '^claude/testhost/2026-11-01-sentmodel ' "$YD/dispatch.calls")" "--model claude-opus-5-5 --effort high" "a block's own model and effort (helm send --text's): passed to dispatch, never only shown"
+f=$(sentbr sentold "$(ccblock sentold)")
+for _ in 1 2 3; do YS env STUB_DISPATCH=fail1 "$WH" apply --yard "$f" --plan yp-sentold --gen 0 > /dev/null 2>&1; done
+has "$(YS "$WH" apply --yard "$f" --plan yp-sentold --gen 0 2>&1)" "sentold  not started: 3 starts failed" "  (the fixture: three counted failures spend a block's starts)"
+python3 - "$YD/plans/yp-sentold/plan.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+for e in p["blueprints"]["sentold"]["ledger"]:
+    if e.get("op") == "seed":
+        e.pop("road", None); e.pop("sent", None)
+        e["error"] = "pickup: sentold is already open as claude/testhost/2026-11-01-sentold — pick that up, or choose another topic"
+json.dump(p, open(sys.argv[1], "w"))
+PY
+has "$(YS "$WH" apply --yard "$f" --plan yp-sentold --gen 0 2>&1)" "sentold  started claude/testhost/2026-11-01-sentold by dispatch" \
+  "the old road's seeds pickup refused for the open topic spend no start: a ship they stalled starts on its branch"
+f=$(sentbr sentmoved "$(ccblock sentmoved)")
+YS env STUB_DISPATCH=unread "$WH" apply --yard "$f" --plan yp-sentmoved --gen 0 > /dev/null 2>&1
+echo built > "$YD/sent-sentmoved/built.txt"; gt "$YD/sent-sentmoved" add -A; gt "$YD/sent-sentmoved" commit -qm checkpoint
+gt "$YD/sent-sentmoved" push -q origin claude/testhost/2026-11-01-sentmoved 2>/dev/null; n0=$(grep -c . "$YD/dispatch.calls")
+out=$(YS "$WH" apply --yard "$f" --plan yp-sentmoved --gen 0 2>&1)
+has "$out" "sentmoved  started claude/testhost/2026-11-01-sentmoved (dispatched before by this ship" \
+  "a branch this ship dispatched before, which a run then committed on (a wait that hid a put): started, never raised"
+check "$(grep -c . "$YD/dispatch.calls")/$(yp yp-sentmoved "p['tasks']['sentmoved']['seeded_branch']")" "$n0/claude/testhost/2026-11-01-sentmoved" "  not dispatched again, its branch recorded"
+
 echo "  the lease (S4): --yard writes plans/<id>/skipper.json at the yard's gen 0; --yard --plan fences a stale --gen"
 ylf() { python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(" ".join(str(r[k]) for k in sys.argv[2:]))' "$YD/plans/$1/skipper.json" "${@:2}"; }
 check "$(ylf yp1 holder gen scope host session)" "yard 0 dock yardhost None" "--yard wrote the lease: the yard holds it at gen 0, for the pin's scope, on the yard"
@@ -1775,7 +2103,7 @@ check "$(printf '%s' "$out" | grep -c 'warning — block if2')" "0" "  the next 
 out=$(Y env CLAUDE_REPOS_JSON="$YD/inyard.json" "$WH" check "$YNR/inflight.md" 2>&1); check "$?" "2" "  a new compile of it (no plan that accepted it): refused, exit 2"
 has "$out" "block if2: host: farhost has no launcher from the yard" "    says so"
 rm -f "$T/config/wharf-runs/ssh"
-unset -f Y YH yp gt ybp shellblock pushed
+unset -f Y YH yp gt ybp shellblock pushed YS sentbr ccblock sentone ylf
 echo "  the on-main reads (skipper-resilience S9): work already on main is never built again"
 # a scratch bare origin (reached through insteadOf, so origin's URL still names a GitHub repo: the PR
 # read needs a slug), the ship's repo cloned from it, and a second clone that plays the sibling

@@ -1,0 +1,5 @@
+# The limits `regatta limit` changes live (modules/regatta/libexec/limit; live-limits, 2026-11-01): see wharf-runs'
+# `limits` for the columns. The week ceiling is a login's (`<login>:<pct>`, `*:` for any login), read by account's
+# ceiling() over the registry's rules.week_max and budgets.json's (a `*:` line only over a row that sets neither); a
+# reserve still judges first.
+lighthouse/week-max  login  -  bin/account week-max {login}

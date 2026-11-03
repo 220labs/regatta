@@ -40,6 +40,11 @@ when the session's claude does (HELM_LISTEN_PARENT, else the nearest `claude` ab
 (HELM_SEND_DIR, else ~/Library/Caches/helm) holds one record per send, send-<plan>.json: the yard,
 its alias, the blocks, the state the sender last saw.
 
+The yard's alias (yard_alias): a named node's peer, and every confidential scope's yard, by the node
+folder's own `ssh` (orca-host's node_peers), never `wharf-runs/ssh`; any other yard by that key or
+bin/harness's peers. In a sandboxed session (SRT_SSH_PROXY_COMMAND) ssh is the one git is given,
+`$GIT_SSH_COMMAND`, run as git runs it (ssh_argv).
+
 Nothing here calls a model. Tests: HARNESS_SSH replaces ssh, HARNESS_HOST names this Mac, a
 HARNESS_PEER_<HOST> line an alias (bin/harness's), HELM_PICKUP the pickup tool. Stdlib only,
 Python 3.9; a blueprint is read through wharf-runs' blueprintlib (PyYAML).
@@ -72,6 +77,7 @@ FORCED = ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_UNATTENDED")
 BLUEPRINT_DIR = "docs/blueprints"
 ENDED_RE = re.compile(r"(^|: )ended: ")
 TOPIC_RE = re.compile(r"^(?!.*-raw$)[a-z0-9][a-z0-9-]{2,39}$")   # bin/pickup's TOPIC_RE
+BRIEF_LINES, BRIEF_CHARS = 60, 4000   # bin/pickup's caps on a seed's brief (brief_caps); test_helm.sh holds them alike
 
 
 class Refused(Exception):
@@ -120,8 +126,24 @@ def machine():
     return os.environ.get("HARNESS_HOST") or helmlib.host()
 
 
-def ssh_bin():
-    return os.environ.get("HARNESS_SSH") or "ssh"
+NO_GIT_SSH = ("a sandboxed session (SRT_SSH_PROXY_COMMAND set) with no GIT_SSH_COMMAND: plain ssh is refused "
+              "there, and the ssh git is given is the one road out")
+
+
+def ssh_argv(alias, command):
+    """The argv that runs COMMAND on ALIAS, or None. HARNESS_SSH first (the tests' stand-in); then, in a
+    sandboxed session (SRT_SSH_PROXY_COMMAND set: plain ssh is refused there, "Operation not permitted"),
+    the ssh git itself is given, run as git runs it — `sh -c '$GIT_SSH_COMMAND "$@"'` — so its ProxyCommand
+    through the sandbox's proxy carries the call (node-road, 2026-11-02), and None when there is no
+    GIT_SSH_COMMAND to run (NO_GIT_SSH); else plain ssh. No shell heredoc: the yard's script goes to
+    ssh's stdin from this process."""
+    opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias, command]
+    if os.environ.get("HARNESS_SSH"):
+        return [os.environ["HARNESS_SSH"]] + opts
+    if os.environ.get("SRT_SSH_PROXY_COMMAND"):
+        gsc = (os.environ.get("GIT_SSH_COMMAND") or "").strip()
+        return ["sh", "-c", gsc + ' "$@"', "helm-send-ssh"] + opts if gsc else None
+    return ["ssh"] + opts
 
 
 def alias_of(yard):
@@ -149,6 +171,96 @@ def alias_of(yard):
     return None
 
 
+_ORCA_HOST = []
+
+
+def orca_host():
+    """wharf-runs' orca-host as a module, loaded once (its node_peers: the one reader of the node folders),
+    or None when it is not here. As orca-host's own _load: spec and exec_module, no bytecode beside it."""
+    if _ORCA_HOST:
+        return _ORCA_HOST[0]
+    h = helmlib.peer("orca-host")
+    if not h:
+        return None
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True   # no __pycache__ beside a bin/ tool (AGENTS.md's trap)
+    path = list(sys.path)   # orca-host puts its own core's hooks/ first; it binds `common` at load, so ours comes back after
+    try:
+        spec = spec_from_loader("orca_host_for_send", SourceFileLoader("orca_host_for_send", str(h)))
+        mod = module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = keep
+        sys.path[:] = path
+    _ORCA_HOST.append(mod)
+    return mod
+
+
+def held_by(c, key, conf):
+    """True when a confidential scope of CONF takes repo KEY, by the core's own rule (scope_of_repo, one scope at a
+    time: entry_takes' absolute paths and globs over any key, which scope_members' literal walk missed; the finish
+    review, 2026-11-03). A confidential scope whose `repos` is no list is held: the fence fails closed."""
+    for name, sc in conf.items():
+        try:
+            if c.scope_of_repo(key, reg={"scopes": {name: sc}})[0]:
+                return True
+        except TypeError:
+            return True
+    return False
+
+
+def yard_alias(scope, yard, key=None, laid=False):
+    """How this Mac reaches SCOPE's YARD over ssh, or Refused. A yard that is a named node's peer
+    (orca-host's node_peers: `<config>/wharf-runs/nodes/<name>/`, peer `<name>-agent`) by that folder's
+    own `ssh` alone, as orca-host's `--on` reaches it; a confidential send's yard only so — never
+    `wharf-runs/ssh`, bin/harness's peers or HARNESS_PEER_*, every one of which other readers share
+    (dispatch --on, berth, autofinish-run, rc-hosts, pickup, hail would place work on the node: the
+    node-pair landing, 2026-10-28). Any other yard by alias_of, as before.
+    One read of the registry judges it all (the fence trap): the yard must still be SCOPE's there (not for a
+    ship already LAID: it stays on the yard it was laid on, whatever the scope's yard became since), and the
+    send is confidential when SCOPE is or when any confidential scope holds the repo KEY (a fence walks
+    every scope: an open glob scope listed first would otherwise hide it). A registry, a node folder or an
+    orca-host that will not read or is not here is a refusal wherever the yard could be a node's (a
+    confidential send, or a yard named `-agent`), never a fallback."""
+    c = common()
+    reg, torn = c.read_registry()
+    if torn:
+        raise Refused("the registry %s does not read: no scope's yard can be told" % c.repos_json())
+    reg = reg or {}
+    sc = (reg.get("scopes") or {}).get(scope)
+    now = sc.get("yard") if isinstance(sc, dict) else None
+    if now != yard and not laid:
+        raise Refused("scope %s's yard read %s, and the registry now says %s: it moved under the send — send it again"
+                      % (scope, yard, now or "none"))
+    conf = c.confidential_scopes(reg=reg)
+    confidential = scope in conf or bool(key and held_by(c, key, conf))
+    if confidential or yard.lower().endswith("-agent"):   # every node's peer is `<name>-agent` (orca-host's NODE_ROLE)
+        try:
+            mod = orca_host()
+            nodes = mod.node_peers() if mod else None
+        except (Exception, SystemExit) as e:   # noqa: BLE001 — OrcaError, a module that will not load, its core missing
+            raise Refused("scope %s's yard %s: the node folders do not read (%s)" % (scope, yard, str(e)[:200] or type(e).__name__))
+        if nodes is None:
+            raise Refused("scope %s's yard %s could be a node's, and wharf-runs' orca-host is not here: its node "
+                          "folder cannot be read" % (scope, yard))
+        node = next((n for n in nodes if str(n.get("peer") or "").lower() == yard.lower()), None)
+        if node:
+            if not node.get("ssh"):
+                raise Refused("scope %s's yard %s is the node %s, whose folder names no ssh (wharf-runs/nodes/%s/ssh: "
+                              "the Host alias this Mac's ssh config gives it)" % (scope, yard, node["folder"], node["folder"]))
+            return node["ssh"]
+        if confidential:
+            raise Refused("scope %s is confidential: its yard %s is reached only by a node folder's own ssh "
+                          "(wharf-runs/nodes/<name>/ssh, peer <name>-agent), and no folder here names it — never "
+                          "wharf-runs/ssh" % (scope if scope in conf else "%s's send of %s (a confidential scope holds it)"
+                                              % (scope, key), yard))
+    alias = alias_of(yard)
+    if not alias:
+        raise Refused("scope %s's yard %s has no ssh alias here (wharf-runs/ssh: %s:<alias>)" % (scope, yard, yard))
+    return alias
+
+
 # The yard's side of every call, read by `sh -s -- <tool> <args>` there: the yard's own tool, found by
 # the yard's own config — the core's module in the checkout the yard's `home` file names (as wharf's
 # REMOTE_WHARF finds it; the overlay's shims went with B14b). ssh
@@ -174,8 +286,9 @@ exec "$w" "$@" </dev/null
 
 def remote(alias, tool, args, timeout=120, capture=True, out=None):
     """(rc, stdout, stderr) of TOOL ARGS on the yard; rc None when ssh did not run or timed out."""
-    argv = [ssh_bin(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias,
-            "sh -s -- " + " ".join(shlex.quote(str(x)) for x in [tool] + list(args))]
+    argv = ssh_argv(alias, "sh -s -- " + " ".join(shlex.quote(str(x)) for x in [tool] + list(args)))
+    if argv is None:
+        return None, "", NO_GIT_SSH
     try:
         if capture:
             r = subprocess.run(argv, input=REMOTE, capture_output=True, text=True, timeout=timeout)
@@ -240,6 +353,21 @@ def write_record(rec):
     tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
     tmp.write_text(json.dumps(rec, indent=1, sort_keys=True))
     tmp.replace(p)
+
+
+def send_dir_writable():
+    """Refused when the send dir takes no file: the record is written after the lay, and a sandbox that refuses
+    the write there would leave a laid ship with no record and no mark, a traceback the sender may send again on
+    (the finish review, 2026-11-03). Asked before anything is seeded, by writing a file, as the record is."""
+    d = send_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / (".probe.%d" % os.getpid())
+        t.write_text("")
+        t.unlink()
+    except OSError as e:
+        raise Refused("the send dir %s takes no file (%s): set HELM_SEND_DIR to a folder this session may write"
+                      % (d, e.strerror or type(e).__name__))
 
 
 def set_state(pid, state):
@@ -476,9 +604,10 @@ def destination(bl, repo, want=None):
     if yard == machine():
         raise Refused("this Mac is scope %s's yard: a send goes from another Mac (here, `wharf apply --yard <file>` "
                       "lays it)" % scope)
-    alias = alias_of(yard)
-    if not alias:
-        raise Refused("scope %s's yard %s has no ssh alias here (wharf-runs/ssh: %s:<alias>)" % (scope, yard, yard))
+    alias = yard_alias(scope, yard, key)
+    if ssh_argv(alias, "") is None:
+        raise Refused(NO_GIT_SSH)
+    send_dir_writable()
     rc, out, err = remote(alias, "helm", ["send", "--status", "--json"], timeout=60)
     if rc in (None, 255):
         raise Refused("ssh %s: the yard %s does not answer (%s)" % (alias, yard, (err or "").strip()[-160:] or "exit %s" % rc), NOT_LAID)
@@ -619,6 +748,14 @@ def from_text(a, root, scope_want=None):
         raise Refused("wharf-runs' pickup is not here: --text cannot seed a branch (install wharf-runs)")
     brief = BRIEF.format(topic=topic, host=machine(), date=time.strftime("%Y-%m-%d"), task=task, tier=a.tier or "worker",
                          sender=sender(), scope=scope)
+    # pickup's caps, judged here before anything is seeded: a brief over them is a ship that can never start
+    # (the first send after the cutover, 2026-11-01, died on the cap), and pickup's own refusal reads as its
+    # failure, not as what to do. Measured as pickup measures it: the text as written, lines newline-trimmed
+    n_lines, n_chars = len(brief.rstrip("\n").splitlines()), len(brief)
+    if n_lines > BRIEF_LINES or n_chars > BRIEF_CHARS:
+        raise Refused("the brief is %d lines, %s characters — over pickup's cap of %d lines or %s characters, so no "
+                      "ship was laid: put the design in docs/ on a branch, and send a short --text that points at it"
+                      % (n_lines, format(n_chars, ","), BRIEF_LINES, format(BRIEF_CHARS, ",")))
     with tempfile.NamedTemporaryFile("w", suffix=".md", prefix="helm-send-", delete=False) as fh:
         fh.write(brief)
         tmp = fh.name
@@ -986,15 +1123,26 @@ def listen(a, parent):
         raise Refused("--listen PLAN [BLOCK]")
     pid, block = a.what[0], (a.what[1] if len(a.what) > 1 else None)
     rec = read_record(pid) or {}
-    alias = rec.get("alias")
+    alias = None
+    if isinstance(rec.get("scope"), str) and isinstance(rec.get("yard"), str) and rec["scope"] and rec["yard"]:
+        # judged again, never trusted from the record: one written before the node road, a scope or a repo
+        # made confidential since or a node folder's ssh changed would keep dialing the old alias. The ship
+        # stays on the yard it was laid on (laid), so a scope's yard moved since is no refusal; a record with
+        # an alias and no scope or yard (by hand, torn) is judged by --scope, as one with none, with the
+        # record's repo still (a confidential repo is never judged open under --scope's name)
+        alias = yard_alias(rec["scope"], rec["yard"], rec.get("repo"), laid=True)
     if not alias:
         if not a.scope:
             raise Refused("no send of %s recorded here (%s): name its scope with --scope" % (pid, record_path(pid)))
         c = common()
+        if c.read_registry()[1]:   # scope_yard reads a torn registry as no scopes: say what is wrong, not "no yard"
+            raise Refused("the registry %s does not read: no scope's yard can be told" % c.repos_json())
         yard = c.scope_yard(a.scope)
-        alias = alias_of(yard) if yard else None
-        if not alias:
-            raise Refused("scope %s has no yard this Mac reaches (scopes set %s --yard HOST; wharf-runs/ssh)" % (a.scope, a.scope))
+        if not yard:
+            raise Refused("scope %s has no yard (scopes set %s --yard HOST)" % (a.scope, a.scope))
+        alias = yard_alias(a.scope, yard, rec.get("repo"))
+    if ssh_argv(alias, "") is None:   # a condition no later pull clears: said once, never a pull that waits
+        raise Refused(NO_GIT_SSH)
     if block is None and len(rec.get("blocks") or []) == 1:
         block = rec["blocks"][0]
     pf = pid_path(pid, block)

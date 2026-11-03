@@ -13,7 +13,8 @@
 #
 # Environment (the tests use it, so they never touch the real launchd):
 #   HELM_LAUNCH_DIR  where the plist goes            (default ~/Library/LaunchAgents)
-#   HELM_LAUNCHCTL   the launchctl to call          (default launchctl)
+#   HELM_LAUNCHCTL   the launchctl to call          (default launchctl on a Mac; elsewhere wharf-runs'
+#                    systemd-launchctl beside this module, the plist loaded as a user timer, as dispatch's are)
 #   HELM_LABEL       the job's label                 (default dev.regatta.helm.ask-poll)
 #   HELM_LOG         the job's log file              (default ask-poll.log in the core's log dir)
 # An overlay that had the job under its own label passes that label and log, so the job is
@@ -28,7 +29,13 @@ common=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev
   && job="$(dirname "$common")/modules/helm"
 label=${HELM_LABEL:-dev.regatta.helm.ask-poll}
 la=${HELM_LAUNCH_DIR:-$HOME/Library/LaunchAgents}
-lc=${HELM_LAUNCHCTL:-launchctl}
+case "$(uname -s)" in Darwin) dlc=launchctl ;; *)
+  # wherever wharf-runs is (the core's tool(), as skipperlib finds it: a plugin install too), else beside this module
+  shim=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib; print(helmlib.peer("systemd-launchctl") or "")' "$here/bin" 2>/dev/null || true)
+  [ -x "$shim" ] || shim="$(dirname "$job")/wharf-runs/bin/systemd-launchctl"
+  if [ -x "$shim" ]; then dlc=$shim; else dlc=launchctl; fi ;;
+esac
+lc=${HELM_LAUNCHCTL:-$dlc}
 uid=$(id -u)
 plist="$la/$label.plist"
 

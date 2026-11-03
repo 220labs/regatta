@@ -19,8 +19,9 @@ What is read:
                      (bin/harness_adapters/claude_code.py) — nothing of Claude's is read here
     autofinished     <common git dir>/claude/autofinished of each repo in repos.json cloned here,
                      with the stopped worktree's autofinish.json (the laptop's only: the build box
-                     is disarmed for launch, and a landing the laptop sends there writes its end
-                     here too — autofinish-run's Where — so a launch stalls only here)
+                     is disarmed for launch, and a finish this Mac put that another host ran has its
+                     end written here by this Mac's queue sweep — dispatch-queue's tomb_line — so a
+                     launch stalls only here)
     the plan store   helmlib.state() of every plan on this Mac (S7)
     ask poll's cache ~/Library/Caches/ask/asks.json: a WAITING line whose branch holds an open D-item
                      is already an ask (`asks N`), never also a stall (launch review, S6)
@@ -93,9 +94,11 @@ S7_QUIET = 30 * 60      # a ready task nobody reported on for this long (S7)
 TEXT_LINE = 160         # an evidence line's length
 GUARDED = helmlib.GUARDED
 
-# autofinished's stop text that means the network or sleep, anchored at its start (R4: a WAITING
-# line that quotes an API error must not match). "Not logged in" is a person's (S5, auth-required).
-NET_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNREFUSED\b)")
+# autofinished's stop text that means the network, sleep or a login's usage limit, anchored at its start
+# (R4: a WAITING line that quotes an API error must not match); a limit is the login's, and the relaunch
+# picks a login afresh (only the named windows the pick judges: autofinish-run's S4_RE comment). "Not logged in"
+# is a person's (S5, auth-required).
+NET_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNREFUSED\b|You(?:'|’)ve hit your (?:5-hour |weekly |session )limit\b)")
 LOGIN_RE = re.compile(r"Not logged in|/login\b|OAuth token|authentication_error", re.I)
 # dispatch's own words (bin/dispatch): the run-cap refusal a `--next` ends on (S2), and deep()'s
 # depth line (S6, never retried)
@@ -124,7 +127,7 @@ CANARY_KEY_RE = re.compile(r"^canary ([^:\s]+):\s*(.*)$", re.S)
 # a raise to the ship's live skipper: written `skipper` since rename S5, `manager` read forever (stalls.jsonl)
 RAISE_TO_SKIPPER = ("skipper", "manager")
 DISPATCH_KEYS = ("repo", "wt", "model", "effort", "yolo", "pin", "manager", "manager_host", "manager_account",
-                 "plan", "plan_space")
+                 "plan", "plan_space", "arm")   # arm: the builder rotation's draw (dispatch's), which a retry carries on
 REPLY_CHARS = 1500      # of an unsure run's last reply, for B3's classifier (never a guarded repo's)
 SUGGESTED = {
     "retry": "re-dispatch once, fresh from the brief, with a note (A1)",
@@ -616,6 +619,16 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
         skipper = st.get("manager")
 
         if reason.startswith("max lifetime"):
+            # what the cap cut (dispatch-rc's cut_at_cap): a check whose verdict nobody read, a login out of room
+            cut = st.get("cut") if isinstance(st.get("cut"), dict) else {}
+            for c in cut.get("checks") or []:
+                if isinstance(c, dict):
+                    ev.append("cut its check pid %s%s" % (c.get("pid"), ", out %s" % c["out"] if c.get("out") else ""))
+            for c in cut.get("checks_done") or []:
+                if isinstance(c, dict):
+                    ev.append("cut before reading its check pid %s%s" % (c.get("pid"), ", out %s" % c["out"] if c.get("out") else ""))
+            if cut.get("limit"):
+                ev.append("cut at a usage limit: %s" % cut["limit"])
             stalls.append(_stall("S3", host, st, name, "max lifetime", ev, now, since))
             continue
         if not ended and alive:
@@ -794,12 +807,12 @@ def judge_launches(host, live_branches, now):
                     stalls.append(_stall("S5", host, st, None, "S4 stop, but the tip moved since (%s → %s)" % (prev["tip"][:7], tip[:7]),
                                          ev, now, since, **kw))
                 else:
-                    stalls.append(_stall("S4", host, st, None, "stopped: the network or sleep", ev + ["worktree %s" % wt],
+                    stalls.append(_stall("S4", host, st, None, "stopped: the network, sleep or a usage limit", ev + ["worktree %s" % wt],
                                          now, since, worktree=wt, by=(prev or {}).get("by"),
                                          af_rule=(prev or {}).get("rule"), **kw))
             else:
                 rule = "login" if LOGIN_RE.search(text) else "WAITING line" if "WAITING FOR YOU" in text else \
-                    "gate %s" % gate if re.match(r"^G\d+$", gate) else "stopped mid-work (%s)" % gate
+                    "gate %s" % gate if re.match(r"^G\d+r?$", gate) else "stopped mid-work (%s)" % gate
                 stalls.append(_stall("S5", host, st, None, rule, ev, now, since, **kw))
     return stalls, notes
 
@@ -1242,7 +1255,7 @@ def judge_codex(host, now, read=None):
 # ---------------------------------------------------------------------------- all of it
 
 TITLES = {"S1": "gone %s", "S2": "next step refused by the run cap", "S3": "ended at max lifetime",
-          "S4": "launch stopped by the network", "S5": "launch stopped", "S6": "waiting on the owner",
+          "S4": "launch stopped by the network, sleep or a usage limit", "S5": "launch stopped", "S6": "waiting on the owner",
           "S7": "ready, nobody started it", WONT_START: "(%d failed starts in a row)", CANARY_DEAD: "(the canary fails)"}
 
 

@@ -1543,7 +1543,7 @@ def trim_line(c):
         # path outside this Mac's PROJECTS cannot be fenced, so it is not named.
         key = d.get("key") or d.get("repo") or "/"
         try:
-            if os.path.isabs(key) and common.repo_key(key) == key:
+            if os.path.isabs(key) and os.path.isabs(common.repo_key(key) or "/"):   # still a path: not under this Mac's PROJECTS
                 raise tl.Refused("a path this Mac cannot relate to its registry")
             tl.fence(Path(key), common)
         except tl.Refused:
@@ -1894,6 +1894,8 @@ def gate_records(c):
                 continue  # written before S-E (2026-10-05): no size, no models
             if "error" in d["models"]:
                 continue  # transcripts unreadable: who built it is unknown, so it joins neither group
+            if d.get("phase") == "build":
+                continue  # a build round's own review (build-review): the rate is the landing's gate (docs/finish-second-review-2026-11-02.md)
             k = (d.get("project") or project_of(d.get("repo")), d.get("branch"))
             if k not in last or (d.get("ts") or "") >= (last[k].get("ts") or ""):
                 last[k] = d

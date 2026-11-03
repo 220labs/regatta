@@ -575,4 +575,31 @@ echo "repos --branches: the fence (knowledge-layers S4)"
   exit $f
 ) || fails=$((fails+1))
 
+# ---- the pre-push template: its verdicts, under every sh it meets, and no heredoc (node-road) ----
+# macOS's /bin/sh (bash 3.2) writes a heredoc to a temp file; in a sandboxed session none can be made, and
+# the old `done <<EOF` loop never ran, so the guard passed every push. The template reads its refs from a pipe.
+(
+  f=0
+  ck() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; f=$((f+1)); fi; }
+  H="$B/../templates/code/git-hooks/pre-push"
+  z=0000000000000000000000000000000000000000; a=1111111111111111111111111111111111111111
+  ck "$(grep -c '<<' "$H")" "0" "pre-push: no heredoc (a temp file a sandbox cannot make)"
+  for SH in sh bash "bash --posix" dash "busybox sh"; do
+    command -v "${SH%% *}" > /dev/null || continue
+    run() { printf "$1" | env -u GIT_PUSH_OK -u VSCODE_GIT_COMMAND ${2:+VSCODE_GIT_COMMAND=$2} $SH "$H" 2>"$T/pp.err"; echo $?; }
+    ck "$(run "refs/heads/claude/x $a refs/heads/claude/x $z\n")" "0" "$SH: a claude/* branch passes"
+    ck "$(run '')" "0" "$SH: nothing pushed passes"
+    ck "$(run "refs/heads/claude/x $a refs/heads/main $z\nrefs/heads/y $z refs/heads/y $a\n")" "1" "$SH: main and a deletion refused"
+    ck "$(sed -n '/^Not allowed here:/,/^Allowed/p' "$T/pp.err" | sed -n '2,3p' | tr '\n' '|')" "  refs/heads/main|  refs/heads/y (deletion)|" "$SH:   each named"
+    ck "$(run "refs/heads/claude/x $a refs/heads/main $z\n" push)" "1" "$SH: Sync landing a claude/* branch on main refused"
+    ck "$(grep -c '^  refs/heads/claude/x -> refs/heads/main$' "$T/pp.err")" "1" "$SH:   naming the ref"
+    ck "$(run "refs/heads/claude/x $a refs/heads/claude/x $z\n" push)" "0" "$SH: Sync of a claude/* branch onto itself passes"
+  done
+  # the road the change exists for: a loop that never reaches its sentinel (here: an echo that prints nothing) refuses
+  out=$(printf "refs/heads/claude/x $a refs/heads/claude/x $z\n" | env -u GIT_PUSH_OK -u VSCODE_GIT_COMMAND sh -c 'echo() { :; }; . "$0"' "$H" 2>&1); rc=$?
+  ck "$rc" "1" "a loop that does not finish refuses the push (fails closed)"
+  ck "$(printf '%s\n' "$out" | grep -c '^  (the refs to push could not be read: refused)$')" "1" "  saying the refs could not be read"
+  exit $f
+) || fails=$((fails+1))
+
 [ "$fails" -eq 0 ] && echo "test_repos: all passed" || { echo "test_repos: $fails failed"; exit 1; }

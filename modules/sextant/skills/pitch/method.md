@@ -175,7 +175,7 @@ runs the same check through the template in [config.md](config.md), section 13.
 | `single.external` | a single-file deck with any absolute or protocol-relative URL or network API |
 | `single.authoring-marker` | a `//` comment inside a slide template or data string; an HTML comment inside a data string; a script the scan cannot pair |
 | `claims.must-appear` | a pinned phrase missing from the document or from one of its renders; each deck reads its own list |
-| `claims.retired` | a retired claim reappearing in any Markdown or HTML file under the root |
+| `claims.retired` | a retired claim reappearing in any file `retired_scan` reads (Markdown and HTML under the root by default); a scan that reads no file; an empty `retired` (only where `require_retired` is `true`, an opt-in) |
 | `claims.table` | a render whose document has no pinned phrases (when `require_pins`), or a pin entry whose renders are gone |
 | `root.orphan` | an HTML file or a deck folder that no document pairs with, so nothing checks it |
 | `root.vacuous` | a root where no document has any render, so every check would pass by finding nothing |

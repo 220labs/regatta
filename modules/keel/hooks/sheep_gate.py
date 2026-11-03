@@ -57,6 +57,12 @@ file at Stop, so a non-private session's own words *about* the vault content lea
 for secrets only. A session that `cd`s into the vault stops reporting from that event on;
 what it sent before stays sent — `sheep forget-private` is the deletion path.
 
+A council arm sends nothing either (wharf's bin/council): an event whose hook runs with
+REGATTA_COUNCIL_ARM set, or whose folder lies under a council run dir (its `.council-run` marker): the
+arm's copy may hold a guarded home's text under /private/tmp, where no path rule here sees it (the
+council's landing review, 2026-10-28; latent while sessionpipe enables claude-code alone, whose council
+arm runs with every hook off).
+
 Fails closed: stdin that is not a JSON object sends nothing, nor does any event while the
 confidential scopes cannot be read, or the overlay's `regatta/guarded` cannot. Exit code always 0.
 Tests: hooks/test_hooks.sh, "sheep".
@@ -64,6 +70,7 @@ Tests: hooks/test_hooks.sh, "sheep".
 import functools
 import json
 import os
+import stat
 import re
 import subprocess
 import sys
@@ -280,6 +287,54 @@ def places(name, event):
     return [event["cwd"] if isinstance(event.get("cwd"), str) else os.getcwd()]
 
 
+COUNCIL_MARKER = ".council-run"   # only where no core is found: the core's common.COUNCIL_MARKER is the name
+
+
+@functools.lru_cache(maxsize=None)
+def council_marker():
+    """The council's run-dir marker: the core's common.COUNCIL_MARKER (one home, the council's third landing
+    review's finding 24), else COUNCIL_MARKER when this keel has no core beside it. keel.sh checks the two agree."""
+    try:
+        lib = str(Path(__file__).resolve().parent.parent / "lib")
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        import find_core
+        hooks = next((str(c) for c in find_core.candidates() if (c / "common.py").is_file()), None)
+        if hooks:
+            if hooks not in sys.path:
+                sys.path.insert(0, hooks)
+            import common
+            return getattr(common, "COUNCIL_MARKER", COUNCIL_MARKER)
+    except Exception:   # noqa: BLE001 — a core that does not import: the name it has always had
+        pass
+    return COUNCIL_MARKER
+
+
+def council_arm(folders):
+    """True for an event of a council arm: the variable bin/council's arm_env sets, or a folder at or under
+    a dir holding its marker (council_marker(); the module docstring) that is a run dir as council makes one:
+    this account's, closed to others (0700), the marker its own too — as the core's fence.box_why judges it. A
+    stray marker elsewhere (another account's, a world-writable scratch root) silences nothing (round 6)."""
+    if os.environ.get("REGATTA_COUNCIL_ARM"):
+        return True
+    marker = council_marker()
+    uid = os.getuid()
+    for f in folders:
+        d = os.path.realpath(f) if isinstance(f, str) and f else None
+        while d:
+            m = os.path.join(d, marker)
+            try:
+                st, sm = os.stat(d), os.lstat(m)
+            except OSError:
+                st = sm = None
+            if st is not None and stat.S_ISREG(sm.st_mode) and st.st_uid == uid and sm.st_uid == uid \
+                    and not st.st_mode & 0o077:
+                return True
+            up = os.path.dirname(d)
+            d = None if up == d else up
+    return False
+
+
 def main(argv, data):
     try:
         event = json.loads(data or b"null")
@@ -291,6 +346,8 @@ def main(argv, data):
         return
     name = harness(argv)
     transcript = event.get("transcript_path") if name == "claude-code" else None
+    if council_arm(places(name, event)):
+        return
     if any(private_reason(p) for p in places(name, event)) \
             or private_reason(None, transcript, os.environ.get("CLAUDE_PROJECT_DIR")) \
             or _text_reason(data):

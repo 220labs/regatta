@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `knowledge-home init` on an existing anchor names a `dreams/` missing from its `in_place`, with the exact
+  edit, and `check` says it as a note: aurora's scope-pass is not ready without it, and its message pointed at
+  an init that said all was well (Evolve S2's landing review, finding 15).
 - `knowledge-commit` never ends a rebase it did not start: a rebase, merge, cherry-pick or revert open
   in the repo or the worktree refuses either form before it commits, and a failed rebase of its own is
   aborted only when its orig-head is the HEAD the run started from. Its push step's `rebase --abort`

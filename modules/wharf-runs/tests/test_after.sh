@@ -3,14 +3,13 @@
 # proves a predecessor on origin/<main> with every refusal of AGENTS.md's vacuous-proof trap; `--after` in the
 # entry, the claim that skips it until the predecessor landed (one case lands it in a bare-origin fixture and
 # proves the waiting entry is claimed only after), the cards for a predecessor that will not land, the poll's
-# reuse of a young hold, the fired run's merge of origin/main; and landings in the queue — `dispatch --start`'s
-# /finish with no room waiting in queue-local/_land, ranked above builds by its kind, claimed for its own process,
-# and autofinish-run's `queued` verdict. A suite of its own, apart from test_queue.sh, test_priority.sh and
+# reuse of a young hold, the fired run's merge of origin/main (a finish in the queue: test_finish_queue.sh, since
+# finish-as-task). A suite of its own, apart from test_queue.sh, test_priority.sh and
 # test_dispatch.sh, so no two steps edit one file's tail. Scratch HOME, bare repos as origin and the queue's home,
 # a stand-in launchctl; no launchd job, session or network is touched. Every name is synthetic.
 #   bash modules/wharf-runs/tests/test_after.sh
 set -u
-unset WEEKLY_RUN CLAUDE_UNATTENDED CLAUDECODE CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME AUTOFINISH_CALLER_UNATTENDED
+unset WEEKLY_RUN REGATTA_UNATTENDED CLAUDE_UNATTENDED CLAUDECODE CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR XPC_SERVICE_NAME AUTOFINISH_CALLER_UNATTENDED
 unset $(compgen -v | grep '^DISPATCH_')   # every DISPATCH_* a run carries (AGENTS.md: a fixed list goes stale)
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -72,7 +71,6 @@ d = json.load(sys.stdin)
 print(" ".join(json.dumps(d.get(k)) if isinstance(d.get(k), (list, dict)) else str(d.get(k)) for k in sys.argv[1:]))
 PY
 qget() { local k=$1; shift; "${QGIT[@]}" show "refs/regatta/queue:queue/$k.json" 2>/dev/null | python3 "$T/qget.py" "$@" 2>/dev/null; }
-lget() { local k=$1; shift; python3 "$T/qget.py" "$@" < "$HL/Caches/run-seed/queue-local/_land/$k.json" 2>/dev/null; }
 qreset() {
   "${QGIT[@]}" update-ref -d refs/regatta/queue 2>/dev/null
   rm_own "$HL/Caches/run-seed/queue" "$HL/Caches/run-seed/queue-local" "$HL/Logs/claude-weekly/run-seed-runs"
@@ -243,86 +241,6 @@ has "$T/err" "--after $BR-zeta has not landed" "  naming the brief's predecessor
 has "$T/err" "the next step waits for a run to end" "  in the cap's waiting words"
 mv "$T/queue-repo.off" "$REGATTA_CONFIG/wharf-runs/queue-repo"
 
-echo "landings in the queue: dispatch --start's /finish with no room waits in queue-local/_land, above builds"
-qreset
-sleep 300 & W=$!
-python3 "$QB" land --repo "$T/repo" --branch "$BR-ship" --topic finish-ship --pid "$W" "${QC[@]}" > "$T/out"; check "$?" "0" "land: a landing entry"
-check "$(lget repo--ship kind host state waiter_pid)" "landing laptop queued $W" "  of kind landing, pinned here, naming its waiting process"
-check "$(lget repo--ship args env)" "[] {}" "  and carrying nothing of its run: no flag, no environment"
-enq hi --priority high > /dev/null; enq lo > /dev/null
-python3 "$QB" list --json "${QC[@]}" > "$T/list"
-check "$(python3 -c 'import json,sys; print(" ".join(e["topic"] for e in json.load(open(sys.argv[1]))["entries"] if e["state"] == "queued"))' "$T/list")" \
-  "finish-ship hi lo" "  ranked above a high build and a normal one, by its kind"
-fenq_dir="$HL/Caches/run-seed/force"; mkdir -p "$fenq_dir"; : > "$fenq_dir/s-suite"
-CLAUDE_CODE_SESSION_ID=s-suite enq fo --priority force > /dev/null
-python3 "$QB" list --json "${QC[@]}" > "$T/list"
-check "$(python3 -c 'import json,sys; print([e["topic"] for e in json.load(open(sys.argv[1]))["entries"] if e["state"] == "queued"][:2])' "$T/list")" \
-  "['fo', 'finish-ship']" "  below force, the owner's word for one run"
-python3 "$QB" cancel --repo "$T/repo" --branch "$BR-fo" "${QC[@]}" > /dev/null
-python3 "$QB" claim --cap 1 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > "$T/out"
-check "$(lget repo--ship state) $(qget repo--hi state) $(qget repo--lo state)" "claimed queued queued" "one free slot: the claim takes the landing, ahead of the builds"
-check "$(ls "$LA" | grep -c finish-ship)" "0" "  and starts no job for it: its own dispatch --start runs it"
-check "$(cat "$HL/Caches/run-seed/queue/claims/"*_land*.json | python3 "$T/qget.py" pid label)" "$W landing.$W" "  its reservation is held for that process"
-python3 "$QB" land-wait "local=_land:repo--ship" --pid "$W" --for 2 "${QC[@]}" > /dev/null; check "$?" "0" "land-wait: 0 once this host claimed it for the process"
-python3 "$QB" started "local=_land:repo--ship" --label "landing.$W" --session s-land "${QC[@]}" > /dev/null
-check "$([ -e "$HL/Caches/run-seed/queue-local/_land/repo--ship.json" ] && echo kept || echo gone)" "gone" "started: its record holds the slot now, the entry goes"
-kill "$W" 2>/dev/null; wait "$W" 2>/dev/null
-sleep 300 & W=$!
-python3 "$QB" land --repo "$T/repo" --branch "$BR-dead" --pid "$W" "${QC[@]}" > /dev/null
-kill "$W" 2>/dev/null; wait "$W" 2>/dev/null
-python3 "$QB" claim "${QC[@]}" > /dev/null
-check "$([ -e "$HL/Caches/run-seed/queue-local/_land/repo--dead.json" ] && echo kept || echo gone)" "gone" "its dispatch --start gone: the claim takes the entry off, no slot claimed for nobody"
-has "$QL" '"event": "landing-gone"' "  logged"
-sleep 300 & W=$!
-python3 "$QB" land --repo "$T/repo" --branch "$BR-waits" --pid "$W" "${QC[@]}" > /dev/null
-( sleep 1; kill "$W" 2>/dev/null ) &
-DISPATCH_LAND_POLL=0.2 python3 "$QB" land-wait "local=_land:repo--waits" --pid "$W" --for 20 "${QC[@]}" > /dev/null; check "$?" "3" "land-wait: 3 once its own process is gone (a TERM bash defers past it)"
-{ wait "$W"; } 2>/dev/null
-qreset
-eval "$(sed -n '/^is_landing() {/,/^}/p' "$B/dispatch")"
-eval "$(sed -n '/^land_queue() {/,/^}/p' "$B/dispatch")"
-( branch="$BR-ship"; lprompt="/finish $BR-ship --unattended --dnd --merge --from=buildbox"; is_landing && echo yes || echo no
-  lprompt="/finish $BR-other --unattended"; is_landing && echo yes || echo no
-  lprompt="/finish $BR-ship"; is_landing && echo yes || echo no
-  lprompt="/finish $BR-ship --unattended and then build all of it"; is_landing && echo yes || echo no
-  lprompt="do something else"; is_landing && echo yes || echo no
-  branch="main"; lprompt="/finish main --unattended"; is_landing && echo yes || echo no ) > "$T/out"
-check "$(tr '\n' ' ' < "$T/out")" "yes no no no no no " "is_landing: autofinish-run's finish prompt for the worktree's own claude/* branch, word for word — no flag, no other text"
-( here="$(dirname "$B")"; Q="$QB"; repo="$T/repo"; branch="$BR-ship"; topic="finish-ship"; max_runs=1; landq=""; lsid=s-land
-  qctx=(--host laptop --cap 1 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch")
-  take_lock() { :; }; drop_lock() { :; }; qreserved() { echo 0; }
-  ( sleep 2; python3 "$QB" claim --cap 1 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null ) &
-  DISPATCH_LAND_POLL=0.3 land_queue "1 other runs are busy"; echo "rc=$? landq=$landq"; wait ) > "$T/out" 2>&1
-has "$T/out" "queued as local=_land:repo--ship (a landing), session s-land, rank 1: 1 other runs are busy" "land_queue: the queued line autofinish-run reads, naming its session"
-has "$T/out" "== the landing's claim: local=_land:repo--ship, a slot on this Mac" "  then the claim, the slot its own"
-has "$T/out" "rc=0 landq=local=_land:repo--ship" "  returning with the start lock held, its queue id kept for the record's queue="
-
-echo "autofinish-run: the queued verdict (night landings' finding 1, built on #281's)"
-cat > "$T/af.py" <<'PY'
-import importlib.util, io, sys, types
-from importlib.machinery import SourceFileLoader
-ld = SourceFileLoader("afr", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("afr", ld)); ld.exec_module(m)
-p = sys.argv[2]
-open(p, "w").write("== start\nqueued as local=_land:repo--ship (a landing), session other, rank 1: a sibling repo's landing of the topic\n")
-print(m.log_verdict(p, 0, "abc"))
-open(p, "a").write("queued as local=_land:repo--ship (a landing), session abc, rank 1: 3 other runs are busy — it starts at the first free slot\n")
-print(m.log_verdict(p, 0, "abc")[0])
-open(p, "a").write("== claude 123, session abc, screen s\n")
-print(m.log_verdict(p, 0, "abc")[0])
-t = types.SimpleNamespace(window="finish · ship")
-out = io.StringIO(); old = sys.stdout; sys.stdout = out
-rc = m.report_verdict(t, "queued", "queued as local=_land:repo--ship (a landing), session abc, rank 1: busy", 9, "state s; log l", "started: x")
-sys.stdout = old
-print(rc, out.getvalue().strip())
-print(m.peer_verdict("abc", {"ticket": {"session": "abc", "rc": 0, "said": "queued on buildbox: local=_land:repo--ship (a landing)"}, "state": {}}))
-PY
-python3 "$T/af.py" "$B/autofinish-run" "$T/af.log" > "$T/out" 2>&1
-check "$(sed -n 1,3p "$T/out" | tr '\n' ' ')" "None queued started " "log_verdict: a sibling's queued line is no verdict; this session's is queued; its later header, started"
-has "$T/out" '0 queued: local=_land:repo--ship (a landing), rank 1: busy — window and Remote Control "finish · ship" once it starts; state s; log l' \
-  "report_verdict: queued on stdout, exit 0 — every caller reads the landing as in hand"
-has "$T/out" "('queued', 'local=_land:repo--ship (a landing)')" "peer_verdict: the peer's queued line, its prefix dropped"
-check "$(grep -c 'refresh_lock(t.state_dir, sid, t.branch)' "$B/autofinish-run")" "2" "the waiter refreshes the worktree's lock while the queue holds the landing"
-
 echo "the S9 landing review's cases"
 cat > "$T/sticky.py" <<'PY'
 import importlib.util, sys, types
@@ -342,16 +260,6 @@ enq both --after "$BR-two-a" --after "$BR-two-b" > /dev/null
 python3 "$QB" claim "${QC[@]}" > /dev/null; python3 "$QB" list "${QC[@]}" > "$T/out"
 has "$T/out" "after $BR-two-a (waiting not on origin/main yet" "two predecessors: the row names the first's hold"
 has "$T/out" "after $BR-two-b (waiting not on origin/main yet" "  and the second's, never \"proved\" for a branch that still holds"
-qreset
-sleep 300 & W=$!
-python3 "$QB" land --repo "$T/repo" --branch "$BR-sib" --pid "$W" "${QC[@]}" > /dev/null
-python3 "$QB" claim "${QC[@]}" > /dev/null
-echo '{ torn' > "$HL/Caches/run-seed/queue-local/_land/zz-torn.json"
-python3 "$QB" land-wait "local=_land:repo--sib" --pid "$W" --for 2 "${QC[@]}" > /dev/null; check "$?" "0" "land-wait reads its own file: a sibling's torn one is no 'gone'"
-kill "$W" 2>/dev/null; { wait "$W"; } 2>/dev/null
-rm -f "$HL/Caches/run-seed/queue-local/_land/zz-torn.json"
-check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import cold_prompt as c; print(c.sent_to("queued on buildbox: local=_land:repo--x (a landing), rank 1"))' "$(dirname "$B")/hooks")" \
-  "buildbox" "cold_prompt: a landing queued on the peer names the peer, whose Mac holds the window"
 qreset
 "${OG[@]}" fetch -q origin; "${OG[@]}" checkout -q -B "$BR-roads" origin/main
 mkdir -p "$T/other/docs/handoff"; printf '# roads\n\n- **After:** %s, and %s.\n' "$BR-eta" "$BR-theta" > "$T/other/docs/handoff/2026-10-29-roads.md"
@@ -404,11 +312,6 @@ git -C "$T/repo" branch -q --no-track "$BR-rf" "origin/$BR-rf"
 git -C "$T/repo" worktree add -q "$T/wt-rf" "$BR-rf" 2>/dev/null
 (cd "$T/wt-rf" && git checkout -q origin/main -- . && git rm -q f-rf && git commit -qm "take main's copy" && git push -q origin "$BR-rf")
 judge rf > "$T/out"; check "$?" "3" "work taken back to main's copy on a branch dispatch created from origin/<branch>: no landing"
-check "$(python3 "$QB" land-wait "local=_land:repo--none" --pid $$ --for 0 "${QC[@]}" > /dev/null 2>&1; echo $?)" "3" "land-wait with no entry: gone (3)"
-sleep 300 & W=$!
-python3 "$QB" land --repo "$T/repo" --branch "$BR-out" --pid "$W" "${QC[@]}" > /dev/null
-DISPATCH_LAND_POLL=0.1 python3 "$QB" land-wait "local=_land:repo--out" --pid "$W" --for 0.3 "${QC[@]}" > /dev/null; check "$?" "6" "land-wait past --for: 6, never 1 (a crash's exit)"
-kill "$W" 2>/dev/null; { wait "$W"; } 2>/dev/null
 
 SX=$(pred moved f-moved); SX=${SX%%:*}
 "${OG[@]}" checkout -q "$BR-moved"; echo more > "$T/other/f-moved2"; "${OG[@]}" add -A; "${OG[@]}" commit -qm "after the merge"; "${OG[@]}" push -q origin "$BR-moved"; "${OG[@]}" checkout -q --detach
@@ -440,7 +343,7 @@ printf '{"%s": [{"number": 13, "state": "closed", "merged_at": "%s", "head": {"r
   "$BR-gone3" "2026-01-01T00:00:00Z" "$BR-gone3" "$MH" > "$T/prs-gone3.json"
 LANDED_PRS="$T/prs-gone3.json" judge gone3 --seen "${SG%%:*}" --sighting "$SG" > "$T/out"; check "$?" "3" "every ref gone, an older merged PR under its name: the sighting's work holds it (road 3)"
 has "$T/out" "gone" "  gone, as a deleted unlanded branch is"
-# a fleet entry that says it is a landing is no landing: only this host's _land store holds one
+# a fleet entry of a kind no queue runs (the old landing, put by hand or a replay): never claimed (bad_args)
 qreset
 enq fl > /dev/null
 sleep 300 & W=$!
@@ -453,7 +356,7 @@ NT=$("${QGIT[@]}" write-tree); unset GIT_INDEX_FILE
 "${QGIT[@]}" update-ref refs/regatta/queue "$("${QGIT[@]}" commit-tree "$NT" -p "$OLD" -m "a hand-written landing")"
 check "$(qget repo--fl kind)" "landing" "  (the fleet entry now says kind landing)"
 python3 "$QB" claim "${QC[@]}" > "$T/out"
-check "$(qget repo--fl state)" "queued" "a fleet entry of kind landing: never claimed as one (no slot held for a live pid)"
+check "$(qget repo--fl state)" "queued" "a fleet entry of kind landing: never claimed (no kind this queue runs)"
 check "$(cat "$HL/Caches/run-seed/queue/claims/"*.json 2>/dev/null | grep -c 'landing\.')" "0" "  no landing reservation"
 kill "$W" 2>/dev/null; { wait "$W"; } 2>/dev/null
 

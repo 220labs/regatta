@@ -328,9 +328,52 @@ def git(repo, *args, check=True, env=None, input=None):
     return r
 
 
+# The scan's caches (twin-nightly, 2026-10-31: a check replayed ~25 s per commit, each re-reading every
+# allowlisted blob through its own cat-file and re-scanning all of it). A blob's sha names its bytes,
+# and a file's findings are a function of its path, its bytes, the word list less the credits, its
+# exemptions' strings and whether this shell masks: keyed by all of them, a cached answer is the
+# answer. HELLOWORLD_NO_CACHE=1 turns both off (the suite proves the two agree; the timing doc uses it).
+_BLOBS, _TEXTS, _FILE_SCANS, _RX = {}, {}, {}, {}
+
+
+def caching():
+    return not os.environ.get("HELLOWORLD_NO_CACHE")
+
+
 def blob(repo, sha):
-    return subprocess.run(["git", "-C", str(repo), "cat-file", "blob", sha],
-                          capture_output=True, check=True, env=dict(os.environ, **GIT_ENV)).stdout
+    if sha in _BLOBS:
+        return _BLOBS[sha]
+    out = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", sha],
+                         capture_output=True, check=True, env=dict(os.environ, **GIT_ENV)).stdout
+    if caching():
+        _BLOBS[sha] = out
+    return out
+
+
+def blobs(repo, shas):
+    """sha -> bytes for each, those not read yet through one `cat-file --batch`; a sha the batch does
+    not return as a blob (missing) is read alone, so it fails as blob() always did."""
+    if not caching():
+        return {s: blob(repo, s) for s in shas}
+    want = [s for s in dict.fromkeys(shas) if s not in _BLOBS]
+    if want:
+        for s, (kind, raw) in read_objects(repo, want).items():
+            if kind == "blob":
+                _BLOBS[s] = raw
+    return {s: blob(repo, s) for s in shas}
+
+
+def utf8(sha, raw):
+    """The blob's text, or None when it is not UTF-8."""
+    if caching() and sha in _TEXTS:
+        return _TEXTS[sha]
+    try:
+        t = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        t = None
+    if caching():
+        _TEXTS[sha] = t
+    return t
 
 
 def entries(repo, ref):
@@ -404,11 +447,16 @@ def words_regex(words, credited=()):
     """The word list, one pattern per entry (so overlapping entries are each found), less the
     entries a person credited themselves with. Built from the original spellings: casefold turns
     "ß" into "ss", and the entry would no longer match itself."""
-    drop = {norm(c) for c in credited}
+    drop = frozenset(norm(c) for c in credited)
+    key = (tuple(words), drop)
+    if caching() and key in _RX:
+        return _RX[key]
     out = []
     for w in dict.fromkeys(w for w in words if norm(w) not in drop):
         body = r"\s+".join(map(re.escape, w.split()))
         out.append(re.compile(body if len(w) >= 5 else r"(?<![A-Za-z])" + body + r"(?![A-Za-z])", re.I))
+    if caching():
+        _RX[key] = out
     return out
 
 
@@ -513,43 +561,64 @@ def message_scan(msg, words_rx):
     return [(line_of(msg, a), *found[(a, b)]) for a, b in sorted(keep)]
 
 
+def file_scan(p, raw, words_rx, ex):
+    """One published file's part of scan(), as (hits, used, bad) tuples: the cut-list keys, every
+    finding its exemptions (`ex`, this file's own, in the list's order) do not clear, each exemption
+    it used with its count or that cleared nothing, and its path's findings."""
+    hits, used, bad = [], [], []
+    if is_edl(p):
+        for n, line in enumerate(raw.splitlines(), 1):
+            m = EDL_KEY.search(line)
+            if m:  # the key only: the line itself is the words
+                hits.append((f"{p}:{n}", "people's words in a cut list", m.group().strip(" -{,[")))
+    spans = [(f, s, [(m.start(), m.end()) for m in re.finditer(re.escape(s), raw)]) for f, s in ex]
+    cleared = {(f, s): 0 for f, s, _ in spans}
+    for start, end, cat, txt in text_hits(raw, words_rx):
+        cover = next(((f, s) for f, s, occ in spans if any(a <= start and end <= b for a, b in occ)), None)
+        if cover:
+            cleared[cover] += 1
+        else:
+            hits.append((f"{p}:{line_of(raw, start)}", cat, txt))
+    for (f, s), c in cleared.items():
+        if c:
+            used.append((f, s, c))
+        elif s in raw:
+            bad.append(f"{f}:{s} — clears no finding in {f}")
+    hits += [(f"{p} (its path)", cat, txt) for _, _, cat, txt in text_hits(p, words_rx)]
+    return tuple(hits), tuple(used), tuple(bad)
+
+
 def scan(repo, paths, files, ex, words, message=None, idents=(), meta=()):
     """Hits as (where, category, shown text); exemptions used as (file, string, cleared); bad exemptions.
     `meta` is the text a pull request makes public beside the files — (where, text, skip) — scanned
     whole against the entire word list: no exemption and no credit reaches it."""
     hits, used, bad = [], [], []
     texts = {}
+    raws = blobs(repo, [files[p][2] for p in paths])
     for p in paths:
-        try:
-            texts[p] = blob(repo, files[p][2]).decode("utf-8")
-        except UnicodeDecodeError:
+        t = utf8(files[p][2], raws[files[p][2]])
+        if t is None:
             hits.append((p, "not UTF-8 text", "the gate reads text only"))
-    words_rx = words_regex(words, credits(texts.get("CREDITS.yaml", "")))
+        else:
+            texts[p] = t
+    credited = frozenset(norm(c) for c in credits(texts.get("CREDITS.yaml", "")))
+    words_rx = words_regex(words, credited)
     for f, s in ex:
         if f not in texts:
             bad.append(f"{f}:{s} — {f} is not published")
         elif s not in texts[f]:
             bad.append(f"{f}:{s} — the string is not in {f}")
+    run_key = (tuple(words), credited, bool(os.environ.get("CLAUDECODE")))  # one per scan, not per file
     for p, raw in texts.items():
-        if is_edl(p):
-            for n, line in enumerate(raw.splitlines(), 1):
-                m = EDL_KEY.search(line)
-                if m:  # the key only: the line itself is the words
-                    hits.append((f"{p}:{n}", "people's words in a cut list", m.group().strip(" -{,[")))
-        spans = [(f, s, [(m.start(), m.end()) for m in re.finditer(re.escape(s), raw)]) for f, s in ex if f == p]
-        cleared = {(f, s): 0 for f, s, _ in spans}
-        for start, end, cat, txt in text_hits(raw, words_rx):
-            cover = next(((f, s) for f, s, occ in spans if any(a <= start and end <= b for a, b in occ)), None)
-            if cover:
-                cleared[cover] += 1
-            else:
-                hits.append((f"{p}:{line_of(raw, start)}", cat, txt))
-        for (f, s), c in cleared.items():
-            if c:
-                used.append((f, s, c))
-            elif s in raw:
-                bad.append(f"{f}:{s} — clears no finding in {f}")
-        hits += [(f"{p} (its path)", cat, txt) for _, _, cat, txt in text_hits(p, words_rx)]
+        key = (run_key, p, files[p][2], tuple(s for f, s in ex if f == p))
+        found = _FILE_SCANS.get(key) if caching() else None
+        if found is None:
+            found = file_scan(p, raw, words_rx, [(f, s) for f, s in ex if f == p])
+            if caching():
+                _FILE_SCANS[key] = found
+        hits += found[0]
+        used += found[1]
+        bad += found[2]
     if message is not None:
         hits += [(f"commit message:{line_of(message, a)}", cat, txt) for a, _, cat, txt in text_hits(message, words_rx)]
     for label, ident in idents:  # the address is the identity the owner chose to publish; the rest is scanned
@@ -1517,11 +1586,16 @@ def pr_body(n_files, tree, parent, stat, removed, used, note, author_public=Fals
     return "\n".join(out) + "\n"
 
 
-def cmd_publish_pr(args):
+def cmd_publish_pr(args, out=None):
+    """`out`, a dict when given (the nightly's): what came of the run — state `none` (nothing to
+    propose), `open` (this tree's PR already open) or `proposed`, with the PR's url and the head sha
+    the scan vouched for."""
+    out = {} if out is None else out
     for v in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
         if os.environ.get(v):  # it would point every clone call at the private repo
             raise Refused(f"{v} is set — the clone's git calls would act on another repo")
     b = build(args.repo, "origin/main", check_only=False)
+    out["head"] = b["head"]  # the private commit published: main's checks are read on it
     # The UTC date, as the commit's: a local date beside a UTC timestamp tells the time zone.
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
     title = args.message or f"Publish {today}"
@@ -1571,6 +1645,7 @@ def cmd_publish_pr(args):
         if not report(b, hits, used, bad_ex):
             return 1
         if stat is None:
+            out.update(state="none")
             print("  nothing to propose — the public main already has exactly this tree. Nothing was pushed.")
             return 0
         # A branch with this tree is enough only while its PR is open: one whose PR was closed, or
@@ -1579,6 +1654,7 @@ def cmd_publish_pr(args):
             r = gh("pr", "list", "--repo", slug, "--head", n, "--state", "open", "--json", "url", "--jq", ".[].url")
             url = r.stdout.strip().splitlines()[0] if not r.returncode and r.stdout.strip() else ""
             if url:
+                out.update(state="open", url=url, sha=next(c for m, _t, c in branches if m == n), branch=n)
                 print(f"  nothing to propose — branch {n} already has exactly this tree, PR {url}. Nothing was pushed.")
                 return 0
         why = "has no open PR" if not r.returncode else f"could not be checked for a PR: {(r.stderr or '').strip()[:200]}"
@@ -1721,10 +1797,374 @@ def cmd_publish_pr(args):
               f"  open it with: gh pr create --repo {slug} --base main --head {branch}")
         return 2
     url = (r.stdout.strip().splitlines() or [""])[-1]
+    out.update(state="proposed", url=url, sha=sha, branch=branch)
     log_row(b["repo"], f"- {today} pr {branch} {sha} {url}", private)
     print(f"Proposed {sha[:7]} as {branch} (read back): {url}\n"
           f"  Merging it is the publish; the public main is untouched until then. Logged in {log_path(b['repo'])}.")
     return 0
+
+
+# The nightly (twin-nightly, 2026-10-31; the owner: "make the nightly job be a standard for public
+# twin repos. driven by config", and the merge question answered "merge on green").
+NIGHTLY_CONF = "nightly"                     # .helloworld/nightly, read from origin/main
+NIGHTLY_MODES = ("off", "pr", "on-green")
+NIGHTLY_REPOS = "helloworld/nightly-repos"   # the config dir's key: the checkouts this host publishes
+LOGBOOK_KEY = "helm/logbook-repo"            # the project's logbook (AGENTS.md, "Where an issue goes")
+NIGHTLY_WAIT_MIN = 90
+CI_MARKERS = ("CI", "GITHUB_ACTIONS", "CIRCLECI")
+
+
+def nightly_conf(text, where):
+    """.helloworld/nightly as dict(mode, checks, twin): `mode: off|pr|on-green` once, and any number
+    of `main-check: <status context>` — a check on the private main that must be green before a merge
+    (the context as GitHub shows it: `ci/circleci: linux`) — and of `twin-check: <check name>`, a check
+    that must have reported on the twin PR, green, before a merge (one still to register is waited
+    for, not passed over). A trailing ` # comment` is stripped. Anything else is refused: a typo must
+    not read as off, nor as a merge."""
+    mode, checks, twin = None, [], []
+    for raw in lines_of(text):
+        k, sep, v = raw.partition(":")
+        k, v = k.strip().lower(), re.sub(r"\s+#.*$", "", v).strip()
+        if not sep or not v or k not in ("mode", "main-check", "twin-check"):
+            raise Refused(f"{where}: '{raw.strip()}' is not `mode: off|pr|on-green`, `main-check: <context>` "
+                          "or `twin-check: <name>`")
+        if k == "main-check":
+            checks.append(v)
+        elif k == "twin-check":
+            twin.append(v)
+        elif mode is not None:
+            raise Refused(f"{where}: mode is given twice")
+        elif v not in NIGHTLY_MODES:
+            raise Refused(f"{where}: mode {v!r} is none of {', '.join(NIGHTLY_MODES)}")
+        else:
+            mode = v
+    if mode is None:
+        raise Refused(f"{where}: no `mode:` line ({', '.join(NIGHTLY_MODES)})")
+    return dict(mode=mode, checks=checks, twin=twin)
+
+
+def nightly_repos():
+    """The config dir's helloworld/nightly-repos: one checkout per line (`~` expanded), the repos
+    this host publishes nightly. [] when there is no such key: nothing runs here."""
+    lines, why = common.config_read(NIGHTLY_REPOS)
+    if why:
+        raise Refused(f"{common.CONFIG / NIGHTLY_REPOS} cannot be read ({why})")
+    out = []
+    for l in lines or []:
+        if l.startswith("#"):
+            continue
+        p = Path(os.path.expanduser(l))
+        if not p.is_absolute():
+            raise Refused(f"{common.CONFIG / NIGHTLY_REPOS}: {l!r} is not an absolute path")
+        out.append(str(p))
+    return out
+
+
+def nightly_at(repo):
+    """(top, public remote, .helloworld/nightly's text, its label) at origin/main, fetched: remote
+    None when that ref has no .helloworld/remote (no twin), text None when it has no nightly file."""
+    top = git(Path(repo).expanduser().resolve(), "rev-parse", "--show-toplevel", check=False)
+    if top.returncode:
+        raise Refused(f"{repo} is not a git repo")
+    top = Path(top.stdout.strip())
+    r = git(top, "fetch", "-q", "origin", "main", check=False)
+    if r.returncode:
+        raise Refused(f"could not fetch origin: {r.stderr.strip()[:200]}")
+    files = entries(top, "origin/main")
+    conf = conf_dir(files)
+    if f"{conf}/remote" not in files:
+        return top, None, None, None
+    remote = blob(top, files[f"{conf}/remote"][2]).decode(errors="replace").strip()
+    path = f"{conf}/{NIGHTLY_CONF}"
+    text = blob(top, files[path][2]).decode(errors="replace") if path in files else None
+    return top, remote, text, f"{path} at origin/main"
+
+
+def check_state(item):
+    """'green', 'red' or 'pending' for one check: a check run (status and conclusion, either case,
+    as the REST API and `gh pr view` give it) or a commit status (state)."""
+    if item.get("status") is not None or item.get("conclusion") is not None:
+        if str(item.get("status") or "").lower() != "completed":
+            return "pending"
+        return "green" if str(item.get("conclusion") or "").lower() in ("success", "neutral", "skipped") else "red"
+    st = str(item.get("state") or "").lower()
+    return "green" if st == "success" else "red" if st in ("failure", "error") else "pending"
+
+
+def verdicts(items):
+    """{name: state} over checks, one per name: red if any item of that name failed (two workflows
+    may share a job name), else pending while one runs, else green. GitHub's rollup carries a
+    re-run's latest attempt only, so a failure re-run green reads green."""
+    by = {}
+    for it in items:
+        by.setdefault(it.get("name") or it.get("context") or "?", []).append(check_state(it))
+    return {n: "red" if "red" in s else "pending" if "pending" in s else "green" for n, s in by.items()}
+
+
+def gh_json(*args):
+    import json
+    r = gh(*args)
+    if r.returncode:
+        return None, (r.stderr or r.stdout or "no answer").strip()[:200]
+    try:
+        return json.loads(r.stdout or "null"), None
+    except ValueError as e:
+        return None, f"not JSON: {e}"
+
+
+def main_checks(slug, sha, wanted):
+    """{context: state} for each wanted check on the private main's commit `sha`: 'unread' when the
+    API does not answer, 'pending' when nothing reported it yet."""
+    st, e1 = gh_json("api", f"repos/{slug}/commits/{sha}/status")
+    cr, e2 = gh_json("api", f"repos/{slug}/commits/{sha}/check-runs")
+    if e1 and e2:
+        return {w: f"unread ({e1})" for w in wanted}
+    items = list((st or {}).get("statuses") or []) + list((cr or {}).get("check_runs") or [])
+    seen = verdicts(items)
+    return {w: seen.get(w, "pending") for w in wanted}
+
+
+def pr_checks(url):
+    """(pr state, head sha, {check: state}) of a twin PR, or (None, why, {})."""
+    v, e = gh_json("pr", "view", url, "--json", "state,headRefOid,statusCheckRollup")
+    if e or not isinstance(v, dict):
+        return None, e or "no answer", {}
+    return v.get("state"), v.get("headRefOid"), verdicts(v.get("statusCheckRollup") or [])
+
+
+def masked(text, words_rx):
+    """text with every private word, address and credential cut to its first two letters, wherever
+    it runs: the logbook is private, and still no place for the household."""
+    spans = []  # overlapping hits merged, so no part of a longer one is left showing
+    for a, b, _c, _t in sorted(text_hits(text, words_rx, only={"private word", "e-mail address", "credential"})):
+        if spans and a < spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    for a, b in reversed(spans):
+        # A hit shorter than five letters is cut whole: two of a short name would be most of it.
+        text = text[:a] + (text[a:a + 2] if b - a >= 5 else "") + "…" + text[b:]
+    return text
+
+
+def merge_actor(slug, words_rx):
+    """Why the gh account that would merge the twin PR may not, or None. GitHub's merge rewrites
+    each replayed commit's committer, so the merging account's login and name reach the twin's
+    public history; a private word there would fail every later check. publish --pr scans its own
+    login only on the road that opens a PR, and a nightly may merge one another Mac opened, so the
+    merger is judged here, by publish's rule: a login already public as the author of a merged PR
+    in the target owner's public repos passes. Unread fails closed (build review, 2026-11-01)."""
+    r = gh("api", "user", "--jq", '[.login, (.name // "")] | @tsv')
+    if r.returncode or not r.stdout.strip():
+        return f"the merging gh account cannot be read ({(r.stderr or 'no login').strip()[:200]}), so it cannot be scanned"
+    login, _t, name = r.stdout.rstrip("\n").partition("\t")
+    found = [w for w in (login, name) if w and text_hits(w, words_rx, only={"private word"})]
+    if login in found and re.fullmatch(r"[A-Za-z0-9-]+", login):
+        s = gh("api", "-X", "GET", "search/issues", "-f",
+               f"q=is:pr is:merged is:public author:{login} org:{slug.split('/')[0]}",
+               "--jq", f'[.items[] | select(.user.login == "{login}")][0].html_url // empty')
+        if not s.returncode and s.stdout.strip():
+            found.remove(login)
+    if found:
+        return "the merging gh account's " + " and ".join(
+            "login" if w == login else "name" for w in found) + " holds a private word, and the merge would publish it"
+    return None
+
+
+def logbook_issue(title, body, words_rx):
+    """File (or add to: one open issue per title) an issue on the logbook, helm/logbook-repo. The
+    outcome as one line."""
+    lines, why = common.config_read(LOGBOOK_KEY)
+    slug = (lines or [""])[0]
+    if why or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", slug):
+        return f"no issue filed: {common.CONFIG / LOGBOOK_KEY} {'cannot be read (' + why + ')' if why else 'names no owner/name'}"
+    title, body = masked(title, words_rx), masked(body, words_rx)
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(body)
+    try:
+        open_, e = gh_json("issue", "list", "--repo", slug, "--state", "open", "--search", f'"{title}" in:title',
+                           "--json", "number,title,url")
+        same = [i for i in (open_ or []) if isinstance(i, dict) and i.get("title") == title]
+        if same:
+            r = gh("issue", "comment", str(same[0]["number"]), "--repo", slug, "--body-file", fh.name)
+            return (f"added to the logbook's {same[0].get('url')}" if not r.returncode
+                    else f"no comment added to {same[0].get('url')}: {(r.stderr or '').strip()[:200]}")
+        r = gh("issue", "create", "--repo", slug, "--title", title, "--body-file", fh.name, "--label", "bug")
+        if r.returncode:  # a logbook without a `bug` label: the issue matters more than its label
+            r = gh("issue", "create", "--repo", slug, "--title", title, "--body-file", fh.name)
+        return (f"filed on the logbook: {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else slug}"
+                if not r.returncode else f"no issue filed on {slug}: {(r.stderr or '').strip()[:200]}")
+    finally:
+        os.unlink(fh.name)
+
+
+class Tee:
+    """stdout for the run's own log, kept too for the logbook's issue."""
+    def __init__(self, out):
+        self.out, self.kept = out, []
+
+    def write(self, s):
+        self.kept.append(s)
+        return self.out.write(s)
+
+    def flush(self):
+        self.out.flush()
+
+
+def nightly_one(repo, args, words_rx):
+    """One repo's night; 0 published, merged or quiet, 1 held (and filed), 2 could not tell."""
+    import contextlib
+    import types
+    print(f"== {repo}")
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+    def held(remote, why, said=""):
+        print(f"  held: {why} — nothing merged")
+        if args.dry_run:
+            return 1
+        name = public_name(remote) if remote else Path(repo).name
+        body = (f"The nightly publish of {name} ({today}, mode {mode}) stopped: {why}. Nothing was merged; "
+                "the next night tries again.\n\nThe run's last lines:\n\n```\n"
+                + "\n".join(said.rstrip("\n").split("\n")[-40:]) + "\n```\n")
+        print("  " + logbook_issue(f"helloworld nightly: {name} held", body, words_rx))
+        return 1
+
+    mode, remote = "?", None
+    try:
+        top, remote, text, where = nightly_at(repo)
+        if remote is None:
+            print("  no .helloworld/remote at origin/main: no twin, nothing to publish")
+            return 0
+        conf = nightly_conf(text, where) if text is not None else dict(mode="off", checks=[], twin=[])
+    except Refused as e:
+        return held(remote, f"its nightly config: {e}")
+    mode = conf["mode"]
+    if mode == "off":
+        print(f"  mode off (.helloworld/{NIGHTLY_CONF} at origin/main, or none there): skipped")
+        return 0
+    slug = common.repo_slug(remote)
+    # The URL as configured: `remote get-url` applies insteadOf, and the API wants GitHub's name.
+    own = common.repo_slug(git(top, "config", "--get", "remote.origin.url", check=False).stdout.strip())
+    checks = conf["checks"]
+    plan = (f"publish --pr, then merge on green: the twin PR's checks"
+            + (f" ({', '.join(conf['twin'])} required)" if conf["twin"] else "")
+            + (f" and main's {', '.join(checks)}" if checks else "")) if mode == "on-green" else \
+        "publish --pr; the owner's merge is the publish"
+    print(f"  mode {mode}: {plan}")
+    if args.dry_run:
+        rc = cmd_check(types.SimpleNamespace(repo=str(top), ref="origin/main"))
+        if mode == "on-green":
+            head = git(top, "rev-parse", "origin/main").stdout.strip()
+            for c, s in (main_checks(own, head, checks).items() if own else ((c, "unread: origin is not on GitHub") for c in checks)):
+                print(mask_words(f"  main's {c} on {head[:7]}: {s}", words_rx))
+            login = gh("api", "user", "--jq", ".login")
+            perm = gh("api", f"repos/{slug}", "--jq", ".permissions | to_entries | map(select(.value)) | map(.key) | join(\",\")")
+            print(mask_words(f"  merge actor: {login.stdout.strip() or 'unread'} "
+                             f"({'may ' + perm.stdout.strip() if not perm.returncode and perm.stdout.strip() else 'its rights unread'} "
+                             f"on {slug})", words_rx))
+            why = merge_actor(slug, words_rx)
+            print(f"  merge actor judged: {why or 'its login and name hold no private word'}")
+            rc = max(rc, 1 if why else 0)
+        lines, why = common.config_read(LOGBOOK_KEY)
+        print(mask_words(f"  a held night files on: {(lines or ['nothing — ' + (why or 'no ' + LOGBOOK_KEY + ' in the config dir')])[0]}",
+                         words_rx))
+        print("  dry run: nothing was pushed, merged or filed")
+        return rc
+    if mode == "on-green" and checks and not own:
+        return held(remote, "main's checks cannot be read: origin is not on GitHub", "")
+    out, tee = {}, Tee(sys.stdout)
+    try:
+        with contextlib.redirect_stdout(tee):
+            rc = cmd_publish_pr(types.SimpleNamespace(repo=str(top), pr=True, message=None, topic="nightly",
+                                                     note=None, squash=False), out)
+    except Refused as e:
+        print(f"  helloworld publish: {e}")
+        tee.kept.append(f"helloworld publish: {e}\n")
+        rc = 2
+    said = "".join(tee.kept)
+    if rc or "state" not in out:
+        return held(remote, "the gate refused the publish" if rc == 1 else f"publish --pr ended {rc}", said)
+    if out["state"] == "none":
+        print("  nothing to publish: the twin's main has this tree")
+        return 0
+    if mode == "pr":
+        print(f"  proposed: {out['url']} — the owner's merge is the publish")
+        return 0
+    deadline, poll = time.time() + args.wait * 60, float(os.environ.get("HELLOWORLD_NIGHTLY_POLL") or 60)
+    while True:
+        # An answer GitHub did not give (a Mac waking with the network still down) is waited on like a
+        # check still running; only the end of the wait holds the night for it.
+        state, head, prs = pr_checks(out["url"])
+        mains = main_checks(own, out["head"], checks) if checks else {}
+        unread = ([f"the twin PR ({head})"] if state is None else []) + \
+            [f"main's {c} ({s})" for c, s in mains.items() if s.startswith("unread")]
+        if state is None:
+            prs = {}
+        if state == "MERGED":
+            print(f"  {out['url']} is merged already")
+            return 0
+        if state is not None and state != "OPEN":
+            return held(remote, f"the twin PR {out['url']} is {state.lower()}", said)
+        if state is not None and head != out["sha"]:
+            return held(remote, f"the twin PR's head is {str(head)[:7]}, not {out['sha'][:7]}, which the gate pushed", said)
+        red = [f"the twin PR's {n}" for n, s in sorted(prs.items()) if s == "red"]
+        red += [f"main's {c} on {out['head'][:7]} ({s})" for c, s in mains.items() if s == "red"]
+        if red:
+            return held(remote, "red: " + ", ".join(red), said)
+        waiting = ([f"the twin PR's {n}" for n, s in sorted(prs.items()) if s != "green"]
+                   + [f"the twin PR's {n} (not reported yet)" for n in conf["twin"] if n not in prs]
+                   + [f"main's {c}" for c, s in mains.items() if s == "pending"] + unread)
+        if prs and not waiting:
+            break
+        if time.time() >= deadline:
+            return held(remote, f"not green within {args.wait:g} min: still waiting on "
+                        + (", ".join(waiting) if waiting else "any check on the twin PR"), said)
+        time.sleep(poll)
+    why = merge_actor(slug, words_rx)
+    if why:
+        return held(remote, why, said)
+    r = gh("pr", "merge", out["url"], "--rebase", "--match-head-commit", out["sha"])
+    if r.returncode:
+        return held(remote, f"green, but the merge was refused: {(r.stderr or r.stdout).strip()[:300]}", said)
+    state, _h, _c = pr_checks(out["url"])
+    if state != "MERGED":
+        return held(remote, f"gh merged {out['url']}, but it reads {state or 'unread'}", said)
+    print(f"  merged on green: {out['url']} (read back)")
+    return 0
+
+
+def cmd_nightly(args):
+    """Every repo given, else the host's helloworld/nightly-repos: publish --pr, and where the repo's
+    .helloworld/nightly says on-green, merge the twin PR once it and main's named checks are green.
+    Never on a CI runner (the private word list lives on the owner's Macs), never a plain publish,
+    and a real run never inside an agent's shell (launchd runs it; --dry-run is the agent's)."""
+    ci = [v for v in CI_MARKERS if os.environ.get(v)]
+    if ci:
+        raise Refused(f"never on a CI runner ({ci[0]} is set): the nightly runs where the private word list is")
+    agent = "CLAUDECODE" if os.environ.get("CLAUDECODE") else common.unattended_label()
+    if agent and not args.dry_run:
+        raise Refused(f"the nightly runs from launchd (install.sh --schedule), never an agent's shell ({agent.split('=')[0]} "
+                      "is set): `helloworld nightly --dry-run` is the agent's")
+    repos = args.repo or nightly_repos()
+    if not repos:
+        print(f"helloworld nightly: no repo to publish on this host ({common.CONFIG / NIGHTLY_REPOS} names none)")
+        return 0
+    words_rx = words_regex(wordlist()[1])
+    rc = 0
+    for repo in repos:
+        try:
+            rc = max(rc, nightly_one(repo, args, words_rx))
+        except Exception as e:  # noqa: BLE001 — one repo's crash must neither skip the rest nor read as held
+            why = f"{type(e).__name__}: {str(e)[:300]}"
+            print(f"  could not tell: {why} — nothing merged")
+            if not args.dry_run:
+                try:
+                    print("  " + logbook_issue(f"helloworld nightly: {Path(repo).name} could not tell",
+                                               f"The nightly stopped on {repo}: {why}. Nothing was merged.\n", words_rx))
+                except Exception as f:  # noqa: BLE001 — filing must not skip the remaining repos either
+                    print(f"  no issue filed: {type(f).__name__}: {str(f)[:200]}")
+            rc = 2
+    return rc
 
 
 def main(argv=None):
@@ -1750,6 +2190,11 @@ def main(argv=None):
     p.add_argument("--topic", help="--pr: the branch's topic (default: publish); scanned")
     p.add_argument("--note", help="--pr: a paragraph for the PR body — what this publish carries; scanned")
     p.add_argument("--squash", action="store_true", help="--pr: one commit, as before the replay (D1-A)")
+    n = sub.add_parser("nightly", help="publish --pr each repo the host names, merging on green where the repo says so")
+    n.add_argument("repo", nargs="*", help="the checkouts (default: the config dir's helloworld/nightly-repos)")
+    n.add_argument("--dry-run", action="store_true", help="check, read the mode, main's checks and the merge actor; "
+                                                           "push, merge and file nothing")
+    n.add_argument("--wait", type=float, default=NIGHTLY_WAIT_MIN, help="minutes to wait for green (default 90)")
     args = ap.parse_args(argv)
     if args.verb == "publish" and not args.pr and (args.topic or args.note or args.squash):
         ap.error("--topic, --note and --squash go with --pr")
@@ -1758,6 +2203,8 @@ def main(argv=None):
             return cmd_check(args)
         if args.verb == "check-message":
             return cmd_check_message(args)
+        if args.verb == "nightly":
+            return cmd_nightly(args)
         return cmd_publish_pr(args) if args.pr else cmd_publish(args)
     except Refused as e:
         print(f"helloworld {args.verb}: {e}", file=sys.stderr)

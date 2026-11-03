@@ -28,6 +28,12 @@ self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched
                                               --host, --labels and --name for another runner Mac
                                               than the keys', --instance N for a further runner of
                                               the repo on one Mac
+    ci-provider REPO --runner caps [--name NAME] [--dry-run]
+                                              each runner's custom labels set to its capabilities
+                                              in wharf/ci-runner-caps.json (live: one PUT per runner
+                                              that differs; --name: that runner only); refused when
+                                              a runs-on, variable or literal, would be left with
+                                              no runner, or --name names no runner
     ci-provider REPO --pick [--apply] [--usage FILE] [--dry-run]
                                               the lane the check takes, by lighthouse's lanes,
                                               budgets and queue (live with --apply: the runs-on
@@ -40,29 +46,39 @@ its templates (templates/ci/circleci-check.yml here; templates/code/.github/work
 and main-protection.json, B5's). bin/repos loads this file, its sibling, for provider_from, the
 one definition of which CI a repo is on (its ci_state reads origin/main with it).
 
-The self-hosted kind's name is `self-hosted`, or what the config dir's `wharf/ci-runner-kind`
-says: an installer whose repos' ci.json already name it otherwise (after the first Mac it ran
-on) writes that name there, and every verb, --to and ci.json take it (SELF, below). Nothing
-else here names a machine. The runner Mac's
+The self-hosted kind's name is `self-hosted` (SELF, below). The config dir's `wharf/ci-runner-kind`
+lists older names of it: an installer whose repos' ci.json still name the kind otherwise (after
+the first Mac it ran on) writes them there, and ci.json and --to read each as `self-hosted`, which is
+what --to writes back (2026-10-31). Nothing else here names a machine. The runner Mac's
 private values come from the regatta config dir (`$REGATTA_CONFIG`, else .config/regatta in the
 home folder), one file each, which the overlay writes (wharf's README, "Private values"), read
 once per command:
   wharf/ci-runner-ssh      the ssh alias of the runner Mac, logged in as the runner's user (never
                            starting with `-`: ssh would read it as an option)
-  wharf/ci-runner-labels   runs-on's labels, one per line: self-hosted, macOS and at least one of
-                           the Mac's own; the first of its own is also the runner's name
+  wharf/ci-runner-labels   the runner's labels, one per line: self-hosted, macOS and at least one of
+                           the Mac's own; the first of its own is the runner's name. A runner the
+                           capabilities file lists takes its automatic labels from it too, and
+                           keeps an own label only while a runs-on still asks for it. No check.yml
+                           is written from it any more
   wharf/ci-runner-user     that user's name, for the trust warning only (absent: left unnamed)
-  wharf/ci-runner-kind     the self-hosted kind's name in ci.json and --to (absent: self-hosted)
+  wharf/ci-runner-kind     older names of the self-hosted kind, one per line, which ci.json and --to
+                           read as `self-hosted` (absent: none)
+  wharf/ci-runner-caps.json  {runner name: [capability, …]}: what each runner can do, which --runner
+                           caps makes its custom labels and --runner install registers it with,
+                           beside any own label a runs-on still asks for (absent: caps refuses,
+                           install takes the labels key's)
 Without the first two, --to self-hosted and --runner refuse and name the file to write; every other
 verb, status among them, reads the labels a repo's own check.yml or variable asks for instead.
 
-Which runs-on is this tool's (review 2026-10-21, 3-5): only the two forms it writes, the labels
-key's labels literally or the variable form below exactly. Any other (`[self-hosted, linux, gpu]`,
-a `vars.X` the repo reads its own way) is a hand edit: a switch holds it like any other, --force
-drops it, and --runner never reads or writes its variable. Without ci.json a check.yml is self-hosted
-when its runs-on is the variable form, or a literal naming one of the labels key's own labels
-(`[self-hosted, macOS, <label>]`, `[macOS, <label>]`, the label alone); on a Mac without the key,
-only the variable form says so.
+Which runs-on is this tool's (review 2026-10-21, 3-5): the two forms it writes, the variable form
+below exactly, or a literal of `self-hosted`, an OS and the labels ci.json's `needs` lists; and one
+it wrote before 2026-10-31, the labels key's labels literally, which a re-run replaces. Any other
+(`[self-hosted, linux, gpu]`, a `vars.X` the repo reads its own way) is a hand edit: a switch holds it
+like any other, --force drops it, and --runner never reads or writes its variable. Without ci.json a
+check.yml is self-hosted when its runs-on is the variable form, a literal of `self-hosted`, `macOS`
+and no label of a runner's own (`[self-hosted, macOS]`), or a literal naming one of the labels key's
+own labels (`[self-hosted, macOS, <label>]`, `[macOS, <label>]`, the label alone); on a Mac without
+the key, only the first two say so.
 
 What a provider is, all of it in the repo except the last line:
   .github/ci.json                     {"provider": "actions"|"self-hosted"|"circleci", "check": "<command>"},
@@ -74,6 +90,8 @@ What a provider is, all of it in the repo except the last line:
                                       reports through the Checks API under a name read back on its
                                       first run, 2026-10-18). Dropped on a switch: a
                                       name belongs to one provider; `--to … --context NAME` sets it;
+                                      "needs": what the check needs from a runner (the lanes' words,
+                                      or capabilities), hand-written, which crosses a switch;
                                       "replaces": the names a later --context or switch replaced,
                                       which --protect swaps out of main's required checks too;
                                       only this branch's: the list main carries is spent
@@ -84,7 +102,11 @@ What a provider is, all of it in the repo except the last line:
             hosted macOS bills at 10x and CircleCI's Free macOS at 200 credits a minute, while a
             self-hosted runner bills no minutes. Only the runs-on line and a first step differ
             (below), so the draft skip and the concurrency block are the template's own. The line takes one of two forms:
-              literal   `runs-on: [<the labels key's labels>]`, for a repo that is private only
+              literal   `runs-on: [self-hosted, macOS, <the capabilities it needs>]`, from ci.json's
+                        `needs`, for a repo that is private only: what the job needs from a runner
+                        Mac, never which one, so `needs` may name capabilities beside the lanes'
+                        words (wharf's README, "Capabilities"). A `needs` naming another OS is
+                        refused here: it takes the variable form, where a lane routes it
               variable  `runs-on: ${{ fromJSON(vars.NAME || '"ubuntu-latest"') }}`: the labels
                         sit in the repository variable NAME (a JSON list), which --runner install
                         sets and status reads, so the file names no machine (the template's header
@@ -92,7 +114,7 @@ What a provider is, all of it in the repo except the last line:
                         installed). For a repo with a public twin, whose check.yml is published:
                         --runs-on-var NAME or --twin, or by itself (CI_RUNS_ON) when
                         .helloworld/allowlist.txt lists check.yml (even over a literal: published,
-                        it would name the runner Mac's labels), or the repo carries .helloworld/
+                        it would name what the runner carries), or the repo carries .helloworld/
                         and check.yml is not on the runner Mac yet. Otherwise a re-run keeps the
                         file's form, literal or variable, unless --runs-on-var is given. Where the
                         variable is unset (the twin, a fork) the job runs on ubuntu-latest, and
@@ -169,6 +191,8 @@ self-hosted, and what it does not cover:
     .private`), and so is a private one set to run fork PRs' workflows (`gh api repos/O/R/actions/
     permissions/fork-pr-workflows-private-repos`, run_workflows_from_fork_pull_requests); either
     one unread is refused too: a fork's pull request would run its own code on the runner Mac.
+    The fork-PR setting and the runner list are an admin's reads: the gh login first, then
+    WHARF_READ_TOKEN's token where it is set (gh_read; lighthouse's `ops pick` passes the desk's).
     `ci-provider REPO` warns if a self-hosted repo has gone public, or let fork PRs run, since.
     A private repo's public twin is another repo: it has no variable, so its check runs hosted.
   - automerge.yml stays on ubuntu-latest, hosted, so no runner-Mac job runs with an
@@ -192,8 +216,8 @@ self-hosted, and what it does not cover:
     and `a/b-c` share one directory. The runners installed before that stay where they are:
     every verb uses the flat directory while its .runner names this repo's URL (config.sh writes
     it as gitHubUrl), the nested one otherwise.
-  - the variable form: --runner install sets the repository variable to the runner's labels (the
-    labels key's, or --labels') once the runner is online, unless the variable already asks for
+  - the variable form: --runner install sets the repository variable to the runner's labels (its
+    capabilities in wharf/ci-runner-caps.json, else the labels key's, or --labels') once the runner is online, unless the variable already asks for
     labels it carries or another registered runner, online or asleep, carries the variable's (a
     fleet: never narrowed, never re-routed to the newcomer; it prints the calls that would) (`gh api` POST repos/O/R/actions/variables, or PATCH
     …/variables/NAME when it holds another value: REST "Actions variables", read 2026-10-20),
@@ -218,10 +242,11 @@ self-hosted, and what it does not cover:
 
 The pick (lighthouse-ops S1, docs/lighthouse-ops-broker-2026-10-26.md; the owner's D2-A: picked, every
 15 minutes on every eligible repo): which lane a repo's check takes, the required check staying `check`.
-A lane is a row of the config dir's `lighthouse/ci-lanes.json` (`name`, `provider` actions|circleci,
+A lane is a row of the config dir's `lighthouse/ci-lanes.json` (`name`, `provider` actions|circleci, `projects` on a CircleCI one,
 `runs_on` a hosted image or a label list, `runs` some of macos/linux/public, `account` for a hosted
 lane); a repo is eligible for one that runs all its ci.json `needs` (absent: macos), and `public`
-too when GitHub says the repo is. In order: a self-hosted lane whose queued p50 (the sampler's
+too when GitHub says the repo is; a capability in `needs` is met only by a self-hosted lane whose
+label list names it. In order: a self-hosted lane whose queued p50 (the sampler's
 ops.jsonl row) is under `lighthouse/ci-queue-max` or unmeasured; a hosted lane for a public repo;
 the hosted lane whose account has the most month left above its reserve in `lighthouse/ci-budgets.json`;
 else the self-hosted lane with the shortest queue. A label list is a self-hosted lane, a hosted one
@@ -229,11 +254,27 @@ is one image's name. A self-hosted lane needs the trust refusals above passed, -
 guard step and host-write refusals, and an online runner with its labels; the repo's current lane
 is skipped while a check created since the pick's last flip of it sits queued past 30 minutes.
 No lane, and the current one refused (trust, money, no runner): exit 3, for the desk to card. Usage is the desk's file (`lighthouse ops usage --write`, the log dir's
-ci-usage.json): the owner's billing token is read there, in the desk's own job, never here, so
+ci-usage.json): the owner's billing token is read there, in the desk's own job; this tool sees it
+only as WHARF_READ_TOKEN, for the two admin reads (gh_read), never for usage, so
 without fresh usage every hosted lane of a private repo is over budget. --apply writes only from the desk's job (refused under a Claude Code session), on
 `lighthouse/ops-host`, only to a check.yml in the variable form (another is reported, never
 written), only when the pick changed, and logs the old value and the call that restores it to
-the log dir's ci-pick.jsonl. CircleCI lanes are reported only: a variable moves no check there.
+the log dir's ci-pick.jsonl. A CircleCI lane is never picked for `check`: a variable moves no check
+there. It is the Linux share's switch instead, where check.yml reads CI_LINUX_ELSEWHERE: with no lane
+under budget (each read as above, unread never chosen) the share goes off (the runner takes the whole
+line), as it does when it may stand on a lane that is out and a refused move or an unread variable keeps
+it there; with one, it comes back on only while main requires check-linux. Where several CircleCI lanes
+run linux, the share takes the one with the most month left, moving the repository variable
+CI_LINUX_TARGET, which check-linux.yml's trigger reads before .circleci/project-slug, to the project
+that lane's `projects` names for this repo ({"<owner>/<repo>": "<project slug>"}: a lane is an org, and
+an org holds many projects). A lane that names no project here is never chosen beside one that does,
+nor one whose project the repo's check-linux.yml cannot reach; with no lane naming one, the first is
+judged and nothing moves, unless the variable holds a project no lane names, which turns the share off.
+A move waits an hour after the last one unless the lane it leaves is out.
+An Actions lane (provider `actions`, GitHub's hosted runners, judged by the account's minutes) whose
+`projects` names this repo (`"actions"`) runs the share alone: the CircleCI lanes are read and said, never
+chosen, and with it out the share goes off (linux-on-actions, 2026-11-02).
+Each flip has the same guards, and is logged the same way.
 """
 import argparse
 import calendar
@@ -254,16 +295,20 @@ sys.path.insert(0, os.path.join(MOD, "lib"))
 import core_path  # noqa: E402 — the regatta core; none: one line, exit 2
 core_path.require()
 import common  # noqa: E402
-# The self-hosted kind's name (the header): the owner's repos say the first runner Mac's, which
-# the overlay writes to `wharf/ci-runner-kind`; read once, at import, like the rest of the table.
-SELF = common.config_line("wharf/ci-runner-kind") or "self-hosted"
+# The self-hosted kind's name, and the older names ci.json and --to read as it (the header): a kind
+# named after a machine is a host name in CI logic (the owner, 2026-10-31). The aliases are the
+# overlay's `wharf/ci-runner-kind`, read once, at import, like the rest of the table.
+SELF = "self-hosted"
+KIND_ALIASES = tuple(n for n in common.config_lines("wharf/ci-runner-kind") or ()
+                     if n not in (SELF, "actions", "circleci"))
 CODE_TEMPLATES = os.path.join(MOD, "templates", "code")
 ACTIONS_TEMPLATE = os.path.join(CODE_TEMPLATES, ".github", "workflows", "check.yml")
 CIRCLECI_TEMPLATE = os.path.join(MOD, "templates", "ci", "circleci-check.yml")
 CONTEXT = {"actions": "check", "circleci": "ci/circleci: check", SELF: "check"}
 ACTIONS_KINDS = ("actions", SELF)  # one check.yml on GitHub Actions; self-hosted: runs-on and GUARD_STEP
 # The labels a self-hosted runner gets by itself (config.sh adds the OS and the architecture):
-# the rest of the labels key are the Mac's own, passed to config.sh --labels
+# the rest of the labels key are the Mac's own, passed to config.sh --labels where the capabilities
+# file does not list the runner
 HOSTED_IMAGE = re.compile(r"^(ubuntu|macos|windows)-[\w.-]+$", re.I)
 AUTOMATIC_LABELS = ("self-hosted", "macos", "linux", "windows", "x64", "arm64", "arm")
 RUNS_ON_VAR = "CI_RUNS_ON"   # the variable form's name when none is given (regatta#53's)
@@ -307,6 +352,14 @@ class Refusal(Exception):
     pass
 
 
+def kind_of(name):
+    """A provider as ci.json or --to names it, an older name of the self-hosted kind read as the kind;
+    None for what is no name (a list in a hand-edited ci.json), which no reader takes for a provider."""
+    if not isinstance(name, str):
+        return None
+    return SELF if name in KIND_ALIASES else name
+
+
 # --- the runner Mac's private values (the docstring; wharf's README, "Private values") -------
 
 def config_key(name):
@@ -319,15 +372,15 @@ def config_key(name):
 
 
 def runner_labels(required=True, given=None):
-    """runs-on's labels for the runner Mac, from `wharf/ci-runner-labels` (or `given`, --labels'
-    list): self-hosted among them and at least one of the Mac's own, or a refusal naming the file to
+    """The runner Mac's labels, from `wharf/ci-runner-labels` (or `given`, --labels' list), which
+    name it and register a runner the capabilities file does not list: self-hosted among them and at least one of the Mac's own, or a refusal naming the file to
     write. required=False, for reading a repo's files (which kind, which labels status asks for):
     None instead of a refusal. Read once per command and passed down (review 2026-10-21, 12)."""
     try:
         lines = given if given is not None else config_key("ci-runner-labels")
         path = "--labels" if given is not None else common.CONFIG / "wharf" / "ci-runner-labels"
         if not lines:
-            raise Refusal("no runner labels: write the runner Mac's runs-on labels to %s, one per "
+            raise Refusal("no runner labels: write the runner Mac's labels to %s, one per "
                           "line (self-hosted, macOS and one of its own, e.g. its host name)" % path)
         labels = tuple(dict.fromkeys(lines))
         if "self-hosted" not in {l.lower() for l in labels} or not own_labels(labels):
@@ -385,13 +438,19 @@ def git(repo, *args):
     return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True).stdout.strip()
 
 
-def gh(*args, data=None):
-    """gh api, JSON in and out; returns (ok, parsed-or-text)."""
+def gh(*args, data=None, token=None):
+    """gh api, JSON in and out; returns (ok, parsed-or-text). token: this one call as that token
+    (GH_TOKEN), never the gh login's; only gh_read passes one (the admin-only reads)."""
     cmd = ["gh", "api", *args]
     if data is not None:
         cmd += ["--input", "-"]
-    p = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
-                       capture_output=True, text=True)
+    env = dict(os.environ, GH_TOKEN=token) if token else None
+    try:
+        p = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
+                           capture_output=True, text=True, env=env)
+    except FileNotFoundError:
+        # a job or shell whose PATH lacks gh (a plain ssh shell on the ops host): unread, never a traceback
+        return False, "gh is not on PATH"
     out = p.stdout.strip()
     try:
         out = json.loads(out) if out else None
@@ -466,7 +525,7 @@ def load_ci(repo):
 def required_context(repo, provider):
     """main's required check: ci.json's `context` for this provider, else the provider's default."""
     ci = load_ci(repo)
-    if ci.get("provider") == provider and ci.get("context"):
+    if kind_of(ci.get("provider")) == provider and ci.get("context"):
         return ci["context"]
     return CONTEXT[provider]
 
@@ -481,24 +540,27 @@ def provider_from(get, labels=None):
         ci = json.loads(get(".github/ci.json") or "{}")
     except ValueError:
         ci = {}
-    if isinstance(ci, dict) and ci.get("provider"):
-        return ci["provider"], "ci.json"
+    kind = kind_of(ci.get("provider")) if isinstance(ci, dict) else None
+    if kind:
+        return kind, "ci.json" if kind == ci["provider"] else "ci.json, by its older name %s" % ci["provider"]
     if get(".circleci/parts/check.yml") is not None:
         return "circleci", "inferred: .circleci/parts/check.yml"
     wf = get(".github/workflows/check.yml")
     if wf is not None:
-        if on_runner_mac(wf, labels):
+        needs = literal_needs(ci) if isinstance(ci, dict) and "needs" in ci else None
+        if on_runner_mac(wf, labels) or own_runs_on(wf, None, needs):
             return SELF, "inferred: .github/workflows/check.yml runs on the runner Mac"
         return "actions", "inferred: .github/workflows/check.yml"
     return None, "no check in CI"
 
 
 # runs-on, as this tool reads it. Its own self-hosted file takes one of two forms and nothing else is
-# the tool's (review 2026-10-21, 3-5): the labels key's labels literally, or the variable form
-# exactly as var_runs_on spells it. Any other runs-on (`[self-hosted, linux, gpu]`, a `vars.X` of
-# the repo's own) is a hand edit: a switch holds it like any other (--force drops it), --runner never
-# writes its variable, and it is self-hosted only when it names one of the labels key's own labels.
-RUNS_ON_LINE = re.compile(r"^( *)runs-on:(.*)$", re.M)
+# the tool's (review 2026-10-21, 3-5; the header): a literal of what ci.json's `needs` asks for (or the
+# labels key's labels literally, as it wrote before 2026-10-31), or the variable form exactly as
+# var_runs_on spells it. Any other runs-on (`[self-hosted, linux, gpu]`, a `vars.X` of the repo's own)
+# is a hand edit: a switch holds it like any other (--force drops it), --runner never writes its
+# variable, and without ci.json it is self-hosted only when it names one of the labels key's own labels.
+RUNS_ON_LINE = re.compile(r"^( *)[\"']?runs-on[\"']?[ \t]*:(.*)$", re.M)
 VAR_NAME = re.compile(r"(?!GITHUB_)[A-Za-z_][A-Za-z0-9_]*", re.I)
 
 
@@ -578,23 +640,34 @@ def runs_on_var(text):
     return next((var_form(v) for _, v in runs_on_lines(text) if var_form(v)), None)
 
 
-def own_runs_on(text, labels):
+def own_runs_on(text, labels, needs=None):
     """runs-on as this tool writes it, as the file has it (for comparing the file with its
-    template): the variable form, or the labels key's labels literally (labels: the key's; None,
-    the variable form only). None when the file has neither."""
+    template): the variable form; a literal of `self-hosted`, the OS the repo needs and any of its
+    capabilities, so a repo that adds one to `needs` gets its re-run (needs: repo_needs', None for no
+    such literal), and never another OS, which is a hand edit on a runner of that OS; or the labels
+    key's labels literally, the form before 2026-10-31 (labels: the key's; None for no such literal).
+    None when the file has none of them."""
     for written, v in runs_on_lines(text):
-        if var_form(v) or (labels and flow_labels(v) and lowered(flow_labels(v)) == lowered(labels)):
+        found = flow_labels(v)
+        if var_form(v) or (labels and found and lowered(found) == lowered(labels)):
+            return written
+        rest = lowered(found) - {SELF}
+        if needs is not None and SELF in lowered(found) and rest <= needs and needs & set(OS_WORDS) <= rest:
             return written
     return None
 
 
 def on_runner_mac(text, labels):
-    """Whether a check.yml runs on the runner Mac: its runs-on is the variable form, or a literal
-    naming one of the labels key's own labels (`[self-hosted, macOS, <label>]`, `[macOS, <label>]`,
-    the label alone), as the first Mac's name once did (review 2026-10-21, 5). From the config,
-    never a name here; without the key, only the variable form says so."""
+    """Whether a check.yml runs on the runner Mac: its runs-on is the variable form, a literal of
+    `self-hosted`, `macOS` and no label of a runner's own (`[self-hosted, macOS]`, this tool's literal
+    for a repo that needs no capability), or a literal naming one of the labels key's own labels
+    (`[self-hosted, macOS, <label>]`, `[macOS, <label>]`, the label alone), as the first Mac's name
+    once did (review 2026-10-21, 5). From the config, never a name here; without the key, only the
+    first two say so."""
     own = lowered(own_labels(labels))
-    return any(var_form(v) or own & lowered(flow_labels(v)) for _, v in runs_on_lines(text))
+    def names_it(found):
+        return own & lowered(found) or ({SELF, "macos"} <= lowered(found) and not own_labels(found))
+    return any(var_form(v) or names_it(flow_labels(v)) for _, v in runs_on_lines(text))
 
 
 def literal_labels(text, labels=None):
@@ -647,7 +720,7 @@ def pick_runs_on_var(repo, given, labels, twin=False):
         return have
     if twin or publishes_workflows(repo):
         return RUNS_ON_VAR
-    if text is not None and on_runner_mac(text, labels):
+    if text is not None and (on_runner_mac(text, labels) or own_runs_on(text, None, needs_of(repo))):
         return None
     if os.path.isdir(p(repo, ".helloworld")):
         return RUNS_ON_VAR
@@ -689,10 +762,13 @@ AUTOMERGE_FORM = re.compile(r"\$\{\{\s*fromJSON\(vars\.\w+_AUTOMERGE\s*\|\|\s*va
 
 
 def runs_on_runner_mac(text, labels):
-    """For the scan only: on_runner_mac, or any runs-on naming self-hosted (`[self-hosted, macOS]`,
-    an expression holding it), which the runner Mac takes too (landing review 2026-10-21, 4). A wider test
+    """For the scan only: on_runner_mac, or any runs-on naming self-hosted (`[self-hosted, gpu]`,
+    an expression holding it) or GitHub's own `macOS` label (`[macOS, gpu]`), which the runner Mac takes too (landing review 2026-10-21, 4). A wider test
     than on_runner_mac, which decides a re-run's form and stays the tool's own."""
     return (on_runner_mac(text, labels) or any("self-hosted" in w.lower() for w, _ in runs_on_lines(text))
+            or any("macos" in lowered(flow_labels(v)) for _, v in runs_on_lines(text))
+            or any(SELF in i.lower() or "macos" in lowered(flow_labels(i))
+                   for m in RUNS_ON_LINE.finditer(text) for i in runs_on_items(text, m.end()))
             or any(AUTOMERGE_FORM.fullmatch(v or "") for _, v in runs_on_lines(text)))
 
 
@@ -963,7 +1039,7 @@ def render(template, placeholder, cmd):
 
 def render_workflow(kind, cmd, runs_on=None, guard=True):
     """check.yml for actions or self-hosted: the template, and for self-hosted its one runs-on line
-    swapped for runs_on (the caller's: the labels key's, or a file's own when comparing) and the
+    swapped for runs_on (the caller's: what the repo needs, or a file's own when comparing) and the
     GIT_CONFIG_GLOBAL step first (guard=False: without it, as the tool wrote it before 2026-10-21,
     for comparing an older file). One template for both, so the draft skip and the concurrency
     block cannot drift."""
@@ -988,9 +1064,10 @@ def render_workflow(kind, cmd, runs_on=None, guard=True):
     def swap(m):
         pad = m.group(1)
         # Published with the file wherever check.yml is (a public twin's): this block, like the
-        # template's header, names no machine, login or account; in the literal form the labels
-        # on the runs-on line do, which is why a repo with a twin takes the variable form. The
-        # suite scans the rendered file against the private word list where one is installed.
+        # template's header, names no machine, login or account; the literal form's labels say what
+        # the runner carries, which a repo with a twin keeps out of its public file with the
+        # variable form. The suite scans the rendered file against the private word list where
+        # one is installed.
         var = var_form(yaml_value(runs_on))
         via = ("%s# runs-on reads the repository variable %s (a JSON list of labels), ubuntu-latest\n"
                "%s# where it is unset (a public twin, a fork): this file names no machine.\n"
@@ -1033,11 +1110,34 @@ def is_private(s):
     return out
 
 
+# A read-only token for the admin-only reads: GitHub answers the fork-PR setting and the runner
+# list to a repo admin alone, so the machine login the desk's gh runs as reads a 404, and the trust
+# guard refused the Mac lane on every pass (198 times by 2026-11-02). lighthouse's `ops pick` passes
+# the desk token here (ops.env's GITHUB_TOKEN, given Administration: read on the repo). main's caller
+# pops it from the environment at the start, so no child process inherits it; gh_read alone uses it,
+# as GH_TOKEN on that one call.
+READ_VAR = "WHARF_READ_TOKEN"
+READ_TOKEN = None
+
+
+def gh_read(path):
+    """A GET the gh login may lack the rights for: the login first, then READ_TOKEN's once.
+    (ok, parsed) from the first read that answered a dict, else (False, both answers said)."""
+    whys = []
+    for tok in [None] + ([READ_TOKEN] if READ_TOKEN else []):
+        ok, out = gh(path, token=tok)
+        if ok and isinstance(out, dict):
+            return True, out
+        whys.append(("%s: %s" % (READ_VAR, out)) if tok else str(out))
+    return False, "; ".join(whys)
+
+
 def runs_fork_prs(s):
     """Whether a private repo runs workflows from fork pull requests (Settings > Actions >
-    General > Fork pull request workflows); unread is a refusal, as with .private."""
-    ok, out = gh("repos/%s/actions/permissions/fork-pr-workflows-private-repos" % s)
-    flag = out.get("run_workflows_from_fork_pull_requests") if ok and isinstance(out, dict) else None
+    General > Fork pull request workflows); unread is a refusal, as with .private. Read through
+    gh_read: the setting is a repo admin's alone."""
+    ok, out = gh_read("repos/%s/actions/permissions/fork-pr-workflows-private-repos" % s)
+    flag = out.get("run_workflows_from_fork_pull_requests") if ok else None
     if not isinstance(flag, bool):
         raise Refusal("could not read whether %s runs fork pull requests' workflows (%s): the "
                       "runner Mac runs a repo's jobs only when it does not" % (s, out))
@@ -1354,16 +1454,28 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
         raise Refusal("automerge.yml runs on GitHub Actions and waits for a check.yml run, so under "
                       "CircleCI it would never arm; remove it first or keep actions")
     # the labels key, read once (review 2026-10-21, 12): for self-hosted first, in either form
-    # (--runner install will set the variable to them), so without it there is nothing to write
+    # (--runner install takes the runner's name from it), so without it there is nothing to write
     # and GitHub is not asked; for the other kinds only to tell this tool's runs-on from a hand edit
     labels = runner_labels(required=(to == SELF))
-    runs_on = None
+    asked = runs_on = None
+    table = readable_caps()
     if to == SELF:
         var = pick_runs_on_var(repo, var, labels, twin)
         # a re-run keeps the split form where the file has it, as it keeps the variable form
         wf = p(repo, ".github", "workflows", "check.yml")
         full = full_form(read(wf)) if os.path.isfile(wf) else False
-        runs_on = var_runs_on(var, full) if var else "[%s]" % ", ".join(labels)
+        if var:
+            runs_on = var_runs_on(var, full)
+        else:
+            asked = needed_labels(load_ci(repo))
+            runs_on = "[%s]" % ", ".join(asked)
+        # `needs` is open to any label, so a typo reads as a capability: said here, while the file
+        # is being written, not once a job has queued for good
+        unlisted = sorted(n for n in own_labels(needs_of(repo)) if n not in LANE_RUNS and table is not None
+                          and not any(n in lowered(c) for c in table.values()))
+        if unlisted:
+            print("  ⚠ no runner in %s lists %s: until one carries it the job queues; a mistyped `needs`, "
+                  "or a capability to add there" % (CAPS_KEY, ", ".join(unlisted)))
         refuse_forks(slug(repo), "a check on the runner Mac's self-hosted runner")
     was, _ = provider_on_disk(repo, labels)
     cmd = check_command(repo, check)
@@ -1385,7 +1497,7 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
     # file's own command, not the new one (check.yml with either runs-on, ubuntu's or this tool's
     # own self-hosted one: a runs-on of any other shape is a hand edit, review 2026-10-21, 4)
     wf_text = read(wf) if os.path.exists(wf) else None
-    own_on = own_runs_on(wf_text, labels)
+    own_on = own_runs_on(wf_text, labels, needs_of(repo))
     for path, key, renders in (
             (wf, "run", lambda c: workflow_renders(c, own_on)),
             (part, "command", lambda c: [render(CIRCLECI_TEMPLATE, "@COMMAND@", c)])):
@@ -1400,10 +1512,11 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
             # difference (another Mac's labels, or a Mac without the labels key)
             why = ""
             if path == wf and own_on is None and literal_labels(wf_text, labels):
-                why = (" (its runs-on, [%s], is not this tool's: %s)" % (
-                    ", ".join(literal_labels(wf_text, labels)),
-                    "the labels key here holds [%s]" % ", ".join(labels) if labels
-                    else "%s is not set here" % (common.CONFIG / "wharf" / "ci-runner-labels")))
+                why = (" (its runs-on, [%s], is not this tool's: that is `self-hosted`, the OS and what "
+                       ".github/ci.json's `needs` lists, so a label just dropped from `needs` leaves the "
+                       "line to edit by hand%s)" % (
+                           ", ".join(literal_labels(wf_text, labels)),
+                           "" if labels else "; %s is not set here" % (common.CONFIG / "wharf" / "ci-runner-labels")))
             raise Refusal("%s holds more than its template and its check command (setup steps, env, "
                           "other jobs, an older template, a runs-on of its own)%s; a switch keeps only "
                           "the command: port the rest by hand, then --force (and --check CMD if the "
@@ -1414,6 +1527,11 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
         raise Refusal("the check command runs %s on the runner Mac, as its login (above): pass "
                       "--check without it, or --force" % ", ".join(
                           sorted({h[3] for h in hits if h[0] == "the check command"})))
+    was_on = literal_labels(wf_text, labels) if asked and wf_text else None
+    if was_on and lowered(was_on) - lowered(asked):
+        # a literal naming a Mac may have stood for a real need: said, as this widens where the job runs
+        print("  runs-on [%s] → [%s]: any runner carrying these takes the job; a real need goes in "
+              ".github/ci.json's `needs`" % (", ".join(was_on), ", ".join(asked)))
     # plan everything, validate, and only then write: a refusal leaves the checkout as it was
     writes, removes = {}, []
     if to == "circleci":
@@ -1438,8 +1556,8 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
     old = load_ci(repo)
     # a name belongs to the CI that reports it: kept on the same provider, and between actions and
     # self-hosted, where the same job of the same check.yml reports it
-    if context is None and (old.get("provider") == to or
-                            {old.get("provider"), to} <= set(ACTIONS_KINDS)):
+    if context is None and (kind_of(old.get("provider")) == to or
+                            {kind_of(old.get("provider")), to} <= set(ACTIONS_KINDS)):
         context = old.get("context")
         if to in ACTIONS_KINDS and matrix_names([context]):
             # a matrix job's name, and the check.yml written here has one job: it would never
@@ -1451,6 +1569,9 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
     if prot is not None:
         writes[p(repo, ".github", "main-protection.json")] = prot
     ci = {"provider": to, "check": cmd}
+    if "needs" in old:
+        # what the check needs from a runner is the repo's, whichever CI runs it
+        ci["needs"] = old["needs"]
     if context:
         ci["context"] = context
     # a context this branch named before and now replaces may already be required on GitHub
@@ -1500,11 +1621,12 @@ def switch(repo, to, check, dry, context=None, force=False, var=None, twin=False
             print("  runs-on reads the repository variable %s: `ci-provider %s --runner install` "
                   "installs the runner (downloads actions/runner onto the runner Mac) and then sets "
                   "%s to %s; until then the check runs on ubuntu-latest, hosted"
-                  % (var, repo, var, variable_value(labels)))
+                  % (var, repo, var, variable_value(
+                      capped_labels(own_labels(labels)[0], labels, table) or labels)))
         else:
             print("  the runner, once per repo: `ci-provider %s --runner install` (downloads "
                   "actions/runner onto the runner Mac); until one labelled %s is online the job "
-                  "queues and `check` never reports" % (repo, ", ".join(labels)))
+                  "queues and `check` never reports" % (repo, ", ".join(asked)))
         if automerge:
             print("  automerge.yml stays on ubuntu-latest, hosted, so no runner-Mac job runs with an "
                   "authenticated `gh` it does not need: about one hosted Linux minute per PR event, "
@@ -1747,7 +1869,13 @@ def wanted_labels(repo, s, labels):
             print("  ⚠ runs-on variable %s is not a JSON label list: check.yml's fromJSON fails" % var)
             return None
         return tuple(asked)
-    return literal_labels(text, labels) or labels
+    # a literal naming no `self-hosted`, or a block list, before the key: a runner carrying
+    # capabilities no longer carries the key's own label
+    lists = literal_runs_on([("check.yml", text or "")])
+    if any(l is None for _, _, l, _ in lists) or any(by_variable(v) for _, v in runs_on_lines(text)):
+        return None   # a shape read here, or a variable this tool did not write: nothing claimed
+    other = next((l for _, _, l, _ in lists if l and not hosted_name(l)), None)
+    return literal_labels(text, labels) or other or labels
 
 
 def automerge_runner(repo, s, var):
@@ -1769,8 +1897,9 @@ def automerge_runner(repo, s, var):
 
 
 def runners_of(s):
-    """The repo's self-hosted runners from GitHub, or None when unread (it needs admin rights)."""
-    ok, out = gh("repos/%s/actions/runners" % s)
+    """The repo's self-hosted runners from GitHub, or None when unread (it needs admin rights:
+    gh_read, so the desk's read token serves where the login cannot)."""
+    ok, out = gh_read("repos/%s/actions/runners" % s)
     if not ok or not isinstance(out, dict):
         return None, out
     return out.get("runners") or [], None
@@ -1808,6 +1937,7 @@ class Target:
 
     def __init__(self, host, labels, name=None, instance=1):
         self.host, self.labels, self.instance = host, labels, instance
+        self.route = None   # the labels a variable may route on, where a label kept beside them may not
         base = name or own_labels(labels)[0]
         self.name = base if instance == 1 else "%s-%d" % (base, instance)
 
@@ -1976,15 +2106,19 @@ def same_labels(value, labels):
         return False
 
 
-def set_variable(s, name, labels, dry):
+def set_variable(s, name, labels, dry, raw=False):
     """The runs-on variable set to labels and read back: POST when GitHub has none of that name,
     PATCH when it holds another value (REST "Actions variables", read 2026-10-20). Returns the
-    call that undoes the write, None when nothing was written."""
-    want = variable_value(labels)
+    call that undoes the write, None when nothing was written. raw: labels is the value as written,
+    a plain word (the share's `true`), never a JSON list."""
+    want = labels if raw else variable_value(labels)
     have, err = variable(s, name)
     if err:
         raise Refusal("could not read %s's variable %s: %s" % (s, name, err))
-    if have is not None and same_labels(have, labels):
+
+    def same(v):
+        return v == want if raw else same_labels(v, labels)
+    if have is not None and same(have):
         print("  variable %s already %s" % (name, have))
         return None
     if dry:
@@ -1999,7 +2133,7 @@ def set_variable(s, name, labels, dry):
     if not ok:
         raise Refusal("GitHub refused variable %s: %s" % (name, out))
     back, err = variable(s, name)
-    if back is None or not same_labels(back, labels):
+    if back is None or not same(back):
         raise Refusal("variable %s read back %s, not %s" % (name, back if back is not None else err, want))
     print("  variable %s: %s (read back)" % (name, back))
     if have is not None:
@@ -2057,17 +2191,13 @@ def served(s, value, name):
     online or not (a fleet Mac asleep is still the fleet): while any does, an install leaves the
     variable. A runner list that cannot be read is a refusal, never "none serve it": a write would
     follow (review 2026-10-27)."""
-    try:
-        want = json.loads(value)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(want, list) or not all(isinstance(l, str) for l in want):
+    want = variable_labels(value, bare=False) if value else None
+    if not want:
         return []
     runners, err = runners_of(s)
     if runners is None:
         raise Refusal("could not read %s's runners (%s), so not whether others serve the variable: "
                       "nothing written" % (s, err))
-    want = {l.lower() for l in want}
     return [r.get("name") for r in runners
             if r.get("name") != name and want <= {l.lower() for l in labels_of(r)}]
 
@@ -2094,14 +2224,14 @@ def no_variable(repo, text, labels):
     the repo has a public twin, and check.yml reads none in this tool's form (review 2026-10-21,
     16). None when nothing needs saying."""
     try:
-        on_self = load_ci(repo).get("provider") == SELF
+        on_self = kind_of(load_ci(repo).get("provider")) == SELF
     except Refusal:
         on_self = False
     if not (on_self or os.path.isdir(p(repo, ".helloworld"))):
         return None
     if text is None:
         why = "there is no .github/workflows/check.yml"
-    elif own_runs_on(text, labels):
+    elif own_runs_on(text, labels, needs_of(repo)):
         why = "check.yml's runs-on names the labels itself (the literal form)"
     else:
         values = [v for _, v in runs_on_lines(text)]
@@ -2116,21 +2246,19 @@ def route_variable(s, var, t, dry):
     for labels this runner carries (it joins the fleet the variable names: never narrowed to it), or
     for labels another registered runner carries. Then it routes the check somewhere that works, and
     a further runner Mac must not re-route it (the check would wait on the newcomer alone): left as
-    it is, with the calls that would move it printed."""
+    it is, with the calls that would move it printed. t.route: a capped runner's capabilities, so a
+    label kept for a literal never reaches the variable."""
+    labels = t.route or t.labels
     have, err = variable(s, var)
     if err:
         raise Refusal("could not read %s's variable %s: %s" % (s, var, err))
-    try:
-        asked = json.loads(have) if have is not None else None
-    except ValueError:
-        asked = None
-    if (isinstance(asked, list) and asked and all(isinstance(l, str) for l in asked)
-            and lowered(asked) <= lowered(t.labels)):
+    asked = variable_labels(have, bare=False) if have else None
+    if asked and asked <= lowered(labels):
         print("  variable %s already routes to %s: %s carries its labels" % (var, have, t.name))
         return
-    others = [] if have is None or same_labels(have, t.labels) else served(s, have, t.name)
+    others = [] if have is None or same_labels(have, labels) else served(s, have, t.name)
     if not others:
-        set_variable(s, var, t.labels, dry)
+        set_variable(s, var, labels, dry)
         return
     print("  variable %s left at %s: registered runner%s %s carr%s its labels. For %s to take the "
           "check too, give the others a shared label of this one's (gh api -X POST repos/%s/actions/"
@@ -2138,7 +2266,7 @@ def route_variable(s, var, t, dry):
           "repos/%s/actions/variables/%s -f name=%s -f value=%s"
           % (var, have, "" if len(others) == 1 else "s", ", ".join(others),
              "ies" if len(others) == 1 else "y", t.name, s, s, var, var,
-             shlex.quote(variable_value(t.labels))))
+             shlex.quote(variable_value(labels))))
 
 
 def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
@@ -2147,12 +2275,54 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
     # Read once here and passed down (review 2026-10-21, 12); --host and --labels stand in for them
     given_host = host
     t = Target(runner_host(host), runner_labels(given=labels), name, instance)
-    host, labels, name = t.host, t.labels, t.name
     wf = p(repo, ".github", "workflows", "check.yml")
     text = read(wf) if os.path.isfile(wf) else None
     # only the variable form this tool writes: a variable the file reads any other way is the
     # repo's own, never set here (review 2026-10-21, 3)
     var = runs_on_var(text)
+    capped, kept, stays, key_labels = False, [], [], t.labels
+    table = load_caps() if verb == "install" and labels is None else None
+    listed = table is not None and t.name in table
+    # every list a job routes on, read as caps reads them: a fresh registration meets no other judge.
+    # Fetched only where a write rests on it: elsewhere they word the warnings below
+    texts = workflows(repo, remote=listed) if verb == "install" else []
+    lists = literal_runs_on(texts)
+    asked = [l for _, _, l, _ in lists if l]
+    unread = [(f, v, x) for f, v, l, x in lists if l is None]
+    if listed:
+        # registered with what it can do (the capabilities' section): the labels key's automatic
+        # labels and the table's capabilities. The Mac's own label only names it, unless a runs-on
+        # still asks for it (`[self-hosted, macOS, <the Mac's label>]`, as --to self-hosted wrote before
+        # 2026-10-31, or a file no reader here can judge that names it): that one stays beside them,
+        # never instead of them, or no runner would carry it (the landing reviews, 2026-10-31 and 11-01)
+        if not table[t.name]:
+            raise Refusal("%s lists %s with no capabilities: a runner that takes no job; list one, "
+                          "or give --labels" % (CAPS_KEY, t.name))
+        # the variables a job routes on: a split form's _FULL, automerge's own. The one route_variable
+        # moves holds its label only until it has moved
+        moving = set()
+        for other in routed_vars(texts):
+            value, err = variable(s, other)
+            if err:
+                raise Refusal("could not read %s's variable %s (%s): nothing done" % (s, other, err))
+            want = variable_labels(value) if value else set()
+            if want is None:
+                unread.append(("variable %s" % other, value, value))
+            elif other == (var or "").upper():
+                moving = want
+            else:
+                asked.append(want)
+        wanted = {l.lower() for one in asked for l in one}
+        own = [l for l in own_labels(t.labels) if l.lower() not in lowered(table[t.name])]
+        kept = [l for l in own if l.lower() in wanted or any(names_label(x, l) for _, _, x in unread)]
+        stays = [l for l in own if l.lower() in moving and l not in kept]
+        t.route = capped_labels(t.name, t.labels, table)
+        t.labels = t.route + tuple(kept)
+        capped = True
+        if kept:
+            print("  %s keeps %s beside its capabilities: a runs-on still asks for it, and `--runner "
+                  "caps` refuses to drop it until none does" % (t.name, ", ".join(kept)))
+    host, labels, name = t.host, t.labels, t.name
     where = ("%s:~/%s" % (host, runner_dir(s, instance)) if instance > 1 else
              "%s:~/%s (or ~/%s, installed before 2026-10-19)" % (host, runner_dir(s), flat_runner_dir(s)))
     if verb == "status":
@@ -2166,7 +2336,17 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
         refuse_forks(s, "a runner on the runner Mac")
         # another Mac than the keys' logs in as whoever --host says, never the key's user
         warn_writers(s, runner_user(given_host))
-        none_set = None if var else no_variable(repo, text, labels)
+        none_set = None if var else no_variable(repo, text, key_labels)
+        for f, v, _ in unread:
+            print("  ⚠ %s's runs-on (%s) is no label list or variable this tool reads: not judged" % (f, v))
+        uncarried = list(dict.fromkeys(l for one in asked if not hosted_name(one) for l in own_labels(one)
+                                       if l.lower() not in lowered(labels)))
+        if uncarried:
+            # the literal form's capabilities: registered without them, a job may queue for good
+            print("  ⚠ a runs-on asks for %s, which runner %s would not carry: unless another runner "
+                  "does, list %s under %s in %s (or give --labels), or the job queues"
+                  % (", ".join(uncarried), name, "it" if len(uncarried) == 1 else "them", name,
+                     common.CONFIG / "wharf" / CAPS_KEY))
         if dry:
             builds = "; ".join("%s %s (%d bytes, SHA-256 %s)" % ((arch,) + (u, z, h[:12]))
                                for arch in ("arm64", "x86_64") for u, z, h in [runner_asset(arch)])
@@ -2189,12 +2369,22 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
         rc = ssh_runner("install", s, t, None if done else runner_token(s, "registration"), asset=asset)
         if rc:
             raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
+        if done and capped:
+            # a configured runner skips config.sh, so its labels are the ones it was registered
+            # with: set them to the table's before waiting for them (landing review, 2026-10-31)
+            # what the variable asks for stays until route_variable, below, has moved it
+            caps(repo, False, only=name, keep=kept + stays, texts=texts)
         wait_online(s, t)
         # only now: set before the runner is online, every job would queue on it
         if var:
             route_variable(s, var, t, dry=False)
         elif none_set:
             print(none_set)
+        if stays:
+            # nothing else drops it, and a label kept for a moved variable routes on a host name
+            # (landing review 2026-11-01)
+            print("  %s still carries %s, which the variable asked for before it moved: `ci-provider %s "
+                  "--runner caps` drops it once no runs-on asks for it" % (name, ", ".join(stays), repo))
         return
     if dry:
         print("would: if the runner Mac reports it configured, take a remove token, and over ssh in "
@@ -2230,6 +2420,336 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
                   "labels is back; %s sends the check to ubuntu-latest" % (var, value, delete))
 
 
+# --- capabilities: what a runner can do, never which machine it is (the owner, 2026-10-31) -------
+#
+# "let's stop using host names in CI logic … use the concept of capabilities, not host names", and
+# "capabilities can be assigned via config so it's instant". A job's runs-on variable lists what it
+# needs; a runner's custom labels are what it can do; GitHub's runs-on is all-of, so the match is the
+# routing. `wharf/ci-runner-caps.json` maps each runner's name to its capabilities, and --runner caps
+# makes GitHub's custom labels equal to it with one PUT per runner (REST "Set custom labels for a
+# self-hosted runner for a repository"): no re-registration, no workflow edit, a queued job matched at
+# once. The vocabulary is the README's ("Capabilities"); a capability is any label, so a repo may
+# name its own. A runner's name stays an identity for people and is never routed on.
+
+CAPS_KEY = "ci-runner-caps.json"
+CAP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+VAR_IN_RUNS_ON = re.compile(r"vars\.([A-Za-z_][A-Za-z0-9_]*)", re.I)   # GitHub's contexts ignore case
+BY_VARIABLE = re.compile(r"\$\{\{\s*(?:fromJSON\(\s*)?vars\.\w+(?:\s*\|\|\s*vars\.\w+)*"
+                         r"(?:\s*\|\|\s*'\"(?:ubuntu|macos|windows)-[\w.-]+\"')?\s*\)?\s*\}\}", re.I)
+
+
+def load_caps():
+    """`wharf/ci-runner-caps.json`: {runner name: [capability, …]}; None when there is no such file.
+    Unreadable, not JSON, or another shape is a refusal, never taken for absent: a write follows. An
+    automatic label (self-hosted, macOS, ARM64 …) is refused too: GitHub sets those, never a PUT."""
+    path = common.CONFIG / "wharf" / CAPS_KEY
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refusal("%s is unreadable (%s)" % (path, getattr(e, "strerror", None) or e))
+    try:
+        d = json.loads(text)
+    except ValueError as e:
+        raise Refusal("%s is not JSON (%s)" % (path, e))
+    if not isinstance(d, dict) or not all(isinstance(v, list) for v in d.values()):
+        raise Refusal("%s is not {runner name: [capability, …]}" % path)
+    for name, caps in d.items():
+        for c in caps:
+            if not isinstance(c, str) or not CAP_RE.match(c):
+                raise Refusal("%s: %s's capability %r is not a label (letters, digits, '.', '_', '-')"
+                              % (path, name, c))
+            if c.lower() in AUTOMATIC_LABELS:
+                raise Refusal("%s: %s lists %s, a label GitHub sets by itself: list capabilities only"
+                              % (path, name, c))
+    # GitHub's labels are case-insensitive: one per spelling, the first kept
+    out = {}
+    for name, caps in d.items():
+        seen, kept = set(), []
+        for c in caps:
+            if c.lower() not in seen:
+                seen.add(c.lower())
+                kept.append(c)
+        out[name] = kept
+    return out
+
+
+def readable_caps():
+    """The table, or None when it is absent or does not read: for a caller that only says something
+    from it. A write's caller takes load_caps' refusal."""
+    try:
+        return load_caps()
+    except Refusal:
+        return None
+
+
+def capped_labels(name, labels, table):
+    """What a runner registers with by the table: the labels key's automatic labels and its
+    capabilities, never the Mac's own label. None when the table does not list it, or lists nothing."""
+    if not table or not table.get(name):
+        return None
+    return tuple(l for l in labels if l.lower() in AUTOMATIC_LABELS) + tuple(table[name])
+
+
+def custom_labels(r):
+    """A runner's labels that a PUT sets: GitHub's `custom` ones (its `read-only` ones are the OS and
+    the architecture); a runner listed without types reads by AUTOMATIC_LABELS."""
+    labels = r.get("labels") or []
+    if all("type" in l for l in labels):
+        return [l.get("name", "") for l in labels if l.get("type") == "custom"]
+    return own_labels(labels_of(r))
+
+
+def workflows(repo, remote=True):
+    """(name, text) for each workflow GitHub may run: the checkout's, and with remote those of origin's
+    default branch where they differ, named `origin/<branch>:<file>`. A push and every other pull
+    request run that branch's file until a branch lands, so a checkout that has moved its runs-on says
+    nothing of what still asks for the old label (the landing review, 2026-11-01; bin/repos' ci_state
+    reads origin/main for the same reason). Fetched first, and a refusal when it cannot be read: a
+    write follows, and unread is never taken for absent (variable(), load_caps()). An origin with no
+    default branch yet runs nothing: said, and the checkout's stand alone."""
+    out, mine = [], {}
+    wdir = p(repo, ".github", "workflows")
+    for f in sorted(os.listdir(wdir)) if os.path.isdir(wdir) else []:
+        if f.endswith((".yml", ".yaml")):
+            mine[f] = read_loose(p(wdir, f))
+            out.append((f, mine[f]))
+    if not remote:
+        return out
+    def run(*args):
+        return subprocess.run(["git", "-C", repo, *args], capture_output=True, encoding="utf-8", errors="replace")
+    head = run("ls-remote", "--symref", "origin", "HEAD")
+    if head.returncode:
+        raise Refusal("could not reach origin (%s), whose workflows GitHub runs until a branch lands: nothing "
+                      "written" % (head.stderr.strip()[:200] or "no output"))
+    m = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$", head.stdout, re.M)
+    if not m:
+        print("  origin has no default branch yet: only this checkout's workflows judged")
+        return out
+    ref = "origin/%s" % m.group(1)
+    done = run("fetch", "-q", "origin", "+refs/heads/%s:refs/remotes/%s" % (m.group(1), ref))
+    listed = run("ls-tree", "-z", "--name-only", ref, "--", ".github/workflows/") if not done.returncode else done
+    if listed.returncode:
+        raise Refusal("could not read %s's workflows (%s), which GitHub runs until a branch lands: nothing "
+                      "written" % (ref, listed.stderr.strip()[:200] or "no output"))
+    for path in filter(None, listed.stdout.split("\0")):
+        f = os.path.basename(path)
+        if f.endswith((".yml", ".yaml")):
+            shown = run("show", "%s:%s" % (ref, path))
+            if shown.returncode:
+                raise Refusal("could not read %s:%s (%s): nothing written" % (ref, path, shown.stderr.strip()[:200]))
+            if shown.stdout != mine.get(f):
+                out.append(("%s:%s" % (ref, f), shown.stdout))
+    return out
+
+
+def routed_vars(texts):
+    """The repository variables any workflow's runs-on reads (check.yml's NAME and NAME_FULL,
+    automerge.yml's NAME_AUTOMERGE …), in file order. texts: workflows()'."""
+    names = []
+    for _, text in texts:
+        for m in RUNS_ON_LINE.finditer(text):
+            said = " ".join([yaml_value(m.group(2))] + runs_on_items(text, m.end()))
+            # a variable's name is upper case on GitHub, however a file spells it
+            names += [n for n in map(str.upper, VAR_IN_RUNS_ON.findall(said)) if n not in names]
+    return names
+
+
+def runs_on_items(text, end):
+    """The items of the YAML block list under a `runs-on:` whose line ends at offset end, as written."""
+    items = []
+    for line in text[end:].split("\n")[1:]:
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if not s.startswith("- "):
+            break
+        items.append(yaml_value(s[2:]))
+    return items
+
+
+def block_labels(text, end):
+    """runs_on_items as a label tuple; None when no list follows or an item is no plain label (an
+    expression)."""
+    items = [flow_labels(i) for i in runs_on_items(text, end)]
+    if not items or None in items:
+        return None
+    return tuple(l for one in items for l in one)
+
+
+def literal_runs_on(texts):
+    """(workflow, value, labels, its text) for each runs-on in workflows()' texts that names its
+    labels: `[self-hosted, macOS, x]`, `[macOS, x]`, the label alone (the header reads each as a
+    runner's) and a block list. labels None: anything else, whatever it is (an expression, a runner
+    group's mapping, a YAML anchor, tag or block scalar, a flow list over two lines, a variable mixed
+    with labels): a value reads only as plain labels, so a shape nobody listed is unread, never a
+    label no runner carries. A runs-on that is variables alone, by_variable's, is routed_vars'."""
+    found = []
+    for f, text in texts:
+        for m in RUNS_ON_LINE.finditer(text):
+            v = yaml_value(m.group(2))
+            if by_variable(v):
+                continue
+            labels = flow_labels(v) if v else block_labels(text, m.end())
+            if not all(CAP_RE.fullmatch(l) for l in labels or ()):
+                labels = None
+            found.append((f, v or ("[%s]" % ", ".join(labels) if labels else "a block of its own"), labels, text))
+    return found
+
+
+def by_variable(value):
+    """Whether a runs-on routes on repository variables alone: this tool's forms, or a chain of `vars.`
+    with at most a hosted image behind it (`${{ fromJSON(vars.A || vars.B) }}`, `${{ vars.A }}`)."""
+    return bool(var_form(value) or BY_VARIABLE.fullmatch(value))
+
+
+def names_label(text, label):
+    """Whether text holds the label as a word of its own (`box1`, not `box10` or `my-box1`)."""
+    return bool(re.search(r"(?<![\w.-])%s(?![\w.-])" % re.escape(label), text, re.I))
+
+
+def hosted_name(labels):
+    """Whether a literal is one hosted image's name; a runner may carry such a label all the same."""
+    return len(labels) == 1 and bool(HOSTED_IMAGE.match(next(iter(labels))))
+
+
+def variable_labels(value, bare=True):
+    """What a set variable routes on: asked_labels' list, or its one plain label, a JSON string or
+    bare (`${{ vars.RUNNER }}`), which routes as a list would; a hosted image's name is judged too, as
+    a runner may carry it. None for any other JSON (a runner group's mapping), which no reader here
+    can judge. bare False: read as this tool's `fromJSON(vars.X || …)` form reads it, where a bare
+    value is no JSON and fails the job, so it routes nowhere (None): served and route_variable, which
+    act on that form only (landing review 2026-11-01: a bare `box1` read as already routing)."""
+    want = asked_labels(value)
+    if want is not None:
+        return want
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        if not bare:
+            return None
+        parsed = value
+    return {parsed.strip().lower()} if isinstance(parsed, str) else None
+
+
+def asked_labels(value):
+    """A variable's value as the label list a job asks for; None for a hosted image's name."""
+    try:
+        want = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(want, list) and want and all(isinstance(l, str) for l in want):
+        return lowered(want)
+    return None
+
+
+def caps(repo, dry, only=None, keep=(), texts=None):
+    """--runner caps: every runner the table lists gets exactly its capabilities as custom labels;
+    one it does not list is left as it is, said. Refused before any write when a runs-on, a variable's
+    or a literal one, that some registered runner serves now would be served by none after (a job queued on it would wait up to
+    GitHub's 24 h): add the new capabilities, move the variables, then drop the old labels. only: the
+    one runner name install syncs; keep: labels it holds beside the table's, for a runs-on that still
+    asks for them; texts: workflows()', where the caller has read them. Prints the PUT that undoes
+    each write."""
+    s = slug(repo)
+    table = load_caps()
+    path = common.CONFIG / "wharf" / CAPS_KEY
+    if table is None:
+        raise Refusal("no capabilities: write %s, {\"<runner name>\": [\"<capability>\", …]} "
+                      "(wharf's README, \"Capabilities\")" % path)
+    runners, err = runners_of(s)
+    if runners is None:
+        raise Refusal("could not read %s's runners (%s): nothing written" % (s, err))
+    plan, after = [], {}
+    for r in runners:
+        name, old = r.get("name"), custom_labels(r)
+        fixed = [l for l in labels_of(r) if l not in old]
+        after[name] = lowered(labels_of(r))
+        if only is not None and name != only:
+            continue
+        if name not in table:
+            print("  runner %s: not in %s, left at %s" % (name, CAPS_KEY, ", ".join(old) or "no custom labels"))
+            continue
+        new = table[name] + list(keep)
+        if lowered(old) == lowered(new) and len(old) == len(new):
+            print("  runner %s: already %s" % (name, ", ".join(new) or "no capabilities"))
+            continue
+        after[name] = lowered(fixed + new)
+        plan.append((r, old, new))
+    names = {r.get("name") for r in runners}
+    if only is not None and only not in names:
+        raise Refusal("%s has no runner named %s: nothing written (its runners: %s)"
+                      % (s, only, ", ".join(sorted(n for n in names if n)) or "none"))
+    for name in table:
+        if name not in names and only is None:
+            print("  %s lists %s: %s has no runner of that name" % (CAPS_KEY, name, s))
+    before = {r.get("name"): lowered(labels_of(r)) for r in runners}
+    texts = workflows(repo) if texts is None else texts
+    asks, unread = [], []
+    for var in routed_vars(texts):
+        value, verr = variable(s, var)
+        if verr:
+            raise Refusal("could not read %s's variable %s (%s): nothing written" % (s, var, verr))
+        want = variable_labels(value) if value else set()
+        if want is None:
+            unread.append(("variable %s" % var, value, value))
+        elif want:
+            asks.append(("variable %s" % var, value, want, "Point the variable at capabilities first"))
+    # a literal runs-on routes on its labels as a variable does (`[self-hosted, macOS, <a runner's
+    # label>]`, as --to self-hosted wrote it before 2026-10-31): judged the same way, or caps strands it
+    # (landing review, 2026-10-31: twelve repos' check.yml were literal that day)
+    for f, value, literal, text in literal_runs_on(texts):
+        if literal is None:
+            unread.append((f, value, text))
+            continue
+        asks.append(("%s's runs-on" % f, value, lowered(literal),
+                     "Name capabilities in its runs-on first"))
+    for what, value, want, first in asks:
+        now = sorted(n for n, have in before.items() if want <= have)
+        then = sorted(n for n, have in after.items() if want <= have)
+        if now and not then:
+            raise Refusal("%s asks for %s, which %s carr%s now and no runner would after: "
+                          "nothing written. %s, or keep the old labels in %s until it is moved"
+                          % (what, value, ", ".join(now), "ies" if len(now) == 1 else "y", first, CAPS_KEY))
+        if now or then or not hosted_name(want):
+            print("  %s (%s): %s" % (what, value, ", ".join(then) if then else
+                                     "no registered runner carries it"))
+    # a runs-on no reader here can judge may still expand to a label this change takes off every
+    # runner (a matrix, a runner group): refused when its file names that label, said when it does not
+    dropped = sorted({l for _, old, new in plan for l in lowered(old) - lowered(new)}
+                     - set().union(*after.values()))
+    for f, value, text in unread:
+        named = [l for l in dropped if names_label(text, l)]
+        if named:
+            raise Refusal("%s's runs-on (%s) is no label list or variable this tool reads, and its text "
+                          "names %s, which this change takes off every runner: nothing written. Name "
+                          "capabilities there first, or keep the label in %s"
+                          % (f, value, ", ".join(named), CAPS_KEY))
+        print("  ⚠ %s's runs-on (%s) is no label list or variable this tool reads: not judged" % (f, value))
+    # additions before removals: a refusal partway leaves labels added, never a job's last runner
+    # gone (landing review, 2026-10-31)
+    plan.sort(key=lambda x: not lowered(x[1]) <= lowered(x[2]))
+    for r, old, new in plan:
+        call = "repos/%s/actions/runners/%s/labels" % (s, r.get("id"))
+        if dry:
+            print("  would set runner %s's capabilities: %s → %s" % (r.get("name"), ", ".join(old) or "none",
+                                                                      ", ".join(new) or "none"))
+            continue
+        # PUT replaces every custom label; an empty list is GitHub's DELETE of them all
+        ok, out = gh("-X", "PUT", call, data={"labels": new}) if new else gh("-X", "DELETE", call)
+        if not ok:
+            raise Refusal("GitHub refused runner %s's labels: %s" % (r.get("name"), out))
+        # the undo first: the write happened, whatever the read-back says (landing review, 2026-10-31)
+        undo = ("echo %s | gh api -X PUT %s --input -" % (shlex.quote(json.dumps({"labels": old})), call)
+                if old else "gh api -X DELETE %s" % call)
+        back = [l.get("name", "") for l in (out or {}).get("labels") or [] if l.get("type") == "custom"]
+        if lowered(back) != lowered(new):
+            raise Refusal("runner %s read back %s, not %s; rollback: %s" % (r.get("name"), back, new, undo))
+        print("  runner %s: %s (read back)" % (r.get("name"), ", ".join(back) or "no capabilities"))
+        print("  rollback: " + undo)
+
+
 # --- the pick: which lane a repo's check takes, by budget and queue (lighthouse-ops S1) ----------
 #
 # The broker's design (docs/lighthouse-ops-broker-2026-10-26.md, D2-A answered): the required check
@@ -2238,15 +2758,17 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
 # runs everything the repo's ci.json `needs` (absent reads as macOS: never guessed onto Linux) and,
 # for a public repo, `public`. Hosted minutes are spent only under `ci-budgets.json`'s caps, read
 # against the usage `lighthouse ops usage` writes from the desk's own job, which alone holds the
-# owner's token: this tool never reads it, so with no fresh usage every hosted lane of a private repo
-# is over budget (fail closed). Every self-hosted candidate runs --runner install's trust refusals.
+# owner's token: this tool reads it only as WHARF_READ_TOKEN, for the admin-only reads (gh_read), so
+# with no fresh usage every hosted lane of a private repo is over budget (fail closed). Every self-hosted candidate runs --runner install's trust refusals.
 
 PICK_STALE = 30 * 60   # s: a check queued this long on the repo's lane skips that lane this pick (D2-A)
 USAGE_MAX_AGE = 3600   # s: older usage reads as unread; the desk's job writes it every 15 minutes
 QUEUE_MAX = 600        # s: `lighthouse/ci-queue-max`'s default, a self-hosted lane's queued p50
 RESERVE = 0.2          # the share of a month cap the pick never spends below, unless a budget says
 LANE_RUNS = ("macos", "linux", "public")
+OS_WORDS = ("macos", "linux", "windows")   # in `needs`, an OS and not a capability
 STATE_OK = "ok"
+PROJECT_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")   # as check-linux.yml's trigger reads one
 
 
 def lighthouse_json(name):
@@ -2269,7 +2791,7 @@ def lighthouse_json(name):
 
 
 def load_lanes():
-    """The lanes, in the file's order: [{name, provider, runs, runs_on, self_hosted, account}]."""
+    """The lanes, in the file's order: [{name, provider, runs, runs_on, self_hosted, account, projects}]."""
     path = common.CONFIG / "lighthouse" / "ci-lanes.json"
     d = lighthouse_json("ci-lanes.json")
     if d is None:
@@ -2288,8 +2810,16 @@ def load_lanes():
             raise Refusal("%s: lane %s's `runs` must list some of %s" % (path, name, ", ".join(LANE_RUNS)))
         provider = r.get("provider", "actions")
         lane = {"name": name, "provider": provider, "runs": set(runs), "account": r.get("account"),
-                "runs_on": None, "self_hosted": False}
+                "runs_on": None, "self_hosted": False, "projects": {}}
         if provider == "circleci":
+            # a value the trigger would refuse fails here, at the pick, never as a held pull request
+            projects = r.get("projects", {})
+            if not isinstance(projects, dict) or not all(isinstance(k, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", k)
+                                                         and isinstance(v, str) and PROJECT_SLUG.fullmatch(v)
+                                                         for k, v in projects.items()):
+                raise Refusal("%s: lane %s's `projects` maps \"<owner>/<repo>\" to a project slug, "
+                              "<provider>/<org>/<project>" % (path, name))
+            lane["projects"] = projects
             lanes.append(lane)
             continue
         if provider != "actions":
@@ -2314,6 +2844,17 @@ def load_lanes():
             # the trust boundary (the header): a fork's PR would run its code on the runner's host
             raise Refusal("%s: lane %s is self-hosted and lists `public`: a self-hosted lane never runs "
                           "a public repo" % (path, name))
+        # a hosted lane may run a repo's Linux share too (linux-on-actions, 2026-11-02): its `projects` maps
+        # the repo to `actions`, the target check-linux.yml reads as "run the suites here, on GitHub's runners"
+        projects = r.get("projects", {})
+        if not isinstance(projects, dict) or not all(isinstance(k, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", k)
+                                                     and v == ACTIONS_TARGET for k, v in projects.items()):
+            raise Refusal("%s: lane %s's `projects` maps \"<owner>/<repo>\" to %r on an Actions lane"
+                          % (path, name, ACTIONS_TARGET))
+        if projects and lane["self_hosted"]:
+            raise Refusal("%s: lane %s is self-hosted: the Linux share runs on GitHub's hosted runners only"
+                          % (path, name))
+        lane["projects"] = projects
         lanes.append(lane)
     return lanes
 
@@ -2423,16 +2964,72 @@ def lane_queues(now):
 
 
 def repo_needs(ci):
+    """What a repo's ci.json says its check needs, in lower case as GitHub's labels compare: the
+    lanes' words (LANE_RUNS; absent: macos) and any other label, a capability. A capability with no
+    OS beside it reads as macos too, as an absent `needs` does: never guessed onto Linux."""
     needs = ci.get("needs", ["macos"])
-    if not isinstance(needs, list) or not all(isinstance(x, str) and x in LANE_RUNS for x in needs):
-        raise Refusal(".github/ci.json's `needs` must list some of %s" % ", ".join(LANE_RUNS))
-    return set(needs)
+    if not isinstance(needs, list) or not all(isinstance(x, str) and CAP_RE.fullmatch(x) for x in needs):
+        raise Refusal(".github/ci.json's `needs` must list some of %s, or capabilities (each a label: "
+                      "letters, digits, '.', '_', '-')" % ", ".join(LANE_RUNS))
+    needs = {x.lower() for x in needs}
+    if needs - set(LANE_RUNS) and not needs & set(OS_WORDS):
+        needs.add("macos")
+    return needs
 
 
-def lane_of(value, lanes):
-    """The lane a runs-on value names (a variable's JSON, a literal's labels), or None."""
+def literal_needs(ci):
+    """repo_needs for the literal form, which always names an OS, so a `needs` naming none reads as
+    macos (`[]`, `["public"]`: never a bare `[self-hosted]` a Linux runner would take; the lanes read
+    repo_needs itself, where they mean what they say); None when it does not read, for a caller that
+    only asks whether a runs-on is this tool's."""
+    try:
+        needs = repo_needs(ci)
+    except Refusal:
+        return None
+    return needs if needs & set(OS_WORDS) else needs | {"macos"}
+
+
+def needs_of(repo):
+    """literal_needs of the repo's ci.json, None when it does not read."""
+    try:
+        return literal_needs(load_ci(repo))
+    except Refusal:
+        return None
+
+
+def needed_labels(ci):
+    """The literal form's labels: `self-hosted`, `macOS` and the capabilities ci.json's `needs` lists,
+    each once, as it spells them first (labels ignore case). `public` is no label: it says what the
+    repo is. Never a runner's name: GitHub gives the job to whichever runner carries all of them.
+    Another OS is refused: this tool's self-hosted runner is a Mac (the Mac-only checks and the
+    runner it installs), and a lane routes the rest through the variable form."""
+    repo_needs(ci)   # its refusal, which literal_needs only reads as None
+    other = sorted(literal_needs(ci) & (set(OS_WORDS) - {"macos"}))
+    if other:
+        raise Refusal(".github/ci.json's `needs` names %s: the literal form asks for a runner Mac, the one "
+                      "kind --runner install sets up; --runs-on-var moves the check by lane instead"
+                      % " and ".join(other))
+    spelt = {}
+    for n in ci.get("needs", ["macos"]):
+        spelt.setdefault(n.lower(), n)
+    return (SELF, "macOS") + tuple(n for l, n in spelt.items() if l not in (*OS_WORDS, "public", SELF))
+
+
+def lane_lacks(lane, need):
+    """What of a repo's needs a lane does not meet: a capability is a label the lane's own list must
+    name, and a hosted image carries none."""
+    return need - lane["runs"] - (lowered(lane["runs_on"]) - set(LANE_RUNS) if lane["self_hosted"] else set())
+
+
+def lane_of(value, lanes, literal=False, need=frozenset()):
+    """The lane a runs-on value names (a variable's JSON, a literal's labels), or None. literal: a
+    file's own list, which says what the repo needs and not what a lane carries, so failing an exact
+    match it sits on the first self-hosted lane whose list holds all of it, one that meets need
+    first (the landing review, 2026-11-01: a re-run off the labels key's literal took a repo off its
+    lane, and the desk's card)."""
     if value is None:
         value = "ubuntu-latest"   # the variable form's own default
+    asked = value
     for lane in lanes:
         ro = lane["runs_on"]
         if ro is None:
@@ -2443,11 +3040,17 @@ def lane_of(value, lanes):
             return lane["name"]
         if not isinstance(ro, str) and isinstance(value, (list, tuple)) and lowered(value) == lowered(ro):
             return lane["name"]
+    if literal and isinstance(asked, (list, tuple)):
+        holding = [l for l in lanes if l["self_hosted"] and lowered(asked) <= lowered(l["runs_on"])]
+        fits = [l for l in holding if not lane_lacks(l, need)]
+        return (fits or holding or [{"name": None}])[0]["name"]
     return None
 
 
-def last_flip(s):
-    """When the pick last flipped this repo (ci-pick.jsonl), 0 when never."""
+def last_flip(s, variable=None):
+    """When the pick last flipped this repo's runs-on (ci-pick.jsonl), 0 when never; with VARIABLE, when
+    it last flipped that variable. A share flip is no runs-on flip: counted as one, a share flapping
+    near its reserve would hide every queued run from stale_lane (the landing review); so is a project move."""
     at = 0
     try:
         with open(common.LOG_DIR / "ci-pick.jsonl", encoding="utf-8") as fh:
@@ -2457,7 +3060,9 @@ def last_flip(s):
                     r = json.loads(l)
                 except ValueError:
                     continue
-                if isinstance(r, dict) and r.get("repo") == s and isinstance(r.get("at"), (int, float)):
+                if not (isinstance(r, dict) and r.get("repo") == s and isinstance(r.get("at"), (int, float))):
+                    continue
+                if (r.get("variable") == variable) if variable else (r.get("variable") not in (SHARE_VAR, PROJECT_VAR, OLD_PROJECT_VAR)):
                     at = max(at, r["at"])
     except OSError:
         return 0
@@ -2487,6 +3092,262 @@ def pick_log(row):
     os.makedirs(path.parent, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def apply_guard(dry):
+    """Refuses --apply anywhere but the desk's own job on the ops host (both flips: runs-on, the share)."""
+    if (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED")
+            or (hasattr(common, "unattended") and common.unattended())):
+        # an accident guard, as yard-node's write verbs: the desk's job applies, a session reports
+        raise Refusal("--apply runs in the desk's own job (`lighthouse ops pick --apply`), never in a "
+                      "Claude Code session: --pick alone reports")
+    host_why = None if dry else ops_host_refusal()
+    if host_why:
+        raise Refusal(host_why)
+
+
+# The Linux share (ci-budgets, 2026-10-31): a check.yml that reads CI_LINUX_ELSEWHERE runs its Linux-proven
+# suites on CircleCI's check-linux when the variable is `true`, and the whole line on its own runner otherwise.
+# The variable is the share's lane switch, judged by the CircleCI lanes' budgets as a hosted lane's is. Off is
+# always safe: check-linux.yml then posts check-linux green itself, saying the runner runs the whole line
+# (regatta#316), so main's requirement stays met. On only while main requires check-linux, or a red Linux
+# run would block nothing (docs/circleci-oauth-2026-10-30.md's rollout order: the requirement first).
+#
+# Two CircleCI orgs (ci-two-orgs, 2026-11-01; the owner: "You will move the jobs between them"): each org
+# has its free plan, so the share runs in whichever has the most month left, and goes off only when none
+# has any. The project moves by a repository variable and not by the file for the reason the share itself
+# does: one PATCH, no commit, and the next trigger follows it (a head already pending at the old org keeps
+# that status until a new push: the trigger's once-a-head guard reads it). A lane's `projects` is a map and
+# not one slug because a lane is an org, read by a budget, and ci-lanes.json serves every repo: one slug
+# would send a second repo's trigger to this repo's project. With the variable unset the trigger reads
+# .circleci/project-slug, so the pick reads the current project the same way; undoing a first move (the
+# DELETE it logs) goes back to the file.
+#
+# A move waits SHARE_HOLD after the last one while the lane it would leave can still run: two orgs near one
+# reading would otherwise swap every 15 minutes, each swap a PATCH and a log line. It limits the rate and sets
+# no margin, so such orgs may trade the share hourly, which keeps them level. A lane that is out is left at
+# once. The project is written before the share goes on, and a failed write leaves it off unless the lane it
+# already stands on can run it, where it comes on there and the pick exits 3; on a lane that is out, a failed
+# move turns the share off: it never runs at an org the pick judged out. The move changes where
+# the PR share runs, nothing else; main's push job (.circleci/parts/linux.yml) runs on demand only since
+# linux-on-actions. An Actions lane (provider `actions`, its `projects` naming `actions`) that names the repo
+# is the only lane chosen while it is in the file: the CircleCI lanes are then read and said, never chosen.
+SHARE_VAR = "CI_LINUX_ELSEWHERE"
+SHARE_CONTEXT = "check-linux"
+SHARE_HOLD = 3600   # off→on, and a move off a lane that can still run, wait this long after the last: a budget read near its line flaps
+PROJECT_VAR = "CI_LINUX_TARGET"   # a CircleCI project slug, or ACTIONS_TARGET (check-linux.yml reads it)
+OLD_PROJECT_VAR = "CI_CIRCLECI_PROJECT"   # its name until linux-on-actions: an old log row of it is no runs-on flip
+ACTIONS_TARGET = "actions"
+PROJECT_FILE = (".circleci", "project-slug")
+
+
+def requires_share(s, branch):
+    """(True | False, None) whether main requires check-linux (any app's: `ci/circleci: check-linux`
+    as well), or (None, why) when the protection is unread: never taken for "not required"."""
+    ok, br = gh("repos/%s/branches/%s" % (s, branch))
+    rsc = ((br.get("protection") or {}).get("required_status_checks") if ok and isinstance(br, dict) else None)
+    # an empty list there is no answer: a branch whose checks come from a ruleset, or protection the reader
+    # cannot see, reads `contexts: []` (the landing review); the protection endpoint judges it, as before
+    if not (isinstance(rsc, dict) and (rsc.get("contexts") or rsc.get("checks"))):
+        # the protection endpoint answers admins only (the desk's machine account: a 404, logbook #6); the
+        # branch's own read carries the same lists for any reader, and this stays the fallback
+        rsc, err = required(s, branch)
+    if not isinstance(rsc, dict):
+        return None, "main's required checks unread (%s)" % (err or rsc)
+    names = [c.get("context") for c in rsc.get("checks") or [] if isinstance(c, dict)] + list(rsc.get("contexts") or [])
+    return any(isinstance(n, str) and (n == SHARE_CONTEXT or n.endswith(": " + SHARE_CONTEXT)) for n in names), None
+
+
+def file_project(repo):
+    """The project .circleci/project-slug names: the first line that is no comment, byte for byte as the
+    trigger reads it, so a line the trigger would refuse matches no lane."""
+    try:
+        with open(p(repo, *PROJECT_FILE), encoding="utf-8", newline="") as fh:   # newline: grep keeps a CR
+            for line in fh.read().split("\n"):
+                if line and not line.startswith("#"):
+                    return line
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+def trigger_reads_project(repo):
+    """Whether this checkout's trigger reads the project variable (`vars.<name>`: its comments name it too):
+    if not, a write would move nothing."""
+    try:
+        return "vars." + PROJECT_VAR in read_loose(p(repo, ".github", "workflows", "check-linux.yml"))
+    except OSError:
+        return False
+
+
+def share_lane(rows, s, project, reads, budgets, usage, usage_why, now):
+    """(lane, left, why, stands) for the share: the lane to run on with what it has left, or, with none able
+    to, (the lane that explains it, None, why, False). stands: the lane the share is on can still run it."""
+    fits = []
+    last = (None, "no lane")
+    for lane in rows:
+        to = lane["projects"].get(s)
+        left, why = budget_left(lane["account"], budgets, usage, usage_why)
+        if left is not None and not to and len(rows) > 1:
+            left, why = None, "names no project for %s" % s
+        elif left is not None and to and to != project and not reads:
+            left, why = None, "check-linux.yml reads no %s, so its project is out of reach" % PROJECT_VAR
+        if len(rows) > 1:
+            print("  share lane %s: %s, %s" % (lane["name"], "eligible" if left is not None else "not chosen", why))
+        if left is not None:
+            fits.append((lane, left, why))
+        if last[0] is None or (to and to == project):
+            last = (lane, why)   # the lane the share stands on says why best, else the first
+    if not fits:
+        return last[0], None, last[1], False
+    here = next((f for f in fits if f[0]["projects"].get(s) == project), None)
+    def frac(f):   # minutes and credits are no common unit: the share of the month's cap left
+        cap = (budgets.get(f[0]["account"]) or {}).get("cap")
+        return f[1] / cap if cap else 0.0
+    best = max(fits, key=lambda f: (frac(f), f is here))   # a tie stays where it is
+    if here and best is not here:
+        moved = last_flip(s, PROJECT_VAR)
+        if moved and now - moved < SHARE_HOLD:
+            print("  share %s: stays on lane %s: lane %s has more left, but the project moved %d min ago "
+                  "(a move waits %d min)" % (PROJECT_VAR, here[0]["name"], best[0]["name"],
+                                             (now - moved) // 60, SHARE_HOLD // 60))
+            return here + (True,)
+    return best + (here is not None or not best[0]["projects"].get(s),)   # a lane with no project moves nothing
+
+
+def share_move(s, lane, project, why, apply, dry, now):
+    """The trigger's project moved to LANE's, said and (with --apply) written. True when a write failed."""
+    to = lane["projects"].get(s)
+    if not to or to == project:
+        return False
+    print("  share %s: %s → %s (lane %s: %s)" % (PROJECT_VAR, project or "unset", to, lane["name"], why))
+    if not apply:
+        print("  --apply sets %s to it" % PROJECT_VAR)
+        return False
+    apply_guard(dry)   # a session or the wrong host: a refusal, as before
+    try:
+        undo = set_variable(s, PROJECT_VAR, to, dry, raw=True)
+    except Refusal as e:
+        print("  ⚠ share %s not written: %s" % (PROJECT_VAR, e))
+        return True
+    if undo:
+        pick_log({"at": int(now), "repo": s, "variable": PROJECT_VAR, "from": project, "to": to,
+                  "lane": lane["name"], "why": why, "undo": undo})
+    return False
+
+
+def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now):
+    """The share's flip and its project, said and (with --apply) written: off when no lane is under
+    budget, when it may stand on a lane that is out and cannot be moved or told, or when main no longer requires
+    check-linux; on when a lane is, main requires check-linux and the
+    last off is SHARE_HOLD old; else left as it is. While on, or coming on, it stands on the lane share_lane
+    takes. True when a write failed or a variable no lane names steers the trigger: the pick then exits 3, which
+    `ops pick` returns and the sample job's log line counts (nothing is filed: the budget alarm is what pages).
+    Never a raise: the runs-on half still runs."""
+    if SHARE_VAR not in text:
+        return False
+    rows = [l for l in lanes if "linux" in l["runs"]
+            and (l["provider"] == "circleci" or (l["provider"] == "actions" and l["projects"]))]
+    if not rows:
+        print("  share %s: no lane runs the Linux share; left as it is" % SHARE_VAR)
+        return False
+    have, err = variable(s, SHARE_VAR)
+    if err:
+        print("  share %s: unread (%s); left as it is" % (SHARE_VAR, err))
+        return False
+    # once an Actions lane names this repo, it alone runs the share: the CircleCI lanes are read and said,
+    # never chosen (the brief: "never chosen once the Actions lane exists"; the owner moved off CircleCI for
+    # its money, 2026-11-02). With that lane out, the share goes off and the Macs take the whole line.
+    gha = [l for l in rows if l["provider"] == "actions" and l["projects"].get(s)]
+    if gha:
+        for l in rows:
+            if l not in gha:
+                left, why = budget_left(l["account"], budgets, usage, usage_why)
+                print("  share lane %s: not chosen, an Actions lane runs the share for %s (%s)" % (
+                    l["name"], s, why))
+        rows = gha
+    # a file with no row naming a project here reads as it always did: its first CircleCI lane, and nothing
+    # moves (an Actions lane naming other repos only is never this repo's: the trigger would go to CircleCI)
+    named = any(l["projects"].get(s) for l in rows)
+    rows = rows if named else [l for l in rows if l["provider"] == "circleci"][:1]
+    if not rows:
+        print("  share %s: no lane runs the Linux share for %s; left as it is" % (SHARE_VAR, s))
+        return False
+    held, perr = variable(s, PROJECT_VAR)
+    reads = trigger_reads_project(repo)
+    perr = perr if reads else None   # a trigger that ignores the variable goes to the file's project, known
+    project = (held if reads else None) or file_project(repo)   # where the trigger goes, as it reads it
+    on = (have or "").strip().lower() == "true"
+    lane, left, why, stands = share_lane(rows, s, project, reads, budgets, usage, usage_why, now)
+    # a variable left behind by a lanes file that named projects: the trigger goes where no lane is judged
+    refused = bool(not named and held and reads and held != file_project(repo))
+    if refused:
+        left, why = None, "%s holds %s, which no lane names" % (PROJECT_VAR, held)
+    if left is not None:
+        req, rwhy = requires_share(s, main_branch(repo))
+        if on and req is False:
+            # on with no requirement: a red Linux run blocks nothing, so off (the safe side) — the
+            # 2026-10-27 stopgap dropped the requirement by hand and left the variable on
+            why = "main does not require %s" % SHARE_CONTEXT
+        elif perr:
+            # where the share stands is unknown: nothing moves or comes on, and it goes off, which needs no
+            # project, when it may stand on a lane that is out
+            print("  share %s: unread (%s); nothing moves" % (PROJECT_VAR, perr))
+            out = next((l for l in rows if l["projects"].get(s)
+                        and budget_left(l["account"], budgets, usage, usage_why)[0] is None), None)
+            if not on or out is None:
+                return False
+            why, lane = "%s is unread, and a lane it may stand on is out" % PROJECT_VAR, out
+        elif on:
+            if lane["projects"].get(s) in (None, project):
+                print("  share %s: %s, stays (lane %s: %s%s)" % (
+                    SHARE_VAR, have, lane["name"], why, "; %s" % rwhy if rwhy else ""))
+            refused = share_move(s, lane, project, why, apply, dry, now)
+            if not refused or stands:
+                return refused
+            out = next((l for l in rows if project and l["projects"].get(s) == project), None)
+            why = "%s, and the move to lane %s was refused" % ("it is out" if out else "no lane names its project", lane["name"])
+            lane = out or lane
+        elif not req:
+            print("  share %s: %s, stays: lane %s is under budget, but %s" % (
+                SHARE_VAR, have or "unset", lane["name"],
+                rwhy or "main does not require %s, so a red Linux run would block nothing" % SHARE_CONTEXT))
+            return False
+        else:
+            off_at = last_flip(s, SHARE_VAR)
+            if off_at and now - off_at < SHARE_HOLD:
+                print("  share %s: %s, stays: lane %s is under budget, but the share went off %d min ago "
+                      "(on waits %d min)" % (SHARE_VAR, have or "unset", lane["name"], (now - off_at) // 60,
+                                             SHARE_HOLD // 60))
+                return False
+    elif not on:
+        print("  share %s: %s, stays (lane %s: %s)" % (SHARE_VAR, have or "unset", lane["name"], why))
+        return refused
+    want = "false" if on else "true"
+    print("  share %s: %s → %s (lane %s: %s)" % (SHARE_VAR, have or "unset", want, lane["name"], why))
+    if want == "true" and share_move(s, lane, project, why, apply, dry, now):
+        if not stands:
+            return True   # never on at an org the pick judged out
+        refused = True    # where it stands can run it: on there, the better lane refused
+        # the log names the lane the share comes on at, not the one the refused move aimed for
+        held_at = next((l for l in rows if project and l["projects"].get(s) == project), None)
+        if held_at is not None:
+            why = "the move to lane %s was refused; on where it stands" % lane["name"]
+            lane = held_at
+            print("  share %s: on at lane %s (%s)" % (SHARE_VAR, lane["name"], why))
+    if not apply:
+        print("  --apply sets %s to it" % SHARE_VAR)
+        return refused
+    apply_guard(dry)   # a session or the wrong host: a refusal, as before
+    try:
+        undo = set_variable(s, SHARE_VAR, want, dry, raw=True)
+    except Refusal as e:
+        print("  ⚠ share %s not written: %s" % (SHARE_VAR, e))
+        return True
+    if undo:
+        pick_log({"at": int(now), "repo": s, "variable": SHARE_VAR, "from": have, "to": want,
+                  "lane": lane["name"], "why": why, "undo": undo})
+    return refused
 
 
 def ops_host_refusal():
@@ -2530,7 +3391,7 @@ def pick(repo, apply, dry, usage_path=None):
         # variable form's default only
         vals = [v for _, v in runs_on_lines(text)]
         current = (literal_labels(text) or flow_labels(vals[0]) or yaml_value(vals[0]) or "?") if vals else "?"
-    cur_lane = lane_of(current, lanes)
+    cur_lane = lane_of(current, lanes, literal=not var, need=need)
     print("%s (%s, %s; needs %s): lane %s" % (repo, s, "private" if private else "public",
                                               ", ".join(sorted(needs)) or "nothing", cur_lane or "(none of the lanes: %s)" % (current,)))
     stale = stale_lane(s, now) if cur_lane else None
@@ -2543,13 +3404,14 @@ def pick(repo, apply, dry, usage_path=None):
         if lane["provider"] != "actions":
             print("  lane %s: CircleCI, advisory: a variable moves no check there" % n)
             continue
-        if not need <= lane["runs"]:
+        lacks = lane_lacks(lane, need)
+        if lacks:
             print("  lane %s: not eligible, the repo needs %s, the lane runs %s"
-                  % (n, ", ".join(sorted(need - lane["runs"])), ", ".join(sorted(lane["runs"]))))
+                  % (n, ", ".join(sorted(lacks)), ", ".join(sorted(lane["runs"]))))
             if n == cur_lane:
                 # the repo sits on a lane it no longer fits (a public repo on the runner Mac): a
                 # failing lane, carded when nothing else takes it (the second landing review)
-                failed[n] = "the repo needs %s, the lane runs %s" % (", ".join(sorted(need - lane["runs"])),
+                failed[n] = "the repo needs %s, the lane runs %s" % (", ".join(sorted(lacks)),
                                                                     ", ".join(sorted(lane["runs"])))
             continue
         if n == cur_lane and stale:
@@ -2590,8 +3452,12 @@ def pick(repo, apply, dry, usage_path=None):
                 print("  lane %s: refused, %s" % (n, failed[n]))
                 continue
             if not any(runs_check(r, lane["runs_on"]) for r in runners):
-                failed[n] = "no online runner labelled %s" % ", ".join(lane["runs_on"])
-                print("  lane %s: refused, %s" % (n, failed[n]))
+                why = "no online runner labelled %s" % ", ".join(lane["runs_on"])
+                print("  lane %s: refused, %s" % (n, why))
+                # a literal sits on a lane by holding part of its list, so the job is served by a
+                # runner of what the literal asks for, whatever the lane's other labels: no card
+                if var or not isinstance(current, (list, tuple)) or not any(runs_check(r, current) for r in runners):
+                    failed[n] = why
                 continue
             q = queues.get(n)
             print("  lane %s: eligible, queue %s" % (n, "%ds" % q if q is not None else "unmeasured"))
@@ -2606,6 +3472,7 @@ def pick(repo, apply, dry, usage_path=None):
                 failed[n] = why
             if left is not None:
                 hosted.append((lane, left))
+    share_bad = pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
     choice = (next((l for l, q in selfh if q is None or q < qmax), None)
               or (max(hosted, key=lambda x: x[1])[0] if hosted else None)
               or (min(selfh, key=lambda x: x[1])[0] if selfh else None))
@@ -2615,11 +3482,11 @@ def pick(repo, apply, dry, usage_path=None):
             # the repo sits on a lane this pick refused (trust, money): exit 3 so the desk cards it
             print("  ⚠ current lane %s fails: %s" % (cur_lane, failed[cur_lane]))
             return 3
-        return 0
+        return 3 if share_bad else 0
     want = choice["runs_on"]
     if choice["name"] == cur_lane:
         print("  pick: %s, unchanged" % choice["name"])
-        return 0
+        return 3 if share_bad else 0
     print("  pick: %s (%s)" % (choice["name"], variable_value(want)))
     if not var:
         why = ("check.yml reads no runs-on variable: `ci-provider %s --to %s --runs-on-var %s` migrates it; "
@@ -2632,32 +3499,26 @@ def pick(repo, apply, dry, usage_path=None):
         if apply:
             raise Refusal(why)
         print("  " + why)
-        return 0
+        return 3 if share_bad else 0
     if not apply:
         print("  --apply sets %s to it" % var)
-        return 0
-    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_UNATTENDED"):
-        # an accident guard, as yard-node's write verbs: the desk's job applies, a session reports
-        raise Refusal("--apply runs in the desk's own job (`lighthouse ops pick --apply`), never in a "
-                      "Claude Code session: --pick alone reports")
-    host_why = None if dry else ops_host_refusal()
-    if host_why:
-        raise Refusal(host_why)
+        return 3 if share_bad else 0
+    apply_guard(dry)
     undo = set_variable(s, var, want, dry)
     if undo:
         pick_log({"at": int(now), "repo": s, "variable": var, "from": cur_lane, "to": choice["name"],
                   "old": current, "new": want, "undo": undo})
-    return 0
+    return 3 if share_bad else 0
 
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="ci-provider", description=__doc__.split("\n\n")[0])
     ap.add_argument("repo", nargs="?", default=".")
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--to", choices=sorted(CONTEXT))
+    g.add_argument("--to", choices=sorted((*CONTEXT, *KIND_ALIASES)))
     g.add_argument("--protect", action="store_true")
     g.add_argument("--compose", action="store_true")
-    g.add_argument("--runner", choices=["install", "status", "remove"])
+    g.add_argument("--runner", choices=["install", "status", "remove", "caps"])
     g.add_argument("--pick", action="store_true",
                    help="the lane the repo's check takes, by lighthouse's lanes and budgets (--apply writes it)")
     ap.add_argument("--check", help="the check command (default: ci.json, check.yml, the part, AGENTS.md)")
@@ -2680,6 +3541,7 @@ def main(argv):
     ap.add_argument("--usage", metavar="FILE", help="with --pick: the desk's usage file (default: the log dir's ci-usage.json)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    a.to = kind_of(a.to)
     if (a.apply or a.usage) and not a.pick:
         ap.error("--apply and --usage go with --pick only")
     if (a.host is not None or a.labels is not None or a.name is not None or a.instance != 1) and not a.runner:
@@ -2715,6 +3577,10 @@ def main(argv):
             protect(repo, a.force, a.dry_run)
         elif a.compose:
             compose(repo, a.dry_run)
+        elif a.runner == "caps":
+            if a.host is not None or a.labels is not None or a.instance != 1:
+                ap.error("--runner caps reads %s: --host, --labels and --instance do not go with it" % CAPS_KEY)
+            caps(repo, a.dry_run, a.name)
         elif a.runner:
             labels = None if a.labels is None else [l.strip() for l in a.labels.split(",") if l.strip()]
             runner(repo, a.runner, a.dry_run, a.host, labels, a.name, a.instance)
@@ -2729,4 +3595,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # popped here, not at import (bin/repos loads this file): no child of this run inherits it
+    READ_TOKEN = os.environ.pop(READ_VAR, None) or None
     sys.exit(main(sys.argv[1:]))

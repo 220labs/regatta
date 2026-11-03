@@ -1277,27 +1277,34 @@ def process(path, state):
         text = MARKER_RE.sub(lambda m: "(" + m.group(0)[1:-1] + ")", text)
         same = words_key(text) if len(text.split()) >= 5 else None
     else:
-        wav = Path(os.environ.get("TMPDIR", "/tmp")) / f"memo-{key}.wav"
+        # This process's own file: KEY is the recording's bytes, so two passes of one user given the same
+        # recording at once (two inboxes of one speaker; two CI jobs on one Mac, whose TMPDIR is the
+        # login's) wrote one path, and afconvert failed -48 or -54 in one of them (runner-interference, 2026-11-02)
+        wav = Path(os.environ.get("TMPDIR", "/tmp")) / f"memo-{key}-{os.getpid()}.wav"
         ok, err = to_wav(path, wav)
         if not ok:
+            wav.unlink(missing_ok=True)
             return f"⚠ {path.name}: could not convert audio ({err[:120]})"
         same = "p" + digest(wav)[:15]
-    if same and not pending:
-        mine = next((filed_notes(e) for e in state.values() if isinstance(e, dict) and e.get("same") == same
-                     and filed_notes(e)), None)
-        other = ("this inbox", mine) if mine else filed_elsewhere(same)
-        if other:  # filed already in another copy: archived, never transcribed or shaped again
-            if wav:
-                wav.unlink(missing_ok=True)
-            archive_copy(path, key)
-            src = other[0] if mine else f"the {other[0]} inbox"
-            state[key] = {"file": path.name, "note": f"(same as {src}: {other[1]})", "archived": True, "same": same}
-            return f"✓ {path.name} → archived (the same {'note' if written else 'recording'} was filed from {src}: {other[1]})"
-    if wav:
-        text, err = transcribe(wav)
-        wav.unlink(missing_ok=True)
-        if text is None:
-            return f"⚠ {path.name}: transcription failed ({err})"
+    # the WAV goes whatever happens from here: its name is this pass's own, so no later pass overwrites one
+    # an exception or a kill left (the landing review of runner-interference)
+    try:
+        if same and not pending:
+            mine = next((filed_notes(e) for e in state.values() if isinstance(e, dict) and e.get("same") == same
+                         and filed_notes(e)), None)
+            other = ("this inbox", mine) if mine else filed_elsewhere(same)
+            if other:  # filed already in another copy: archived, never transcribed or shaped again
+                archive_copy(path, key)
+                src = other[0] if mine else f"the {other[0]} inbox"
+                state[key] = {"file": path.name, "note": f"(same as {src}: {other[1]})", "archived": True, "same": same}
+                return f"✓ {path.name} → archived (the same {'note' if written else 'recording'} was filed from {src}: {other[1]})"
+        if wav:
+            text, err = transcribe(wav)
+            if text is None:
+                return f"⚠ {path.name}: transcription failed ({err})"
+    finally:
+        if wav:
+            wav.unlink(missing_ok=True)
     red = None
     if CFG["redact"]:  # fail closed at every step: the audio waits, Claude never sees the raw text
         if not CFG["split"]:

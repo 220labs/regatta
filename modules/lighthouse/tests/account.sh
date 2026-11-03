@@ -83,7 +83,8 @@ lock=null; [ "${3:-}" = locked ] && lock='"rate_limited"'
 fr='"2026-10-07T22:00:00+00:00"'; [ -f "$dir/stub-resets" ] && fr=$(cat "$dir/stub-resets")
 echo '{"type":"system","subtype":"init"}'
 lim=''
-[ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":37,"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]'
+fw=37; [ -s "$dir/stub-fable" ] && fw=$(cat "$dir/stub-fable")   # stub-fable's text, when any, is Fable's week
+[ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":'"$fw"',"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]'
 [ -f "$dir/stub-nofable" ] && lim=',"limits":[{"kind":"session","scope":null},{"kind":"weekly_all","scope":null}]'
 # paid overage on, in the get_usage answer's shape (probed 2026-10-24: rate_limits.extra_usage)
 [ -f "$dir/stub-overage" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"monthly_limit":4000,"used_credits":120,"utilization":3,"currency":"USD","user_disabled":false,"spend_limit_reached":false}'
@@ -120,6 +121,31 @@ check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a 5-h
 reset; use "$S1" "10 10"
 check "$(ACCOUNT_NOW=$WED A pick --bound --json) $(field "['account']")" "0 main" "--bound (account-bound work) → the primary, even with room elsewhere"
 
+echo "budgets — the owner's file overrides a row's ceilings (2026-10-31)"
+BF="$ACCOUNTS_FILE.budgets"
+reset; use "$S1" "10 75"; use "$P1" "10 10"
+echo '{"_note": "the owner edits this", "spare": {"week_max": 100}}' > "$BF"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "75% on a Wednesday with spare's week_max 100 in budgets.json → the secondary"
+has "$T/out" "week 75% < 100% (week ceiling, budgets.json)" "…naming the file as the ceiling's source"
+reset; use "$S1" "10 75"
+echo '{"spare": {"week_max": "lots", "colour": 3}}' > "$BF"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a value that is no number → the registry's 70% stands"
+A pick > /dev/null
+has "$T/out" "spare.week_max 'lots' is not one of" "…said on stderr, outside --json"
+has "$T/out" "spare.colour 3 is not one of" "…an unknown key too"
+reset; use "$S1" "10 99"
+echo '{"spare": {"week_max": NaN, "window_max": -5}}' > "$BF"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a NaN week_max (json reads it as a number) is skipped: the registry's 70% stands"
+A pick > /dev/null
+has "$T/out" "spare.week_max nan is not one of" "…said on stderr, as is a negative one"
+has "$T/out" "spare.window_max -5 is not one of" "…a negative window_max too"
+reset; use "$S1" "10 75"
+rm -f "$(dirname "$BF")/.$(basename "$BF").last"; echo '{"spare": {"week_max": 100' > "$BF"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a torn budgets file with no copy → the registry's ceilings stand, never a failed pick"
+A pick > /dev/null
+has "$T/out" "the registry's ceilings stand" "…said on stderr, outside --json"
+rm -f "$BF" "$(dirname "$BF")/.$(basename "$BF").last"
+
 echo "exhaustion — cooldown and margin (D6)"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
 mkdir -p "$S1"; echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED + 3600)")}" > "$S1/exhaustion.jsonl"
@@ -151,6 +177,122 @@ reset; use "$S1" "25 10"; use "$P1" "10 10"; resets "$S1" "$WED" 270
 for i in 1 2 3 4; do echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED - $i * 3600)")}" >> "$S1/exhaustion.jsonl"; done
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "four exhaustions in a week: margin capped at 30 points"
 has "$T/out" "5h 25% > 20%, 30 points of margin" "…50 − 30, not 50 − 40"
+
+echo "exhaustion — a row counts only its own login's records (cooldown-account, 2026-11-02)"
+# the primary's week lock, mirrored into an Orca login's profile, held that login past its own reset: the
+# record's `account` (the writer's login, login_ids) is read now; a record without one counts, as before
+echo '{"oauthAccount": {"accountUuid": "u-spare-0001", "emailAddress": "t@example.com"}}' > "$S1/.claude.json"
+rec() { echo "{\"at\": $WED, \"window\": \"$1\", \"resets_at\": $(python3 -c "print($WED + $2)")${3:+, \"account\": \"$3\"}}"; }
+reset; use "$S1" "10 10"; use "$P1" "10 10"
+rec seven_day 432000 u-main-0 > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "another login's locked week in the log → ignored, the row is picked"
+hasnt "$T/out" "cooling down" "…no cooldown named"
+reset; rec seven_day 432000 u-spare- > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "its own login's locked week → skipped until it resets"
+has "$T/out" "cooling down until" "…with the reason"
+reset; rec five_hour 3600 > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a record with no account → counted, as before (nothing says whose it is)"
+reset; use "$S1" "45 10"; resets "$S1" "$WED" 270
+for i in 1 2 3 4; do rec five_hour "-$((i * 3600))" u-main-0 >> "$S1/exhaustion.jsonl"; done
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "four exhaustions of another login: no margin asked (45% under 50%)"
+reset; use "$S1" "45 10"; resets "$S1" "$WED" 270; rec five_hour -3600 u-spare- > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "one of its own: 10 points of margin (45% over 40%)"
+reset; use "$S1" "10 10"; rec seven_day 432000 u-main-0 > "$S1/exhaustion.jsonl"
+ACCOUNT_NOW=$WED A check > /dev/null
+has "$T/out" "exhaustion log $S1/exhaustion.jsonl holds 1 record in force of u-main-0 (not this login's u-spare-; not counted)" "check names a log holding another login's records"
+CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED python3 "$B/account" exhausted --window seven_day --resets-at "$(python3 -c "print($WED + 432000)")" --session s9 --used 100
+check "$(wc -l < "$S1/exhaustion.jsonl" | tr -d ' ') $(python3 -c "import json;print([json.loads(l)['account'] for l in open('$S1/exhaustion.jsonl')])")" "2 ['u-main-0', 'u-spare-']" \
+  "the status line's write: its own lock on the same week is recorded (another's never dedupes it); a plain file keeps the other's"
+reset; rec seven_day 432000 u-main-0 > "$T/main-log.jsonl"; ln -s "$T/main-log.jsonl" "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "a log that is a link to another login's (Orca's mirror) → its records ignored"
+ACCOUNT_NOW=$WED A check > /dev/null
+has "$T/out" "exhaustion log $S1/exhaustion.jsonl is a link to" "check names the link"
+has "$T/out" "shared with that dir's login (each counts its own records only); it holds 1 record in force of u-main-0" "…and the other login's records in it"
+CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED python3 "$B/account" exhausted --window seven_day --resets-at "$(python3 -c "print($WED + 432000)")" --session s10 --used 100
+check "$([ -L "$S1/exhaustion.jsonl" ] && echo link || echo file) $(python3 -c "import json;print([json.loads(l)['account'] for l in open('$T/main-log.jsonl')])")" "link ['u-main-0', 'u-spare-']" \
+  "a write through such a link: the link left as Orca made it, the row's own record beside the other's (never deduped by it)"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "…and that own lock holds the row"
+rm -f "$S1/exhaustion.jsonl"; echo '{"oauthAccount": {}}' > "$S1/.claude.json"; rec seven_day 432000 u-main-0 > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a home whose own login does not read → every record counts, as before"
+check "$(CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED A exhausted --window five_hour --resets-at "$(python3 -c "print($WED + 3600)")" --session s14 --used 100) $(wc -l < "$S1/exhaustion.jsonl" | tr -d ' ')" "0 1" \
+  "…and a lock it reads is not recorded with no account (it would count for every login sharing the log): exit 0, so the status line does not retry at every render"
+has "$T/out" "no login reads in $S1/.claude.json" "…saying why"
+rm -f "$S1/exhaustion.jsonl"; rec seven_day 432000 u-main-0 > "$T/main-log.jsonl"; ln -s "$T/main-log.jsonl" "$S1/exhaustion.jsonl"
+ACCOUNT_NOW=$WED A check > /dev/null
+# account names the link's target by its real path: under a runner's TMPDIR, whose path passes through a
+# system link, that is not $T's spelling, so the case expects the resolved one (runner-paths, 2026-11-03)
+RT=$(cd "$T" && pwd -P)
+has "$T/out" "is a link to $RT/main-log.jsonl, and this login does not read: every record in it counts here" "…a link on such a row is named as the hold it is"
+rm -f "$S1/exhaustion.jsonl" "$T/main-log.jsonl"; echo '{"oauthAccount": {"accountUuid": "u-spare-0001"}}' > "$S1/.claude.json"
+{ rec seven_day -864000 u-main-0 | sed "s/\"at\": [0-9.]*/\"at\": $(python3 -c "print($WED - 1036800)")/"; rec five_hour 3600 u-spare- | sed 's/"resets_at": [0-9.]*/"resets_at": "2026-10-07T20:00:00+00:00"/'; } > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a hand-edited reset (an ISO time) is read as a time: no crash, the lock holds"
+rec seven_day 432000 u-spare- | sed "s/\"resets_at\": \([0-9.]*\)/\"resets_at\": \"\1\"/" > "$T/numstr.jsonl"
+check "$(grep -c '"resets_at": "' "$T/numstr.jsonl")" 1 "  (the fixture holds a reset written as a quoted number)"
+cp "$S1/exhaustion.jsonl" "$T/iso.jsonl"; cp "$T/numstr.jsonl" "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "…and one written as a quoted number too: the lock holds"
+cp "$T/iso.jsonl" "$S1/exhaustion.jsonl"; rm -f "$T/iso.jsonl" "$T/numstr.jsonl"
+ACCOUNT_NOW=$WED A check > /dev/null
+hasnt "$T/out" "u-main-0" "…and another login's lock long reset and past margin is not named"
+rm -f "$S1/exhaustion.jsonl"; rec seven_day 432000 u-spare- | sed 's/"u-spare-"/12345/' > "$S1/exhaustion.jsonl"
+echo '{"oauthAccount": {"accountUuid": "u-spare-0001"}}' > "$S1/.claude.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a record whose account is no id → read as none: counted, never freed"
+echo '{"oauthAccount": {"accountUuid": "u-spare-0001", "organizationUuid": "org-aaaa-1"}}' > "$S1/.claude.json"
+rm -f "$S1/exhaustion.jsonl"
+{ rec seven_day 432000 u-spare- | sed 's/}$/, "org": "org-bbbb"}/'; rec five_hour -3600 u-spare- | sed 's/}$/, "org": "org-bbbb"}/'; } > "$S1/exhaustion.jsonl"
+use "$S1" "45 10"; resets "$S1" "$WED" 270
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "one account in another org (another seat): its lock and margin ignored"
+ACCOUNT_NOW=$WED A check > /dev/null
+has "$T/out" "holds 2 records in force of u-spare-/org-bbbb (not this login's u-spare-/org-aaaa; not counted)" "…check names the other seat by its org"
+rec seven_day 432000 u-spare- > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "…a record of the account with no org (written before the field) still counts"
+rm -f "$S1/exhaustion.jsonl"; use "$S1" "10 10"
+CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED python3 "$B/account" exhausted --window five_hour --resets-at "$(python3 -c "print($WED + 3600)")" --session s12 --used 100
+check "$(python3 -c "import json;r=json.loads(open('$S1/exhaustion.jsonl').readline());print(r['account'], r['org'])")" "u-spare- org-aaaa" "a new record carries its writer's org"
+rm -f "$S1/exhaustion.jsonl"; echo '{"oauthAccount": {"accountUuid": 12345}}' > "$S1/.claude.json"; rec seven_day 432000 u-main-0 > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "an accountUuid that is no string: no crash, every record counts"
+echo '{"oauthAccount": {"accountUuid": "u-spare-0001"}}' > "$S1/.claude.json"
+{ printf '\377\376 torn\n'; rec seven_day 432000 u-spare-; } > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a log with a byte that is no UTF-8: that line skipped, the next still read"
+check "$(CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED A exhausted --window five_hour --resets-at "$(python3 -c "print($WED + 3600)")" --session s13 --used 100) $(grep -c five_hour "$S1/exhaustion.jsonl")" "0 1" "…and a write beside it succeeds"
+rm -f "$S1/.claude.json" "$S1/exhaustion.jsonl" "$T/main-log.jsonl"; unset -f rec
+
+echo "usage-probe.json — a row reads only its own login's cached reading (cooldown-account D1, 2026-11-02)"
+# Orca copies ~/.claude's top-level files into a profile at each selection, usage-probe.json too: the profile's row
+# read the primary's whole reading, its locked week included, until its own next probe
+echo '{"oauthAccount": {"accountUuid": "u-spare-0001", "organizationUuid": "org-aaaa-1"}}' > "$S1/.claude.json"
+cache() { echo "{\"at\": $WED, \"limits\": {\"plan\": \"max\", \"locked\": [\"seven_day\"], \"kinds\": [], \"five_hour\": 10, \"five_hour_resets\": null, \"seven_day\": 100, \"seven_day_resets\": $(python3 -c "print($WED + 432000)")}${1:+, \"account\": \"$1\"}${2:+, \"org\": \"$2\"}}"; }
+probed() { cat "$T/probes" 2>/dev/null | grep -c "^$1\$"; }
+reset; use "$S1" "10 10"; use "$P1" "10 10"; cache u-main-0 > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(probed "$S1")" "0 spare 1" "another login's cached reading (Orca's copy) → not read: the row is probed, and picked on its own"
+check "$(python3 -c "import json;d=json.load(open('$S1/usage-probe.json'));print(d['account'], d['org'], d['limits']['seven_day'])")" \
+  "u-spare- org-aaaa 10" "…and the new reading carries the login it read"
+reset; cache u-spare- org-aaaa > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(probed "$S1")" "0 main 0" "its own login's cached reading → read, no probe: its locked week holds it"
+reset; cache u-spare- > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(probed "$S1")" "0 main 0" "…as is one of its account with no org stamp"
+reset; cache > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(probed "$S1")" "0 main 0" \
+  "a reading with no login stamp on a row Orca does not set up → its own (written before the stamp): read, no probe"
+reset; cache u-spare- org-bbbb > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']") $(probed "$S1")" "0 spare 1" "the account in another org (another seat) → probed again"
+reset; cache u-main-0 > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits'], d[0]['sampled']") $(probed "$S1")" "0 None None 0" \
+  "--cached (the hooks' read): another login's reading is no reading, and nothing probes"
+rm -f "$S1/stub-usage"
+check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 600)") A pick --json) $(field "['account']")" "0 main" "a failed probe never falls back to another login's reading"
+hasnt "$T/out" "week 100%" "…its locked week is not named as the row's"
+ACCOUNT_NOW=$WED A check > /dev/null
+has "$T/out" "usage cache $S1/usage-probe.json holds u-main-0's reading (not this login's u-spare-/org-aaaa; not used — the next probe replaces it)" \
+  "check names a usage cache holding another login's reading"
+cache > "$S1/usage-probe.json"; ACCOUNT_NOW=$WED A check > /dev/null
+hasnt "$T/out" "usage cache" "…but not one with no stamp on such a row"
+cache u-spare- org-aaaa > "$S1/usage-probe.json"; ACCOUNT_NOW=$WED A check > /dev/null
+hasnt "$T/out" "usage cache" "…never its own"
+echo '{"oauthAccount": {}}' > "$S1/.claude.json"; cache u-main-0 > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits']['seven_day']")" "0 100" "a home whose login does not read takes any reading, as before"
+echo '[1]' > "$S1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits']")" "0 None" "a cache that is no object reads as none, no crash"
+rm -f "$S1/.claude.json" "$S1/usage-probe.json"; unset -f cache probed
 reset; use "$S1" "80 10"; rm -f "$P1/stub-usage"
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "the primary's probe fails → the primary runs it rather than nothing"
 has "$T/out" "limits unknown — the primary runs it rather than nothing" "…and says so"
@@ -160,6 +302,36 @@ check "$(ACCOUNT_NOW=$WED A limits main)" 0 "a probe of the primary at 98% of it
 rm "$P1/stub-usage"
 check "$(ACCOUNT_NOW=$(python3 -c "print($WED + 600)") A pick --json)" 3 "…then a failed probe uses that stale reading: refused, not guessed"
 has "$T/out" "week 98% ≥ 95% (week ceiling)" "…naming the stale figure"
+
+echo "a Claude plan with no 5-hour window; --hide (2026-11-01)"
+# the primary's answer that day: five_hour null, and limits[] a week and Fable's week, no session window
+reset; use "$S1" "80 10"; use "$P1" "null 11"; touch "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A limits main --json) $(field "[0]['eligible'], d[0]['why']")" \
+  "0 True week 11% < 95% (week ceiling); no 5-hour window" "limits[] with no session window: judged on the week, never 'unknown'"
+check "$(ACCOUNT_NOW=$WED A limits main --cached --json) $(field "[0]['no_five_hour']")" "0 True" "…--json says no_five_hour, which the widget and the tier check read"
+check "$(ACCOUNT_NOW=$WED A limits main)" 0 "…and said in words"
+has "$T/out" "main: no 5-hour window, week 11%" "…as no 5-hour window"
+reset; rm -f "$P1/stub-fable"; touch "$P1/stub-nofable"
+check "$(ACCOUNT_NOW=$WED A limits main --json) $(field "[0]['eligible'], d[0]['why'], d[0]['no_five_hour']")" \
+  "0 False limits unknown (no window figures) False" "a session window listed and no figure for it: a lost reading, still unknown"
+check "$(ACCOUNT_NOW=$WED A limits main --cached)" 0 "…said in words"
+has "$T/out" "main: 5h unknown, week 11%" "…as 5h unknown, never as no 5-hour window"
+nf=$(python3 - "$B/account" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("acct_nf", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("acct_nf", l)); l.exec_module(m)
+a = {"provider": "claude"}
+for kinds in (["weekly_all", "weekly_scoped"], ["weekly_all"], ["weekly_scoped"], [], None, [None], ["session_v2", "weekly_all"]):
+    print(m.no_five_hour(a, {"five_hour": None, "seven_day": 11, "kinds": kinds}), end=" ")
+print(m.no_five_hour({"provider": "codex"}, {"five_hour": None, "seven_day": 20}))
+PY
+)
+check "$nf" "True True False False False False False True" \
+  "no_five_hour: the week and only weekly kinds; Fable's week alone, none, an empty or unknown kind stay unknown; Codex by the window's absence"
+reset; rm -f "$P1/stub-nofable"; use "$P1" "10 10"
+check "$(ACCOUNT_NOW=$WED A limits --all --hide 'spare, nobody' --json) $(python3 -c "import json;print([r['label'] for r in json.load(open('$T/out'))])")" "0 ['main']" "--hide: the row is left out"
+check "$(grep -c spare "$T/probes")" 0 "…and never probed"
+check "$(ACCOUNT_NOW=$WED A limits --all --hide '' --json) $(python3 -c "import json;print(len(json.load(open('$T/out'))))")" "0 2" "an empty --hide (the widget with no plumb/widget-hide) hides nothing"
+reset
 
 echo "pace — a 5-hour window under its elapsed share runs (2026-10-30)"
 # WED is 12:00; the spare row's flat limit is 50%, its week 70%. resets <dir> WED <m>: the window ends m minutes on.
@@ -260,6 +432,80 @@ reset; use "$S1" "10 80"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.last" ACCOUNT_NOW=$(python3 -c "print($SAT)") A pick --json) $(field "['account']")" "0 spare" "reserve.last_hours: inside the last 24 h before the reset → 100%"
 reset; use "$S1" "10 80"; use "$P1" "10 10"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.last" ACCOUNT_NOW=$THU A pick --json) $(field "['account']")" "0 main" "…and not before"
+
+echo "pick --room fable — only a seat whose plan carries Fable, with room (the principal tier's S6)"
+reset; use "$S1" "10 10"; use "$P1" "10 10"; touch "$S1/stub-nofable" "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "control: without --room the Pro-plan row first in the walk runs it"
+reset
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json) $(field "['account']")" "0 main" "--room fable: the row whose plan lacks Fable is skipped, the next with Fable picked"
+check "$(field "['skipped']")" "[['spare', 'no Fable on its plan (pro): --room fable']]" "…the skip names the plan"
+has "$T/out" "Fable's week 37%" "…and the pick's reason carries Fable's week"
+reset; rm -f "$S1/stub-nofable"; touch "$S1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json) $(field "['account']")" "0 spare" "both carry Fable: the walk's order holds"
+reset; echo 100 > "$S1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json) $(field "['account']")" "0 main" "the first row's Fable week full: skipped"
+has "$T/out" "Fable's week 100% ≥ 70% (week ceiling)" "…by its week ceiling"
+reset; echo 96 > "$P1/stub-fable"; rm -f "$S1/stub-fable"; touch "$S1/stub-nofable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable)" 3 "no row with Fable room → exit 3, nothing picked"
+has "$T/out" "spare: no Fable on its plan" "…the Pro-plan row named"
+has "$T/out" "main: Fable's week 96% ≥ 95%" "…and the primary's full Fable week"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "…while a plain pick still runs on the Pro-plan row"
+reset; rm -f "$P1/stub-usage"; use "$S1" "10 90"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "control: a plain pick's unreadable primary runs it rather than nothing"
+reset
+check "$(ACCOUNT_NOW=$WED A pick --room fable)" 3 "--room fable: an unreadable primary is no Fable room (never a guess)"
+has "$T/out" "main: Fable room unknown (no reading with limits[])" "…saying so, the room's reason alone (judge's \"limits unknown\" is the same unread probe)"
+# a refusal no reset lifts still leads: extra usage on, the room unknown behind it (dispatch's resets() reads the start)
+use "$P1" "10 10"; reset; touch "$P1/stub-overage"; rm -f "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json; field "['skipped'][1][1][:14]")" "3
+extra usage on" "under --room, extra usage on leads the primary's skip, never an unknown room a retry may lift"
+rm -f "$P1/stub-overage"; rm -f "$P1/stub-usage"; reset
+# a reading with no window figures but a full Fable week: the room's reason leads, one Fable's reset lifts
+echo "{\"at\": $WED, \"limits\": {\"plan\": \"max\", \"locked\": [], \"kinds\": [], \"fable\": true, \"fable_week\": 99, \"fable_week_resets\": $(python3 -c "print($WED + 86400)"), \"five_hour\": null, \"seven_day\": null}}" > "$P1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --cached --json; field "['skipped'][1][1][:16]")" "3
+Fable's week 99%" "a primary with no window figures and a full Fable week: Fable's week leads (a reset lifts it)"
+reset
+use "$P1" "10 10"; use "$S1" "10 10"; reset; : > "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room opus --json)" 3 "an unknown room refuses (exit 3), never the plain walk an unknown --kind falls back to"
+check "$(field "['skipped']")" "[['room', \"unknown room 'opus': --room takes fable\"]]" "…naming the rooms it takes"
+check "$(cat "$T/probes" 2>/dev/null | wc -l | tr -d ' ')" "0" "…before any probe"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --provider codex)" 3 "--room fable with a Codex provider refuses"
+has "$T/out" "codex rows carry no Fable" "…saying why"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --kind review)" 3 "…and with a kind that routes to Codex"
+has "$T/out" "codex rows carry no Fable" "…saying why (not the walk's own refusal: no enabled Codex row)"
+# a plan without Fable is a refusal no reset lifts: it leads the row's reason, never judge's week or a cooldown
+# (dispatch's resets() reads a leading week or cooldown as SHORT and requeues; the S6 landing review)
+reset; use "$S1" "10 80"; use "$P1" "10 10"; echo 99 > "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json; field "['skipped'][0][1]")" "3
+no Fable on its plan (pro): --room fable" "a Pro row over its week ceiling: its skip is the plan, not the week"
+reset; use "$S1" "10 10"; ACCOUNT_NOW=$WED A pick --json > /dev/null   # spare's reading cached: no Fable
+echo "{\"at\": $WED, \"window\": \"seven_day\", \"resets_at\": $(python3 -c "print($WED + 5 * 86400)")}" > "$S1/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --json; field "['skipped'][0][1]")" "3
+no Fable on its plan (pro): --room fable" "a Pro row cooling down: its cached reading's plan is said, not the cooldown"
+rm -f "$P1/account-ships.json"; ACCOUNT_NOW=$WED A ships --pin pr/cool spare > /dev/null; echo 37 > "$P1/stub-fable"; rm -f "$P1/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --ship pr/cool --json; field "['account']")" "0
+main" "a ship pinned to a Pro row cooling down moves, never waits out the cooldown"
+check "$(ACCOUNT_NOW=$WED A pick --ship pr/cool --json; field "['account']")" "0
+main" "…(pinned there now)"
+rm -f "$P1/account-ships.json" "$S1/exhaustion.jsonl"; : > "$P1/stub-fable"; reset
+check "$(ACCOUNTS_FILE="$T/none.json" A pick --room opus)" 3 "an unknown room with no registry: refused (exit 3), never read as no registry (exit 4)"
+has "$T/out" "unknown room 'opus'" "…naming it"
+check "$(ACCOUNTS_FILE="$T/none.json" A pick --room fable)" 4 "…while --room fable with no registry is no registry, as a plain pick"
+# a ship pinned to a row whose Fable is unknown moves, as pick skips such a row (never waits on a reading)
+reset; rm -f "$S1/stub-nofable"; use "$S1" "10 10"; ACCOUNT_NOW=$WED A ships --pin pr/unk spare > /dev/null
+check "$(ACCOUNT_NOW=$WED A pick --room fable --ship pr/unk --json; field "['account']")" "0
+main" "a ship pinned to a row with no limits[] reading moves under --room fable"
+has "$T/out" "moved: spare is of unknown Fable room" "…saying why"
+rm -f "$P1/account-ships.json"; touch "$S1/stub-nofable"; reset
+reset; rm -f "$P1/account-ships.json"
+check "$(ACCOUNT_NOW=$WED A ships --pin pr/ship spare; ACCOUNT_NOW=$WED A pick --room fable --ship pr/ship --json) $(field "['account']")" "0
+0 main" "a ship pinned to a row whose plan lacks Fable moves under --room fable"
+has "$T/out" "moved: spare is on a plan without Fable (pro)" "…saying why"
+reset; echo 99 > "$P1/stub-fable"
+check "$(ACCOUNT_NOW=$WED A pick --room fable --ship pr/ship)" 3 "a ship on a row whose Fable week is full waits there (exit 3)"
+has "$T/out" "ship pr/ship stays on main and waits: Fable's week 99%" "…saying so"
+check "$(ACCOUNT_NOW=$WED A pick --room nope --ship pr/ship)" 3 "…and an unknown room refuses a ship too"
+rm -f "$P1/account-ships.json" "$S1/stub-nofable" "$P1/stub-fable"; reset
 
 echo "paid overage — judge refuses a row whose extra usage is on (costs S8)"
 reset; use "$S1" "10 10"; use "$P1" "10 10"; touch "$S1/stub-overage"
@@ -649,7 +895,8 @@ check "$(DA limits work --cached --json; field "[0]['limits']['fable_week']")" "
 37" "…--json carries fable_week for the widget"
 check "$(DA limits work --cached --json; field "[0]['limits']['fable_week_resets']")" "0
 1791662400.0" "…and when that week resets (2026-10-10 20:00 UTC)"
-# A reading cached before fable_week existed: plain "yes", never a week it does not have.
+# A reading cached before fable_week existed: plain "yes", never a week it does not have. Unstamped, as every
+# reading before cooldown-account: work is no Orca row, so it is still read.
 echo '{"at": 1, "limits": {"plan": "pro", "locked": [], "fable": true, "five_hour": 1, "five_hour_resets": 1791504000, "seven_day": 2, "seven_day_resets": 1791662400}}' > "$F/usage-probe.json"
 check "$(DA limits work --cached)" 0 "limits work from an older cache"
 check "$(grep -o 'fable: [^;]*' "$T/out" | head -1)" "fable: yes" "…→ fable: yes, with no week"
@@ -682,7 +929,20 @@ J
 DR() { ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUNT_LOGINS="$ACCOUNT_LOGINS.d" ACCOUNT_HOST=laptop ACCOUNT_SSH="$T/ssh-peer" ACCOUNT_NOW=$WED A doctor "$@"; }
 rm -f "$F/usage-probe.json" "$P1/usage-probe.json"; use "$F" "10 10"; use "$P1" "10 10"; touch "$P1/stub-fable" "$F/stub-nofable"
 echo f@example.com > "$F/stub-login"; echo p@example.com > "$P1/stub-login"; echo '{}' > "$F/settings.json"
+echo "{\"at\": $WED, \"window\": \"seven_day\", \"resets_at\": $(python3 -c "print($WED + 432000)"), \"account\": \"u-other\"}" > "$F/exhaustion.jsonl"
 check "$(DR)" 1 "doctor: problems on both Macs → exit 1"
+has "$T/out" "work: exhaustion log $F/exhaustion.jsonl holds 1 record in force of u-other (not this login's u-f; not counted)" "doctor names a log holding another login's records (cooldown-account)"
+rm -f "$F/exhaustion.jsonl"
+# the cases below run doctor again: the first run's output and work's cache are kept for the block's later lines
+cp "$T/out" "$T/out.dr"; cp "$F/usage-probe.json" "$T/f-probe.json"
+fcache() { echo "{\"at\": $WED, \"limits\": {\"plan\": \"max\", \"locked\": [], \"kinds\": [], \"five_hour\": 10, \"seven_day\": 10}, \"account\": \"u-other\"}" > "$F/usage-probe.json"; }
+fcache; mv "$F/stub-usage" "$F/stub-usage.off"; DR > /dev/null; mv "$F/stub-usage.off" "$F/stub-usage"
+has "$T/out" "work: usage cache $F/usage-probe.json holds u-other's reading (not this login's u-f; not used — the next probe replaces it)" \
+  "doctor names a usage cache of another login's reading, where its live call failed (cooldown-account D1)"
+has "$T/out" "work: no answer to a live call" "…and that reading is never taken for the call's answer"
+fcache; DR > /dev/null
+hasnt "$T/out" "usage cache" "…where the live call answers, it replaced the reading: no such line"
+cp "$T/out.dr" "$T/out"; cp "$T/f-probe.json" "$F/usage-probe.json"; rm -f "$T/out.dr" "$T/f-probe.json"; unset -f fcache
 has "$T/out" "laptop:" "…the laptop's block"
 has "$T/out" "server:" "…and the peer's, reached over ssh"
 has "$T/out" "work: guard: missing (hooks/account_guard.py, E4)" "the guard not wired in work's dir"
@@ -874,6 +1134,31 @@ check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.g" python3 "$B/account" env work2)" "CLAU
 check "$(ACCOUNT_NOW=$WED AG pick --json) $(field "['account']")" "0 work2" "synced, it is first in the walk"
 check "$(AG orca-sync)" 0 "a second sync: idempotent"
 has "$T/out" "ok  work2: $G" "…ok, same dir"
+# Orca's profile setup copies the default dir's top-level files into the profile at each selection (read live,
+# 2026-11-02): its exhaustion log the primary's records, whose week lock then held work2. A link, tested here, reads
+# the same way (cooldown-account)
+echo "{\"at\": $WED, \"window\": \"seven_day\", \"resets_at\": $(python3 -c "print($WED + 432000)"), \"account\": \"u-primar\"}" > "$P1/exhaustion.jsonl"
+ln -s "$P1/exhaustion.jsonl" "$G/exhaustion.jsonl"
+check "$(ACCOUNT_NOW=$WED AG pick --json) $(field "['account']")" "0 work2" "an Orca dir whose log links to the primary's: the primary's lock never holds it"
+ACCOUNT_NOW=$WED AG check > /dev/null
+has "$T/out" "exhaustion log $G/exhaustion.jsonl is a link to" "check names the shared log"
+check "$(AG orca-sync; [ -L "$G/exhaustion.jsonl" ] && echo link)" "0
+link" "orca-sync leaves Orca's link as it is (its setup reruns at each selection; the filter makes it harmless)"
+CLAUDE_CONFIG_DIR="$G" ACCOUNT_NOW=$WED python3 "$B/account" exhausted --window five_hour --resets-at "$(python3 -c "print($WED + 3600)")" --session sg --used 100
+ACCOUNT_NOW=$WED AG check > /dev/null
+has "$T/out" "exhaustion log $P1/exhaustion.jsonl holds 1 record in force of u-g (not this login's u-primar; not counted)" "…the primary's check names work2's record written through the link"
+check "$(ACCOUNT_NOW=$WED AG pick --json) $(field "['account']")" "0 stray2" "…which holds work2 (its own lock): the walk goes on past it"
+# …and the copy took usage-probe.json: on an Orca row a reading with no stamp is no reading (cooldown-account D1)
+rm -f "$T/g-probe.json"; [ ! -f "$G/usage-probe.json" ] || cp "$G/usage-probe.json" "$T/g-probe.json"
+echo "{\"at\": $WED, \"limits\": {\"plan\": \"max\", \"locked\": [\"seven_day\"], \"kinds\": [], \"five_hour\": 10, \"seven_day\": 100}}" > "$G/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED AG limits work2 --cached --json) $(field "[0]['limits']")" "0 None" "an Orca row's reading with no login stamp (the primary's, copied) → no reading"
+ACCOUNT_NOW=$WED AG check > /dev/null
+has "$T/out" "usage cache $G/usage-probe.json holds a reading with no login stamp (not this login's u-g; not used" "…check names it"
+check "$(grep '^  .. *work2:' "$T/out" | grep -c 'no reading of its own cached')" 1 "…and says no reading of its own is cached, never \"never probed\""
+echo "{\"at\": $WED, \"account\": \"u-g\", \"limits\": {\"plan\": \"max\", \"locked\": [\"seven_day\"], \"kinds\": [], \"five_hour\": 10, \"seven_day\": 100}}" > "$G/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED AG limits work2 --cached --json) $(field "[0]['limits']['seven_day']")" "0 100" "…its own stamped reading is read"
+if [ -f "$T/g-probe.json" ]; then mv "$T/g-probe.json" "$G/usage-probe.json"; else rm -f "$G/usage-probe.json"; fi
+rm -f "$P1/exhaustion.jsonl" "$G/exhaustion.jsonl"
 check "$(grep -c -- '--new-window' "$T/code.calls") $(grep -c -- '--install-extension' "$T/code.calls")" "1 2" "…no second window, no extension twice"
 check "$(grep -c 'VS Code profile' "$T/out")" 0 "…the VS Code step only when a login is first synced (a deleted profile stays deleted)"
 check "$(AG vscode main)" 1 "vscode on the default dir: refused (the default profile is it)"
@@ -1157,6 +1442,38 @@ check "$(rows "(r['limits']['seven_day'], r['limits']['five_hour'], r['limits'][
 check "$(rows "(r['limits']['seven_day'], r['limits']['buckets'])" "r['label'] == 'mon'")" "[(7, [])]" \
   "…an agent with a month and no buckets keeps its week beside the month (review 2026-10-21)"
 check "$(field "[3]['why']")" "Orca: token expired" "…and a failed one says Orca's error"
+check "$(AR limits --all --orca --cached --hide agy --json; rows "r['label']")" "0
+['main', 'mon']" "--hide: an Orca agent's card left out by its name (the widget's plumb/widget-hide: cursor)"
+check "$(AR limits --all --orca --cached --hide 'agy: Big' --json; rows "([(b['family'], b['percent']) for b in r['limits']['buckets']], r['limits']['seven_day'])" "r['label'] == 'agy'")" "0
+[([('Fast', 12)], 12)]" "--hide AGENT:FAMILY: that bucket family dropped, the week taken again from the buckets left (no 40 from Big)"
+check "$(AR limits --all --orca --cached --json; rows "(len(r['limits']['buckets']), r['limits']['seven_day'])" "r['label'] == 'agy'")" "0
+[(2, 40)]" "…a call without it reads every bucket (the desk's)"
+cat > "$T/bw.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("acct_bw", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("acct_bw", l)); l.exec_module(m)
+print([m.bucket_words(n) for n in ("Gemini Models · Five Hour Limit Remaining", "Claude and GPT models · Weekly Limit Remaining", "Other Models")])
+b = lambda n, p, r: dict(name=n, percent=p, resets=r, **dict(zip(("family", "win"), m.bucket_words(n))))
+row = {"label": "antigravity", "provider": "antigravity", "limits": {"five_hour": 90, "five_hour_resets": 3, "seven_day": 70, "seven_day_resets": 4,
+       "locked": [], "buckets": [b("Gemini Models · Weekly Limit Remaining", 8, 1), b("Gemini Models · Five Hour Limit Remaining", 2, 2),
+                                 b("Claude and GPT models · Weekly Limit Remaining", 70, 4), b("Claude and GPT models · Five Hour Limit Remaining", 90, 3)]}}
+lim = m.hide_families(row, [("antigravity", "claude/gpt")])["limits"]
+print(lim["five_hour"], lim["five_hour_resets"], lim["seven_day"], lim["seven_day_resets"], len(lim["buckets"]))
+lim = m.hide_families(row, [("antigravity", "claude/gpt"), ("antigravity", "gemini")])["limits"]
+print(lim["five_hour"], lim["seven_day"], lim["buckets"], lim["hidden"])
+print(m.hide_families(row, [("cursor", "other")]) is row)
+PY
+check "$(python3 "$T/bw.py" "$B/account")" "[('Gemini', '5h'), ('Claude/GPT', 'week'), ('Other', '')]
+2 2 8 1 2
+None None [] ['claude/gpt', 'gemini']
+True" "bucket_words in the cards' words; hide_families takes the 5h and week again from the family left, none when none is left (said hidden), and leaves another agent's row alone"
+cat > "$T/bw2.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("acct_bw2", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("acct_bw2", l)); l.exec_module(m)
+b = lambda n, p: dict(name=n, percent=p, resets=9, **dict(zip(("family", "win"), m.bucket_words(n))))
+row = {"label": "cursor", "provider": "cursor", "limits": {"seven_day": None, "buckets": [b("Cursor Models", 3), b("Other Models", 5)]}}
+print(m.hide_families(row, [("cursor", "other")])["limits"]["seven_day"])
+PY
+check "$(python3 "$T/bw2.py" "$B/account")" "None" "…an agent with no week (Cursor's month buckets) gains none when a family is hidden"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.c" ACCOUNT_ORCA="$T/orca-r" python3 "$B/account" limits --all --cached --json 2>/dev/null | python3 -c "import json,sys;print([r['label'] for r in json.load(sys.stdin)])")" \
   "['main']" "without --orca: no such row (the walk, the tier check, usage-report)"
 check "$(AR limits --all --orca; grep -c '(Orca)' "$T/out")" "0
@@ -1455,6 +1772,122 @@ check "$(TS allowed "$PR/acme-one")" 0 "a link into the drive: the copy answers 
 check "$(REGATTA_DRIVE_ROOTS="$T/elsewhere" TS allowed "$PR/acme-one")" 1 "a link outside every drive root reads the link itself (lab's now, work refused)"
 check "$(CLAUDE_UNATTENDED=1 TS refresh --force)" 3 "refresh --force refuses an unattended caller (a person's yes; AGENTS.md Traps)"
 has "$T/out" "this run is unattended" "…saying so"
+echo "the budgets key: refresh links it beside the tenants link's target (budgets-link, 2026-11-01)"
+mkdir -p "$T/bdrive" "$T/bl"; echo '{}' > "$T/bdrive/tenants.json"; echo '{"_note": "the owner'"'"'s"}' > "$T/bdrive/budgets.json"
+ln -s "$T/bdrive/tenants.json" "$T/bl/tenants.json"; BD="$(cd "$T/bdrive" && pwd -P)"   # the target as realpath reads it
+BL() { TENANTS_FILE="$T/bl/tenants.json" ACCOUNT_BUDGETS="${BLB:-$T/bl/budgets.json}" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_LOGINS="$T/no-logins.json" A "$@"; }
+bd() { TENANTS_FILE="$T/bl/tenants.json" ACCOUNT_BUDGETS="$T/bl/budgets.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_LOGINS="$T/no-logins.json" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_bl", sys.argv[1]).load_module()
+for t in a.stale_copies():
+    if "budgets" in t[2]: print(t[1], t[2])' "$B/account" 2>&1; }
+bdfix() { TENANTS_FILE="$T/bl/tenants.json" ACCOUNT_BUDGETS="$T/bl/budgets.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_LOGINS="$T/no-logins.json" python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_blf", sys.argv[1]).load_module()
+for t in a.stale_copies():
+    if "budgets" in t[2]: print(t[3] or "none")' "$B/account" 2>&1; }
+check "$(bd)" "fix budgets.json: no link; refresh links it to $BD/budgets.json (until then the hooks judge by the registry's ceilings alone)" \
+  "doctor: no budgets key, a tenants link, a budgets.json beside its target: refresh would link it"
+check "$(BL refresh)" 3 "outside claude-host refresh refuses before it makes the link (the sibling is in the drive)…"
+check "$(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "none" "…and makes none"
+check "$(CLAUDE_UNATTENDED=1 BL refresh --force) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "3 none" \
+  "an unattended --force refuses before the link too"
+check "$(BL refresh --force) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" "a person's --force outside claude-host makes it"
+rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh)" 0 "under claude-host (the usage tick) refresh makes the link: exit 0"
+check "$(readlink "$T/bl/budgets.json")" "$BD/budgets.json" "…to the budgets.json beside the tenants link's target"
+has "$T/out" "refresh: budgets.json linked to $BD/budgets.json, beside tenants.json's target" "…saying so"
+has "$T/out" "refresh: budgets.json → .budgets.json.last" "…and the same pass copies it for the hooks"
+if [ "$(id -u)" != 0 ]; then   # root writes through a read-only folder
+  rm "$T/bl/budgets.json"; chmod a-w "$T/bl"
+  check "$(REGATTA_CLAUDE_HOST=1 BL refresh)" 1 "a link refresh cannot write: exit 1…"
+  has "$T/out" "refresh: budgets.json not linked to $BD/budgets.json" "…naming it"
+  chmod u+w "$T/bl"; check "$(REGATTA_CLAUDE_HOST=1 BL refresh)" 0 "…and the next pass makes it"
+fi
+check "$(bd)" "" "doctor: the link made and its copy fresh: quiet"
+echo '{"_note": "kept"}' > "$T/elsewhere-budgets.json"; rm "$T/bl/budgets.json"; ln -s "$T/elsewhere-budgets.json" "$T/bl/budgets.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "0 $T/elsewhere-budgets.json" "an existing link is kept, wherever it leads"
+check "$(bd)" "info budgets.json links to $T/elsewhere-budgets.json, not to the budgets.json beside tenants.json's target ($BD/budgets.json); refresh never replaces a link" \
+  "doctor: a link away from the tenants link's target (the tenants key relinked) is named"
+rm "$T/bl/budgets.json"; ln -s "$T/gone/budgets.json" "$T/bl/budgets.json"
+check "$(bd)" "info budgets.json links to $T/gone/budgets.json, which is not there, outside the folder of tenants.json's target (the vault moved, or a drive of its own away): the hooks hold its last copy, and refresh keeps the link" \
+  "doctor: a dead link outside the sibling's folder while the sibling reads (the vault moved, or the owner's own drive away): info…"
+check "$(bdfix)" "rm $T/bl/budgets.json && $B/account refresh --force   (refresh links it again to $BD/budgets.json)" "…offering the rm refresh follows with the sibling's link"
+mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
+check "$(bd)" "info budgets.json links to $T/gone/budgets.json, whose folder is not there (the drive away?): the hooks hold its last copy, and the link reads again once it mounts" \
+  "doctor: a link whose folder is away and no sibling reads gets no rm (it would drop the key and the hooks' copy)"
+check "$(bdfix)" "none" "…no rm offered"
+mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"
+rm "$T/bl/budgets.json"; echo '{"_note": "plain"}' > "$T/bl/budgets.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" && echo link || cat "$T/bl/budgets.json")" '0 {"_note": "plain"}' \
+  "an existing plain file is kept (a host with no drive)"
+check "$(bd)" "" "doctor: quiet on a plain file"
+rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last" "$T/bl/tenants.json"; cp "$T/bdrive/tenants.json" "$T/bl/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "0 none" \
+  "no tenants link (a plain tenants file): nothing made"
+check "$(bd)" "" "doctor: no tenants link, nothing to say"
+rm "$T/bl/tenants.json"; ln -s "$T/bdrive/tenants.json" "$T/bl/tenants.json"; mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "0 none" \
+  "no budgets.json beside the tenants link's target: nothing made (never a dangling link)"
+check "$(bd)" "" "doctor: no sibling, nothing to say"
+mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"; rm "$T/bl/tenants.json"; ln -s ../bdrive/tenants.json "$T/bl/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" \
+  "a relative tenants link: the budgets link is made absolute from the link's real target"
+rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last" "$T/bl/tenants.json"; mkdir -p "$T/bmid"; echo '{"_note": "not the drive'"'"'s"}' > "$T/bmid/budgets.json"
+ln -s "$T/bdrive/tenants.json" "$T/bmid/tenants.json"; ln -s "$T/bmid/tenants.json" "$T/bl/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" \
+  "a chained tenants link (a local link into the drive): the sibling of the last target, never the middle folder's"
+mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
+check "$(bd)" "info budgets.json links to $BD/budgets.json, which is not there: the hooks hold its last copy; put a budgets.json back there, or make the key a plain {} to drop the owner's ceilings" \
+  "doctor: a budgets link that leads nowhere, with no sibling to relink: info, no rm (refresh would make nothing)"
+check "$(bdfix)" "none" "…no rm offered"
+echo '{}' > "$T/bdrive/budgets-new.json"; rm "$T/bl/budgets.json"; ln -s "$T/bdrive/budgets-gone.json" "$T/bl/budgets.json"; mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"
+check "$(bd)" "fix budgets.json links to $T/bdrive/budgets-gone.json, which is not there: the hooks hold its last copy, and refresh keeps the link" \
+  "doctor: a dangling link with a sibling to relink: a fix…"
+check "$(bdfix)" "rm $T/bl/budgets.json && $B/account refresh --force   (refresh links it again to $BD/budgets.json)" "…whose rm refresh follows with a link"
+rm "$T/bl/budgets.json"; ln -s "$T/bdrive/budgets-new.json" "$T/bl/budgets.json"
+check "$(bd)" "info budgets.json links to $T/bdrive/budgets-new.json, not to the budgets.json beside tenants.json's target ($BD/budgets.json); refresh never replaces a link" \
+  "doctor: another file in the target's own folder is named too"
+rm "$T/bl/budgets.json" "$T/bdrive/budgets-new.json"; ln -s "$BD/budgets.json" "$T/bl/budgets.json"; mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "1 $BD/budgets.json" "…and refresh keeps it (exit 1, did not read)"
+mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"; rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
+mv "$T/bdrive/tenants.json" "$T/bdrive/tenants.json.away"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "1 none" \
+  "a dangling tenants link (the drive away): nothing made…"
+has "$T/out" "refresh: tenants.json did not read" "…the tenants half says why"
+check "$(bd)" "" "doctor: a dangling tenants link makes no budgets line"
+mv "$T/bdrive/tenants.json.away" "$T/bdrive/tenants.json"
+mkdir -p "$T/bother"
+check "$(REGATTA_CLAUDE_HOST=1 BLB="$T/bother/budgets.json" BL refresh) $(test -L "$T/bother/budgets.json" || test -e "$T/bother/budgets.json" || echo none)" "0 none" \
+  "the budgets key in another folder than the tenants key (one overridden alone): never linked"
+rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"; mkdir -p "$T/bsib"; ln -s "$T/bdrive/budgets.json" "$T/bsib/budgets.json"; echo '{}' > "$T/bsib/tenants.json"
+rm "$T/bl/tenants.json"; ln -s "$T/bsib/tenants.json" "$T/bl/tenants.json"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "0 none" \
+  "a sibling that is itself a link (it may lead into a drive the gate never judged): never linked"
+BS="$(cd "$T/bsib" && pwd -P)"
+check "$(bd)" "info budgets.json: no link, and refresh makes none: the budgets.json beside tenants.json's target ($BS/budgets.json) is itself a link, which refresh never follows; link the key by hand (until then the hooks judge by the registry's ceilings alone)" \
+  "doctor: a sibling refresh refuses is named, never silent"
+mkdir -p "$T/droot"; ln -s "$T/bdrive" "$T/droot/v"; rm "$T/bl/tenants.json"; ln -s "$T/droot/v/tenants.json" "$T/bl/tenants.json"
+check "$(REGATTA_DRIVE_ROOTS="$T/droot" REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "0 none" \
+  "a folder link on the way (the tenants link reads as the drive's, the sibling's real path not): never linked"
+check "$(REGATTA_DRIVE_ROOTS="$T/droot" bd)" "info budgets.json: no link, and refresh makes none: tenants.json's link reads as inside a drive and a link to $BD/budgets.json would read as outside one (a folder link on the way), so the hooks would judge the two keys apart; link the key by hand to that file by a path that reads as inside a drive (until then the hooks judge by the registry's ceilings alone)" \
+  "doctor: …names why, and a hand link that keeps the verdict"
+mkdir -p "$T/bloc"; ln -s "$T/bdrive" "$T/bloc/v"; rm "$T/bl/tenants.json"; ln -s "$T/bloc/v/tenants.json" "$T/bl/tenants.json"
+check "$(REGATTA_DRIVE_ROOTS="$T/bdrive" REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "0 none" \
+  "the other way: the tenants link's text outside the drive, the sibling's real path inside it: never linked"
+has "$T/out" "refresh: budgets.json not linked: tenants.json's link reads as outside a drive" "…and refresh's own log says why"
+check "$(REGATTA_DRIVE_ROOTS="$T/bdrive" bd)" "info budgets.json: no link, and refresh makes none: tenants.json's link reads as outside a drive and a link to $BD/budgets.json would read as inside one (a folder link on the way), so the hooks would judge the two keys apart; relink tenants.json by its real path, which reads as a drive; refresh then links the key itself (until then the hooks judge by the registry's ceilings alone)" \
+  "doctor: …names that side too"
+ln -s "$T/bloc/v/budgets.json" "$T/bl/budgets.json"
+check "$(REGATTA_DRIVE_ROOTS="$T/bdrive" bd)" "fix budgets.json links to $T/bloc/v/budgets.json, which reads as outside a drive while its file ($BD/budgets.json) is in one: the hooks open it outside claude-host, where an ungranted app blocks on it; relink it by its real path" \
+  "doctor: a hand link whose text reads as outside a drive while its file is in one: a fix…"
+check "$(REGATTA_DRIVE_ROOTS="$T/bdrive" bdfix)" "ln -sfn $BD/budgets.json $T/bl/budgets.json" "…relinking it by its real path"
+rm "$T/bl/tenants.json"; ln -s "$T/bdrive/tenants.json" "$T/bl/tenants.json"; rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
+check "$(REGATTA_DRIVE_ROOTS="$T/elsewhere" BL refresh) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" \
+  "a tenants link outside every drive root: refresh links it without claude-host"
+rm -f "$T/bl/tenants.json" "$T/bl/.tenants.json.last" "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
 ACCOUNT_LOGINS="$T/logins-link.json" python3 - "$B/account" "$T" > "$T/s4f.out" 2>&1 <<'PY2'
 import json, os, sys
 from importlib.machinery import SourceFileLoader
@@ -1603,7 +2036,7 @@ tstate "$TN/off.json" > "$T/ts"
 has "$T/ts" "info - tenancy is off: off.json is {}" "a file written {}: tenancy off, said as info"
 echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}, "beta": {"repos": ["app"], "logins": ["lab", "work"]}}' > "$TN/two.json"
 tstate "$TN/two.json" > "$T/ts"
-has "$T/ts" 'fix lab lab is in the "logins" of acme, beta in two.json: it is beta'"'"'s login only, and is refused acme'"'"'s repos' "a label in two tenants' logins: a fix naming the later as its owner"
+has "$T/ts" 'fix lab lab is in acme'"'"'s "logins", beta'"'"'s "logins" in two.json: it is beta'"'"'s login only, and is refused acme'"'"'s repos' "a label in two tenants' logins: a fix naming the later as its owner"
 has "$T/ts" "fix - acme's repos run nowhere: no enabled claude login is acme's" "…and the tenant it left with no login"
 cat > "$ACCOUNTS_FILE.th" <<'J'
 {"accounts": [
@@ -1660,8 +2093,8 @@ has "$T/out" "lab is acme's login already: a login is in one tenant only" "…sa
 check "$(VT tenant set other --repos privy --logins work)" 1 "a repo another tenant holds: refused"
 has "$T/out" "privy is owner's already" "…saying whose"
 check "$(VT tenant set other --repos acme-two --logins work)" 1 "…a key another tenant's glob takes too"
-check "$(VT tenant set other --repos zed --logins nobody)" 1 "a label no claude or codex row has: refused"
-has "$T/out" "nobody is no claude or codex row of accounts.json.vt" "…naming the registry"
+check "$(VT tenant set other --repos zed --logins nobody)" 1 "a label no claude, codex or antigravity row has: refused"
+has "$T/out" "nobody is no claude, codex or antigravity row of accounts.json.vt" "…naming the registry"
 check "$(VT tenant set other --repos /abs --logins work; grep -c other "$T/vt/tenants.json")" "1
 0" "an absolute repo entry: refused, nothing written"
 ln -sfn "$T/vt/nowhere.json" "$T/vt/gone.json"
@@ -1856,7 +2289,7 @@ check "$(VX tenant set beta --repos zed --logins codex-own)" 1 "a Codex login in
 has "$T/out" "codex-own is owner's login already" "…saying whose"
 check "$(VX tenant set beta --repos zed --logins lab)" 1 "a Claude label in another tenant: still refused"
 check "$(VX tenant set beta --repos zed --logins nobody)" 1 "an unknown label: still refused"
-has "$T/out" "nobody is no claude or codex row of accounts.json.vx" "…naming claude or codex"
+has "$T/out" "nobody is no claude, codex or antigravity row of accounts.json.vx" "…naming the three"
 echo "  doctor: a Codex login alone leaves a tenant's Claude sessions nowhere"
 check "$(CXRUN="$CXO" VX tenant set solo --repos zed --logins codex-other)" 1 "tenant set with Codex labels alone: refused"
 has "$T/out" "codex-other names no claude row" "…saying the Claude sessions would have nowhere to start"
@@ -1874,6 +2307,196 @@ check "$(CLAUDE_CONFIG_DIR="$S1" VX allowed "$PR/privy")" 1 "…spare too (not t
 check "$(VX run codex-own)" 1 "run still refuses a Codex row"
 check "$(VX pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "a Claude pick in the tenant's repo → its Claude login"
 hasnt "$T/out" "codex-own only" "…and its skip line names no Codex login"
+
+echo "a tenant's logins may name an Antigravity row: routing only, as a Codex one (agy-tenant, 2026-10-31)"
+AGH="$HOME/.gemini-own"; AGO="$HOME/.gemini-other"; mkdir -p "$AGH" "$AGO"
+cat > "$T/mkva.py" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["accounts"] += [{"label": "agy-own", "provider": "antigravity", "home": "~/.gemini-own"},
+                  {"label": "agy-other", "provider": "antigravity", "home": "~/.gemini-other"}]
+json.dump(d, open(sys.argv[2], "w"))
+PYEOF
+python3 "$T/mkva.py" "$ACCOUNTS_FILE.vx" "$ACCOUNTS_FILE.va"
+echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/cx.json"
+VA() { GEMINI_CLI_HOME="${AGRUN:-$AGH}" CODEX_HOME="$CXH" VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" ACCOUNT_CODEX="$T/codex" VT "$@"; }
+check "$(AGRUN="$AGO" VA tenant set owner --repos privy --logins main codex-own agy-own)" 1 "an agy label whose home is not the one an agy run uses: refused"
+has "$T/out" "agy-own is an antigravity row whose home is not" "…the vendor fence would pass a run on another login"
+check "$(VA tenant set owner --repos privy --logins main codex-own agy-own)" 0 "tenant set with an agy label beside the Codex one: written"
+has "$T/out" "runs on main, codex-own, agy-own only" "…naming both"
+has "$T/out" "refused to work, lab, spare, codex-other, agy-other" "…the other rows of every vendor are refused"
+check "$(VA pick --provider antigravity --repo "$PR/privy" --json) $(field "['account']")" "0 agy-own" "pick --provider antigravity --repo a tenant's repo → the tenant's agy login"
+check "$(VA pick --provider antigravity --repo "$PR/privy" --json) $(field "['owns'], d['env']")" "0 True {}" "…it owns the repo, and sets no environment (agy picks its keychain login itself)"
+check "$(VA pick --provider antigravity --repo "$PR/acme-one" --json)" 3 "an agy pick in another tenant's repo: every agy row refused (acme has none)"
+has "$T/out" "acme-one is acme's: it runs on no antigravity login only (tenants)" "…with that tenant's line, naming agy rows alone"
+check "$(VA pick --provider codex --repo "$PR/privy" --json) $(field "['account']")" "0 codex-own" "…the Codex pick is unchanged beside it"
+check "$(VA limits --all --cached --json) $(field "[0:0] or [o['label'] for o in d if o['provider'] == 'antigravity']")" "0 []" "limits --all leaves an agy row out: Orca's card is its figure"
+check "$(VA run agy-own)" 1 "run refuses an agy row"
+VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy "$roster" > "$T/roster"
+has "$T/roster" "codex: codex-own (routing only); antigravity: agy-own (routing only)" "the roster names each routing login by its vendor"
+check "$(VA tenant set beta --repos zed --logins agy-own)" 1 "an agy login in another tenant already: refused (one tenant per login)"
+has "$T/out" "agy-own is owner's login already" "…saying whose"
+echo "  confined: a routing login owns only part of its tenant (the owner tenant holds the vault beside the scope meant)"
+check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own=cv)" 0 "tenant set --confine: written"
+has "$T/out" "runs on main only; agy-own confined to cv" "…naming the confine"
+check "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["owner"]; print(t["logins"], t["confined"], "confine" in t)' "$T/vt/cx.json")" \
+  "['main'] {'agy-own': ['cv']} False" "…in the tenants file as \"confined\", the label out of \"logins\" (agy-confine-fail-closed)"
+check "$(VA pick --provider antigravity --repo "$PR/cv" --json) $(field "['account'], d['owns']")" "0 agy-own True" "a confined login's pick in its confine: runs it, owns it"
+check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "…the tenant's repo outside its confine: refused (the vendor fence's no)"
+has "$T/out" "agy-own is confined to cv of owner's repos (tenants)" "…its skip line says why"
+check "$(VA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "the tenant's Claude login is untouched: privy still runs on main"
+check "$(VA tenant set beta --repos zed --logins spare --confine agy-own=zed)" 1 "a login confined in another tenant: refused (one tenant per login)"
+has "$T/out" "agy-own is owner's login already" "…saying whose"
+echo "  an account older than the confine reads \"confined\" as no tenant's: refused, never the whole tenant"
+# The tenants file is one file in the shared drive, read by every Mac at its own regatta main (header). The
+# case runs the account of the commit that brought the first confine (#350) and of the one before it, from a
+# copy of the history; a clone without that history (CI's depth-1 checkout, linux-local's one commit) says so.
+R="$(cd "$B/../../.." && pwd)"
+c350=$(git -C "$R" log --reverse --format=%H -S'def tenant_confine' -- modules/lighthouse/bin/account 2>/dev/null | head -1)
+if [ -n "$c350" ] && git -C "$R" rev-parse -q --verify "$c350^{commit}" >/dev/null && git -C "$R" rev-parse -q --verify "$c350^" >/dev/null; then
+  for old in "$c350^" "$c350"; do
+    O="$T/old-$(git -C "$R" rev-parse --short "$old")"; mkdir -p "$O"
+    git -C "$R" archive "$old" modules/lighthouse/bin/account modules/lighthouse/lib modules/regatta/hooks | tar -x -C "$O"
+    OA() { REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="$T/vt/cx.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.va" GEMINI_CLI_HOME="$AGH" CODEX_HOME="$CXH" \
+      ACCOUNT_CODEX="$T/codex" ACCOUNT_ORCA_FILE="$T/no-orca.json" ACCOUNT_NOW=$WED python3 "$O/modules/lighthouse/bin/account" "$@" > "$T/out" 2>&1; echo $?; }
+    what=$([ "$old" = "$c350" ] && echo "#350's account (the first confine)" || echo "the account before #350")
+    check "$(OA pick --provider antigravity --repo "$PR/privy" --json)" 3 "$what: the confined login refused the vault's repo"
+    has "$T/out" "privy is owner's" "…by tenancy, not for want of a reading (exit 3 says both)"
+    check "$(OA pick --provider antigravity --repo "$PR/cv" --json)" 3 "…and its confine too: it is no tenant's there (fails closed)"
+    has "$T/out" "cv is owner's" "…by tenancy"
+    check "$(OA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "…while the tenant's Claude login runs as before"
+  done
+  # the shape this branch replaced, on the account before #350: the label in logins owns the whole tenant
+  echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+  O="$T/old-$(git -C "$R" rev-parse --short "$c350^")"
+  check "$(OA pick --provider antigravity --repo "$PR/privy" --json) $(field "['owns']")" "0 True" \
+    "the first form on the account before #350: the whole tenant, the vault's repo included (why \"confined\")"
+  VA tenant set owner --repos privy cv --logins main --confine agy-own=cv > /dev/null
+elif [ "$(git -C "$R" rev-parse --is-shallow-repository 2>/dev/null)" = true ] || [ "$(git -C "$R" rev-list --count HEAD 2>/dev/null)" = 1 ]; then
+  echo "  note: not run — a shallow or one-commit checkout holds no commit that brought tenant_confine (the Macs' check and CircleCI's full clone run it)"
+else
+  check "no commit with its parent" "found" "the commit that brought tenant_confine, in a clone with history (the pickaxe above no longer finds it?)"
+fi
+check "$(VA tenant set owner --repos privy cv --logins main)" 0 "tenant set again without --confine: written"
+has "$T/out" "agy-own confined to cv" "…the confine kept"
+check "$(VA tenant set owner --repos privy --logins main)" 1 "…and judged again: a set that drops the repo it covers is refused, never widened"
+has "$T/out" "--confine agy-own: cv is no repo of owner's --repos" "…saying so"
+check "$(VA tenant set owner --repos privy cv --logins main --confine)" 0 "a bare --confine: written"
+hasnt "$T/out" "confined" "…drops every confine"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]))' "$T/vt/cx.json")" "['logins', 'repos']" "…and the key with it"
+check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "…so the login is no tenant's, and refused the tenant's repos"
+check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine agy-own=cv)" 1 "--confine on a label --logins names too: refused"
+has "$T/out" "--confine names agy-own, which --logins names too" "…an older account would read --logins whole"
+check "$(VA tenant set owner --repos privy cv --logins main --confine main=cv)" 1 "--confine on a Claude row: refused (a seat's guard reads its tenant whole)"
+has "$T/out" "--confine names main, which --logins names too" "…(main is a login here, said first)"
+check "$(VA tenant set owner --repos privy cv --logins main --confine spare=cv)" 1 "--confine on a Claude row outside --logins: refused"
+has "$T/out" "--confine names spare, a claude row" "…naming why"
+check "$(VA tenant set owner --repos privy cv --logins main --confine agy-other=cv)" 1 "--confine on an agy row whose home is not this Mac's agy run's: refused"
+has "$T/out" "agy-other is an antigravity row whose home is not" "…the home check covers a confined label too"
+check "$(VA tenant set owner --repos privy --logins main --confine agy-own=cv)" 1 "--confine to a repo the tenant does not hold: refused (a confine only narrows)"
+has "$T/out" "cv is no repo of owner's --repos" "…saying so"
+check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own)" 1 "--confine with no keys: refused"
+check "$(VA tenant set owner --repos privy cv --logins main --confine typo=cv)" 1 "--confine on a label no row has"
+has "$T/out" "--confine names typo, which is no claude, codex or antigravity row" "…saying so"
+hasnt "$T/out" "typo, a claude row" "…and never called a claude row"
+echo "  confined fails closed, never open (the landing review, 2026-10-31)"
+TS() { VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ts"; }
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"agy-own": "cv"}}}' > "$T/vt/cx.json"
+check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "a confined value that is no list: the row confined to nothing"
+has "$T/out" "agy-own is confined to nothing of owner's repos" "…saying so"
+VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy "$roster" > "$T/roster"
+has "$T/roster" "antigravity: agy-own confined to nothing (routing only)" "the roster shows a confine"
+TS; has "$T/ts" "agy-own's entry in owner's \"confined\" in cx.json is no list of repo keys" "…and doctor names it"
+for c in '["agy-own", "cv"]' '"agy-own=cv"'; do
+  echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": '"$c"'}}' > "$T/vt/cx.json"
+  check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "a confined of $c: no login joins the tenant, so none runs its repos"
+  TS; has "$T/ts" "owner in cx.json: its \"confined\" is no object" "…and doctor names it"
+done
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confined": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "a label in logins and confined both, by hand: confined all the same"
+TS; has "$T/ts" "agy-own is in both owner's \"logins\" and its \"confined\" in cx.json" "…and doctor says an older account gives it the tenant"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "the first form (#350's \"confine\" beside logins): every routing login confined to nothing"
+TS; has "$T/ts" "owner's \"confine\" in cx.json is the first form" "…and doctor says to rewrite it as \"confined\""
+check "$(VA tenant drop owner)" 0 "a drop of the vault's tenant in the first form"
+has "$T/out" "--logins main --confine agy-own=cv" "…its restore line moves the label out of --logins into --confine, never the whole tenant"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main agy-own)" 1 "a set over the first form with the label still in --logins: refused, never widened (main kept the confine)"
+has "$T/out" "owner's confine for agy-own, kept from cx.json, and --logins names agy-own too" "…saying which confine"
+has "$T/out" "leave agy-own out of --logins to keep it confined" "…and how to keep it"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]))' "$T/vt/cx.json")" "['confine', 'logins', 'repos']" "…nothing written"
+check "$(VA tenant set owner --repos privy cv --logins main)" 0 "the same set with the label out of --logins: written"
+check "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["owner"]; print(t["logins"], t["confined"], "confine" in t)' "$T/vt/cx.json")" \
+  "['main'] {'agy-own': ['cv']} False" "…the first form carried over as \"confined\""
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "codex-own", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA pick --provider codex --repo "$PR/privy" --json) $(field "['account'], d['owns']")" "0 codex-own True" \
+  "the first form confines only the labels it names: the owner's own Codex beside it runs the tenant whole"
+check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "…the label it names, confined to nothing"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine codex-own=cv)" 1 "an explicit --confine over the first form, its label still in --logins: refused, never widened"
+has "$T/out" "agy-own is confined by owner's \"confine\" (the first form) in cx.json, and --logins names it while --confine does not" "…saying which"
+check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine)" 1 "…a bare --confine the same"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]))' "$T/vt/cx.json")" "['confine', 'logins', 'repos']" "…nothing written"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confine": {}}}' > "$T/vt/cx.json"
+TS; hasnt "$T/ts" "is the first form" "an empty first form names no login: doctor raises nothing about it"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"main": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant drop owner)" 0 "a drop of the vault's tenant with a Claude row in confined, by hand"
+has "$T/out" "--logins main" "…its restore line keeps the seat in --logins"
+hasnt "$T/out" "main=cv" "…and never confines it"
+for e in '"confined": 7' '"confine": {"codex-own": ["cv"]}'; do
+  echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], '"$e"'}}' > "$T/vt/cx.json"
+  check "$(VA tenant drop owner)" 0 "a drop of a closed vault tenant ($e)"
+  has "$T/out" "--logins main" "…its restore line keeps the seat"
+  hasnt "$T/out" "agy-own" "…and leaves the routing login it had confined to nothing out, never whole"
+  hasnt "$T/out" "codex-own=" "…and never makes the loose first-form label a member"
+done
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confine": {"codex-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main)" 1 "a set over a first form naming a label none of logins: refused, never made a member"
+has "$T/out" "names codex-own, none of its \"logins\"" "…saying so"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"main": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main)" 0 "a set over a Claude row in confined: the seat kept whole, never asked to leave --logins"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]))' "$T/vt/cx.json")" "['logins', 'repos']" "…the never-read entry dropped"
+echo "  a confined that does not read narrows every routing login in logins to nothing (the landing review, 2026-11-01)"
+for c in '["agy-own"]' '"agy-own=cv"' '7' '{"agy-onw": ["cv"]}'; do
+  echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "codex-own", "agy-own"], "confined": '"$c"'}}' > "$T/vt/cx.json"
+  check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "a confined of $c with agy-own in logins: refused the vault's repo, never owned"
+  check "$(VA pick --provider codex --repo "$PR/privy" --json)" 3 "…the Codex beside it too"
+  check "$(VA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "…while the tenant's Claude seat runs (a seat is never confined)"
+done
+TS; has "$T/ts" "owner in cx.json: its \"confined\" names agy-onw, no codex or antigravity row of" "…and doctor names the typo"
+has "$T/ts" "so every routing login in its \"logins\" is confined to nothing" "…and what it does"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"agy-own": ["cv"], "codex-own": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine codex-own=cv)" 0 "a label moved from confined to --logins, the other confine given: written"
+check "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["owner"]; print(t["logins"], t["confined"])' "$T/vt/cx.json")" \
+  "['main', 'agy-own'] {'codex-own': ['cv']}" "…the other confine kept"
+echo '{"beta": {"repos": ["zed"], "logins": ["spare"], "confined": {"main": ["zed"]}}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main)" 0 "a Claude label in another tenant's confined, never read there: no clash, written"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"]}, "beta": {"repos": ["zed"], "logins": ["spare"], "confined": {"agy-own": ["zed"]}}}' > "$T/vt/cx.json"
+TS; has "$T/ts" "agy-own is in owner's \"logins\", beta's \"confined\" in cx.json" "a label in one tenant's logins and another's confined: doctor says where it sits in each"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"spare": ["cv"]}}}' > "$T/vt/cx.json"
+check "$(CLAUDE_CONFIG_DIR="$S1" VA allowed "$PR/cv")" 1 "a Claude row in confined, by hand: never read, so spare is no login of owner"
+TS; has "$T/ts" "spare, in owner's \"confined\" in cx.json, is a claude row" "…and doctor names it"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"ghost": ["cv"]}}}' > "$T/vt/cx.json"
+TS; has "$T/ts" "owner in cx.json: its \"confined\" names ghost, no codex or antigravity row of" "a confined label no row has: doctor names it"
+echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"]}}' > "$T/vt/cx.json"
+check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own=cv --confine codex-own=cv)" 0 "--confine given twice: both written"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]["confined"]))' "$T/vt/cx.json")" "['agy-own', 'codex-own']" "…each flag adds, none replaces"
+check "$(VA tenant set owner --repos privy grp --logins main --confine agy-own=grp/one)" 0 "--confine to a key inside a folder entry: covered, as denied() routes it"
+check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own=cv)" 0 "confined again"
+check "$(VA limits agy-own --repo "$PR/privy" --cached --json) $(field "[0]['eligible'], d[0]['why']")" \
+  "0 False agy-own is confined to cv of owner's repos (tenants)" "limits LABEL --repo reads the confine"
+check "$(VA limits agy-own --cached)" 0 "limits on an agy row: answered"
+has "$T/out" "agy-own: never probed" "…as never probed, not as a failed probe"
+check "$(VA add agy-own)" 0 "add on an agy row: nothing to add"
+has "$T/out" "agy keeps its login itself; nothing to add" "…saying so"
+hasnt "$T/out" "codex login" "…never the Codex sign-in line"
+check "$(VA pick --provider antigravity --ship agyship --repo "$PR/cv" --json) $(field "['account']")" "0 agy-own" "a ship on the confined login, in its confine"
+check "$(VA pick --provider antigravity --ship agyship --repo "$PR/privy" --json)" 3 "…the same ship outside its confine: moved off it, never kept on it"
+check "$(VA tenant drop owner)" 0 "a drop of the vault's tenant"
+has "$T/out" "--logins main --confine agy-own=cv" "…its restore line carries the confine, the label out of --logins"
+python3 -c 'import json,sys; p=sys.argv[1]; json.dump({"solo": {"repos": ["zed"], "logins": ["codex-own", "agy-own"]}}, open(p, "w"))' "$T/vt/cx.json"
+VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ts"
+has "$T/ts" "codex-own, a codex login, agy-own, an antigravity login: they route \`pick --provider codex\`, \`pick --provider antigravity\`" "doctor names each routing vendor, with its article"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }

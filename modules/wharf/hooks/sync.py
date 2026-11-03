@@ -70,7 +70,8 @@ and C1-superseded ones — every commit's patch, every added line and a three-wa
 review` line for the owner; not on main, as before. No paste reaches the owner. Bounded by REPORT_BUDGET seconds per
 repo; imported lazily, so a fault in it can never cost the fast-forward. The same note opens with
 the autofinish runs that ended since the last start — launched as #N, stopped at a gate, died — each said
-once (autofinished_line; bin/autofinish's header has the file).
+once (autofinished_line; bin/autofinish's header has the file). Before it, a stopped landing whose PR
+merged after the stop gets its `launched` line there (settle_landed), so helm's stalls let it go.
 
   sync.py --report [<repo>]   print that branch note for one repo and nothing else: no fetch,
                               no prune, no fast-forward, no marker (read-only; the one network
@@ -701,6 +702,59 @@ def reap_candidates(branches, maybe, pending, now):
 
 
 AUTOFINISHED_SHOWN = 6  # ended runs named per start; the rest are in `bin/repos --branches`
+SETTLE_MAX = 12  # stopped landings asked of GitHub per pass, newest stop first
+SETTLE_BUDGET = 10  # seconds for those questions
+
+
+def settle_landed(repo, main):
+    """Append `<now> launched <branch> #N` to the repo's autofinished for each landing whose last line
+    there is `stopped`, `died` or `never-started` and whose pull request into main merged after it:
+    a stop that landed later by another road (a typed /finish, the other Mac) leaves the branch's
+    head on the Mac it stopped on, and helm's stalls raised it for good (83 such on 2026-10-31, the
+    lines written by hand then; TODO.md [arm-yard]). Sync is the one writer, once: the line makes the
+    branch's last entry a launch. Only a branch whose GitHub copy the fetch pruned is asked (the
+    repos delete a branch on merge), so an open stop costs no request. Returns the branch names."""
+    import common  # noqa: E402
+    import datetime
+    if os.environ.get("CLAUDE_HOOK_NO_GITHUB"):
+        return []
+    cdir = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    last = {}
+    for e in common.autofinished(cdir):
+        last[e["branch"]] = e
+    heads = set(git(repo, "for-each-ref", "--format=%(refname)", "refs/heads/claude/", "refs/remotes/origin/claude/").stdout.split())
+    stops = sorted((e for b, e in last.items() if e["outcome"] in ("stopped", "died", "never-started")
+                    and f"refs/heads/{b}" in heads and f"refs/remotes/origin/{b}" not in heads),
+                   key=lambda e: e["ts"], reverse=True)[:SETTLE_MAX]
+    if not stops:
+        return []
+    slug = common.repo_slug(git(repo, "remote", "get-url", "origin").stdout.strip())
+    tok = common.token() if slug else None
+    if not tok:
+        return []
+    deadline, lines = time.monotonic() + SETTLE_BUDGET, []
+    for e in stops:
+        if time.monotonic() > deadline:
+            break
+        pr = common.landed_pr(slug, e["branch"], tok=tok, base=main)
+        if not pr or not merged_after(pr.get("merged_at"), e["ts"]):
+            continue
+        now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")   # autofinish-run's stamp
+        lines.append((e["branch"], f"{now} launched {e['branch']} #{pr['number']}"))
+    if lines:
+        with open(cdir / "claude" / common.AUTOFINISHED, "a", encoding="utf-8") as f:
+            f.write("".join(l + "\n" for _, l in lines))
+    return [b for b, _ in lines]
+
+
+def merged_after(merged_at, ts):
+    """GitHub's merged_at (`…Z`) is later than an autofinished stamp (local, with its offset)."""
+    import datetime
+    try:
+        m = datetime.datetime.fromisoformat((merged_at or "").replace("Z", "+00:00"))
+        return m > datetime.datetime.fromisoformat(ts)
+    except (ValueError, TypeError):   # TypeError: a stamp with no offset (aware against naive)
+        return False
 
 
 def autofinished_line(repo, act):
@@ -847,6 +901,10 @@ def sync(repo, cwd=None):
             notes.append(f"{name}: main diverged from origin ({ahead} here, {behind} there) — resolve by hand")
     elif not head:
         notes.append(pinned_note(repo, name))
+    try:  # before report(): its autofinished line then says each one launched
+        settle_landed(repo, main)
+    except Exception as exc:
+        notes.append(f"⚠ {name}: settling landed stops failed: {exc}")
     for_model = list(notes)
     user_note, model_note = report(repo, main, act=True, reaped=reaped)
     if user_note:
@@ -1047,6 +1105,29 @@ def user_settings_notes():
         return [f"⚠ settings: {exc}"], []
 
 
+def merge_driver_note(repos):
+    """Each tended repo's own `merge.union.driver` names wharf's list-merge (bin/list-merge's header: a TODO.md
+    or CHANGELOG.md merged by item, any other union file as union; per repo, never global, and never over a
+    driver the repo set itself). One `git config` read per repo when it is set; a repo without it merges those
+    files as plain union, so a failure here is one line, never a stop."""
+    tool = Path(__file__).resolve().parent.parent / "bin" / "list-merge"
+    if not tool.exists():
+        return []
+    notes = []
+    for repo in repos:
+        try:
+            r = subprocess.run([sys.executable, str(tool), "install", str(repo)], capture_output=True, text=True,
+                               timeout=5)
+        except Exception as exc:
+            notes.append(f"⚠ list-merge install {repo.name}: {exc}")
+            continue
+        if r.returncode != 0:
+            notes.append(f"⚠ list-merge install {repo.name}: {(r.stderr or r.stdout).strip()[:200]}")
+        elif r.stdout.strip():
+            notes.append(r.stdout.strip())
+    return notes
+
+
 def sheep_notes():
     """sessionpipe hook entries without the vault's gate (bin/sheep; orchestration proposal
     E1, R1): a `sessionpipe install` or `update` rewrites every entry ungated, and from then on
@@ -1175,6 +1256,7 @@ def main():
     u, m = user_settings_notes()
     for_user.extend(u)
     for_model.extend(m)
+    for_user.extend(merge_driver_note(repos))  # the owner's: set once per repo, said once
     sheep = sheep_notes()  # both readers: the model can run the fix, the owner sees the leak
     for_user.extend(sheep)
     for_model.extend(sheep)

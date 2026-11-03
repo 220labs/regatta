@@ -38,7 +38,10 @@ starts by itself until the owner's 3-hour dry run was read, 2026-10-05); the ses
 unattended (CLAUDE_UNATTENDED); the runner refuses (that tip already tried, a run going, the
 lock another session's) or fails — then the typed `/finish` runs here as it always did. A runner
 that does not answer within RUN_TIMEOUT_S blocks instead: it may be starting, and a `/finish`
-here beside it would be two at once; the reason names `/finish --here`.
+here beside it would be two at once; the reason names `/finish --here`. So does the runner's origin
+gate (ORIGIN_RC, finish-stale-tip): origin's branch holds what this tip lacks, which is no tip to
+finish here either. A warm session on such a tip goes to the runner at once: the summary commit it
+would be asked for sets a tip behind origin's apart from it, and the fast-forward is lost.
 
 checkpoint.py runs beside this hook — Claude Code starts a prompt's UserPromptSubmit hooks in
 parallel — and its claim() rewrites owner.json for this panel; it re-reads the lock just before
@@ -86,7 +89,8 @@ COLD_S = 55 * 60
 # base $4 → $8, Fable 5.1 base $10 → $20 (pricing page, read 2026-10-04; design section 3).
 WRITE_PER_M = {"opus": 8.0, "fable": 20.0, "sonnet": 6.0}
 RUNNER = os.environ.get("CLAUDE_AUTOFINISH_RUN") or str(Path(__file__).resolve().parent.parent / "bin" / "autofinish-run")
-RUN_TIMEOUT_S = 45  # autofinish-run returns once dispatch has said whether the run began, within its typed bound (40 + 3 s; not confirmed exits 0), after ending a warm run (30 s cap for --by typed); its account pick is --cached
+RUN_TIMEOUT_S = 45  # autofinish-run returns once dispatch has said whether the run began, within its typed bound (40 + 3 s; not confirmed exits 0), after its origin gate and ending a warm run (30 s cap for --by typed, less what the gate spent); its account pick is --cached
+ORIGIN_RC = 6  # autofinish-run's origin gate refused: origin's branch holds what this tip lacks, and nothing ran
 
 
 def now():
@@ -150,7 +154,24 @@ def handover_context(ctx, model, top, sid):
             f"2. Hand the branch over: `{runner} {top} {' '.join(runner_args())}{session}`, and tell the owner the "
             f"window its output names; its PR carries the report.\n"
             f"If step 2 is denied or exits non-zero (that tip already tried, a run going, a lock another session's), run "
-            f"/finish here as the skill says. The owner's `/finish --here` always runs it in this tab.")
+            f"/finish here as the skill says; on exit {ORIGIN_RC} (origin's branch holds what this tip lacks) stop, and show "
+            f"the owner its line. The owner's `/finish --here` always runs it in this tab.")
+
+
+def origin_moved(cwd, branch):
+    """True when origin's branch holds what this tip lacks: a commit not here, or one the tip does not contain.
+    What cannot be read is False, as the runner's own gate passes it, and a warm session goes on as before."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        r = subprocess.run(["git", "-C", cwd, "ls-remote", "origin", "refs/heads/" + branch],
+                           capture_output=True, text=True, timeout=10, env=env)
+        remote = (r.stdout.split() or [""])[0]
+        if r.returncode or not remote:
+            return False
+        return subprocess.run(["git", "-C", cwd, "merge-base", "--is-ancestor", remote, "HEAD"],
+                              capture_output=True, timeout=10).returncode != 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def head(cwd):
@@ -195,12 +216,15 @@ def decide(data):
     fable = family(model) == "fable"
     top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
                          capture_output=True, text=True, timeout=10).stdout.strip() or cwd
+    moved = False
     if idle <= COLD_S and not fable:
-        if last_run_tip(cwd) == head(cwd):
-            # a fresh run already stopped on this tip: step 1's commit would move it, and the runner's
-            # "no retry on the same tip" would never refuse the same stop again (the finish review)
-            return None
-        return "context", handover_context(ctx, model, top, data.get("session_id"))
+        moved = origin_moved(top, branch)
+        if not moved:
+            if last_run_tip(cwd) == head(cwd):
+                # a fresh run already stopped on this tip: step 1's commit would move it, and the runner's
+                # "no retry on the same tip" would never refuse the same stop again (the finish review)
+                return None
+            return "context", handover_context(ctx, model, top, data.get("session_id"))
     # priced before the runner starts: nothing may raise once it has detached
     price = common.cost_text(ctx * WRITE_PER_M[family(model)] / 1e6)
     cmd = [RUNNER, top] + runner_args()
@@ -214,6 +238,12 @@ def decide(data):
         return "block", ("the launcher did not answer in time — it may be starting /finish in its own window "
                 "(`bin/dispatch --status`, the autofinish log); give it a minute, or /finish --here "
                 "runs it in this tab")
+    if run.returncode == ORIGIN_RC:
+        said = (run.stderr.strip().splitlines() or ["origin's branch holds what this tip lacks"])[-1]
+        said = re.sub(r"^autofinish-run: not starting \S+ — ", "", said)
+        if "neither holds the other" in said:   # a rebase would replay the pre-rewrite commits (AGENTS.md's trap)
+            return "block", said + " (reset to origin's tip once its commits hold this tip's, then /finish again)"
+        return "block", said + " (/finish --here runs it in this tab, taking origin's commits in by a rebase)"
     if run.returncode:
         return None  # refused or failed: the typed /finish runs here, as before
     m = re.search(r'Remote Control "([^"]+)"', run.stdout)
@@ -225,10 +255,18 @@ def decide(data):
     peer = sent_to(run.stdout)
     if peer:
         on = f" on {peer} (sent there)"
-    why = f"cold {ctx // 1000}k ({age(idle)})" if idle > COLD_S else f"on Fable, {ctx // 1000}k"
+    why = (f"cold {ctx // 1000}k ({age(idle)})" if idle > COLD_S else f"on Fable, {ctx // 1000}k" if fable
+           else f"origin's branch moved on, {ctx // 1000}k")
+    here = "/finish --here runs it in this tab" + ("" if moved else f" at the full re-write (~{price})")   # warm: no re-write
+    qm = re.search(r"^queued: (.*)$", run.stdout or "", re.M)
+    if qm:
+        # a finish in the fleet queue (finish-as-task): the first host with room runs it, maybe not this one
+        q = qm.group(1).split(" — ")[0]
+        return "block", (f"{why} — /finish is queued ({q}): the first host with room runs it, in the window \"{window}\" "
+                         f"there (dispatch --queue); its PR carries the report. To run it in this tab instead, cancel that "
+                         f"one first (dispatch <branch> --cancel), then /finish --here — never both")
     return "block", (f"{why} — /finish runs by itself in the window \"{window}\"{on} (the phone shows it on its own login); "
-            f"its PR carries the report; /finish --here runs it in this tab at the full "
-            f"re-write (~{price})")
+            f"its PR carries the report; {here}")
 
 
 def sent_to(out):

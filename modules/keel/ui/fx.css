@@ -1,0 +1,93 @@
+/* fx.css — round 6: the drawings' colours and every piece of motion on the board and the Course page.
+   Motion explains state and never blocks input: a pressed button that applies something answers with a rainbow light
+   that runs round it once and settles (the spacesheep's trail, STYLE.md's one rainbow); a shipped ship, opened for
+   the first time on this device, sets off the mark's own three fireworks; the sloops bob in the strip and the swell
+   drifts; a buoy rocks once when its decision is answered; the save strip rises in; a count that changed ticks.
+   `prefers-reduced-motion: reduce` turns all of it into plain state changes (tokens.css already stops every
+   animation; the fireworks are not started at all, art.js's still burst stands in).
+   Freezing: every animation here delays by `var(--d)` (its own offset in a show) minus `--fxt`; `?fx=<name>&t=<ms>`
+   sets `--fxt` and the class `fxfreeze`, which pauses everything, so a screenshot shows the show at that instant. */
+
+/* ── the drawings' colours ── */
+.art { display: inline-block; vertical-align: middle; flex: none; }
+.buoy.b-safe { color: var(--safe); } .buoy.b-irreversible { color: var(--irr); } .buoy.b-held { color: var(--held); } .buoy.b-yours { color: var(--yours); }
+.buoy.b-safe path:first-of-type, .buoy.b-irreversible path:first-of-type, .buoy.b-held path:first-of-type { fill: color-mix(in srgb, currentColor 30%, transparent); }
+.buoy.s-taken { color: var(--graphite); } .buoy.s-taken path:first-of-type { fill: none; stroke-dasharray: 4 3.5; }
+.buoy.s-picked { color: var(--flag); } .buoy.s-picked path:first-of-type { fill: var(--flag); } .buoy.s-picked .bflag { fill: var(--ground); stroke: var(--flag); stroke-width: 2.4; }
+.buoy.empty { color: var(--graphite); } .buoy.empty path:first-of-type { fill: none; }
+.strip .buoy.b-safe { color: var(--band-safe); } .strip .buoy.b-irreversible { color: var(--band-irr); } .strip .buoy.b-held { color: var(--band-held); } .strip .buoy.b-yours { color: #fff; }
+.strip .buoy.s-taken { color: rgba(255, 255, 255, .55); } .strip .buoy.s-picked { color: #fff; } .strip .buoy.s-picked path:first-of-type { fill: #fff; } .strip .buoy.s-picked .bflag { fill: var(--sky-bottom); stroke: #fff; }
+.pennant, .flag, .dueflag { color: inherit; }
+.quietnight, .finishline, .noskippers, .memo { color: var(--ink-2); }
+.finishline .blueflag { fill: var(--flag); }
+.burstmark { color: var(--fire); }
+:root { --fire: #D97757; --rb1: #2FAE7E; --rb2: #6CFFC0; --rb3: #8CEFF8; --rb4: #B9A4FF; --rb5: #F5A0E6; --rb6: #FFB0C4; --fxt: 0ms; }
+:root[data-theme="dark"] { --fire: #FFC46B; --rb1: #177A52; --rb2: #3BE89C; --rb3: #4FD9EA; --rb4: #8E6CFF; --rb5: #E06BD6; --rb6: #FF7FA6; }
+
+/* ── the strip's sea: the swell drifts, the sloops bob ── */
+.strip .waves { position: absolute; left: 0; right: 0; bottom: 0; height: 20px; width: 100%; display: block; overflow: visible; pointer-events: none; }
+.strip .waves .w { transform-box: fill-box; }
+.strip .waves .far { stroke: var(--wave-3); opacity: .5; animation: drift 34s linear infinite; }
+.strip .waves .near { stroke: var(--wave-3); opacity: .95; animation: drift 21s linear infinite; }
+@keyframes drift { to { transform: translateX(-50%); } }
+.strip .boat .sloop { animation: bob var(--bobt, 3.8s) ease-in-out infinite alternate; animation-delay: var(--bobd, 0s); transform-origin: 50% 85%; }
+@keyframes bob { from { transform: translateY(0) rotate(-1.6deg); } to { transform: translateY(-1.4px) rotate(1.6deg); } }
+.strip .boat.shipped .sloop { animation: none; }
+
+/* ── the rainbow press light: a button that applies something answers with a light that runs round it once ── */
+@property --ra { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+.lit { position: relative; }
+.lit::after { content: ""; position: absolute; inset: -3px; border-radius: inherit; padding: 2px; pointer-events: none; opacity: 0; z-index: 5;
+  background: conic-gradient(from var(--ra), var(--rb1), var(--rb2), var(--rb3), var(--rb4), var(--rb5), var(--rb6), var(--rb1));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude;
+  animation: lit-spin 720ms linear both, lit-fade 900ms var(--ease) both; animation-delay: calc(0ms - var(--fxt)); }
+.lit.pill::after { border-radius: 999px; }
+.opt.lit::after { inset: 2px; border-radius: 10px; }
+.modes button.lit::after, .seg .lit::after, .cat.lit::after { inset: -2px; }
+.day.lit::after { inset: -3px; border-radius: 16px; }
+@keyframes lit-spin { from { --ra: 0deg; } to { --ra: 720deg; } }
+@keyframes lit-fade { 0% { opacity: 0; } 12% { opacity: 1; } 68% { opacity: 1; } 100% { opacity: 0; } }
+
+/* ── the fireworks: a layer over the top of the page; three rockets, three bursts, sparks that fall ── */
+.fxlayer { position: fixed; left: 0; right: 0; top: var(--top-reserve); z-index: 85; pointer-events: none; display: flex; justify-content: center; }
+.fxlayer .fw { width: min(760px, 100vw); height: auto; }
+.fw .rocket { stroke-dasharray: .18 1; stroke-dashoffset: 1.18; opacity: 0; stroke-width: 2.6; animation: fw-rocket 460ms ease-out both; animation-delay: calc(var(--d) - var(--fxt)); }
+@keyframes fw-rocket { 0% { stroke-dashoffset: 1.18; opacity: 0; } 8% { opacity: 1; } 85% { opacity: 1; } 100% { stroke-dashoffset: -.18; opacity: 0; } }
+.fw .shape { opacity: 0; transform-box: fill-box; transform-origin: center; animation: fw-open 2100ms var(--ease) both; animation-delay: calc(var(--d) + 430ms - var(--fxt)); }
+@keyframes fw-open { 0% { opacity: 0; transform: scale(.25); } 9% { opacity: 1; transform: scale(1.06); } 16% { transform: scale(1); } 72% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.1); } }
+.fw .open path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: fw-draw 420ms var(--ease) both; animation-delay: calc(var(--d) + 440ms - var(--fxt)); }
+@keyframes fw-draw { to { stroke-dashoffset: 0; } }
+.fw .spark { opacity: 0; stroke-width: 2.2; animation: fw-spark 900ms ease-in forwards; animation-delay: calc(var(--d) + 1150ms + var(--i) * 45ms - var(--fxt)); }
+@keyframes fw-spark { 0% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(28px); } }
+.fw .k-rays .open path { stroke-width: 3.4; }
+.fw .k-star .open path { stroke-width: 3.2; }
+.fw .k-knot .open path { stroke-width: 4; }
+/* the shipped line in a ship's head and on its ladder row */
+.shipped-line { display: inline-flex; align-items: center; gap: 8px; }
+.shipped-line .burstmark { animation: shine 2.4s ease-in-out infinite alternate; transform-origin: center; transform-box: fill-box; }
+@keyframes shine { from { transform: scale(.94); opacity: .8; } to { transform: scale(1.04); opacity: 1; } }
+.btn.again { margin-left: 8px; }
+
+/* ── a buoy settles when its decision is answered; the strip's buoy rocks, the contents' buoy nods ── */
+.buoy.settle { animation: settle 1000ms var(--ease) both; animation-delay: calc(0ms - var(--fxt)); transform-origin: 50% 72%; transform-box: fill-box; }
+@keyframes settle { 0% { transform: rotate(0); } 18% { transform: rotate(-11deg); } 42% { transform: rotate(7deg); } 66% { transform: rotate(-3deg); } 84% { transform: rotate(1.5deg); } 100% { transform: rotate(0); } }
+.dq.answered .dq-n .buoy { animation: settle 900ms var(--ease) both; transform-origin: 50% 72%; transform-box: fill-box; }
+
+/* ── the save strip rises in; a count that changed ticks ── */
+.savebar.on { animation: sb-in 340ms var(--ease) both; animation-delay: calc(0ms - var(--fxt)); }
+@keyframes sb-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.n { display: inline-block; }
+.n.tick { animation: tick 440ms var(--ease) both; animation-delay: calc(0ms - var(--fxt)); }
+@keyframes tick { from { opacity: 0; transform: translateY(-.5em); } 60% { opacity: 1; } to { transform: none; } }
+.toast.on { animation: toast-in 260ms var(--ease) both; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ── freezing: ?fx=<name>&t=<ms> pauses every animation at --fxt ── */
+:root.fxfreeze *, :root.fxfreeze *::after, :root.fxfreeze *::before { animation-play-state: paused !important; }
+:root.fxfreeze .strip .waves .w, :root.fxfreeze .strip .boat .sloop, :root.fxfreeze .shipped-line .burstmark { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lit::after { display: none; }
+  .fxlayer { display: none; }
+  .strip .waves .w, .strip .boat .sloop { animation: none; }
+}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `sheep_gate.py` reads the council's marker from the core's `common.COUNCIL_MARKER`; its own `.council-run` stands
+  only where no core is found, and the suite checks the two agree (the isolation design's S3).
+- The shared foundation (helm-ui S10, docs/helm-board-ux-2026-10-26.md): `ui/` holds the helm council's round-6 tokens, drawings and fx layer, and keel serves them — inlined into every Course page under `@layer foundation`, so the page's own CSS wins every normal rule both set and its look stays as it was until S9. What reaches it meanwhile: the tokens' base rules the page never set (antialiased text, `text-rendering`, `-webkit-text-size-adjust`, a link's underline thickness, offset and focus ring in the flag's blue, `color-scheme`, so scrollbars and fields follow the theme), and the reduced-motion rule's `!important`, which an important declaration in a layer keeps over the page, so its pop-up's and bar buttons' transitions stop under reduced motion; the page now carries `data-theme` (theme.js). helm's board takes the foundation through `foundation_head()`, `foundation_css()` and `foundation_js()` from S3. `theme.js` sets `data-theme` before first paint (`?theme=`, a stored `helm-theme`, else the system's, followed while nothing chose; a host's own stands). From the prototype, fx.js stands without decision.js (`FX.on`, handed to `DC.on` when decision.js loaded first) and keeps `helm-fx-shipped`; art.js marks a drawing `role="presentation"` or, titled, `role="img"`, never by the accessibility prefix the publish gate's word list refuses. `keel ui check` is the step's check; `tests/ui.sh` runs it beside the cases for each road.
+- `sheep_gate.py` sends no event of a council arm (wharf's `bin/council`): its hook's `REGATTA_COUNCIL_ARM`,
+  or a folder under a run dir its `.council-run` marks (the council's landing review, 2026-10-28).
+- A lookout card's age, `held by session …, seen Nm ago` in `pull --plumb` and the stand sweep's line read `0m ago`, never `-1m ago`, and a claimed seed waits no extra pass, when this clock stepped back or another host's runs ahead.
 - Routed comments S6, notes (judge section 4): `keel routed notes` reads sextant's `sparks acts` (a fresh `status: new` note of the ideas pool, an open promise of the owner's in a meeting note's `## Promises`), drops a fenced source's notes before any batch (one `fenced` row each, never asked again), holds a held verb by the rules, judges the rest with the same `keel.comment` call, one a source, and cards every act on `lookout --status` and helm's board, naming the note's folder, day and a promise's line, never its words or its file name. T2 only: a note's `by:` and git author are not the owner, `## Asks` is never read. `notes go <id>` (refused unattended) is the owner's yes in chat, a `pickup seed` in the note's repo after a fresh read, the card's age and the repo's fence are asked again; `notes dismiss <id>` drops a card; both honour `--dry-run` and write under the lookout's lock. A card closes when its note leaves the read and reopens if it comes back; only `dismissed` and `seeded` end one, and only a read that answered a list closes anything (a failed read, or a Mac sparks does not read the notes on, closes nothing). The fence: an unreadable registry reads nothing, a guarded source or a confidential scope's repo never reaches the call. The lookout's pass runs it after its pages (a dry pass judges nothing); routed.jsonl's `event: note, source: note` rows are G5's measure and `routed status` counts them (`--json`: `{"docs", "notes"}`).
 - Tables on a doc's page take a layout from their text: one too wide for the column but of short cells breaks out
   of it (up to 64rem, centred); one of three columns or more whose cells are paragraphs, or whose
@@ -10,6 +16,14 @@
   table is records too. A row's note still anchors to its row, its marker inside the record. Only a
   table at the page's top level breaks out, never one in a card. Two-column tables, and a table without a head or
   without a body, stay as they were.
+- A course page's local file links open (Evolve S2): `inline()` made only `http(s)` links clickable, so every
+  file link a doc hands the owner, an absolute path by the rule, showed as `[x](/path)` text; `local_href()`
+  gives each its repo's GitHub blob — the checkout's branch when its blob differs from main's (a line anchor
+  written on a branch holds), else the repo's own main (workflow.json's), else the branch —, the same path
+  under this Mac's projects root when another Mac's home wrote it, and leaves a file no origin holds as text.
+  Cached per path and folder for five minutes, one batched `cat-file` a file, each git call under 5 s, so a
+  doc set renders inside the Stop hook's sheep budget. `local_candidates()` is the path rule `evolve probes`
+  reads too.
 - Routed comments S5, after landing: a routed doc whose `Routed:` line `main` holds is read under `main`'s key on
   every host, its page from the line where no pin is (the branch's pin first, until a deploy on main adopts it).
   No run holds a landed doc: an owner's T1 ask, and an answer committed on `main` to a doc routed within 14 days,
@@ -17,11 +31,11 @@
   doc as origin has it), `dispatch`, the `routed into` mark; the brief says it is off main, named for the doc. A
   commit on `main` carrying a session's trailer came with a landing and answers nothing; a landed doc's first pass
   is the baseline of its commits; a Save on a landed doc is carded, never a seed `--beside main` (no pass raises
-  one there yet: TODO item 29 (h)). An ask on `main` takes the landed road only on a doc routed within 14 days. A
+  one there yet: TODO.md [routed-s4] (h)). An ask on `main` takes the landed road only on a doc routed within 14 days. A
   question, or new words in a conversation, on a landed doc hails this Mac's standing manager (a
   narrowest scope's skipper first, an umbrella's last, none on a torn registry; helm's asklib's `standing_skipper`),
   `--when idle`; with none here, the card as before.
-  TODO item 29: a `stop` stops only the run that replied `starting:` (a queued run or one begun after it is
+  TODO.md [routed-s4]: a `stop` stops only the run that replied `starting:` (a queued run or one begun after it is
   another, left running, carded — a resumed run is still the one); an offer still open on the page goes into a T1 seed's `--routing`; in a repo
   that is not `physical: none` the `would start` mark names the skipper and invites no `go`; a dry pass spends no
   `keel.comment` call; `keel routed bench` makes one call for every writer.

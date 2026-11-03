@@ -136,6 +136,34 @@ check "$(cpr '/finish claude/x --unattended' "$SMALL")" "" "the runner's own /fi
 check "$(cpr 'please /finish later' "$SMALL")" "" "a prompt that is not /finish passes"
 check "$(wc -c < "$CP/calls" | tr -d ' ')" "0" "  none of them started a runner"
 check "$(cpr /finish "$COLD" "$CP/refuser")" "" "the runner refuses (that tip tried, a lock in use): the typed /finish runs here"
+printf '#!/bin/sh\necho "autofinish-run: not starting b — origin'"'"'s b is at abc1234, apart from this worktree'"'"'s tip def5678: neither holds the other" >&2\nexit 6\n' > "$CP/gated"; chmod +x "$CP/gated"
+out=$(cpr /finish "$COLD" "$CP/gated")
+check "$(echo "$out" | field 'd["decision"]')" "block" "the runner's origin gate refuses (exit 6): blocked, no /finish on that tip"
+has "$(echo "$out" | field 'd["reason"]')" "apart from this worktree's tip def5678" "  the reason is the gate's own"
+has "$(echo "$out" | field 'd["reason"]')" "reset to origin's tip once its commits hold this tip's" "  and names the way past it: no rebase, which replays a rewrite's old commits"
+check "$(echo "$out" | field 'd["reason"]' | grep -c 'finish --here')" "0" "    never /finish --here for a split"
+printf '#!/bin/sh\necho "autofinish-run: not starting b — origin'"'"'s b is at abc1234, ahead of this worktree'"'"'s tip def5678, and 1 uncommitted file(s) keep it from fast-forwarding" >&2\nexit 6\n' > "$CP/behind"; chmod +x "$CP/behind"
+out=$(cpr /finish "$COLD" "$CP/behind")
+has "$(echo "$out" | field 'd["reason"]')" "/finish --here" "the gate refuses a dirty tree behind origin: blocked, /finish --here named"
+# a warm session on a tip origin moved past: the summary commit would set it apart, so the runner takes it now
+git init -q --bare "$CP/origin.git"; git -C "$CP/repo" remote add origin "$CP/origin.git"
+CPB=$(git -C "$CP/repo" symbolic-ref --short HEAD); CPT=$(git -C "$CP/repo" rev-parse HEAD)
+git -C "$CP/repo" send-pack "$CP/origin.git" "$CPB:refs/heads/$CPB" >/dev/null 2>&1
+out=$(cpr /finish "$SMALL")
+has "$out" "commit-summary" "warm, equal to origin: the summary-first context, as before"
+git -C "$CP/repo" commit -q --allow-empty -m "the build, on origin"
+git -C "$CP/repo" send-pack "$CP/origin.git" "$CPB:refs/heads/$CPB" >/dev/null 2>&1
+git -C "$CP/repo" reset -q --hard "$CPT"; : > "$CP/calls"
+out=$(cpr /finish "$SMALL")
+check "$(echo "$out" | field 'd["decision"]')" "block" "warm, origin past the tip: the runner takes it at once"
+has "$(echo "$out" | field 'd["reason"]')" "origin's branch moved on" "  saying why, not cold and not Fable"
+check "$(wc -l < "$CP/calls" | tr -d ' ')" "1" "  one runner call, no summary asked of a stale tip"
+check "$(echo "$out" | field 'd["reason"]' | grep -c 're-write')" "0" "  and no re-write priced: this cache is warm"
+mkdir -p "$CP/repo/.git/claude"; printf '{"tip": "%s"}' "$CPT" > "$CP/repo/.git/claude/autofinish.json"; : > "$CP/calls"
+out=$(cpr /finish "$SMALL")
+check "$(echo "$out" | field 'd["decision"]')/$(wc -l < "$CP/calls" | tr -d ' ')" "block/1" "  the same when the last run stopped on this tip: origin moved past it"
+rm -f "$CP/repo/.git/claude/autofinish.json"
+git -C "$CP/repo" remote remove origin; : > "$CP/calls"
 out=$(COLD_PROMPT_TIMEOUT=1 cpr /finish "$COLD" "$CP/hanger")
 check "$(echo "$out" | field 'd["decision"]')" "block" \
   "a runner that does not answer in time: blocked, never a second /finish beside one that may be starting"

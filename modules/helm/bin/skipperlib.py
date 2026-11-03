@@ -130,6 +130,15 @@ def screen_name(scope):
     return "skipper-%s" % scope
 
 
+def session_name(scope):
+    """The skipper's session name, `steer-<scope>` (the core's session_name, the owner's 2026-11-01 verbs);
+    its screen keeps screen_name. Without the core, the same shape unfitted: a name never stops a start."""
+    try:
+        return helmlib._common().session_name("steer", scope)
+    except (ImportError, AttributeError):
+        return "steer-%s" % scope
+
+
 def job_label(scope, start_id):
     return LABEL_PREFIX + scope + "-" + start_id
 
@@ -681,7 +690,7 @@ def run_body(scope, start_id, say):
              REGATTA_UNATTENDED="skipper", CLAUDE_UNATTENDED="skipper")
     # the prompt first: --disallowedTools takes every word after it; through claude-host where this
     # Mac's grant allows it (launcher()), which takes the word `claude` and starts the current one
-    argv = claude_argv(host_bin, brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", screen_name(scope),
+    argv = claude_argv(host_bin, brief(scope), "--session-id", sid, "--remote-control", holder(scope), "-n", session_name(scope),
                        "--permission-mode", "auto", "--model", MODEL, "--effort", EFFORT, "--disallowedTools", "AskUserQuestion")
     os.chdir(str(cwd))
     sys.stdout.flush()
@@ -701,7 +710,17 @@ def run_body(scope, start_id, say):
 # ---------------------------------------------------------------------------- launchd and screen
 
 def launchctl():
-    return os.environ.get("HELM_LAUNCHCTL") or "launchctl"
+    """HELM_LAUNCHCTL, else launchd's launchctl on a Mac, else wharf-runs' systemd-launchctl (the same
+    verbs over systemd's user manager, as dispatch and dispatch-queue load their jobs on a Linux host;
+    its `list` is no verb, so labels() reads the plists alone there). A node's yard starts its scope's
+    skipper through it (node-road, 2026-11-02)."""
+    if os.environ.get("HELM_LAUNCHCTL"):
+        return os.environ["HELM_LAUNCHCTL"]
+    if sys.platform != "darwin":
+        shim = helmlib.peer("systemd-launchctl")
+        if shim:
+            return str(shim)
+    return "launchctl"
 
 
 def screen():

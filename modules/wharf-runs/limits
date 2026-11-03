@@ -1,0 +1,11 @@
+# The limits `regatta limit` changes live (modules/regatta/libexec/limit; live-limits, 2026-11-01): a key, its shape
+# (`host`, a line per host; `*` where a `*:` line serves a host without one; `plain`, one value), its default here,
+# and its trial read, run from this folder on a scratch config dir that holds only the value tried: it must print the
+# value back, as the key's own reader reads it, or the value is refused. A new limit adds its line, with a case.
+wharf-runs/run-cap      host   3                 DISPATCH_HOST={host} bin/dispatch --cap
+wharf-runs/check-slots  host*  2                 CHECK_HOST={host} bin/check --slots
+wharf-runs/headroom     host*  avail=10,rate=50  HEADROOM_HOST={host} bin/headroom limits
+# load-max and load-margin are the placing host's rule: berth on that host judges every candidate's load by it, so a
+# host's value changes how it places runs, not how others place onto it.
+wharf-runs/load-max     plain  1.5               bin/berth --load-key wharf-runs/load-max
+wharf-runs/load-margin  plain  0.5               bin/berth --load-key wharf-runs/load-margin

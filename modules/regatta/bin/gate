@@ -2,8 +2,10 @@
 """gate — which provider and model each script call site uses, read from one table. Stdlib, 3.9.
 
     gate show                          one line per site, defaults applied, and the table's commit
-    gate set <site> <key>=<value>…     validate and write one row (value `none` removes the key)
-    gate check                         the table (and the module's beside it) validates, overrides ignored
+    gate set <site> <key>=<value>…     validate and write one row (value `none` removes the key), in the
+                                       table that holds the site: the core's, else a module's
+    gate check                         every table validates (the core's, the module's beside it, each
+                                       module's own), overrides ignored
 
 From Python (the same loader bin/jev uses):
 
@@ -25,7 +27,7 @@ The table: `defaults.<provider>` gives model, effort, threshold; `sites.<site>` 
 - kind      generate | review | classify | media
 - provider  always written on the row, never inherited: the approval quote and the bench bind to
             the vendor, and a flip that moves data must be a visible edit. Per kind:
-              generate, review  claude, codex, off
+              generate, review  claude, codex, antigravity (Google's `agy`, VENDOR google), off
               classify          jev, claude, codex, off
               media             flow-browser, seedance, off
 - model, effort, threshold, batch   from the row, else defaults.<provider>, else absent (no flag).
@@ -33,17 +35,23 @@ The table: `defaults.<provider>` gives model, effort, threshold; `sites.<site>` 
 - bench, note   pointers for people; `set` prints the bench.
 A threshold left on a row after a flip to claude is kept and ignored, so flipping back restores
 the tuned value.
-Two tables: the config dir's (on the owner's Macs a link into the overlay) and the module's beside
-the gate. A site the config table lacks runs the module's row with the module's defaults; `show`,
-resolve()'s `table` and classify's log line name it with "(module default)"; `set` copies it into
-the config table before changing it (GATE_TABLE's copy too); `check` validates both. A broken
-module row, or one whose override variables clash with a config site's, refuses that fallback site,
-show and check, never a config site. GATE_TABLE resolves as one file, no fallback.
+Two tables for the core's sites: the config dir's (on the owner's Macs a link into the overlay) and
+the module's beside the gate. A site the config table lacks runs the module's row with the module's
+defaults; `show`, resolve()'s `table` and classify's log line name it with "(module default)"; `set`
+copies it into the config table before changing it (GATE_TABLE's copy too); `check` validates both. A
+broken module row, or one whose override variables clash with a config site's, refuses that fallback
+site, show and check, never a config site. GATE_TABLE resolves as one file, no fallback.
+Another module's own call sites live in its own table, never in the overlay's (the owner, 2026-10-27: no
+new regatta dependency in the overlay): `module_table(<module>)` is
+${REGATTA_CONFIG:-~/.config/regatta}/<module>/models.json when it exists (the owner's values, whole),
+else the module's shipped `settings/models.json`; resolve(site, table=module_table(…)) reads it with
+the same rules, no fallback. `check`, `show` and `set` cover every module table beside the core's.
 Overrides, one variable per site and key: GATE_<SITE>_<KEY>, the site upper-cased with `.` and
 `-` as `_`, KEY one of PROVIDER, MODEL, EFFORT, THRESHOLD, BATCH, WHEN_OFF (GATE_SPARKS_SHAPE_MODEL=
 sonnet, GATE_REVIEW_GATE_MERGE_EFFORT=low; `none` removes the key, as in `set`). load() applies them
 after reading the file and before validating it, so an override validates like a written row and
-an error names the variable. Any other GATE_* variable but GATE_TABLE and GATE_LOG raises: a typo
+an error names the variable. Any other GATE_* variable but GATE_TABLE and GATE_LOG raises — one that
+names a site of another table (a module's) is left to that table's load: a typo
 must never quietly run the table's row. `check` refuses two sites whose variable names collide;
 `show` marks an overridden value (env); classify logs the site's overrides; `set` never writes one. Unknown keys, providers and kinds raise; a missing row raises — never a default
 vendor. Media rows are declarations (Flow has no API): resolve() on one raises.
@@ -60,10 +68,11 @@ classify(): items in, a label per item out. `labels` is {label: description}, 2-
   and nobody applies a threshold to it. Every id must carry a listed label; one retry, then
   GateError — a missing id is never read as "no".
 - Guarded sources (bin/jev's GUARDED, one home): `approved` is a dict keyed by vendor
-  (typesafe, anthropic, openai); the resolved vendor's quote is required and logged. A repo of a
+  (typesafe, anthropic, openai, google); the resolved vendor's quote is required and logged. A repo of a
   confidential scope (the registry's `scopes`) is guarded the same way for every vendor but
   Anthropic, and so is an unknown source while a scope is confidential, and every source while the
-  registry cannot be read (bin/jev's confidential()).
+  registry cannot be read (bin/jev's confidential()). vet(row, source, approved) is that rule alone,
+  for a caller that sends data by its own road (wharf's council: every non-Claude arm).
 Log: one JSON line per classify call to $GATE_LOG, default gate.jsonl in bin/jev's log_dir():
 site, provider, model, source, items, cost, ms, approval, status. Never the items. Jev calls
 also land in jev.jsonl, as before.
@@ -98,12 +107,12 @@ TABLE = CONFIG_TABLE if os.path.lexists(CONFIG_TABLE) else DEFAULT_TABLE
 # neither is refused. GATE_TABLE or an explicit table is that file alone: a suite sees its own rows.
 DEFAULT_MARK = " (module default)"
 PROVIDERS = {
-    "generate": ("claude", "codex", "off"),
-    "review": ("claude", "codex", "off"),
+    "generate": ("claude", "codex", "antigravity", "off"),
+    "review": ("claude", "codex", "antigravity", "off"),
     "classify": ("jev", "claude", "codex", "off"),
     "media": ("flow-browser", "seedance", "off"),
 }
-VENDOR = {"jev": "typesafe", "claude": "anthropic", "codex": "openai"}
+VENDOR = {"jev": "typesafe", "claude": "anthropic", "codex": "openai", "antigravity": "google"}
 ROW_KEYS = ("kind", "provider", "model", "effort", "threshold", "batch", "when_off", "bench", "note")
 DEFAULT_KEYS = ("model", "effort", "threshold", "batch")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -122,6 +131,83 @@ class GateOff(GateError):
 
 def _path(table=None):
     return table or os.environ.get("GATE_TABLE") or TABLE
+
+
+def _config_dir():
+    return os.path.expanduser(os.environ.get("REGATTA_CONFIG") or "~/.config/regatta")
+
+
+def _module_dirs():
+    """{module: its folder} the core's own lookup finds (common.module_path's roads): the modules of the regatta
+    checkout this core belongs to, then each `<plugin>@regatta` Claude Code installed — in a marketplace
+    install every plugin sits in a cache folder of its own, never beside the core (the second landing
+    review's finding 10); then each folder beside the core that is no core itself."""
+    out = {}
+    try:
+        common = _jev_module().common
+        root = common.regatta_root()
+        if root:
+            for d in sorted((root / "modules").iterdir()):
+                if (d / ".claude-plugin" / "plugin.json").is_file():
+                    out.setdefault(d.name, str(d))
+        for plugin, base in common._installed_roots():
+            if base.is_dir():
+                out.setdefault(plugin, str(base))
+    except Exception:   # noqa: BLE001 — a lookup that cannot run leaves the folder beside the core
+        out = {}
+    sib = os.path.dirname(os.path.dirname(HERE))
+    try:
+        for n in sorted(os.listdir(sib)):
+            d = os.path.join(sib, n)
+            # a folder holding a gate is a core (another version's, in a plugin cache), never a module
+            if os.path.isdir(d) and not os.path.isfile(os.path.join(d, "bin", "gate")):
+                out.setdefault(n, d)
+    except OSError:
+        pass
+    me = os.path.realpath(os.path.dirname(HERE))   # the core is no module of its own tables
+    return {n: d for n, d in out.items() if os.path.realpath(d) != me}
+
+
+def module_table(module, module_dir=None):
+    """MODULE's own table: the config dir's <module>/models.json when it exists (lexists, as TABLE: a
+    dangling link fails as "cannot read", never the defaults), else <module dir>/settings/models.json, the
+    module where the core's lookup finds it (_module_dirs) unless MODULE_DIR names it."""
+    own = os.path.join(_config_dir(), module, "models.json")
+    if os.path.lexists(own):
+        return own
+    d = module_dir or _module_dirs().get(module) or os.path.join(os.path.dirname(os.path.dirname(HERE)), module)
+    return os.path.join(d, "settings", "models.json")
+
+
+def module_tables():
+    """{module: table path} of every module the core's lookup finds that ships a table, or that has one in the
+    config dir."""
+    core = os.path.basename(os.path.dirname(HERE))
+    names = {n for n, d in _module_dirs().items() if os.path.lexists(os.path.join(d, "settings", "models.json"))}
+    try:
+        names |= {n for n in os.listdir(_config_dir()) if os.path.lexists(os.path.join(_config_dir(), n, "models.json"))}
+    except OSError:
+        pass
+    # the core's own name too: in a plugin install its folder is a version, and the config dir's regatta/ is its table
+    return {n: module_table(n) for n in sorted(names - {core, "regatta"})}
+
+
+def _sites_elsewhere(path):
+    """Every site another table holds (the core's, each module's), for the override rule: a variable that
+    names one is that table's to apply. A table that cannot be read holds none here; its own load raises."""
+    out = set()
+    # GATE_TABLE is that file alone: the shipped table is then read by nobody, so a site only it holds is no other
+    # table's, and a variable naming it stays the typo it is (round 6's third review)
+    core = [_path()] + ([] if os.environ.get("GATE_TABLE") else [DEFAULT_TABLE])
+    for p in core + list(module_tables().values()):
+        if os.path.realpath(p) == os.path.realpath(path):
+            continue
+        try:
+            with open(p) as f:
+                out.update((json.load(f).get("sites") or {}).keys())
+        except (OSError, ValueError, AttributeError):
+            continue
+    return out
 
 
 def _fallback_path(table=None):
@@ -230,16 +316,18 @@ def _env_value(key, s):
     return _value(s) if key in ("threshold", "batch") else s
 
 
-def _apply_env(t, name, environ=None):
-    """Write every GATE_<SITE>_<KEY> into its row; {site: {key: variable}}. An unknown one raises."""
+def _apply_env(t, name, environ=None, elsewhere=()):
+    """Write every GATE_<SITE>_<KEY> into its row; {site: {key: variable}}. An unknown one raises, bar one
+    naming a site of ELSEWHERE (another table's: its own load applies it)."""
     environ = os.environ if environ is None else environ
     sites = t.get("sites") if isinstance(t, dict) else None
     known = {}
     if isinstance(sites, dict):
         known = {env_name(s, k): (s, k) for s in sites for k in ENV_KEYS}
+    theirs = {env_name(s, k) for s in elsewhere for k in ENV_KEYS} - set(known)
     over = {}
     for var in sorted(environ):
-        if not var.startswith("GATE_") or var in ENV_OWN:
+        if not var.startswith("GATE_") or var in ENV_OWN or var in theirs:
             continue
         if var not in known:
             near = difflib.get_close_matches(var, list(known), 1)
@@ -312,7 +400,12 @@ def _load(table=None, env=True):
     if fpath and isinstance(t, dict) and isinstance(t.get("sites"), dict):
         fb = _module_rows(t, name, fpath, _rel(fpath) + DEFAULT_MARK)
         view = {"sites": dict(fb["sites"], **t["sites"])}
-    over = _apply_env(view, name + (" or " + fb["name"] if fb else "")) if env else {}
+    # a variable naming another table's site (a module's, the core's) is that table's to apply; the other
+    # tables are read only when some GATE_ variable is set
+    if env and any(v.startswith("GATE_") and v not in ENV_OWN for v in os.environ):
+        over = _apply_env(view, name + (" or " + fb["name"] if fb else ""), elsewhere=_sites_elsewhere(path))
+    else:
+        over = {}
     errs = [_blame(e, name, over) for e in validate(t, name)]
     if errs:
         raise GateError("; ".join(errs))
@@ -422,18 +515,7 @@ def classify(site, items, ask, labels, context=None, source=None, approved=None,
     if not source:
         source = jev.repo_of(os.getcwd())
         print("gate: no source given; assuming the cwd's repo, %s" % source, file=sys.stderr)
-    quote = None
-    vendor = VENDOR.get(prov, prov)
-    if source in jev.GUARDED or (vendor != "anthropic" and jev.confidential(source)):
-        if not isinstance(approved, dict):
-            raise GateError("%s: refused: data from %s needs %s's quote per vendor — "
-                            "approved={\"%s\": \"%s, <date>: <what>\"}, not %s"
-                            % (site, source, jev.WHO, vendor, jev.QUOTE_BY, type(approved).__name__))
-        quote = (approved.get(vendor) or "").strip()
-        if not quote:
-            raise GateError("%s: refused: data from %s goes to %s only with %s's say-so — "
-                            "approved has no %r quote (it has: %s)"
-                            % (site, source, vendor, jev.WHO, vendor, ", ".join(approved) or "none"))
+    quote = vet(row, source, approved)
     items = {str(k): v for k, v in items.items()}
     rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname().split(".")[0],
            "caller": caller or os.path.basename(sys.argv[0]), "site": site, "provider": prov,
@@ -463,6 +545,27 @@ def classify(site, items, ask, labels, context=None, source=None, approved=None,
     rec.update(status="ok", model=out.get("model"), cost_usd=out["cost_usd"], ms=out["ms"])
     _log(rec)
     return out
+
+
+def vet(row, source, approved=None):
+    """The guarded-source rule for a resolved ROW sending data from SOURCE (a repo name): the vendor's
+    quote from APPROVED when one is needed, else None; GateError when it is needed and missing. A
+    guarded source needs it for every vendor; a confidential scope's repo (or an unknown source while a
+    scope is confidential, or any while the registry is unreadable) for every vendor but Anthropic."""
+    site, jev = row.get("site"), _jev_module()
+    vendor = VENDOR.get(row["provider"], row["provider"])
+    if not (source in jev.GUARDED or (vendor != "anthropic" and jev.confidential(source))):
+        return None
+    if not isinstance(approved, dict):
+        raise GateError("%s: refused: data from %s needs %s's quote per vendor — "
+                        "approved={\"%s\": \"%s, <date>: <what>\"}, not %s"
+                        % (site, source, jev.WHO, vendor, jev.QUOTE_BY, type(approved).__name__))
+    quote = (approved.get(vendor) or "").strip()
+    if not quote:
+        raise GateError("%s: refused: data from %s goes to %s only with %s's say-so — "
+                        "approved has no %r quote (it has: %s)"
+                        % (site, source, vendor, jev.WHO, vendor, ", ".join(approved) or "none"))
+    return quote
 
 
 def _chunks(jev, row, items, questions, context):
@@ -655,7 +758,14 @@ def main(argv=None):
             if fb:
                 print("gate: %s validates, %d sites, %d of them the table lacks"
                       % (fb["name"], fb["count"], len(fb["sites"])))
-            return 0
+            bad = 0
+            for mod, mp in module_tables().items():
+                try:
+                    print("gate: %s's %s validates, %d sites" % (mod, _rel(mp), len(load(mp, env=False)["sites"])))
+                except GateError as e:
+                    print("gate: %s" % e, file=sys.stderr)
+                    bad = 1
+            return bad
         if cmd == "show":
             t, over, fb = _load()
             _strict(fb)
@@ -667,32 +777,65 @@ def main(argv=None):
             if fb and fb["sites"]:
                 print("rows marked%s: %s @ %s, sites the table lacks"
                       % (DEFAULT_MARK, _rel(fb["path"]), _commit(fb["path"])))
-            if over:
-                print("overridden here: %s" % ", ".join(sorted(v for o in over.values() for v in o.values())))
+            over_all = dict(over)
+            for mp in module_tables().values():
+                if os.path.realpath(mp) == os.path.realpath(path):
+                    continue
+                sys.stdout.flush()   # the core's rows are out before a broken module table raises
+                mt, mover, _ = _load(mp)
+                for s, row in mt["sites"].items():
+                    print(_line(s, row, mt.get("defaults", {}), mover.get(s, {})))
+                print("table: %s @ %s" % (_rel(mp), _commit(mp)))
+                over_all.update(mover)
+            if over_all:
+                print("overridden here: %s" % ", ".join(sorted(v for o in over_all.values() for v in o.values())))
             return 0
         if cmd == "set" and len(argv) >= 3:
             # The primary checkout's table on main is live at save: a flip there bypasses /finish
             # and the checkpoint (which never sees a script's writes). A worktree's copy is fine.
             # The guard and the write both go to the real file: through the config symlink an
             # os.replace would swap the link for a plain file and leave the overlay's table as it was.
+            # A site a module's table holds is written there, the table its caller reads (council's rows in
+            # wharf's): never a second row in the core's, which nothing reads (finding 10). GATE_TABLE names the
+            # table outright, as for every verb.
+            shipped, own, mod_of = DEFAULT_TABLE, CONFIG_TABLE, None
+            if not os.environ.get("GATE_TABLE"):
+                ct, _, cfb = _load(env=False)
+                core_sites = set(ct.get("sites") or {}) | set((cfb or {}).get("sites") or {})
+                if argv[1] not in core_sites:
+                    for mod, mp in module_tables().items():
+                        try:
+                            with open(mp) as f:
+                                held = argv[1] in (json.load(f).get("sites") or {})
+                        except (OSError, ValueError, AttributeError):
+                            continue
+                        if held:
+                            path, own, mod_of = mp, os.path.join(_config_dir(), mod, "models.json"), mod
+                            shipped = mp if not os.path.lexists(own) else shipped
+                            print("gate: %s is %s's row: writing %s's table" % (argv[1], mod, mod))
+                            break
             path = os.path.realpath(path)
             br = subprocess.run(["git", "-C", os.path.dirname(path), "rev-parse", "--abbrev-ref", "HEAD"],
                                 capture_output=True, text=True).stdout.strip()
-            if not os.environ.get("GATE_TABLE") and not br and path == os.path.realpath(DEFAULT_TABLE):
+            if not os.environ.get("GATE_TABLE") and not br and path == os.path.realpath(shipped):
                 # A plugin cache: the next update reverts the edit, and the user thinks it flipped.
-                raise GateError("not written: %s is the module's shipped defaults — write %s holding "
-                                "only the rows you change (a site it lacks keeps the module's row) "
-                                "and set it there" % (path, CONFIG_TABLE))
+                raise GateError("not written: %s is the module's shipped defaults — %s"
+                                % (path, ("copy it to %s and set it there" % own) if mod_of else
+                                       ("write %s holding only the rows you change (a site it lacks keeps "
+                                        "the module's row) and set it there" % own)))
             if not os.environ.get("GATE_TABLE") and br == "main":
                 raise GateError("not written: %s is on main, live at save — flip from a worktree "
                                 "(open one, then GATE_TABLE=<its path>/settings/models.json "
                                 "<its path>/bin/gate set …)" % _rel(path))
-            t, _, fb = _load(env=False)  # the files alone: an override is never written into them
-            if fb is None and os.path.realpath(path) != os.path.realpath(DEFAULT_TABLE):
-                # GATE_TABLE names a worktree's copy of the config table, as the on-main refusal
-                # says to: its missing sites still copy from the module's table, or `set` could
-                # never reach a row `show` lists on the Macs
-                fb = _module_rows(t, _rel(path), DEFAULT_TABLE, _rel(DEFAULT_TABLE) + DEFAULT_MARK)
+            if mod_of:
+                t, fb = load(path, env=False), None  # a module's table alone: no fallback, no override written
+            else:
+                t, _, fb = _load(env=False)  # the files alone: an override is never written into them
+                if fb is None and os.path.realpath(path) != os.path.realpath(DEFAULT_TABLE):
+                    # GATE_TABLE names a worktree's copy of the config table, as the on-main refusal
+                    # says to: its missing sites still copy from the module's table, or `set` could
+                    # never reach a row `show` lists on the Macs
+                    fb = _module_rows(t, _rel(path), DEFAULT_TABLE, _rel(DEFAULT_TABLE) + DEFAULT_MARK)
             site, before = argv[1], dict(t["sites"].get(argv[1], {}))
             copied = not before and fb and site in fb["sites"]
             if copied:

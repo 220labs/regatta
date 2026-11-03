@@ -9,7 +9,7 @@ docs/chain-manager-2026-10-11.md section 4 and E3; D4 = C, the owner 2026-10-14,
 What it may do (A1/A2), everything else raised (A3, a card and a line, nothing called):
     S1   a build step gone without an end: re-dispatched fresh from its brief with a note
     S2   a step whose --next the run cap refused: its next step started once the cap has room
-    S4   a launch stopped by the network or sleep: `autofinish-run <worktree> --by chain`
+    S4   a launch stopped by the network, sleep or a usage limit: `autofinish-run <worktree> --by chain`
     S1   an Orca step whose worker exited with no worker_done: `harness retry <dispatch>`, which is
          Orca's `worker-start --task --retry-of` with the same placement — the Task's spec is its
          brief, so there is no note; the same two retries, keys and gates (B8)
@@ -45,23 +45,29 @@ classifier added; the cheap and permanent ones first, the live reads last):
     the week       bin/autofinish's week_tight() with cached readings: its verdict "tight" refuses
                    (the week), "none" refuses (`account pick` found no login with room)
     the tools      dispatch and autofinish-run keep every guard of their own; a refusal is a
-                   line, never a loop: it moves the backoff, and REFUSALS of them raise the stall
+                   line, never a loop: it moves the backoff, and REFUSALS of them raise the stall —
+                   bar a relaunch this Mac's own pick refused (`no_account`), which the week
+                   check above then holds without calling the tool
 A re-dispatch keeps the run's skipper (the five DISPATCH_MANAGER*/DISPATCH_PLAN* values from its
 record), its depth (an S1 or classified re-run passes depth - 1: the same step, dispatch adds
 one; S2 passes it as recorded), model, effort, yolo and a bound pin; it runs where it ran — the
 laptop's worktree may hold commits its gone session never pushed — so `--on here` here and
-`--on <peer> --at @<now+120> --fallback here` for a peer's (never a bare ssh). A skippered run
+`--on <peer> --at @<now+120> --fallback here` for a peer's (never a bare ssh). Since dispatch-queue
+S12 `--on` is a preference, and the queue pins the step to that host at the put only when its worktree
+there holds what origin lacks (dispatch-queue's held_here): a pin for that one step, never inherited by
+the steps after it, which a typed `--pin` would be. A skippered run
 gets `helm report --status blocked`, then `running` once its retry's record appears; `failed`
 never (helmlib.ENDED would close its asks and let S7 fire on its successors).
 
 The tick runs on the laptop and, since skipper-resilience S8, on each scope's yard (bin/ask poll_tick),
 each judging its own store; on a yard what it raises also goes out by the stall road — escalations.jsonl
-and the `notify.<host>` row (escalate(), below the classifier).
+and the notify ladder of its kind, `stall` or `question` (charterer S3; escalate(), below the classifier).
 
 stalls.jsonl (~/Library/Logs/claude-weekly/, the host's own, O_APPEND) is the log and the retry
 memory in one: one JSON line per verdict that changed, never per tick (R6) — `{t, host, repo,
 branch, tip, topic, class, run, key, key_kind, action, why, …}` with action dry | wait | refused |
-raise | retry | started (the retry's record appeared) — and the classifier's answer, so a stall is
+raise | retry | started (the retry's record appeared), a refused line `no_account` true when only
+this Mac's pick refused — and the classifier's answer, so a stall is
 classified once. A retry's record does not exist when its line is written (launchd fires it ~90 s
 later): the next tick matches it by (repo, topic, brief blob, started after the line), or reads
 its dispatch log from the recorded offset for a FAILED line (a refusal at fire time, not counted).
@@ -101,6 +107,13 @@ RETRIES = 2                      # D4 = C: two per step
 BACKOFF = (10 * 60, 40 * 60)     # before retry 1, before retry 2 (header)
 DRY_AFTER_ARM = 3 * 3600         # the owner's precedent for autofinish (2026-10-05), D4-B's gate kept
 REFUSALS = 6                     # tool refusals of one stall before it is raised (a loop is never the answer)
+# autofinish-run's refuse() line when this Mac's own pick finds no login with room (start_here): the wait a
+# usage-limit S4 owes, never the tool's verdict on the stall, so it is neither counted nor moves the backoff.
+# Only the refusal's own last line, only a relaunch, and never a peer's answer relayed ("… on <peer>"): the
+# peer's no-account leaves this Mac's cached pick unchanged, so nothing here would end that wait, and it
+# counts as any refusal does (queue-followthrough's landing review). This Mac's live pick rewrites the cache
+# week_refusal reads, so the next tick waits there without calling the tool.
+NO_ACCOUNT_RE = re.compile(r"^autofinish-run: not starting \S+ — no account may run this now\b")
 CLASSIFY_SITE = "plan.stall"
 CLASSIFY_AGAIN = 3600            # a classifier that failed is asked again after this, not every tick
 ON_PEER_DELAY = 120              # --at for a run sent to a peer (dispatch's --on takes @EPOCH)
@@ -114,10 +127,12 @@ DISPATCH_KEYS = {"manager": helmlib.ENV_NAMES["skipper"], "manager_host": helmli
                  "plan_space": ("DISPATCH_PLAN_SPACE",)}
 # a caller's chain and skipper must never become the retry's: launchd's tick has none, a session
 # typing `helm tick` has its own (dispatch would name that session the retry's skipper)
+# DISPATCH_ARM and DISPATCH_COIN too: a retry sets its own arm below, and an inherited word or forced coin
+# must never reach a re-dispatch (trim S6's landing review)
 STRIP_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE") + tuple(
     "DISPATCH_" + v for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF", "MANAGER", "MANAGER_ACCOUNT",
                               "MANAGER_HOST", "PLAN", "SKIPPER", "SKIPPER_ACCOUNT", "SKIPPER_HOST", "SHIP",
-                              "PLAN_SPACE", "TASK", "REPO", "PIN")) + tuple(
+                              "PLAN_SPACE", "TASK", "REPO", "PIN", "ARM", "COIN")) + tuple(
     "RUN_SEED_" + v for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF"))
 LOGIN_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")   # autofinish-run picks its own, as start_runner lets it
 CLASSIFY_ASK = "Should this stalled run be started again, fresh from its brief, by an unattended agent?"
@@ -292,7 +307,7 @@ class Memory:
         self.fire_refused = {(_k(ln.get("key")), ln.get("retry_t")) for ln in lines
                              if ln.get("action") == "refused" and ln.get("retry_t")}
         self.followed = {(_k(ln.get("key")), ln.get("retry_t")) for ln in lines
-                         if ln.get("action") in ("started", "refused") and ln.get("retry_t")}
+                         if ln.get("action") in ("started", "refused", "spent") and ln.get("retry_t")}
 
     def last(self, i):
         ls = self.by_ident.get(i)
@@ -313,7 +328,7 @@ class Memory:
 
     def refusals(self, key):
         return [ln for ln in self.by_key.get(_k(key), []) if ln.get("action") == "refused"
-                and (ln.get("tool") or ln.get("retry_t"))]
+                and (ln.get("tool") or ln.get("retry_t")) and not ln.get("no_account")]
 
     def classified(self, i):
         for ln in reversed(self.by_ident.get(i, [])):
@@ -500,6 +515,19 @@ def skipper_road(s):
     return {k: d[k] for k in DISPATCH_KEYS if d.get(k)}
 
 
+ARM_WORD = re.compile(r"(opus-high|sonnet-high):[01]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # dispatch-queue's
+
+
+def arm_word(d):
+    """The builder rotation's word for a stopped run whose recorded pair is its drawn arm (dispatch's record), else
+    None (dispatch-queue's arm_word, for helm's own retry)."""
+    a = d.get("arm")
+    if not isinstance(a, dict) or a.get("model") != d.get("model") or a.get("effort") != d.get("effort"):
+        return None
+    w = "%s:%s:%s:%d" % (a.get("name"), a.get("coin"), a.get("until"), bool(a.get("forced")))
+    return w if ARM_WORD.fullmatch(w) else None
+
+
 def dispatch_cmd(s, what, attempt, t):
     """(argv, env) of the re-dispatch (header): where it ran, its depth, its skipper, its mode."""
     d = s.get("dispatch") or {}
@@ -514,10 +542,13 @@ def dispatch_cmd(s, what, attempt, t):
                 "(%s)." % (attempt, RETRIES, s.get("run")))
     argv = [exe, s["branch"], "--repo", str(local_repo(s)), "--note", note]
     # the recorded model and effort are the stopped run's: the same step again keeps them, while S2 starts the
-    # NEXT step, whose brief's Tier: line decides (a principal tier's model and effort, principal tier S5)
-    if what == "redispatch" and d.get("model"):
+    # NEXT step, whose brief's Tier: line decides (a principal tier's model and effort, principal tier S5). A run
+    # whose pair is its builder-rotation draw carries the draw instead (DISPATCH_ARM, below): typed, its retry
+    # would run the arm unrecorded, and trim would read the landing as pinned
+    arm = arm_word(d) if what == "redispatch" else None
+    if what == "redispatch" and d.get("model") and not arm:
         argv += ["--model", str(d["model"])]
-    if what == "redispatch" and d.get("effort"):
+    if what == "redispatch" and d.get("effort") and not arm:
         argv += ["--effort", str(d["effort"])]
     if str(d.get("yolo") or "0") not in ("0", "", "False"):
         argv.append("--yolo")
@@ -528,6 +559,8 @@ def dispatch_cmd(s, what, attempt, t):
     else:
         argv += ["--on", s["host"], "--at", "@%d" % (int(t) + ON_PEER_DELAY), "--fallback", "here"]
     env = tool_env()
+    if arm:
+        env["DISPATCH_ARM"] = arm
     # S1 and a classified retry are the same step again: dispatch adds one to DISPATCH_DEPTH
     env["DISPATCH_DEPTH"] = str(max(0, s["depth"] - 1) if what == "redispatch" else s["depth"])
     for k, v in skipper_road(s).items():
@@ -598,8 +631,11 @@ def act(s, dec, t):
         return {"action": "retry", "what": what, "attempt": attempt, "cmd": shown,
                 "why": "%s timed out after %d s — counted as spent" % (shown[0], tool_timeout(s, what))}
     if rc != 0:
-        return {"action": "refused", "tool": shown[0], "rc": rc,
+        line = {"action": "refused", "tool": shown[0], "rc": rc,
                 "why": "%s refused it (exit %s): %s" % (shown[0], rc, last_line(err) or last_line(out) or "no output")}
+        if dec.get("what") == "relaunch" and NO_ACCOUNT_RE.match(last_line(err) or ""):
+            line["no_account"] = True   # Memory.refusals skips it: the next tick asks the pick again
+        return line
     line = {"action": "retry", "what": what, "attempt": attempt, "cmd": shown, "why": last_line(out) or "started"}
     if what == "relay":
         # bin/ask exits 0 on every verdict: only a road that delivered is a relay (a `none` or
@@ -697,6 +733,9 @@ def base_line(s, t):
             "key_kind": s.get("key_kind")}
 
 
+FOR_GOOD_RE = re.compile(r"\brefused for good\b")   # a fire-time refusal no retry fixes (dispatch's words)
+
+
 def follow_up(mem, res, t, write, mode_now):
     """The retries of earlier ticks: their record appeared (`started`, the plan told `running`), or
     their dispatch log says FAILED since the retry (a refusal at fire time: not a spent retry)."""
@@ -726,8 +765,13 @@ def follow_up(mem, res, t, write, mode_now):
                 text = ""
             failed = [x for x in text.splitlines() if x.startswith("FAILED")]
             if failed:
+                # "refused for good" (dispatch's spawn gate, confidential-reach S6): no start fixes it, so the retry
+                # is spent, never voided — a void let every tick start it again for as long as it stalled (the
+                # fourth landing review)
+                good = FOR_GOOD_RE.search(failed[0])
                 line = dict({k: r.get(k) for k in ("host", "repo", "branch", "tip", "topic", "class", "run", "key", "key_kind")},
-                            t=t, action="refused", retry_t=r["t"], why="at fire time: %s" % failed[0][:200])
+                            t=t, action="spent" if good else "refused", retry_t=r["t"],
+                            why="at fire time%s: %s" % (", for good" if good else "", failed[0][:200]))
         if line:
             out.append(line)
             if write:
@@ -889,9 +933,21 @@ CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SIT
 
 # ---------------------------------------------------------------------------- the stall road (skipper-resilience S8)
 #
-# On a yard nobody watches the board, so what the tick raises reaches the owner as one notify — the host's
-# `notify.<host>` row, `github-issue` on the yard: an issue in the config's helm/logbook-repo, its body led by
-# helm/mention (bin/ask notice()) — and one row in escalations.jsonl, beside stalls.jsonl, O_APPEND:
+# On a yard nobody watches the board, so what the tick raises reaches the owner by the ladder of its kind
+# (charterer S3: surfaces.json's notify.stall for a stall, notify.question for a block or a question; a kind
+# with no ladder in the file reads the host's old `notify.<host>` row as one rung at ESCALATE_AFTER,
+# surfaces.HOST_ROW, sent by bin/ask's notice() as before the ladder). A ladder's machine rung — its
+# github-issue rung, or that host row — is the issue machine this block describes: an issue in the config's
+# helm/logbook-repo, its body led by helm/mention (bin/ask push(), or notice() for the host row, which may
+# ring a banner instead), opened at that rung's `after`. Every other rung is a push of its own, fired once per
+# message and class (escalations-rungs.json), each a row {…, rung_of, state rung, ladder, rung (its place in
+# the owner's list), via, road, why, pushed}; a rung with no road yet says so once, with no row. Quiet hours
+# and the hourly cap hold phone-reaching rungs (surfaces.PHONE) and the machine's issue comments, a reopen's
+# and a close's alike, the cap counting each row's `pushed` once; `when: present` holds a rung until presence
+# is read (charterer S5). An answered question (closed, or answered in its doc) is withdrawn on the second
+# pass in a row that reads it answered (one misread never closes it): its issue closed then, no CLEAR_AFTER
+# waited, its other rungs offered to their channel's withdraw() and forgotten.
+# The issue machine's rows, in escalations.jsonl beside stalls.jsonl, O_APPEND:
 #     {t, yard, ekey, plan, block, key, key_kind, kind, src, class, rule, title, guarded, road, issue, state, why}
 #     (ekey: kind and key in one string; plus was, was_class, was_open, was_tries, retried, transient,
 #     also (older followed issues still open), close_tries, close_left (what a first close left open),
@@ -902,6 +958,8 @@ CLASSIFIER_NOTE = "bin/gate classify %s would say retry or raise" % CLASSIFY_SIT
 #            row, opened once it does) | closed (the key missing CLEAR_AFTER with its source read: a comment
 #            naming what cleared it, then the issue closed; a failed close tried once more)
 # One issue per key at a time. Three kinds are wanted, on this host's own store only:
+# (each `after` below is the default; the ladder's rungs set it, a skipper's question never under
+# RELAY_UNANSWERED; a message whose rungs have no road is unrouted once its first rung is due)
 #     stall  a decision whose verdict is raise (dry or not), first seen ESCALATE_AFTER ago — S3, S5, S6, S7,
 #            `skipper won't start`, `start path dead` (a canary beat that fails, orca-launcher S7: G2's
 #            raise is the hourly beat's window plus the tick plus these 10 minutes), a spent or refused retry, an unsure one the classifier refused — but
@@ -936,12 +994,42 @@ def escalations_path():
     return Path(os.environ.get("STALLS_ESCALATIONS") or log_path().with_name("escalations.jsonl"))
 
 
-def read_escalations():
-    return [d for d in read_log(escalations_path()) if d.get("ekey")]
+# A ladder rung's own rows (charterer S3), keyed by `rung_of`, never `ekey`: a reader from before the ladder
+# (a rollback, an open branch's tick or board) takes every row with an ekey as that key's newest state, so a
+# rung row under the ekey would read there as the key's issue gone, and open a second one.
+RUNG_STATES = ("rung", "withdrawn")
+
+
+def read_escalations(rungs=False):
+    """The stall road's rows with a key: its issue machine's (open, class-changed, unrouted, closed), and
+    with RUNGS the ladder's rung rows too (state rung or withdrawn, their `rung_of` read back as `ekey`),
+    which the machine never reads."""
+    out = []
+    for d in read_log(escalations_path()):
+        if d.get("ekey") and d.get("state") not in RUNG_STATES:
+            out.append(d)
+        elif rungs and d.get("rung_of") and d.get("state") in RUNG_STATES:
+            out.append(dict(d, ekey=d["rung_of"]))
+    return out
 
 
 def append_escalation(row):
     append(row, escalations_path())
+
+
+def append_rung(row):
+    """A rung row, its key written as `rung_of` (above): never an `ekey` an older reader takes as the key's state."""
+    r = {k: v for k, v in row.items() if k != "ekey" and v is not None}
+    r["rung_of"] = row.get("ekey") or row.get("rung_of")
+    append(r, escalations_path())
+
+
+def hm_due(t):
+    """hm() of a due time, or `never` past what a clock prints (an `after` near MAX_AFTER on a far clock)."""
+    try:
+        return hm(t)
+    except (ValueError, OverflowError, OSError):
+        return "never"
 
 
 def yard_here():
@@ -977,9 +1065,10 @@ def _shown_key(key):
 
 
 def wanted(res, decisions, mem, t):
-    """({ekey: what to escalate}, {"ships": bool, "plans": set}) — the three kinds above, each {kind, key,
-    key_kind, src, class, rule, plan, block, since, after, ready, title, body, guarded}; and what of the
-    yard's ships could not be read this pass (no lease reader: ships False; a ship unread: its id)."""
+    """({ekey: what to escalate}, {"ships": bool, "plans": set, "errors": [...], "answered": set}) — the three
+    kinds above, each {kind, key, key_kind, src, class, rule, plan, block, since, after, ready, title, body,
+    guarded, ladder, floor, frozen}; what of the yard's ships could not be read this pass (no lease reader:
+    ships False; a ship unread: its id); and the ekeys read as answered, or no longer the owner's, this pass."""
     me = helmlib.host()
     out = {}
     for s, line, _ in decisions:
@@ -1005,8 +1094,9 @@ def wanted(res, decisions, mem, t):
         ek = _k(["stall", s.get("key_kind"), s.get("key")])
         out[ek] = {"kind": "stall", "key": s.get("key"), "key_kind": s.get("key_kind"), "src": src, "class": cls,
                    "rule": s.get("rule"), "plan": s.get("plan"), "block": s.get("task") or s.get("topic"), "since": since,
-                   "after": ESCALATE_AFTER, "ready": t - since >= ESCALATE_AFTER, "title": title, "body": body, "guarded": g}
-    unread = {"ships": True, "plans": set()}
+                   "after": ESCALATE_AFTER, "ready": t - since >= ESCALATE_AFTER, "title": title, "body": body, "guarded": g,
+                   "ladder": "stall", "floor": 0, "frozen": 0}
+    unread = {"ships": True, "plans": set(), "answered": set()}
     try:
         import leaselib
         import skipperlib
@@ -1024,29 +1114,32 @@ def wanted(res, decisions, mem, t):
     saved, skipperlib._PASS = skipperlib._PASS, {}
     try:
         for pid, lease in ships:
-            if not _ship_wanted(out, pid, lease, me, t, skipperlib, unread.setdefault("errors", [])):
+            if not _ship_wanted(out, pid, lease, me, t, skipperlib, unread.setdefault("errors", []), unread["answered"]):
                 unread["plans"].add(pid)
     finally:
         skipperlib._PASS = saved
     return out, unread
 
 
-def _ship_wanted(out, pid, lease, me, t, sk, errors=None):
+def _ship_wanted(out, pid, lease, me, t, sk, errors=None, answered=None):
     """The block and ask kinds of one ship the yard holds, into OUT (wanted()'s); False when it did not read.
-    A ship's keys are merged only when all of it read: a raise half-way opens none of them."""
-    mine = {}
+    A ship's keys are merged only when all of it read: a raise half-way opens none of them. ANSWERED gains
+    the ekey of each of its questions answered (closed, or answered in its doc): withdrawn once two passes in a row read it so."""
+    mine, done = {}, set()
     try:
-        ok = _ship_wanted1(mine, pid, lease, me, t, sk)
+        ok = _ship_wanted1(mine, pid, lease, me, t, sk, done)
     except Exception as e:   # noqa: BLE001 — one malformed or unreadable ship costs its own keys, never the pass
         if errors is not None:
             errors.append(type(e).__name__)   # the class only: a guarded ship's text never reaches the log
         return False
     if ok:
         out.update(mine)
+        if answered is not None:
+            answered.update(done)
     return ok
 
 
-def _ship_wanted1(out, pid, lease, me, t, sk):
+def _ship_wanted1(out, pid, lease, me, t, sk, answered=None):
     try:
         st = helmlib.state(pid)
     except (FileNotFoundError, ValueError):
@@ -1054,7 +1147,12 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
     tasks = {x["id"]: x for x in st["tasks"]}
     ship = st.get("topic") or pid
     for task in st["tasks"]:
+        settled = _k(["block", [me, pid, task["id"]]])
         if task["status"] in helmlib.ENDED:
+            if answered is not None:
+                # ended: its block and its questions are settled (an escalated question of a done task included)
+                answered.add(settled)
+                answered.update(_k(["ask", [me, pid, a["ref"]]]) for a in task["asks"] if a.get("ref"))
             continue
         g = bool(task.get("guarded"))
         prog = str(task.get("progress") or "")
@@ -1066,6 +1164,8 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
             cls, since = "person's", max([d.get("updated") or 0 for d in deps] + [task.get("updated") or 0]) or st.get("created") or t
         elif task.get("status") == "waiting" and prog.startswith(sk.OWNER_PROGRESS):
             cls, since = "gated", task.get("updated") or t
+        elif answered is not None:
+            answered.add(settled)   # no longer waiting on the owner (its gate answered, its person's task done)
         if cls:
             key = [me, pid, task["id"]]
             if g:   # K6: no ship, task, plan id or progress
@@ -1082,11 +1182,15 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
             out[_k(["block", key])] = {
                 "kind": "block", "key": key, "key_kind": "block", "src": "ships", "class": cls, "rule": "waits on the owner",
                 "plan": pid, "block": task["id"], "since": since, "after": ESCALATE_AFTER,
-                "ready": t - float(since) >= ESCALATE_AFTER, "guarded": g, "title": title, "body": body}
+                "ready": t - float(since) >= ESCALATE_AFTER, "guarded": g, "title": title, "body": body,
+                "ladder": "question", "floor": 0, "frozen": 0}
             continue   # its questions are the doc's D-items this issue already names
         for a in task["asks"]:
             if not a.get("open") or sk.doc_answer(a):
-                continue   # answered in its doc already: nobody's to chase
+                # answered in its doc already, or closed: nobody's to chase, and what chased it is withdrawn
+                if answered is not None and a.get("ref"):
+                    answered.add(_k(["ask", [me, pid, a["ref"]]]))
+                continue
             # S5's rule (skipperlib.owners_ask): escalated by `helm skipper --escalate`, or asked in mode
             # ask or dnd, the question is the owner's — escalated after ESCALATE_AFTER; else the skipper's,
             # escalated once RELAY_UNANSWERED passes unanswered
@@ -1114,7 +1218,10 @@ def _ship_wanted1(out, pid, lease, me, t, sk):
             out[_k(["ask", key])] = {
                 "kind": "ask", "key": key, "key_kind": "ask", "src": "ships", "class": cls,
                 "rule": "the owner's question" if mode else "a relay unanswered", "plan": pid, "block": task["id"],
-                "since": opened, "after": wait, "ready": t - opened - frozen >= wait, "guarded": g, "title": title, "body": body}
+                "since": opened, "after": wait, "ready": t - opened - frozen >= wait, "guarded": g, "title": title, "body": body,
+                # the ladder (charterer S3): every question the owner's to know of is a `question` message; one the
+                # skipper still holds is never pushed before its RELAY_UNANSWERED, whatever a rung's `after`
+                "ladder": "question", "floor": 0 if mode else RELAY_UNANSWERED, "frozen": frozen}
     return True
 
 
@@ -1122,7 +1229,7 @@ _ASK = None
 
 
 def ask_mod():
-    """bin/ask as a module: the notify seam (notice(), stall_road(), issue_state()) is its, as the poll's bell is."""
+    """bin/ask as a module: the notify seam is its (push(), rung_road(), withdraw(), issue_state()), as the poll's bell is."""
     global _ASK
     if _ASK is None:
         _ASK = _load("ask_for_tick", HERE / "ask")
@@ -1131,6 +1238,65 @@ def ask_mod():
 
 def seen_path():
     return state_dir() / "escalations-seen.json"
+
+
+def rungs_path():
+    return state_dir() / "escalations-rungs.json"
+
+
+def read_rungs():
+    """{ekey: {"first", "t" (last pass present), "src", "plan", "fired": {class: [via…]}, "tries": {class: {via: n}},
+    "noroad": {class: [via…]} (said once to have no road, re-checked each pass), "missed", "answered"}}: which
+    of a message's rungs other than its issue machine's have fired, per class, so each fires once per message
+    and class: a new class (a skipper's question escalated to the owner) fires its rungs afresh, a class seen
+    before never again. Forgotten once the message is gone CLEAR_AFTER with its source read, or answered. An
+    entry any field of which will not read (a hand edit, another version) is forgotten whole, read here once:
+    its message starts afresh, never a pass that raises."""
+    try:
+        d = json.loads(rungs_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in d.items() if _rungs_entry_reads(v)} if isinstance(d, dict) else {}
+
+
+def _rungs_entry_reads(v):
+    def num(x):
+        return x is None or (isinstance(x, (int, float)) and not isinstance(x, bool))
+
+    def per_class(x, each):
+        return x is None or (isinstance(x, dict) and all(each(y) for y in x.values()))
+
+    def vias(y):
+        return isinstance(y, list) and all(isinstance(z, str) for z in y)
+    return (isinstance(v, dict) and all(num(v.get(f)) for f in ("first", "t", "answered", "missed"))
+            and all(v.get(f) is None or isinstance(v.get(f), str) for f in ("src", "plan"))
+            and per_class(v.get("fired"), vias) and per_class(v.get("noroad"), vias)
+            and per_class(v.get("tries"), lambda y: isinstance(y, dict) and all(num(z) and z is not None for z in y.values())))
+
+
+def _write_json(p, d):
+    """D to P whole: a temporary file beside it, then a rename (a reader never sees half of it)."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
+    tmp.write_text(json.dumps(d, sort_keys=True))
+    tmp.replace(p)
+
+
+def write_rungs(d):
+    _write_json(rungs_path(), d)
+
+
+def phone_pushes(rows, t):
+    """How many phone-reaching pushes (surfaces.PHONE) the road made in the hour before T: each row a push
+    marks (`pushed`, its time, carried by every later copy of the row) counted once per key, rung and time."""
+    import surfaces
+    def recent(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and t - x < 3600
+    sent = {(r.get("ekey"), r.get("rung"), r.get("via"), r.get("pushed")) for r in rows
+            if recent(r.get("pushed")) and (r.get("via") or r.get("road")) in surfaces.PHONE}
+    # an issue's comments (a clear's close, a follow-up close): a row's `commented`, its time, one push each
+    said = {(r.get("ekey"), "commented", r.get("commented")) for r in rows if recent(r.get("commented"))}
+    return len(sent | said)
 
 
 def read_seen():
@@ -1142,11 +1308,7 @@ def read_seen():
 
 
 def write_seen(d):
-    p = seen_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(".%s.%d" % (p.name, os.getpid()))
-    tmp.write_text(json.dumps(d, sort_keys=True))
-    tmp.replace(p)
+    _write_json(seen_path(), d)
 
 
 @contextlib.contextmanager
@@ -1196,7 +1358,8 @@ def escalate(res, decisions, mem, t, dry=False, road_before=(True, None), mode_n
 
 def _escalate(res, decisions, mem, t, dry, keep=False):
     """seen (escalations-seen.json) holds, per key, [last pass it was present, first pass it was missing
-    with its source read]: a key closes once missing CLEAR_AFTER and on two passes in a row, so a stale
+    with its source read, whether the last miss read it answered]: a key closes once missing CLEAR_AFTER and
+    on two passes in a row (or on two answered passes in a row, with no wait), so a stale
     memory (a stretch of refused or fenced passes) never closes it on one miss. keep: write it on a dry pass."""
     me = helmlib.host()
     want, ships_unread = wanted(res, decisions, mem, t)
@@ -1206,21 +1369,158 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
     else:
         lines_pre = []
     last = {}
-    for row in read_escalations():
-        last[row["ekey"]] = row
+    rows_all = read_escalations(rungs=True)   # the log read once a pass: the machine's rows, and the rungs' below
+    for row in rows_all:
+        if row.get("state") not in RUNG_STATES:
+            last[row["ekey"]] = row
     seen = read_seen()
     try:
         deadline = float(os.environ.get("STALLS_DEADLINE") or 0)
     except ValueError:
         deadline = 0
-    lines, opened, held = lines_pre, 0, 0
-    road_ok, road_why = ask_mod().stall_road(me)
+    lines, opened, held = lines_pre, 0, set()   # held: the messages a full pass left for the next
+    import surfaces
+    # the ladder (charterer S3): each kind's rungs, quiet hours and cap, read once a pass from one snapshot.
+    # A ladder's machine rung — its github-issue rung, or the host row read as one (surfaces.HOST_ROW, sent by
+    # notice() as before the ladder) — is the issue machine below (open, class-changed, reopen, close); every
+    # other rung is a push of its own, fired once per message and class (escalations-rungs.json), one row each
+    held_all = {"hours": None, "except": set(), "bad": True}   # every phone rung held: what will not read never widens
+    snap = surfaces.snapshot()   # one version of the file for every read below
+    torn = surfaces.notify_unreadable(text=snap)
+    ladders, quiet, cap, typos, row_phone = {}, held_all, 0, {}, True
+    if not torn:
+        try:
+            n_ = surfaces.load(text=snap)["notify"]
+            ladders = {lk: surfaces.ladder(lk, me, text=snap, legacy_after=ESCALATE_AFTER) for lk in surfaces.LADDER_KINDS}
+            row_phone = "github-issue" in surfaces.host_row(n_, me)   # notice() may open an issue: the row reaches a phone
+            quiet, cap = surfaces.quiet(text=snap), surfaces.cap(text=snap)
+            # a rung that does not read is dropped by ladder() (it narrows to nothing, never widens): named every
+            # pass below, and in the reason of a message it leaves without a road
+            typos = {lk: [b for b in surfaces.validate_ladders(n_) if b.startswith("notify.%s" % lk)] for lk in surfaces.LADDER_KINDS}
+        except Exception as e:   # noqa: BLE001 — a seam that will not read holds every rung, its closes too, never fails the pass
+            ladders, quiet, cap, typos, row_phone = {}, held_all, 0, {}, True
+            torn = "the notify seam did not read (%s)" % (str(e) or type(e).__name__)
+    if torn:
+        # held, not unrouted: no rung this pass, and no message written as having no road (the file is the fault)
+        lines.append("escalations: %s — every rung held until it reads, a banner and an issue's comments too (`ask backends` names it)" % torn)
+    if quiet.get("bad") and not torn:
+        lines.append("escalations: notify.quiet does not read — every phone rung held until it does (`ask backends` names it)")
+    if cap == 0 and not torn:
+        lines.append("escalations: notify.cap does not read — every phone rung held until it does (`ask backends` names it)")
+    for lk in surfaces.LADDER_KINDS:
+        for b in typos.get(lk) or ():
+            lines.append("escalations: %s — that rung dropped until it reads (`ask backends` names it)" % b)
+    rungs = read_rungs()
+    pushes = phone_pushes(rows_all, t)
+    answered = set(ships_unread.get("answered") or ()) - set(want)
+
+    roadc = {}
+
+    def road(via):
+        """bin/ask's road for a rung, asked once per channel a pass (it reads the config dir): the host row's
+        is stall_road(), the backends notice() walks; a channel's is rung_road()."""
+        if via not in roadc:
+            roadc[via] = ask_mod().stall_road(me) if via == surfaces.HOST_ROW else ask_mod().rung_road(via)
+        return roadc[via]
+
+    def kind_of(row):
+        """The ladder a row's message is on: its own `ladder`, else (a row from before the ladder) by its kind."""
+        return row.get("ladder") or ("question" if row.get("kind") in ("ask", "block") else "stall")
+
+    def machine(lad):
+        """(index, rung) of a ladder's machine rung — its github-issue rung or the host row — or (None, None)."""
+        return next(((i, r) for i, r in enumerate(lad) if r["via"] in ("github-issue", surfaces.HOST_ROW)), (None, None))
+
+    def hold(kind, rung):
+        """Why RUNG of a KIND message holds this pass, or None: presence unread, quiet hours, the hourly cap.
+        The host row reaches the phone when it holds github-issue, as notice() may open an issue."""
+        if torn:
+            return "the notify seam does not read"
+        if rung.get("when") == "present":
+            return "until the owner is at the Mac (presence is read from charterer S5)"
+        phone = rung["via"] in surfaces.PHONE or (rung["via"] == surfaces.HOST_ROW and row_phone)
+        if phone:
+            if surfaces.in_quiet(t, kind, q=quiet):
+                return "quiet hours" if not quiet.get("bad") else "notify.quiet does not read"
+            if cap is not None and pushes >= cap:
+                return "the cap of %d an hour" % cap if cap else "notify.cap does not read"
+        return None
+
+    def issue_hold(kind):
+        """Why a comment on an issue of a KIND message holds (it reaches the phone: the issue mentions the
+        owner) — a reopen's, a follow-up close's, a clear's — or None: as an open of its github-issue rung."""
+        return hold(kind, {"via": "github-issue"})
+
+    def due(w, rung):
+        return float(w["since"]) + float(w.get("frozen") or 0) + max(float(w.get("floor") or 0), rung["after"])
+
+    def fire_rungs(ek, w, lad):
+        """Every rung of W's ladder LAD but its machine rung: fired once each per class when due, unless held.
+        A class seen before keeps what it fired (a stall flipping between two classes never rings twice); a
+        push that fails is tried once more on the next pass; pushes share the pass's ESCALATE_MAX."""
+        nonlocal pushes, opened
+        ent = rungs.get(ek) if isinstance(rungs.get(ek), dict) else {"first": t}
+        for k in ("fired", "tries", "noroad"):
+            if not isinstance(ent.get(k), dict):
+                ent[k] = {}   # absent, or null in the file (read_rungs lets null by): an empty map
+        done = ent["fired"].setdefault(w["class"], [])
+        tries = ent["tries"].setdefault(w["class"], {})
+        ent.update(t=t, **{f: w.get(f) if isinstance(w.get(f), str) else None for f in ("src", "plan")})   # what read_rungs reads
+        for k in ("missed", "answered"):
+            ent.pop(k, None)   # present: neither a miss nor an answer to count
+        rungs[ek] = ent
+        kind = w.get("ladder") or "stall"
+        for r in lad:
+            via = r["via"]
+            if via in ("github-issue", surfaces.HOST_ROW) or via in done or t < due(w, r):
+                continue
+            why = hold(kind, r)
+            if why:
+                if dry:
+                    say(w, "would push", " via %s — held: %s" % (via, why))
+                continue
+            ok, why = road(via)
+            if not ok and r.get("implicit"):
+                continue   # the charterer a file with no ladder implies: no road yet, nothing to say
+            if not ok:
+                # no road for this channel: nothing called, no row (nothing was pushed). Never marked fired, so a
+                # road that appears later is taken on that pass; said once per message and class
+                if dry:
+                    say(w, "would push", " via %s — %s" % (via, why))
+                    continue
+                said_ = ent["noroad"].setdefault(w["class"], [])
+                if via not in said_:
+                    lines.append("escalation: %s — rung %s" % (w.get("title"), why))
+                    said_.append(via)
+                continue
+            if dry:
+                say(w, "would push", " via %s" % via)
+                continue
+            if opened >= ESCALATE_MAX or late():
+                held.add(ek)
+                continue
+            opened += 1
+            n = ask_mod().push(via, w["title"], "\n".join(w["body"]))
+            delivered = n["road"] != "none"
+            tries[via] = tries.get(via, 0) + 1
+            if delivered or tries[via] >= 2:
+                done.append(via)
+            if delivered and via in surfaces.PHONE:
+                pushes += 1
+            append_rung(row_of(ek, w, "rung", n["road"], n["issue"], n["said"], rung=r["at"], via=via,
+                               pushed=t if delivered else None, retried=True if tries[via] > 1 else None))
+            write_rungs(rungs)   # what fired is kept at once: a pass killed after this never pushes it again
+            if delivered:
+                say(w, "pushed", " via %s: %s" % (via, n["road"] + (" #%s" % n["issue"] if n["issue"] else "")))
+            else:
+                lines.append("escalation: %s — push via %s failed: %s (%s)" % (
+                    w.get("title"), via, n["said"], "tried once more next pass" if tries[via] < 2 else "not tried again"))
 
     def row_of(ek, w, state, road, issue, why, **kw):
         r = {"t": t, "yard": me, "ekey": ek, "plan": w.get("plan"), "block": w.get("block"), "key": w.get("key"),
              "key_kind": w.get("key_kind"), "kind": w.get("kind"), "src": w.get("src"), "class": w.get("class"),
              "rule": w.get("rule"), "title": w.get("title"), "guarded": bool(w.get("guarded")),
-             "road": road, "issue": issue, "state": state, "why": why}
+             "road": road, "issue": issue, "state": state, "why": why, "ladder": w.get("ladder")}
         r.update({k: v for k, v in kw.items() if v is not None})
         return r
 
@@ -1230,32 +1530,82 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
     def late():
         return bool(deadline) and deadline - time.time() < ESCALATE_LEFT
 
-    for ek, w in sorted(want.items()):
+    # under a cap the newest message goes first (the rest wait for the next hour); else the key order as before
+    order = sorted(want.items(), key=(lambda kv: (-float(kv[1]["since"]), kv[0])) if cap is not None else (lambda kv: kv[0]))
+    for ek, w in order:
         seen[ek] = [t, None]   # present: no absence to count
+        kind = w.get("ladder") or "stall"
+        lad = ladders.get(kind) or []
+        fire_rungs(ek, w, lad)
+        _, gr = machine(lad)
+        legacy = bool(gr and gr.get("legacy"))
+        # a rung that can reach the owner this pass: a road here, and no presence to wait for (unread until S5).
+        # A machine rung held for presence, with no other rung that can reach, is unrouted and said, never held mute
+        routable = any(road(r["via"])[0] and r.get("when") != "present" for r in lad)
+        if gr and (routable or gr.get("when") != "present"):
+            w = dict(w, after=max(float(w.get("floor") or 0), gr["after"]), ready=t >= due(w, gr), rung=gr["at"])
+            road_ok, road_why = road(gr["via"])
+            gh_hold = hold(kind, gr)
+        elif not torn and not routable:
+            # no rung of its kind has a road (none at all, or each unbuilt or unable here): unrouted, as a host
+            # with no stall road was before the ladder — once its first rung is due (a ladder with none: at the
+            # wait wanted() set), one row, re-checked each pass, opened once it has one. The reason names every
+            # rung the owner wrote that has no road and each that does not read, never the implied charterer
+            whys = [why if not ok else "%s: held until the owner is at the Mac (presence is read from charterer S5)" % r["via"]
+                    for r, (ok, why) in ((r, road(r["via"])) for r in lad if not r.get("implicit"))
+                    if not ok or r.get("when") == "present"]
+            whys += typos.get(kind) or []
+            road_ok, gh_hold = False, None
+            road_why = "no rung with a road in notify.%s%s" % (kind, " (%s)" % "; ".join(whys) if whys else "")
+            if lad:
+                first = min(lad, key=lambda r: due(w, r))
+                w = dict(w, after=max(float(w.get("floor") or 0), first["after"]), ready=t >= due(w, first))
+        else:
+            road_ok, road_why, gh_hold = None, None, None   # its rungs are pushes only: no issue for it
         prev = last.get(ek) or {}
         state = prev.get("state")
         is_open = state in OPEN_STATES
+        carry = []
+        if is_open and gr and not legacy and prev.get("road") == "banner":
+            # a banner notice() rang before the owner wrote a github-issue rung: no issue of the key's own is open,
+            # and the rung the owner asked for opens one. The issues the banner row still follows (a class move
+            # whose issue failed and fell to the banner) are carried into the new row and closed once it is open
+            is_open = False
+            # what a first close already closed is never closed again: after one, only what it left open
+            carry = list(prev.get("close_left") or []) if prev.get("close_tries") else followed(prev)
         same = prev.get("class") == w["class"]
         if is_open and prev.get("close_tries") and not dry:
             # back before its close's retry: the next clear starts with a fresh try. close_left names what
             # the first try failed to close; the rest is closed on GitHub: its own issue is reopened (a live
-            # stall never keeps only a closed issue), a followed one is no longer followed
+            # stall never keeps only a closed issue), a followed one is no longer followed. The reopen reaches
+            # the phone: quiet hours, the cap and a torn file hold it (the narrowing is written at once, the
+            # reopen and the dropped close_tries wait for a pass they allow)
             left = set(prev.get("close_left") or [])
             own = prev.get("issue") if prev.get("road") == "github-issue" else None
-            fix = {}
-            if own and own not in left:
-                ok, why = ask_mod().issue_state(int(own), "open", "Back on %s: %s" % (me, w["title"]))
-                if not ok:
-                    # its issue stays closed: a new one opens below, as a failed open is tried once more
-                    lines.append("escalation: #%s not reopened (%s) — a new notify instead" % (own, why))
-                    fix = {"transient": True, "retried": None}
-            prev = dict(prev, t=t, close_tries=None, close_left=None,
-                        was_open=True if prev.get("was_open") and prev.get("was") in left else None,
-                        also=[n for n in (prev.get("also") or []) if n in left] or None, **fix)
-            append_escalation({k: v for k, v in prev.items() if v is not None})
+            narrowed = dict(was_open=True if prev.get("was_open") and prev.get("was") in left else None,
+                            also=[n for n in (prev.get("also") or []) if n in left] or None)
+            reopen_hold = gh_hold or issue_hold(kind)
+            if own and own not in left and reopen_hold:
+                if (prev.get("was_open"), prev.get("also")) != (narrowed["was_open"], narrowed["also"]):
+                    prev = dict(prev, t=t, **narrowed)
+                    append_escalation({k: v for k, v in prev.items() if v is not None})
+            else:
+                fix = {}
+                if own and own not in left:
+                    ok, why = ask_mod().issue_state(int(own), "open", "Back on %s: %s" % (me, w["title"]))
+                    if ok:
+                        pushes += 1
+                        fix = {"pushed": t, "via": "github-issue"}   # a push of its own: the cap counts it
+                    else:
+                        # its issue stays closed: a new one opens below, as a failed open is tried once more
+                        lines.append("escalation: #%s not reopened (%s) — a new notify instead" % (own, why))
+                        fix = {"transient": True, "retried": None}
+                prev = dict(prev, t=t, close_tries=None, close_left=None, **dict(narrowed, **fix))
+                append_escalation({k: v for k, v in prev.items() if v is not None})
         # the issues an open row follows, still open after their close failed: tried once more, then a card
+        # (a comment reaches the phone: quiet hours and the cap hold it, as they hold an open)
         if is_open and prev.get("issue") and (prev.get("was_open") or prev.get("also")) and not prev.get("was_tries") \
-                and not dry and not late():
+                and not dry and not late() and not issue_hold(kind):
             failed = []
             for n in followed(prev):
                 ok, why = ask_mod().issue_state(int(n), "closed", "The class moved to %s: followed in #%s." % (
@@ -1264,15 +1614,19 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
                 if not ok:
                     failed.append(n)
             was_left = prev.get("was") if prev.get("was_open") and prev.get("was") in failed else None
+            some = len(failed) < len(followed(prev))
+            pushes += 1 if some else 0
             prev = dict(prev, t=t, was_open=True if was_left else None, also=[n for n in failed if n != was_left] or None,
-                        was_tries=1 if failed else None,
+                        was_tries=1 if failed else None, commented=t if some else prev.get("commented"),
                         why="#%s not closed; left open" % ", #".join(map(str, failed)) if failed else prev.get("why"))
             append_escalation({k: v for k, v in prev.items() if v is not None})
         # a failed open that was no config absence (the API down, a refused token) is tried once more
         retry = is_open and same and prev.get("transient") and not prev.get("retried")
+        if road_ok is None:
+            continue   # a ladder with no github-issue rung: the open issue (a config changed since) closes as it clears
         if (is_open and same and not retry) or (not w["ready"] and not is_open):
             if dry and not w["ready"] and not is_open:
-                say(w, "would escalate", " (due %s)" % hm(float(w["since"]) + w["after"]))
+                say(w, "would escalate", " (due %s)" % hm_due(float(w["since"]) + float(w.get("frozen") or 0) + w["after"]))
             continue
         moved = is_open and not same
         # the same key and class back after it cleared: its own issue reopened, never a second
@@ -1280,8 +1634,10 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
         # back after a clear, the issues its close left open (carded) are carried, still carded
         left_open = [n for n in (prev.get("close_failed_issues") or []) if n != prev.get("issue")] if state == "closed" else []
         if not road_ok:
-            if is_open:
-                continue   # the config lost its road: the open issue stays the stall's, nothing called
+            if is_open or carry:
+                # the config lost its road: the open issue stays the stall's (the banner row with what it follows,
+                # when an issue rung has no road yet), nothing called
+                continue
             # no road by the config: nothing called; one row, re-checked each pass without another
             if not (state == "unrouted" and same and prev.get("why") == road_why):
                 if dry:
@@ -1290,19 +1646,33 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
                 append_escalation(row_of(ek, w, "unrouted", "none", None, road_why))
                 say(w, "escalated", ": none — %s" % road_why)
             continue
+        if gh_hold:
+            # quiet hours, the cap or presence hold its issue: nothing opened (a class move's second issue
+            # neither); it opens on the first pass they allow
+            if dry:
+                say(w, "would escalate", " — held: %s" % gh_hold)
+            continue
+        back_hold = issue_hold(kind) if back else None
+        if back_hold:
+            # the reopen's comment reaches the phone, whatever the rung that would send a new one
+            if dry:
+                say(w, "would escalate", " — held: %s" % back_hold)
+            continue
         if dry:
             say(w, "would escalate", " (the class moved from %s)" % prev.get("class") if moved else
                 " (#%s reopened)" % prev["issue"] if back else " (tried once more)" if retry else "")
             continue
         if opened >= ESCALATE_MAX or late():
-            held += 1
+            held.add(ek)
             continue
         opened += 1
         if back:
             ok, why = ask_mod().issue_state(int(prev["issue"]), "open", "Back on %s: %s" % (me, w["title"]))
             if ok:
                 append_escalation(row_of(ek, w, "open", "github-issue", prev["issue"], "back after it cleared", reopened=True,
-                                         also=left_open or None, was_tries=1 if left_open else None))
+                                         also=left_open or None, was_tries=1 if left_open else None, rung=w.get("rung"),
+                                         via="github-issue", pushed=t))
+                pushes += 1
                 say(w, "escalated", ": github-issue #%s, reopened" % prev["issue"])
                 continue
             lines.append("escalation: #%s not reopened (%s) — a new notify instead" % (prev["issue"], why))
@@ -1312,44 +1682,57 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
         was = (prev.get("issue") or prev.get("was")) if moved else prev.get("was") if retry and prev.get("was_open") else None
         # older issues still open (a followed one whose close failed): carried, never dropped by a second move
         also = [n for n in followed(prev) if n != was] if moved else list(prev.get("also") or []) if retry else left_open
+        also = also + [n for n in carry if n not in also and n != was]
         from_cls = prev.get("class") if moved else prev.get("was_class")
         body = list(w["body"])
         if was:
             body += ["", "The class moved from %s to %s: this follows #%s." % (from_cls, w["class"], was)]
         body += ["", "The yard's tick opened this (helm tick, the stall road) and closes it when this clears."]
-        n = ask_mod().notice(w["title"], "\n".join(body), kind="stall", host=me)
+        # the host row is sent as before the ladder, notice() walking its backends in one call (a banner that
+        # fails falls to the issue at once); a github-issue rung is that channel alone
+        n = ask_mod().notice(w["title"], "\n".join(body), kind="stall", host=me) if legacy else \
+            ask_mod().push("github-issue", w["title"], "\n".join(body))
         new_state = "class-changed" if (moved or (retry and state == "class-changed")) else "open"
         row = row_of(ek, w, new_state, n["road"], n["issue"],
                      n["said"] if n["road"] == "none" else "the class moved from %s" % from_cls if moved else w["rule"],
                      was=was, was_class=from_cls if was else None, retried=True if retry else None,
                      transient=True if n["road"] == "none" else None, also=also or None,
-                     was_tries=1 if left_open and not moved and not retry else None)
+                     was_tries=1 if left_open and not moved and not retry else None, rung=w.get("rung"),
+                     via=None if legacy else "github-issue", legacy=True if legacy else None,
+                     pushed=t if n["road"] != "none" else None)
+        if n["issue"]:
+            pushes += 1
         # the issues it follows are closed only once this one is open: a stall is never left with none.
         # The row is written first, its followed issues still open, so a kill before the closes leaves
         # no issue that no row names; a second row says what closed.
         if was:
             row["was_open"] = True
         append_escalation(row)
-        if was and n["issue"] and not late():
-            failed = []
-            for f in [was] + also:
+        # (their comments reach the phone: held past the cap the open just reached, closed by the follow-up block above)
+        if (was or carry) and n["issue"] and not late() and not issue_hold(kind):
+            failed, todo = [], ([was] if was else []) + also
+            for f in todo:
                 ok, why = ask_mod().issue_state(int(f), "closed", "The class moved from %s to %s: followed in #%s." % (
                     from_cls, w["class"], n["issue"]))
                 if not ok:
                     failed.append(f)
                     lines.append("escalation: #%s not closed (%s) — tried once more next pass" % (f, why))
-            row = dict(row, was_open=True if was in failed else None, also=[f for f in failed if f != was] or None)
+            some = len(failed) < len(todo)
+            pushes += 1 if some else 0
+            row = dict(row, was_open=True if was in failed else None, also=[f for f in failed if f != was] or None,
+                       commented=t if some else None)
             append_escalation({k: v for k, v in row.items() if v is not None})
         say(w, "escalated", ": %s%s" % (n["road"], " #%s" % n["issue"] if n["issue"] else " — %s" % n["said"]))
     if held:
         lines.append("escalations: %d more wait for the next pass (at most %d a pass, and none past the tick's kill time)"
-                     % (held, ESCALATE_MAX))
+                     % (len(held), ESCALATE_MAX))
 
     # a key's absence counts only where its source was read this pass
     unread = res.get("unread") or {}
     gaps = {"runs": not res.get("hosts") or bool(unread.get("hosts")), "launches": bool(unread.get("launches")),
             "orca": bool(unread.get("orca")), "skippers": bool(unread.get("skippers")), "canary": bool(unread.get("canary")),
             "ships": not ships_unread["ships"]}
+    closed_now = set()   # the keys this pass closed: their rungs are withdrawn and forgotten now
     for ek, prev in sorted(last.items()):
         if prev.get("state") not in OPEN_STATES + ("unrouted",) or ek in want or prev.get("yard") not in (None, me):
             continue
@@ -1357,45 +1740,97 @@ def _escalate(res, decisions, mem, t, dry, keep=False):
         if gaps.get(src) or prev.get("plan") in ships_unread["plans"] and src == "ships":
             continue   # its source unread this pass: a key missing from it may still be there
         v = seen.get(ek)
-        last_p, absent = (list(v) + [None, None])[:2] if isinstance(v, list) else (v, None)
+        last_p, absent, was_answer = (list(v) + [None, None, None])[:3] if isinstance(v, list) else (v, None, None)
         last_p = float(last_p or prev.get("t") or t)
         if absent is None:
-            seen[ek] = [last_p, t]   # the first miss on a pass that read its source: never a clear by itself
+            # the first miss on a pass that read its source: never a clear by itself (its third field: an answer)
+            seen[ek] = [last_p, t, ek in answered]
             continue
-        if t - last_p < CLEAR_AFTER:
+        if bool(was_answer) != (ek in answered):
+            # a plain miss, then an answer: the next answered pass closes it; an answer, then a plain miss: no
+            # longer two in a row
+            seen[ek] = [last_p, absent, ek in answered]
+        if t - last_p < CLEAR_AFTER and not (was_answer and ek in answered):
             continue   # one pass's absence is no clear: a glitch would close and reopen it
+        # (an answered question, or a block that no longer waits on the owner, read so on two passes in a row,
+        # closes then, with no CLEAR_AFTER waited: an answer is read, not an absence — charterer S3)
         why = "cleared" if prev.get("guarded") else cleared(prev, mem)
-        if dry:
-            lines.append("would close the escalation of %s: %s" % (prev.get("title") or "?", why))
-            continue
         note = None
         # its own issue where it has one, and the one it followed while that is still open, whatever its road
         live = [n for n in ((prev.get("issue") if prev.get("road") == "github-issue" and prev.get("state") != "unrouted" else None),
                             ) if n] + followed(prev)
         if prev.get("close_tries") and prev.get("close_left"):
             live = list(prev["close_left"])   # the retry closes only what failed: no second comment on a closed one
-        if live and late():
-            continue   # no time left in this tick: tried on the next, no try spent
+        # a close's comment reaches the phone (the issue mentions the owner): quiet hours, the cap and a seam that
+        # will not read hold it as they hold an open, the row kept open, closed on the first pass they allow
+        close_hold = issue_hold(kind_of(prev)) if live else None
+        if dry:
+            lines.append("would close the escalation of %s: %s%s" % (prev.get("title") or "?", why,
+                                                                     " — held: %s" % close_hold if close_hold else ""))
+            continue
+        if live and (late() or close_hold):
+            continue   # no time left in this tick, or held: tried on a later pass, no try spent
         failed = []
         for n in live:
             ok, err = ask_mod().issue_state(int(n), "closed", "Cleared on %s: %s." % (me, why))
             if not ok:
                 failed.append(n)
                 note = "#%s: %s" % (n, err)
+        if len(failed) < len(live):
+            pushes += 1   # one clear is one push, as its row counts in phone_pushes on a later pass
         if note and not prev.get("close_tries"):
             # verify, then retry once: the row stays open, the next pass tries the close again
-            append_escalation(dict(prev, t=t, close_tries=1, close_left=failed,
+            append_escalation(dict(prev, t=t, close_tries=1, close_left=failed, commented=t if len(failed) < len(live) else prev.get("commented"),
                                    why="its close failed (%s); tried once more next pass" % note))
             lines.append("escalation: %s not closed — tried once more next pass" % note)
             continue
         seen.pop(ek, None)
+        closed_now.add(ek)
         append_escalation(row_of(ek, prev, "closed", prev.get("road"), prev.get("issue"), why, close_failed=note,
-                                 close_failed_issues=failed or None))
+                                 close_failed_issues=failed or None, ladder=kind_of(prev),
+                                 commented=t if len(failed) < len(live) else None))
         lines.append("escalation closed%s: %s — %s%s" % (" (#%s)" % prev["issue"] if prev.get("issue") else "",
                                                           prev.get("title") or _shown_key(prev.get("key")), why,
                                                           " (the issue not closed: %s — carded)" % note if note else ""))
+    # the other rungs of an answered question are withdrawn where their channel can take one back; a
+    # message gone CLEAR_AFTER forgets which of its rungs fired, so one back later is a new message
+    for ek in sorted(answered):
+        ent = rungs.get(ek)
+        if not isinstance(ent, dict):
+            continue
+        if not ent.get("answered"):
+            ent["answered"] = t   # the first pass that reads it answered: withdrawn on the next that does too
+            continue
+        if dry:
+            continue   # kept for the acting pass, which withdraws
+        if (last.get(ek) or {}).get("state") in OPEN_STATES and ek not in closed_now:
+            continue   # its issue's close held (quiet hours, the cap) or failed: withdrawn once it has closed
+        done = [r for r in rows_all if r.get("ekey") == ek and r.get("state") == "rung" and r.get("pushed")
+                and float(r.get("t") or 0) >= float(ent.get("first") or 0)]   # this message's pushes, not an older one's
+        for r in done:
+            what = ask_mod().withdraw(r.get("via"), r)
+            if what:
+                append_rung(dict(r, t=t, state="withdrawn", why=what, pushed=None))
+                lines.append("escalation withdrawn via %s: %s — %s" % (r.get("via"), r.get("title"), what))
+        rungs.pop(ek, None)
+    for ek, v in list(rungs.items()):
+        if ek in want or ek in answered:
+            continue
+        if not isinstance(v, dict):
+            rungs.pop(ek, None)
+            continue
+        if gaps.get(v.get("src") or "runs") or (v.get("src") == "ships" and v.get("plan") in ships_unread["plans"]):
+            continue   # its source unread this pass: the message may still be there, its rungs fired
+        v.pop("answered", None)   # a plain miss between two answers: not two in a row
+        if not v.get("missed"):
+            v["missed"] = t   # the first miss on a pass that read its source, as seen's: never a clear by itself
+        elif not dry and t - float(v.get("t") or 0) >= CLEAR_AFTER and (last.get(ek) or {}).get("state") not in OPEN_STATES:
+            # forgotten on an acting pass only, and only once its issue has closed (a held close keeps it): a message
+            # back while its issue is open is the same message, its rungs never rung twice
+            rungs.pop(ek, None)
     if not dry or keep:
         write_seen({k: v for k, v in seen.items() if k in want or (last.get(k) or {}).get("state") in OPEN_STATES + ("unrouted",)})
+        write_rungs(rungs)
     return lines
 
 
@@ -1409,12 +1844,55 @@ ROAD_CARD_DAYS = 7   # a close that failed twice is carded this long; the owner 
 
 def road_faults(rows=None):
     """[row]: the escalations the road could not deliver or settle, newest per key — an open row with no
-    issue after its one retry, a followed issue left open, a close that failed twice. helm_render cards
-    each (road_cards): the owner sees on the board what GitHub never got."""
-    last = {}
-    for row in read_escalations() if rows is None else rows:
+    issue after its one retry, a followed issue left open, a close that failed twice, a ladder rung whose
+    push failed twice while its message is still raised — and, on a yard (a log to read) whose notify seam
+    will not read, one row saying every phone rung is held. helm_render cards each (road_cards): the owner
+    sees on the board what GitHub never got."""
+    rows_ = read_escalations(rungs=True) if rows is None else rows
+    last, rung_last = {}, {}
+    for row in rows_:
+        if row.get("state") in RUNG_STATES:
+            if row.get("state") == "rung":
+                rung_last[(row["ekey"], row.get("via"))] = row
+            continue
         last[row["ekey"]] = row
     out = []
+    import surfaces
+    if rows is None and (rows_ or seen_path().exists()):   # a yard: its road has run here
+        # a seam that will not read holds every phone rung, an issue's close too (charterer S3): with only the
+        # tick's log line to say so, a yard would go silent
+        why = surfaces.notify_unreadable()
+        if not why:
+            try:
+                q, c = surfaces.quiet(), surfaces.cap()
+                why = "notify.quiet does not read" if q.get("bad") else "notify.cap does not read" if c == 0 else None
+            except Exception as e:   # noqa: BLE001 — a seam that raises is one that does not read
+                why = str(e) or type(e).__name__
+        if why:
+            out.append({"t": clock(), "yard": helmlib.host(), "ekey": "notify-seam", "state": "held", "issue": None,
+                        "title": "every phone rung held", "why": why})
+        else:
+            # a rung that does not read is dropped (it narrows to nothing): a kind it leaves with no road is as
+            # silent as a held seam, so the first such problem is carded too
+            try:
+                typo = next(iter(surfaces.validate_ladders(surfaces.load()["notify"])), None)
+            except Exception:   # noqa: BLE001 — a seam that raises is carded above on the next read
+                typo = None
+            if typo:
+                out.append({"t": clock(), "yard": helmlib.host(), "ekey": "notify-rung", "state": "held", "issue": None,
+                            "title": "a notify rung dropped", "why": typo})
+    # a ladder rung whose push failed twice (charterer S3), carded while its message lives (its rungs entry),
+    # unless a push since this message began reached the owner's phone, or its issue is open: a banner on a
+    # yard's screen reaches nobody, so it never hides another rung's failure
+    live = read_rungs() if rung_last else {}
+
+    def since_first(r, ek):
+        return isinstance(live.get(ek), dict) and float(r.get("t") or 0) >= float(live[ek].get("first") or 0)
+    through = {ek for ek, r in last.items() if r.get("state") in OPEN_STATES and r.get("issue")}
+    through |= {ek for (ek, _), r in rung_last.items() if r.get("pushed") and r.get("via") in surfaces.PHONE and since_first(r, ek)}
+    out += [r for (ek, _), r in sorted(rung_last.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1])))
+            if r.get("road") in (None, "none") and r.get("retried")
+            and ek not in through and since_first(r, ek)]
     for r in last.values():
         st = r.get("state")
         if (st in OPEN_STATES and r.get("issue") is None and r.get("retried") and r.get("road") in (None, "none")) \

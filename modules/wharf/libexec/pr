@@ -268,7 +268,14 @@ def refuse_sweep_gate(up, base, verb, hold=None):
     autofinish's held_slice under the branch's mode now: a mode lowered since the start, or a run's
     own edit into the held slice, stops it as a gate does (landing review 1).
     A brief launch (by=brief: rule C from the yes at the brief, autofinish-exclude S7) is judged by
-    autofinish's brief_held, not the whole list: the yes covers class 1 and 3, never class 2 or the list."""
+    autofinish's brief_held, not the whole list: the yes covers class 1 and 3, never class 2 or the list.
+    A hand-over (by=handed: dispatch landing a done build, task-shape S2) is judged by autofinish's
+    handed_held, as at its start: under D1-C its slice is empty, so a diff or config that will not read, a
+    binary, a `.gitattributes` change or the launcher's own gates stop it; with rule M it is a mode launch and
+    re-judged as one. It is no person's yes, so mode ask now, or a mode that will not read now, stops it too,
+    as landing() holds it at the start. A handed start held already, on its mode or by handed_held, is not
+    re-judged: held_launch() keeps it from merging and `ready` labels it `hold` (a brief run's mode is not
+    re-read: its start never held on an unread mode)."""
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
     st = run_record(me)
     why = held_launch() if verb == "merged" else None
@@ -280,25 +287,48 @@ def refuse_sweep_gate(up, base, verb, hold=None):
                                         else " The PR could not be labelled `hold`: label it, or automerge may launch it.")
         sys.exit(f"pr: NOT merged — this launch is held at a ready PR ({why}); it lands by "
                  f"{common.OWNER_NAME or 'the owner'}'s tap, never by its own run.{keep}")
-    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief") or st.get("ended"):
+    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief", "handed") or st.get("ended"):
         return
+    # the labels judged by their own slice rather than the whole list (autofinish-run's landing())
+    own = {"brief": "brief_held", "handed": "handed_held"}.get(st.get("by")) \
+        if not (st.get("by") == "handed" and st.get("rule") == "M") else None
     from importlib.machinery import SourceFileLoader
     found = common.tool("autofinish")
     gate, problem = None, "autofinish (wharf-runs) is not installed"
     if found:
         af = SourceFileLoader("autofinish", str(found)).load_module()
         primary = str(Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent)
-        _, _, problem, exclude = af.repo_config(primary, base)
-        paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
-        if st.get("by") == "brief":
+        cfg = af.repo_config(primary, base)
+        _, _, problem, exclude = cfg
+        if own:
             try:
-                held = af.brief_held(primary, git("rev-parse", "--show-toplevel"), base)
-            except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
-                held = f"the brief's held paths could not be read ({type(e).__name__})"
+                held = getattr(af, own)(primary, git("rev-parse", "--show-toplevel"), base, cfg=cfg)
+            except Exception as e:  # noqa: BLE001 — what it cannot read is a hold (an autofinish without handed_held too)
+                held = f"the {st.get('by')} launch's held paths could not be read ({type(e).__name__})"
             gate = f"held: {held}" if held else None
+            if own == "handed_held":
+                # handed_held judges the config itself and holds on one that will not read, while a repo with
+                # no workflow.json of its own (a repos.json opt-in) holds nothing, as a typed /finish there
+                problem = None
+            # held_launch(), not the record's `hold`: it is what labels the PR and refuses the merge, and it
+            # answers only for the launch's own session (S2's review round 4). A start held already, by the mode
+            # or by handed_held itself, is left to it and the `hold` label, a ready PR as its prompt promised;
+            # only `ready` reaches here held, as `merged` stopped above (the landing review)
+            if own == "handed_held" and held_launch():
+                gate = None
+            elif own == "handed_held" and not gate:
+                # handed is no person's yes, so mode ask holds it at the start (landing()): a mode lowered to ask
+                # since, or one that cannot be read now, stops it here as it stops a mode launch
+                mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
+                if af.mode_unreadable(why_mode):
+                    gate = f"held: the mode is unreadable now ({why_mode})"
+                elif mode == "ask":
+                    gate = "held: mode ask — nothing lands by itself"
         else:
+            # read here only: a brief or handed run is judged by its own slice, and must() exits on a git failure
+            paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
             gate = af.touches_gate(primary, base, exclude, paths)
-        if not gate and not problem and st.get("by") != "brief" and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
+        if not gate and not problem and not own and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
                                          or st.get("by") == "ship"):
             mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
             # autofinish's effective_mode, the rule landing() judged the start by (follow-ups' landing review,
@@ -322,7 +352,8 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         else:
             keep = ("the PR is labelled `hold`, so automerge leaves it" if hold()
                     else "the PR is ready and could not be labelled `hold`: label it, or automerge may launch it")
-        sys.exit(f"pr: NOT {verb} — this /finish was started by the autofinish sweep, and {why}. "
+        who = "a dispatch hand-over (by handed)" if st.get("by") == "handed" else "the autofinish sweep"
+        sys.exit(f"pr: NOT {verb} — this /finish was started by {who}, and {why}. "
                  f"A gate launches by a /finish or /autofinish {common.OWNER_NAME or 'the owner'} starts, never unwatched: stop with "
                  f"`⚠ step 11 — {why}`; {keep}.")
 

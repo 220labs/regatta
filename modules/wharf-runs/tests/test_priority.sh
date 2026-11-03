@@ -74,8 +74,8 @@ check "$(python3 -c 'import json,sys; print([e["topic"] for e in json.load(open(
   "  the second force entry is first in line"
 check "$(python3 "$QB" cap --priority force --cap 6) $(python3 "$QB" cap --priority high --cap 6) $(python3 "$QB" cap --cap 6)" "7 6 6" \
   "dispatch-queue cap: force's cap is the host's plus one, every other rank's the host's"
-check "$(grep -c '"$n" -ge "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -lt "$(pcap)"' "$B/dispatch")" "1 3" \
-  "  dispatch's fire path and its no-queue refusals count against it (pcap)"
+check "$(grep -c '"$n" -ge "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -lt "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -ge "$scap"' "$B/dispatch") $(grep -c 'c=$(pcap)' "$B/dispatch")" "1 3 3 0" \
+  "  dispatch's fire path, its no-queue refusals and --start count against it (pcap; force-any; no landing recount since finish-as-task)"
 
 echo "a requeued run goes back at force (S10; the owner, 2026-10-30), and force's claim rules apply to it"
 qreset
@@ -209,7 +209,7 @@ check "$(cat "$T/term.rc" 2>/dev/null)" "0" "  that dispatch ran and passed (exi
 mkdir -p "$FM"; echo x > "$FM/s-old"; touch -t 202610280000 "$FM/s-old"
 CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-old "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" \
   "a mark older than half an hour is not this turn's words: refused"
-"$B/dispatch" --start "go" "$T/repo" d2 --priority high --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" "--start takes no --priority (its run never spends a mark)"
+"$B/dispatch" --start "go" "$T/repo" d2 --priority high --dry-run > "$T/out" 2> "$T/err"; check "$?" "0" "--start takes --priority since force-any (a landing's rank; it was refused before)"
 echo "a later plain put keeps the queued step's better rank; --replace is the word over it"
 qreset
 enq k1 --priority high > /dev/null; enq k1 > /dev/null
@@ -225,7 +225,7 @@ check "$(fm h1 'use the force on queue-s4')" "mark" "the phrase in the owner's o
 check "$(fm h1 'and dispatch the next one')" "none" "  the session's next prompt clears it"
 check "$(fm h2 'Use The Force, dispatch it now')" "mark" "  any case"
 check "$(fm h3 'he said "use the force" once')" "none" "a quoted phrase: not the owner's"
-check "$(fm h3 "it's a use the force moment, isn't it")" "mark" "  an apostrophe is no quote"
+check "$(fm h3 "it's a use the force moment")" "mark" "  an apostrophe is no quote"
 check "$(fm h4 '> use the force')" "none" "a quote line"
 check "$(fm h4 'see `use the force`')" "none" "a code span"
 check "$(fm h5 '<pasted_content id="p1">use the force</pasted_content> what is this?')" "none" "a pasted block"
@@ -246,9 +246,80 @@ HAIL report from buildbox — done')" "mark" "  the owner's words before it stay
 check "$(fm h5 'reuse the forceful words')" "none" "the phrase as part of other words"
 check "$(fm h9 "don't use the force on this one, high is enough")" "none" "a negated phrase: no mark"
 check "$(fm h9 'do not use the force')" "none" "  any negation"
+# any wording that asks for force (the owner, 2026-10-30: "I don't want to rewrite my words for your convenience")
+check "$(fm h11 'help force anything that needs to land ASAP')" "mark" "any wording: \"help force anything\""
+check "$(fm h11 'Force it through')" "mark" "  \"force it\", any case"
+check "$(fm h11 'keep forcing the landings')" "mark" "  forcing"
+check "$(fm h11 "don't force this one")" "none" "  negated: no mark"
+check "$(fm h11 'no need to force anything')" "none" "  no need to: no mark"
+check "$(fm h11 'run it with --force')" "none" "  a flag is no ask"
+check "$(fm h11 'force push the branch, then force-pull main')" "none" "  git's force push and pull are no ask"
+check "$(fm h11 'force quit the app')" "none" "  the OS's force quit is no ask"
+check "$(fm h11 'the workforce is forceful')" "none" "  a word inside another"
+# the landing review's cases (2026-10-30): a refusal in the ask's clause, a description, a rank named, more verbs
+check "$(fm h12 'actually do force priority instead - we want them ASAP, so they don'"'"'t block other work.')" "mark" "  the owner's own words: a later clause's negation leaves the ask"
+check "$(fm h12 "don't wait, use the force")" "none" "  a refusing word within six words, of any verb: no mark (the window errs to no mark)"
+check "$(fm h12 'no force, high is enough')" "none" "  no force: a refusal"
+check "$(fm h12 "I don't want you to force anything")" "none" "  don't want you to force: a refusal"
+check "$(fm h12 "force isn't needed here")" "none" "  a negation after the word"
+check "$(fm h12 'avoid forcing anything')" "none" "  avoid: a refusal"
+check "$(fm h12 'we were forced to rebase twice')" "none" "  forced: a description"
+check "$(fm h12 'why did --priority force refuse?')" "none" "  a rank named"
+check "$(fm h12 'brute force search')" "none" "  brute force"
+check "$(fm h12 'force-delete it')" "none" "  force-delete"
+check "$(fm h12 'force restart the host')" "none" "  force restart"
+check "$(fm h12 'git push --force-with-lease, or force-with-lease it')" "none" "  force-with-lease"
+check "$(fm h12 'force  push it')" "none" "  any spacing before the verb"
+# the second landing review's refusals (2026-10-30): across a break, before an aside or a list, in a curly quote
+check "$(fm h13 'Force? No.')" "none" "  Force? No."
+check "$(fm h13 'force, no')" "none" "  force, no"
+check "$(fm h13 'Force — not now')" "none" "  Force — not now"
+check "$(fm h13 'do we need force? no, high is fine')" "none" "  a question answered no"
+check "$(fm h13 "please don't, force is overkill")" "none" "  please don't, force is overkill"
+check "$(fm h13 'Never, ever force it')" "none" "  Never, ever"
+check "$(fm h13 "Don't, under any circumstances, force it")" "none" "  a refusal before an aside"
+check "$(fm h13 'No need for high, force or critical')" "none" "  a refusal before a list"
+check "$(fm h13 'I said ‘don’t force it’')" "none" "  a curly-quoted refusal"
+check "$(fm h13 'use the force, and also do a quick change to accept any phrase that suggests use of force as allowing it. I don'"'"'t want to rewrite my words for your convenience.')" "mark" "  the owner's own ask, a later don't six words past it"
+# the third landing review's false marks (2026-10-30)
+check "$(fm h14 'dont force it')" "none" "  a contraction without its apostrophe"
+check "$(fm h14 "I said 'don't force it'")" "none" "  a straight-quoted refusal"
+check "$(fm h14 'Never use force on these. As I said, the force rank is only for outages.')" "none" "  a refusal vetoes a later mention"
+check "$(fm h14 'dispatch it high rather than force')" "none" "  rather than force"
+check "$(fm h14 'high is fine, skip force')" "none" "  skip force"
+check "$(fm h14 'I force-pushed the branch')" "none" "  an inflected git verb"
+check "$(fm h14 'it force quits on launch')" "none" "  an inflected OS verb"
+check "$(fm h14 'why did you force it?')" "none" "  a question about a past force"
+check "$(fm h14 'review the force mark change')" "none" "  the feature's own noun"
+check "$(fm h14 'dispatch-queue force-ok refused')" "none" "  force-ok"
+check "$(fm h14 'why did --priority=force refuse')" "none" "  another spelling of the rank"
+check "$(fm h14 'force it through, the queue is stuck')" "mark" "  a plain ask still marks"
+check "$(fm h14 'instead of waiting, force it')" "mark" "  instead of another word, then force: an ask"
+check "$(fm h14 'top priority: force queue-s4')" "mark" "  a priority that is no flag: an ask"
+check "$(fm h14 'instead of force use high. force is for outages')" "none" "  force chosen against vetoes a later mention"
+check "$(fm h14 'is force needed? I doubt force helps here')" "none" "  a question vetoes a later mention"
 fm h10 'use the force' > /dev/null
 check "$(fm h10 '<task-notification>done</task-notification>')" "mark" "a notification leaves the owner's mark as it was"
 check "$(fm h10 'HAIL report from buildbox — done')" "mark" "  and a peer's frame"
+# the fourth landing review (2026-10-31): VS Code's blocks, a dash autocorrected, and the refusals themselves pasted back
+check "$(fm h11 '<ide_opened_file>The user opened the file /x/force-phrases/README.md in the IDE.</ide_opened_file>
+thanks')" "none" "VS Code's opened-file block: not the owner's words"
+check "$(fm h11 '<ide_selection>#  force: the claiming host</ide_selection>
+what does this mean')" "none" "  nor its selection"
+check "$(fm h11 '<ide_opened_file>x</ide_opened_file> force it')" "mark" "  the owner's words beside it still count"
+check "$(fm h11 'rerun dispatch —force for the account override')" "none" "an em dash before force is the flag named"
+check "$(fm h11 'rerun dispatch –force')" "none" "  an en dash too"
+check "$(fm h11 'it said –priority force')" "none" "  and before priority"
+check "$(fm h11 "--priority force is the owner's word: it needs the owner's own message this turn asking for \"force\", in any wording (\"use the force\", \"force it\"; the force mark), and this session has none — dispatch it high, or ask the owner")" "none" "dispatch-queue's refusal pasted back: no mark"
+check "$(fm h11 "⛔ \`touch x\` writes the force mark by hand (\`Library/Caches/run-seed/force\` under HOME): it stands for the owner asking for \"force\", in any wording, so only wharf-runs' force_mark hook writes it, from the owner's typed message, and only dispatch spends it. Reading it is fine; to dispatch at the force rank, ask the owner.")" "none" "checkpoint's deny pasted back: no mark"
+check "$(fm h12 'that force run failed')" "none" "a determiner beyond the/a: talk about force"
+check "$(fm h12 'your force check refused it')" "none" "  your"
+check "$(fm h12 'the task force meets at noon')" "none" "a compound noun: task force"
+check "$(fm h12 'the policy is in force')" "none" "  in force"
+check "$(fm h12 'pass force=True to publish()')" "none" "code: force=True"
+check "$(fm h12 'force.py has a bug')" "none" "  force.py"
+check "$(fm h12 'that one is stuck, force it')" "mark" "  a determiner elsewhere leaves an ask an ask"
+check "$(fm h12 'force it.')" "mark" "  a full stop after force is no code"
 check "$(CLAUDE_UNATTENDED=dispatch fm h6 'use the force')" "none" "an unattended session: never marked (its prompt is dispatch's)"
 check "$(fm '../x' 'use the force') $(ls "$HL/Caches/run-seed" | grep -c '^x$')" "none 0" "a session id that is no plain name: nothing written"
 
@@ -363,9 +434,124 @@ unset Q q_qid branch model effort log
 
 echo "--on auto beside --wait or --replace with a queue home: the queue places it, no refusal naming berth's pick"
 check "$(grep -c 'on_auto=0; on_default=0' "$B/dispatch")" "1" "a typed --on auto is dropped where --wait or --replace speaks to the queue"
-echo "the unattended --next one-shot keeps its pin"
-check "$(grep -c '\[ "$next" = 1 \] && \[ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" \]; }; } && opin=1' "$B/dispatch")" "1" \
-  "its fallback plist carries DISPATCH_HOST_PIN, as the queue road pins it (the marker under either name)"
+echo "the unattended --next one-shot keeps its preference (S12: its pin before)"
+check "$(grep -c '\[ "$next" = 1 \] && \[ -n "${REGATTA_UNATTENDED:-${CLAUDE_UNATTENDED:-}}" \]; }; } && opref=1' "$B/dispatch")" "1" \
+  "its fallback plist carries DISPATCH_HOST_PREFER, as the queue road prefers its host (the marker under either name)"
+
+echo "force-any: a finish's --priority, one rule for every kind of task (the owner, 2026-10-30; a fleet entry since finish-as-task)"
+order() { python3 "$QB" list --json "${QC[@]}" | python3 -c 'import json,sys; print(" ".join(e["topic"] for e in json.load(sys.stdin)["entries"] if e["state"] == "queued"))'; }
+TIP=$(git -C "$T/repo" rev-parse HEAD)
+fin() { python3 "$QB" enqueue --kind finish --repo "$T/repo" --branch "$BR-$1" --tip "$TIP" --finish '{"by": "typed", "rule": "C", "from": "laptop"}' "${QC[@]}" "${@:2}"; }
+qreset
+enq hi --priority high > /dev/null
+fin ln > /dev/null
+mkdir -p "$FM"; : > "$FM/s-suite"
+CLAUDE_CODE_SESSION_ID=s-suite fin lf --priority force > "$T/out"; check "$?" "0" "a finish at --priority force with the session's mark: queued"
+check "$(qget repo--lf kind priority)" "finish force" "  a finish entry carrying force"
+check "$([ -f "$FM/s-suite" ] && echo kept || echo spent)" "spent" "  the force mark spent once queued, as any put spends it"
+check "$(order)" "lf hi ln" "  force first; a normal finish below a high build (a finish leads only its own priority)"
+fin lh --priority high > /dev/null
+check "$(order)" "lf lh hi ln" "a high finish: ahead of the high build, below the forced one"
+python3 "$QB" list "${QC[@]}" > "$T/list"
+has "$T/list" "queued force · rank 1 · a finish of ${TIP:0:7}" "the queue's list (and so dispatch --status) shows a finish and its priority"
+python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null
+check "$(qget repo--lf state) $(qget repo--lh state) $(qget repo--ln state) $(qget repo--hi state)" "claimed queued queued queued" \
+  "a full host (cap 0): the forced finish takes force's one slot over the cap, the rest wait"
+python3 "$QB" raise --repo "$T/repo" --branch "$BR-lf" --priority high "${QC[@]}" > "$T/out"; check "$?" "0" \
+  "raise on a claimed finish (its job starting it): 0, never 3 (a build or a second start beside it)"
+has "$T/out" "it is claimed on laptop" "  saying so"
+qreset
+printf '%s\n' "*:avail=15,rate=30" > "$REGATTA_CONFIG/wharf-runs/headroom"
+fin ln > /dev/null
+: > "$FM/s-suite"; CLAUDE_CODE_SESSION_ID=s-suite fin lf --priority force > /dev/null
+HEADROOM_SAMPLE="7 1 2" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(qget repo--lf state) $(qget repo--ln state)" "claimed queued" "7 % free: the forced finish passes the force's floor, the plain one waits"
+rm -f "$REGATTA_CONFIG/wharf-runs/headroom"
+qreset
+CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-nomark fin lf --priority force > /dev/null 2> "$T/err"; check "$?" "2" "a finish at --priority force without the force mark: refused"
+has "$T/err" "use the force" "  with force-ok's words"
+has "$T/err" "the next step waits for a run to end" "  in the cap's waiting words"
+CLAUDE_UNATTENDED=dispatch fin lf --priority force > /dev/null 2> "$T/err"; check "$?" "2" "unattended: a finish at --priority force refused"
+has "$T/err" "an unattended caller never raises to it" "  saying why"
+CLAUDE_UNATTENDED=dispatch fin lh --priority high > /dev/null 2> "$T/err"; check "$?" "2" "  unattended, no high record of its own: high refused too"
+check "$(qget repo--lf state)$(qget repo--lh state)" "" "  and nothing queued by a refusal"
+
+echo "force-any: a finish already queued is raised in place, never a second entry"
+qreset
+fin rz > /dev/null
+id0=$(qget repo--rz id queued_at)
+: > "$FM/s-suite"
+CLAUDE_CODE_SESSION_ID=s-suite python3 "$QB" raise --repo "$T/repo" --branch "$BR-rz" --priority force "${QC[@]}" > "$T/out"; check "$?" "0" "raise --priority force: 0"
+has "$T/out" "raised fleet:repo--rz to force (was normal)" "  saying what it raised"
+check "$(qget repo--rz id queued_at) $(qget repo--rz priority kind)" "$id0 force finish" "  one entry: its id and place kept, its priority force"
+check "$([ -f "$FM/s-suite" ] && echo kept || echo spent)" "spent" "  the force mark spent once the raise landed"
+python3 "$QB" raise --repo "$T/repo" --branch "$BR-rz" --priority high "${QC[@]}" > "$T/out"; check "$?" "0" "raise --priority high on a forced finish: 0"
+has "$T/out" "kept fleet:repo--rz at force" "  never lowered"
+CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-nomark python3 "$QB" raise --repo "$T/repo" --branch "$BR-rz" --priority force "${QC[@]}" > /dev/null 2> "$T/err"
+check "$?" "2" "raise force without the mark: refused (it is on the Bash PATH)"
+python3 "$QB" raise --repo "$T/repo" --branch "$BR-none" --priority high "${QC[@]}" > /dev/null; check "$?" "3" "no finish of the branch queued: 3, the caller goes its own way"
+enq bd > /dev/null
+python3 "$QB" raise --repo "$T/repo" --branch "$BR-bd" --priority high "${QC[@]}" > /dev/null; check "$?" "3" "  a build of the branch is no finish to raise: 3"
+qreset
+fin rd > /dev/null
+python3 "$QB" raise --repo "$T/repo" --branch "$BR-rd" --priority high --dry-run "${QC[@]}" > "$T/out"
+check "$(qget repo--rd priority)" "normal" "raise --dry-run: writes nothing"
+has "$T/out" "would raise fleet:repo--rd to high" "  says what it would raise"
+CLAUDE_UNATTENDED=dispatch python3 "$QB" raise --repo "$T/repo" --branch "$BR-rd" --priority high "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" \
+  "unattended, no high record: raise refused"
+REGATTA_UNATTENDED=dispatch python3 "$QB" raise --repo "$T/repo" --branch "$BR-rd" --priority high "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" \
+  "  the marker under its new name alone: refused too"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --note later > "$T/out" 2> "$T/err"; check "$?" "2" \
+  "dispatch BRANCH --priority high --note on a branch whose finish is queued: refused, never a flag dropped"
+has "$T/err" "takes no other flag" "  saying why"
+check "$(qget repo--rd priority)" "normal" "  and nothing raised"
+DISPATCH_MAX_RUNS=0 "$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high > "$T/out" 2> "$T/err"; check "$?" "0" "dispatch BRANCH --priority high on a branch whose finish is queued: 0"
+has "$T/out" "raised fleet:repo--rd to high (was normal)" "  raised in place"
+has "$T/out" "no build queued" "  saying no build was queued"
+check "$(qget repo--rd priority kind)" "high finish" "  the finish high, and still the branch's one entry"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --dry-run > "$T/out" 2> "$T/err"; check "$?" "0" "  a dry run of it: 0"
+has "$T/out" "kept fleet:repo--rd at high" "  (raise's own line)"
+# the peer road always sends --at (its defaulted now), marked DISPATCH_AT_DEFAULT: no flag of the caller's
+ATP="@$(( $(date +%s) + 90 ))"
+DISPATCH_AT_DEFAULT=1 "$B/dispatch" "$BR-rd" --repo "$T/repo" --at "$ATP" --priority high --dry-run > "$T/out" 2> "$T/err"; check "$?" "0" \
+  "a peer's ssh line (--at its defaulted now, DISPATCH_AT_DEFAULT): the raise goes on"
+has "$T/out" "kept fleet:repo--rd at high" "  raise's line"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --at "$ATP" --priority high --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" "  an --at the caller typed: refused, never dropped"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --account acct-b > "$T/out" 2> "$T/err"; check "$?" "2" \
+  "--account beside a raise: refused, never dropped (the flags the landing review's list missed)"
+has "$T/err" "--account" "  naming it"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --if-room > "$T/out" 2> "$T/err"; check "$?" "2" "  --if-room too"
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --on auto > "$T/out" 2> "$T/err"; check "$?" "2" "  --on auto too (it clears \$on and sets on_auto alone)"
+# a "kept" outcome used no force: the session's mark stays (raise spends it only when it raises)
+mkdir -p "$FM"; : > "$FM/s-suite"
+CLAUDE_CODE_SESSION_ID=s-suite python3 "$QB" raise --repo "$T/repo" --branch "$BR-rd" --priority force "${QC[@]}" > /dev/null
+check "$(qget repo--rd priority) $([ -f "$FM/s-suite" ] && echo kept || echo spent)" "force spent" "the finish raised to force, its mark spent"
+: > "$FM/s-suite"
+CLAUDE_CODE_SESSION_ID=s-suite "$B/dispatch" "$BR-rd" --repo "$T/repo" --priority force > "$T/out" 2> "$T/err"; check "$?" "0" "dispatch --priority force on a finish at force: 0"
+has "$T/out" "kept fleet:repo--rd at force" "  kept, never raised"
+check "$([ -f "$FM/s-suite" ] && echo kept || echo spent)" "kept" "  and the mark kept: a kept rank used no force"
+rm -f "$FM/s-suite"
+python3 "$QB" cancel --repo "$T/repo" --branch "$BR-rd" "${QC[@]}" > /dev/null
+"$B/dispatch" "$BR-rd" --repo "$T/repo" --priority high --dry-run > "$T/out" 2> "$T/err"
+hasnt "$T/out" "raised fleet:repo--rd" "its finish cancelled (a tombstone): no raise, the build road goes on"
+hasnt "$T/out" "kept fleet:repo--rd" "  nor a kept one"
+# a brief whose `After:` line names a predecessor: its --after is the branch's own, no flag of the caller's
+qreset
+git -C "$T/repo" checkout -q -b "$BR-ra" main; mkdir -p "$T/repo/docs/handoff"
+printf 'brief\nAfter: %s\n' "$BR-d2" > "$T/repo/docs/handoff/2026-10-28-ra.md"
+git -C "$T/repo" add docs; git -C "$T/repo" commit -qm seed; git -C "$T/repo" push -q origin "$BR-ra" 2>/dev/null; git -C "$T/repo" checkout -q main
+fin ra > /dev/null
+DISPATCH_MAX_RUNS=0 "$B/dispatch" "$BR-ra" --repo "$T/repo" --priority high > "$T/out" 2> "$T/err"; check "$?" "0" \
+  "dispatch --priority high on a queued finish whose brief names an After: predecessor: 0, never \"no other flag\""
+has "$T/out" "raised fleet:repo--ra to high (was normal)" "  raised in place"
+DISPATCH_MAX_RUNS=0 "$B/dispatch" "$BR-ra" --repo "$T/repo" --priority high --after "$BR-rd" > "$T/out" 2> "$T/err"; check "$?" "2" \
+  "  an --after the brief does not name: a flag, refused"
+has "$T/err" "takes no other flag" "  saying why"
+
+echo "force-any: dispatch --start --priority"
+qreset
+CLAUDE_UNATTENDED=dispatch "$B/dispatch" --start "/finish x --unattended" "$T/repo" "finish · x" --priority low > /dev/null 2> "$T/err"; check "$?" "2" "--start --priority low: refused"
+has "$T/err" "--start takes --priority normal, high or force" "  naming the three a finish's start takes"
 
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

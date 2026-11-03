@@ -215,6 +215,15 @@ def m_retired(r):
     edit(r / f"{STEM}.md", "## Where things stand", "The library opens every evening from week 1.\n\n## Where things stand")
 
 
+def m_retired_empty(r):
+    # an empty list fires only where the project opted in (require_retired true; false by default)
+    config(r, {"claims": {"retired": [], "require_retired": True}})
+
+
+def m_retired_unscanned(r):
+    config(r, {"claims": {"retired_scan": ["**/*.txt"]}})
+
+
 def m_table(r):
     config(r, {"claims": {"must_appear": {"ghost-2026-01-01": ["a phrase nothing carries"]}}})
 
@@ -229,8 +238,9 @@ def m_vacuous(r):
         if p.suffix != ".md":
             shutil.rmtree(p) if p.is_dir() else p.unlink()
     # Its own config: the shared one pins phrases and an exemption for renders this root no longer has.
-    (r / rf.CONFIG_NAME).write_text(json.dumps({"palette": {"allowed": ["#FFFFFF", "#1F2430"]}}) + "\n",
-                                    encoding="utf-8")
+    # It has retired no claim: by default (require_retired false) an empty list is no finding.
+    (r / rf.CONFIG_NAME).write_text(json.dumps({"palette": {"allowed": ["#FFFFFF", "#1F2430"]}})
+                                    + "\n", encoding="utf-8")
 
 
 def m_sidecar(r):
@@ -502,6 +512,13 @@ REVIEW_CASES = [
 ]
 
 
+# More roots for one rule, from passing/ like CASES: (folder, rule, mutation, also).
+MORE_CASES = [
+    ("claims.retired.empty", "claims.retired", m_retired_empty, []),
+    ("claims.retired.unscanned", "claims.retired", m_retired_unscanned, []),
+]
+
+
 CASES = [
     ("admiral.words", m_words, DRIFT),
     ("admiral.statements", m_statements, DRIFT),
@@ -557,12 +574,17 @@ def main():
         shutil.copytree(PASSING, root)
         mutate(root)
         (root / "expect.json").write_text(json.dumps({"rule": rule, "also": also}) + "\n", encoding="utf-8")
+    for name, rule, mutate, also in MORE_CASES:
+        root = out / name
+        shutil.copytree(PASSING, root)
+        mutate(root)
+        (root / "expect.json").write_text(json.dumps({"rule": rule, "also": also}) + "\n", encoding="utf-8")
     for name, rule, mutate, also in REVIEW_CASES:
         root = out / name
         shutil.copytree(REVIEW, root)
         mutate(root)
         (root / "expect.json").write_text(json.dumps({"rule": rule, "also": also}) + "\n", encoding="utf-8")
-    print(f"{len(CASES) + len(REVIEW_CASES)} failing fixtures written under {out}")
+    print(f"{len(CASES) + len(MORE_CASES) + len(REVIEW_CASES)} failing fixtures written under {out}")
 
 
 if __name__ == "__main__":

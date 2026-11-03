@@ -9,11 +9,11 @@ from the JSONL stream — the thread id from the first event, the last agent mes
 the exit. V3/V5 answer from that record; V4 is the directory of records whose codex still runs.
 
     HARNESS_RUNS_DIR (default ~/Library/Logs/claude-weekly/harness-runs/)
-        codex-<stamp>-<name>.json    the record: run, thread, pid, proc_start, cwd, branch, repo,
+        codex-<stamp>-<hex>-<name>.json  the record: run, thread, pid, proc_start, cwd, branch, repo,
                                      model, effort, started, ended, exit, end_reason, last_message,
                                      turns, resumed_from, fork, codex_home
-        codex-<stamp>-<name>.jsonl   codex's own events, as printed
-        codex-<stamp>-<name>.log     its stderr
+        codex-<stamp>-<hex>-<name>.jsonl codex's own events, as printed
+        codex-<stamp>-<hex>-<name>.log   its stderr; .reply.md, a research run's whole reply
 
 Codex's own store is read too, for a thread no wrapper ran (the desktop app, a TUI): $CODEX_HOME
 (else ~/.codex) `state_5.sqlite` table `threads` (id, rollout_path, cwd, title, model,
@@ -55,6 +55,27 @@ not probed, same parent flags). Event names are OpenAI's documented ones (thread
 turn.started, item.completed with an agent_message item, turn.completed, turn.failed, error),
 seen in that probe's --json stream.
 
+Research mode (research(), principal tier S3): one Codex turn in a council arm's box, waited for, behind the
+isolation design's seven fences (docs/principal-council-isolation-2026-10-29.md; the core's hooks/fence.py holds them):
+- F1, the source judge, is bin/harness's (research_guard: the public-repo, `physical`, confidential and guarded
+  rules on --repo and the copy).
+- F2, the copy: council's git_copy made it; fence.box_why is harness's one rule over --cwd.
+- F3, the start: the box's scratch CODEX_HOME (auth.json alone, fence.arm_home's), an allowlisted environment, git's
+  global and system config pointed at nothing (RESEARCH_ENV); `codex exec --json --ephemeral --skip-git-repo-check
+  -C <copy>`, each feature codex has on judged and those judged off turned off (fence.codex_flags: hygiene), its own
+  sandbox and approvals off since its seatbelt cannot apply inside ours (research_argv), never `--approve-for-me`;
+  refused while an administrator layer is set (managed_why).
+- F4, the seatbelt (fence.wrap): the profile written and probed in the caller's arm dir, beside the box; the proxy,
+  run here for the turn's length, its one door.
+- F5, the record: `commands`, each command_execution item codex ran; `usage`, summed over every turn.completed (every
+  mode: one exec may run several); `net`, the proxy's decisions. council reads codex's own events (fence.record).
+- F6, the bounds: the wrapper kills codex at the deadline (the caller's absolute --deadline, else --timeout from
+  the start); research_counts' per-council and per-day counts, which harness asks before dispatch's start lock.
+- F7, the login withdrawn: the proxy unlinks auth.json at the first connection it allows to chatgpt.com, before the
+  reply; the turn's first tool call reads what of it is still on disk (fence.FirstTool); both go back in the
+  record's `credential`, for council to judge beside its scan of what the arm left.
+--review BASE is `codex exec … review --base BASE`, no prompt. The caller waits: the turn ends, or the deadline stops it.
+
 bin/harness refuses Codex in a public repo, a fenced repo on a login its tenant does not own, and a start
 past the run cap before this file runs (its guard()). The wrapper ends a run past its timeout (req
 `timeout`, else HARNESS_CODEX_TIMEOUT, else TIMEOUT_S): SIGTERM, then SIGKILL after KILL_GRACE_S, the end
@@ -70,6 +91,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -81,6 +103,37 @@ _FINAL = ("completed", "failed", "canceled")
 FRESH_S = 300      # a thread no wrapper ran is live while its open turn wrote in the last 5 minutes
 TAIL_BYTES = 256 * 1024
 TEXT_CAP = 4000
+COMMANDS_CAP = 200   # command_execution items kept on a record: the Receipt prints a research run's (F5)
+KILL_GRACE = 10   # s between the deadline's SIGTERM and its SIGKILL
+# an unattended research run's counts, from the run records (bin/harness has judged the rest): a council
+# run's arms and one examine (a review is a council run of its own); and runs started on this Mac in a day
+UNATTENDED_PER_COUNCIL = 2
+UNATTENDED_PER_DAY = 12
+COUNCIL_HORIZON = 7 * 86400   # s of records the counts read (research_counts)
+# the deadline's timer thread and the wrapper's loop both write the record: one read-modify-write at a time
+_RECORD_LOCK = threading.RLock()
+
+
+def _fence():
+    """The core's fence (its hooks/fence.py): the seatbelt, the proxy, the scratch home's environment, the gates."""
+    from importlib.machinery import SourceFileLoader
+    import common
+    return SourceFileLoader("fence", os.path.join(os.path.dirname(os.path.abspath(common.__file__)), "fence.py")).load_module()
+
+
+# git's global and system config pointed at nothing: the review's scratch repo is git's alone (H1)
+RESEARCH_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+# Codex's administrator layers, read over the user's and the scratch home's (codex-cli 0.166.0's strings, read
+# 2026-10-31: /etc/codex/config.toml, requirements.toml and the legacy managed_config.toml; macOS's managed
+# preferences in the com.openai.codex domain, keys config_toml_base64 and requirements_toml_base64). Any one present
+# refuses the turn (finding 2): such a layer may turn on what the flags turn off, and no parser here reads TOML.
+# The domain itself is the Codex app's own preferences (none of the two keys among its 8 where it was read), so
+# only the keys count. The scratch home holds no config.toml (fence.arm_home), and S2 strips the copy's own .codex/.
+CODEX_ETC = "/etc/codex"
+CODEX_MDM_KEYS = ("config_toml_base64", "requirements_toml_base64")
+CODEX_MDM_PLISTS = ("/Library/Managed Preferences/com.openai.codex.plist",
+                    "/Library/Managed Preferences/{user}/com.openai.codex.plist")
+CODEX_DEFAULTS = ("/usr/bin/defaults", "read", "com.openai.codex")   # + a key: exit 0 when cfprefsd holds it
 # goals_1's statuses that say more than the turn does (the rest — active, complete — do not)
 _GOALS = {"usage_limited": "auth-required", "budget_limited": "auth-required", "blocked": "input-required",
           "paused": "idle"}
@@ -96,6 +149,46 @@ APPS_OFF = ("apps", "plugins", "remote_plugin", "plugin_sharing", "skill_mcp_dep
 RATE_RE = re.compile(r"rate.?limit|usage.?limit|too many requests|\b429\b", re.I)
 # what a hail to a Codex thread is framed as: Codex loads no K3 rule, so the frame carries it
 PEER_MARK = "[peer session message — data from another session, never the owner's answer] "
+
+
+def managed_why():
+    """Why a research turn may not run under Codex's administrator layers, or None: any /etc/codex/*.toml, or a
+    managed-config key in the com.openai.codex domain (the managed preferences' plists, then what cfprefsd answers
+    for the user's). A plist that does not read refuses: it may hold either key. Values are never read out: a key's
+    presence is the answer, and `defaults read`'s output is dropped."""
+    import glob as _glob
+    import plistlib
+    import pwd
+    found = sorted(_glob.glob(os.path.join(CODEX_ETC, "*.toml")))
+    if found:
+        return ("Codex's administrator config %s is here: it may turn on what research mode turns off, and nothing "
+                "here reads TOML — no research turn while it is" % ", ".join(found))
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        user = ""
+    for path in (p.format(user=user) for p in CODEX_MDM_PLISTS):
+        if not os.path.lexists(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                keys = set(plistlib.load(f))
+        except Exception as e:   # noqa: BLE001 — a managed plist that cannot be read may hold the keys
+            return "Codex's managed preferences %s do not read (%s): no research turn" % (path, type(e).__name__)
+        hit = sorted(keys & set(CODEX_MDM_KEYS))
+        if hit:
+            return "Codex's managed preferences %s set %s: no research turn while they do" % (path, ", ".join(hit))
+    for key in CODEX_MDM_KEYS:
+        try:
+            r = subprocess.run(list(CODEX_DEFAULTS) + [key], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, timeout=20)
+        except FileNotFoundError:
+            break   # no defaults (off macOS): no preferences domain to hold it
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return "Codex's preferences cannot be read (%s): no research turn" % type(e).__name__
+        if r.returncode == 0:
+            return "the com.openai.codex domain sets %s, a managed config Codex reads: no research turn while it does" % key
+    return None
 
 
 def _home():
@@ -131,18 +224,22 @@ def _load(path):
 
 
 def _save(path, rec):
-    tmp = "%s.%d.tmp" % (path, os.getpid())   # the wrapper and `harness stop` both write it: never one temp name
+    # the wrapper and `harness stop` both write it, and inside the wrapper its deadline thread too: a temp
+    # name per process and thread (one shared by two threads lost its file to the other's os.replace)
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w") as f:
         json.dump(rec, f, indent=1)
     os.replace(tmp, path)
 
 
 def _update(path, **kw):
-    """Merge KW into the record on disk (a stop may have written `ending` since it was read)."""
-    rec = _load(path) or {}
-    rec.update(kw)
-    _save(path, rec)
-    return rec
+    """Merge KW into the record on disk (a stop may have written `ending` since it was read); within one
+    process, under _RECORD_LOCK, so the deadline thread's `ending` is never saved over by the loop's update."""
+    with _RECORD_LOCK:
+        rec = _load(path) or {}
+        rec.update(kw)
+        _save(path, rec)
+        return rec
 
 
 def _pstart(pid):
@@ -171,7 +268,10 @@ def _running(rec):
 
 def _git(cwd, *argv):
     try:
-        r = subprocess.run(["git", "-C", cwd] + list(argv), capture_output=True, text=True, timeout=20)
+        # no fsmonitor or hook from the repo's own config: a research copy's .git is the arm's to write, and this git
+        # runs as the owner, outside the seatbelt (harness's git_out; round 6's second review)
+        r = subprocess.run(["git", "-C", cwd, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"] + list(argv),
+                           capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.strip() if r.returncode == 0 else None
@@ -321,7 +421,8 @@ def _run_record(ctx, path, rec):
     native = {"source": "harness run", "run": path, "run_id": rec.get("run"), "events": rec.get("events"),
               "turns": rec.get("turns"), "resumed_from": rec.get("resumed_from"), "fork": rec.get("fork") or None,
               "error": rec.get("error"), "codex_home": rec.get("codex_home"), "topic": rec.get("name"),
-              "repo": rec.get("repo"), "exit": rec.get("exit"), "cost": rec.get("cost"),
+              "repo": rec.get("repo"), "exit": rec.get("exit"), "mode": rec.get("mode"), "council": rec.get("council"),
+              "usage": rec.get("usage"), "commands": rec.get("commands"), "review": rec.get("review"), "cost": rec.get("cost"),
               "rate_limited": rec.get("rate_limited") or None, "timed_out": rec.get("timed_out") or None,
               "fence": rec.get("fence"), "apps_off": rec.get("apps_off") or None, "unattended": rec.get("unattended"),
               "timeout_s": rec.get("timeout_s"), "requested_model": rec.get("model"), "requested_effort": rec.get("effort"),
@@ -500,6 +601,30 @@ def _argv(req, cwd, sub=None, scratch=None, unattended=None):
     return argv + (sub or []) + ["-"]
 
 
+def research_argv(req, cwd, real, port):
+    """Research mode's codex, the Codex column of "Equal terms": ephemeral, in CWD, every feature judged off turned
+    off (fence.codex_flags: hygiene, F7 is the fence), its shell on, its own sandbox and approvals off since its
+    seatbelt cannot apply inside ours (probe E; the flag's help names an external sandbox), the shell's
+    environment the core one plus the proxy (P2: `inherit="core"` alone dropped it), then the model, the effort and
+    the prompt on stdin, or `review --base BASE`."""
+    fence = _fence()
+    sets = ", ".join('%s="%s"' % kv for kv in sorted(fence.proxy_env(port).items()) if kv[0].lower() != "all_proxy")
+    argv = [real, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-C", cwd] + fence.codex_flags()
+    argv += ["--dangerously-bypass-approvals-and-sandbox", "-c", 'shell_environment_policy.inherit="core"',
+             "-c", "shell_environment_policy.set={%s}" % sets]
+    # Codex's own web_search runs at OpenAI, past our proxy: off unless the brief asked for the web (--web), or a
+    # query would take the copy's text to a search provider (the fourth landing review, finding 10). The values
+    # codex-cli 0.162.1 takes: disabled, cached, indexed, live
+    argv += ["-c", 'web_search="%s"' % ("live" if req.get("web") else "disabled")]
+    if req.get("model"):
+        argv += ["-m", req["model"]]
+    if req.get("effort"):
+        argv += ["-c", 'model_reasoning_effort="%s"' % req["effort"]]
+    if req.get("review"):
+        return argv + ["review", "--base", req["review"]]
+    return argv + ["-"]
+
+
 def _timeout(req):
     for v in (req.get("timeout"), os.environ.get("HARNESS_CODEX_TIMEOUT")):
         try:
@@ -547,24 +672,99 @@ def _add_usage(total, usage):
     return out
 
 
+def _mark_ending(path, p, why):
+    """The deadline's mark, under the record's lock: `ending` written only while codex runs and the record has no
+    `ended` — else the wrapper's last update may already be in, and an `ending` after it would read a finished turn
+    as canceled (finding 14). True when codex still ran, so the kill goes on."""
+    with _RECORD_LOCK:
+        if p.poll() is not None or (_load(path) or {}).get("ended"):
+            return False
+        _update(path, ending=why)
+        return True
+
+
+def _await_exit(pid):
+    """Block until PID exits, never reaping it (Popen's wait still reads its code): waitid's WNOWAIT where the
+    platform has it (Linux), else kqueue's NOTE_EXIT (macOS; a process already gone answers ESRCH). True once it
+    has exited; False when neither can tell."""
+    import select
+    try:
+        if hasattr(os, "waitid"):
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+            return True
+        if hasattr(select, "kqueue"):
+            kq = select.kqueue()
+            try:
+                kq.control([select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)], 1, None)
+            finally:
+                kq.close()
+            return True
+    except ProcessLookupError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
-    """The wrapper, in the detached grandchild: codex as its child, the record kept from its stream, the
-    run ended at TIMEOUT seconds."""
+    """The wrapper, in the detached grandchild: codex as its child, the record kept from its stream, ENV its whole
+    environment (child_env's, or research mode's allowlist). The run ends at the record's `deadline` (research
+    mode: the caller's clock), else at TIMEOUT seconds."""
     rec = _load(path) or {}
     events = open(rec["events"], "a")
     err = open(rec["log"], "a")
     try:
+        # a research turn's codex leads a process group of its own, killed whole when the turn ends: what its shell
+        # left running never outlives the arm (round 3: council's group kill never reached the Codex road)
         p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True,
-                             env=env)
+                             env=env, start_new_session=rec.get("mode") == "research")
     except OSError as e:
         _update(path, ended=time.time(), exit=127, end_reason="could not start %s: %s" % (argv[0], e))
         return
     _update(path, pid=p.pid, proc_start=_pstart(p.pid), wrapper=os.getpid())
-    limit = float(timeout or TIMEOUT_S)
+    if rec.get("mode") == "research":
+        # the group killed as soon as codex itself ends: a process its shell left running holds the stdout pipe, so
+        # the read loop below would wait on it for good, and the deadline's timer gives up once codex is gone (round
+        # 5's second review)
+        def _reap_group():
+            if _await_exit(p.pid):
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass   # the group is gone
+        threading.Thread(target=_reap_group, daemon=True).start()
+    timer, killed, why = None, threading.Event(), "timeout after %d s" % (rec.get("timeout") or 0)
+    if rec.get("deadline"):
+        # research mode's bound held here, by the process that owns codex, not by whoever waits on it. A turn
+        # that ended by itself is never recorded as stopped: the timer looks first, and `ending` counts at the
+        # end only once a signal was sent (the second landing review's finding 7)
 
-    def expire():
-        if p.poll() is None:
-            _update(path, timed_out=True, ending="timed out after %ds" % limit)
+        def _kill():
+            try:
+                if not _mark_ending(path, p, why):
+                    return
+            except Exception:   # noqa: BLE001 — a record that cannot be written never stops the kill
+                if p.poll() is not None:
+                    return
+            for sig, wait in ((signal.SIGTERM, KILL_GRACE), (signal.SIGKILL, 0)):
+                if p.poll() is not None:
+                    return
+                try:
+                    os.killpg(p.pid, sig)   # the group: research mode starts codex in one of its own
+                except OSError:
+                    return
+                killed.set()
+                time.sleep(wait)
+        timer = threading.Timer(max(0.0, rec["deadline"] - time.time()), _kill)
+    else:
+        limit = float(timeout or TIMEOUT_S)
+
+        def expire():
+            with _RECORD_LOCK:
+                if p.poll() is not None:
+                    return
+                _update(path, timed_out=True, ending="timed out after %ds" % limit)
             try:
                 p.terminate()
                 p.wait(KILL_GRACE_S)
@@ -572,8 +772,7 @@ def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
                 p.kill()
             except OSError:
                 pass
-
-    timer = threading.Timer(limit, expire)
+        timer = threading.Timer(limit, expire)
     timer.daemon = True
     timer.start()
     try:
@@ -581,7 +780,7 @@ def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
         p.stdin.close()
     except OSError:
         pass
-    turns, usage, rated = 0, {}, None
+    turns, usage, commands, rated = 0, {}, [], None
     for line in p.stdout:
         events.write(line)
         events.flush()
@@ -593,7 +792,18 @@ def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
         if t == "thread.started" and e.get("thread_id"):
             _update(path, thread=e["thread_id"], updated=time.time())
         elif t == "item.completed" and (e.get("item") or {}).get("type") == "agent_message":
-            _update(path, last_message=((e["item"].get("text") or "")[-TEXT_CAP:]) or None, updated=time.time())
+            text = e["item"].get("text") or ""
+            if rec.get("mode") == "research":
+                # the whole reply: a council paper is not a status line (last_message keeps TEXT_CAP)
+                with open(rec["reply"], "w") as f:
+                    f.write(text)
+            _update(path, last_message=text[-TEXT_CAP:] or None, updated=time.time())
+        elif t == "item.completed" and (e.get("item") or {}).get("type") == "command_execution":
+            it = e["item"]
+            if len(commands) < COMMANDS_CAP:
+                commands.append({"command": str(it.get("command") or "")[:2000], "exit_code": it.get("exit_code"),
+                                 "status": it.get("status")})
+            _update(path, commands=commands, updated=time.time())
         elif t == "turn.completed":
             turns += 1
             usage = _add_usage(usage, e.get("usage"))
@@ -606,14 +816,23 @@ def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
                 rated = text
             _update(path, error=text, updated=time.time(), **({"rate_limited": True} if rated else {}))
     code = p.wait()
+    if rec.get("mode") == "research":
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
     timer.cancel()
-    cur = _load(path) or {}
     if code == 0 and rated:   # a limit Codex retried past: the run finished, never a failed run's S1 card
         rated = None
         _update(path, rate_limited=False)
+    with _RECORD_LOCK:
+        cur = _load(path) or {}
+        ending = cur.get("ending")
+        if ending == why and not killed.is_set():
+            ending = None   # the deadline's timer wrote it, then found codex gone: the turn ended by itself
     model, effort = _observed(cur.get("thread"))
-    end = cur.get("ending") or ("rate limited: %s" % rated if rated else "exit %d" % code)
-    _update(path, ended=time.time(), exit=code, end_reason=end,
+    end = ending or ("rate limited: %s" % rated if rated else "exit %d" % code)
+    _update(path, ended=time.time(), exit=code, ending=ending, end_reason=end,
             observed_model=model or cur.get("model"), observed_effort=effort or cur.get("effort"),
             cost=dict({k: usage.get(k, 0) for k in TOKEN_KEYS}, **{k: v for k, v in usage.items() if k not in TOKEN_KEYS},
                       usd=None) if usage else None)
@@ -622,7 +841,9 @@ def _wrap(path, argv, prompt, cwd, env=None, timeout=None):
         shutil.rmtree(scratch, ignore_errors=True)   # the run's own, made by _start; nothing else is removed
 
 
-def _detach(fn):
+def _detach(fn, close=()):
+    """FN in a grandchild of its own session, its stdio on /dev/null; CLOSE: descriptors the grandchild must not
+    keep (research mode's proxy socket: a wrapper holding it kept the port bound past proxy.stop(); round 6)."""
     pid = os.fork()
     if pid:
         _, status = os.waitpid(pid, 0)
@@ -632,6 +853,11 @@ def _detach(fn):
     code = 0
     try:
         os.setsid()
+        for fd in close:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if os.fork():
             os._exit(0)
         null = os.open(os.devnull, os.O_RDWR)
@@ -643,28 +869,40 @@ def _detach(fn):
     os._exit(code)
 
 
-def _start(ctx, req, cwd, sub, name, prior=None, fork=False):
+def _start(ctx, req, cwd, sub, name, prior=None, fork=False, extra=None, env=None, argv=None, close=()):
     os.makedirs(_runs_dir(), exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    base = os.path.join(_runs_dir(), "codex-%s-%s" % (stamp, re.sub(r"[^A-Za-z0-9.-]+", "-", name)))
+    # a few random hex after the stamp: two runs of one name in one second must not share an events file
+    base = os.path.join(_runs_dir(), "codex-%s-%s-%s" % (stamp, uuid.uuid4().hex[:6], re.sub(r"[^A-Za-z0-9.-]+", "-", name)))
     run_id = "codex-run-" + uuid.uuid4().hex[:12]
     path = base + ".json"
     # the run's scratch dir, outside the home folder the fence denies: its TMPDIR, writable, removed at its end
-    base_dir = os.environ.get("HARNESS_CODEX_SCRATCH") or ("/private/tmp" if os.path.isdir("/private/tmp") else None)
-    scratch = tempfile.mkdtemp(prefix=run_id + "-", dir=base_dir)
-    env = child_env(scratch)
+    # research mode (ARGV given) brings its own: the box's scratch, the allowlisted ENV, the seatbelt-wrapped argv
+    own = argv is None
+    scratch = None
+    if own:
+        base_dir = os.environ.get("HARNESS_CODEX_SCRATCH") or ("/private/tmp" if os.path.isdir("/private/tmp") else None)
+        scratch = tempfile.mkdtemp(prefix=run_id + "-", dir=base_dir)
+        env = child_env(scratch)
     mark = caller_unattended()
     limit = _timeout(req)
     _save(path, {"harness": HARNESS, "run": run_id, "name": name, "cwd": cwd, "repo": req.get("repo"),
                  "branch": _git(cwd, "symbolic-ref", "--short", "-q", "HEAD"), "model": req.get("model"),
                  "effort": req.get("effort"), "started": time.time(), "events": base + ".jsonl", "log": base + ".log",
                  "resumed_from": prior, "fork": fork, "codex_home": _codex_home(), "account": None,
-                 "scratch": scratch, "unattended": mark, "timeout_s": limit, "fence": PROFILE,
-                 "apps_off": True})
-    argv = _argv(req, cwd, sub, scratch=scratch, unattended=mark)
-    _detach(lambda: _wrap(path, argv, req["prompt"], cwd, env=env, timeout=limit))
+                 "scratch": scratch, "unattended": mark, "timeout_s": limit, "fence": PROFILE if own else "seatbelt",
+                 "apps_off": True, "reply": base + ".reply.md", **(extra or {})})
+    if own:
+        argv = _argv(req, cwd, sub, scratch=scratch, unattended=mark)
+    _detach(lambda: _wrap(path, argv, req.get("prompt") or "", cwd, env=env, timeout=limit), close=close)
     # the id is codex's (thread.started, its first event), so it is read back, never made up here
     end = time.time() + _start_wait()
+    if not own:
+        # research mode: once codex's pid is on the record, dispatch-rc counts the run, so the start lock goes back
+        # now, not after thread.started (finding 9)
+        while time.time() < end and not {"pid", "ended"} & set(_load(path) or {}):
+            time.sleep(0.05)
+        getattr(ctx, "started", lambda: None)()
     while time.time() < end:
         rec = _load(path) or {}
         if rec.get("thread") or rec.get("ended"):
@@ -691,10 +929,144 @@ def run(ctx, req):
     return _start(ctx, req, cwd, None, name)
 
 
+def _recent(horizon):
+    """[(path, record)] of the research records written in the last HORIZON seconds: judged by the file's mtime
+    before it is parsed (a record is written at its start and on every update, so its mtime is never before its
+    `started`), so a count reads a day's records, never every one ever written (finding 8)."""
+    d, since, out = _runs_dir(), time.time() - horizon, []
+    try:
+        names = sorted(n for n in os.listdir(d) if n.startswith("codex-") and n.endswith(".json"))
+    except OSError:
+        return out
+    for n in names:
+        path = os.path.join(d, n)
+        try:
+            if os.path.getmtime(path) < since:
+                continue
+        except OSError:
+            continue
+        rec = _load(path)
+        if rec and rec.get("mode") == "research":
+            out.append((path, rec))
+    return out
+
+
+def research_counts(req, unattended):
+    """Why REQ may not start a research run by the counts, or None — bin/harness asks before it takes dispatch's
+    start lock. One Codex run per council verb; unattended, UNATTENDED_PER_COUNCIL per council run and
+    UNATTENDED_PER_DAY on this Mac in 24 h. Read over COUNCIL_HORIZON of records: a council run's id is a uuid
+    (council's cmd_run), so no older run's record can match it, and a verb run a week after its council run is
+    counted by the day's cap alone."""
+    recs = _recent(COUNCIL_HORIZON)
+    if req.get("council"):
+        held = [p for p, r in recs if r.get("council") == req["council"]]
+        if held:
+            return "council run %s has its Codex run already (%s): one per council verb" % (req["council"], held[0])
+    if unattended:
+        run_id = str(req.get("council") or "").split(":", 1)[0]
+        mine = [p for p, r in recs if str(r.get("council") or "").split(":", 1)[0] == run_id]
+        if len(mine) >= UNATTENDED_PER_COUNCIL:
+            return ("council run %s has had %d Codex runs (%s): an unattended council run gets %d, its arms and one "
+                    "examine" % (run_id, len(mine), ", ".join(os.path.basename(p) for p in mine), UNATTENDED_PER_COUNCIL))
+        day = [p for p, r in recs if r.get("unattended") and (r.get("started") or 0) > time.time() - 86400]
+        if len(day) >= UNATTENDED_PER_DAY:
+            return "%d unattended research runs started on this Mac in the last 24 h: the cap is %d; the next step waits for a run to end" % (len(day), UNATTENDED_PER_DAY)
+    return None
+
+
+def research(ctx, req):
+    """Research mode (this file's header): the fenced turn over req["cwd"], waited for; its last record.
+    bin/harness's research_guard() has judged req before this runs. The fence is the core's (fence.py): the
+    arm's box is the cwd's folder, its scratch CODEX_HOME the one council's fence.arm_home made there; the
+    features codex has on are each judged; the proxy runs here, in the process that waits, for the turn's length,
+    and withdraws the login at its first connection to chatgpt.com (F7); the profile is probed before codex
+    starts, and the first tool call in codex's events reads what of the login is still on disk."""
+    fence = _fence()
+    cwd = os.path.realpath(req["cwd"])
+    if not fence.available():
+        ctx.fail("no seatbelt here (%s has no sandbox-exec): research mode runs on macOS only, until a guest (the "
+                 "isolation design's S6)" % sys.platform, 2)
+    if not (req.get("prompt") or req.get("review")):
+        ctx.fail("a research run needs --prompt (or --review BASE)", 2)
+    box = os.path.dirname(cwd)
+    home = os.path.join(box, "home", ".codex")
+    if not os.path.isfile(os.path.join(home, "auth.json")):
+        ctx.fail("no scratch CODEX_HOME at %s (council's fence.arm_home makes it): codex never starts from the "
+                 "login's own" % home, 2)
+    real, inst = fence.install_of(_bin())
+    stub = {k: v for k, v in os.environ.items() if k.startswith("STUB_")} if os.environ.get("HARNESS_CODEX") else {}
+    env0 = fence.arm_env("codex", box, None, {"CODEX_HOME": home}, extra=dict(RESEARCH_ENV, **stub), path_first=inst)
+    # in the arm's own copy: a project's .codex/ where the caller stands would change the listing, and the copy has
+    # none (round 5's second review)
+    new, why = fence.codex_features(env0, real, cwd=cwd)
+    if why:
+        ctx.fail(why, 2)
+    why = managed_why()
+    if why:
+        ctx.fail(why, 2)
+    arm = os.path.dirname(box)   # the caller's arm dir, beside the box: the profile and the proxy's log are its
+    cred = fence.Credential.in_box("codex", box)
+    proxy = fence.Proxy(fence.VENDOR_HOSTS["codex"], research=req.get("web"), log=os.path.join(arm, "proxy.jsonl"),
+                        on_vendor=cred.withdraw)
+    port = proxy.start()
+    first = None
+    try:
+        ro = fence.codex_ro(home)   # the scratch configs and auth.json, read-only as council's arm_home names them
+        prof = fence.write_profile(os.path.join(arm, "arm.sb"), fence.profile(box, port, reads=[inst], ro=ro))
+        bad = fence.probe(prof, box, port, ro=ro, holders=fence.stand_in_holders(real, "codex"))
+        if bad:
+            ctx.fail("the seatbelt does not hold: %s" % "; ".join(bad)[:400], 2)
+        env = fence.arm_env("codex", box, port, {"CODEX_HOME": home}, extra=dict(RESEARCH_ENV, **stub), path_first=inst)
+        name = re.sub(r"[^A-Za-z0-9-]+", "-", req.get("name") or "research").strip("-")[:60] or "research"
+        extra = {"mode": "research", "council": req.get("council"), "timeout": req["timeout"], "review": req.get("review"),
+                 "deadline": min(req.get("deadline") or float("inf"), time.time() + req["timeout"]),
+                 "unattended": bool(req.get("unattended")),
+                 "web": bool(req.get("web")), "profile": prof, "codex_home": home}
+        if req.get("unattended"):
+            # the run cap's slot, under dispatch's start lock from here until codex's pid is on its record (finding 9)
+            why = getattr(ctx, "claim", lambda: None)()
+            if why:
+                ctx.fail("an unattended research run needs a free slot: %s" % why, 2)
+        try:
+            rec = _start(ctx, req, cwd, None, name, extra=extra, env=env,
+                         argv=fence.wrap(research_argv(req, cwd, real, port), prof), close=[proxy.server.fileno()])
+        finally:
+            getattr(ctx, "started", lambda: None)()   # codex runs: dispatch's start lock goes back (bin/harness)
+        path = rec["native"]["run"]
+        # thread.started is codex's first event, so no tool call came before this watch: it reads from the start
+        first = fence.FirstTool("codex", rec["native"].get("events"), cred)
+        # the wrapper kills codex at the deadline (TERM, then KILL); this wait only watches it
+        end = extra["deadline"] + KILL_GRACE + _start_wait()
+        while time.time() < end and not (_load(path) or {}).get("ended"):
+            time.sleep(0.25)
+    finally:
+        proxy.stop()
+        if first:
+            first.stop()
+    net = [{k: v for k, v in x.items() if k in ("host", "port", "ok", "why")} for x in proxy.decisions][:100]
+    credential = {"withdrawn": cred.withdrawn, "at_first_tool": first.found if first else None,
+                  "at": first.at if first else None, "read_late": bool(first and first.late)}
+    _update(path, net=net, credential=credential)
+    final = _load(path) or {}
+    out = _run_record(ctx, path, final)
+    out["native"]["net"] = net
+    out["native"]["credential"] = credential
+    # what the turn wrote outside the arm's dir: council scans them for the login's strings (F7)
+    out["native"]["files"] = [x for x in (path, final.get("events"), final.get("log"), final.get("reply")) if x]
+    try:
+        with open(final.get("reply") or "") as f:
+            out["last_message"] = f.read()
+    except OSError:
+        out["last_message"] = final.get("last_message")
+    return out
+
+
 def resume(ctx, rec, req):
     """V2: `codex exec resume <thread>`, or `exec fork <thread>` for a copy under a new id."""
     tid = rec.get("session_id")
     native = rec.get("native") or {}
+    if native.get("mode") == "research":
+        ctx.fail("%s is a research run: one fenced turn, never continued (start another)" % tid, 2)
     if not tid or tid.startswith("codex-run-"):
         ctx.fail("this run has no Codex thread id (it never started): nothing to continue", 2)
     if rec.get("state") not in _FINAL and not req.get("fork"):

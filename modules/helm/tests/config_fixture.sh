@@ -20,6 +20,9 @@ fixture_config() {
   echo transcripts > "$1/regatta/guarded"
   printf 'Sam\nAlex\n' > "$1/helm/people"
   echo buildbox:buildbox-ssh > "$1/wharf-runs/ssh"
+  # no detached `hosts sample` from a case's claim or sweep (dispatch-queue's sample_soon): it would push a
+  # hosts row to the case's queue home and outlive the suite; lighthouse's tests/hosts.sh runs the sampler
+  echo off > "$1/wharf-runs/hosts-sample"
   unset REGATTA_LAPTOP CLAUDE_REPOS_JSON
   # a dispatched run's own DISPATCH_* (its skipper, ship, task) would reach a case that asserts none is
   # handed down (test_helm's skipper start): the suite is run from such runs, so they go here

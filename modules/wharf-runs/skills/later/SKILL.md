@@ -30,13 +30,14 @@ the branch to read it.
   its time the one-shot enters dispatch's queue, aged from then (dispatch-queue S3): `low` lets a run
   the owner sent since go first, and an entry waiting past two hours ranks as `normal`. Without a
   queue home the one-shot runs at its time as before, and `low` is only its record's. A named time keeps `normal` unless the owner says so.
-  A named time → `--at "YYYY-MM-DD HH:MM"` in the *target host's* local time; with `--on` the
+  A named time → `--at "YYYY-MM-DD HH:MM"` in the *target host's* local time; with `--pin` (or `--on`) the
   engine takes only `reset` or an epoch, so turn the clock time into `@EPOCH` first.
 - **Where:** the dispatch host by default since 2026-10-13 (`wharf-runs/dispatch-host` in the
   regatta config dir, else the first host `wharf-runs/ssh` names) — dispatch adds `--on <it>
   --fallback here` when no host is named, and this Mac takes it only when that host does not
-  answer; `--on HOST` names another host the ssh key lists, `--on here` when the owner says this
-  Mac. A named clock time stays here (ambiguous across hosts): give `@EPOCH` for a peer. Say which
+  answer; `--pin HOST` names another host the ssh key lists, `--pin here` when the owner says this
+  Mac — the owner's choice of host is a pin; `--on` is only a preference another host may take once
+  that host is full or silent a sweep (dispatch-queue S12). A named clock time stays here (ambiguous across hosts): give `@EPOCH` for a peer. Say which
   you chose.
 - **Never a repo with a live system** (one that drives a house: a repo whose contract says `live:`
   something). The run is unattended and its `python3`/`bash` are not fenced from `scripts/*.py`
@@ -66,17 +67,17 @@ Stop and ask when one of these holds:
 ## 3. Schedule it, then prove it
 
 ```
-dispatch '<branch>' --at reset --priority low [--repo ~/projects/<repo>] [--on HOST|here] [--model opus --effort high] [--note '…']
+dispatch '<branch>' --at reset --priority low [--repo ~/projects/<repo>] [--pin HOST|here] [--model opus --effort high] [--note '…']
 ```
 
 `--repo` is required for a branch outside the default repo (the overlay's checkout where one is
 installed, else this regatta clone; `pickup list` names the repo); it must sit under the projects
-folder for `--on`. `reset` is read from this Mac's plan cache, so it is the reset of
+folder for `--pin`. `reset` is read from this Mac's plan cache, so it is the reset of
 the account signed in *here*: say in the closing line which account the job runs under on the
 target host (a peer's launchd job uses that Mac's own login; the probe shows whether it works).
-A time already past is refused; `--on` without `--at` starts it on that host in about two minutes.
+A time already past is refused; `--pin` without `--at` starts it on that host in about two minutes.
 
-`--on HOST` runs the peer's own regatta core (the checkout its config dir's `home` file names): if
+`--pin HOST` runs the peer's own regatta core (the checkout its config dir's `home` file names): if
 the command says dispatch there is missing or predates a flag, `git -C <that checkout> pull
 --ff-only` over `ssh <its alias>` (the alias: the host's line in `wharf-runs/ssh`; routine, yours
 to run), then again. Read the job back, do not trust the exit code: `launchctl print

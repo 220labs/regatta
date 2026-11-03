@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """vendor_hook — a Claude Code PreToolUse guard, run unchanged inside another CLI's own hooks. Stdlib, Python 3.9.
 
-    python3 <lighthouse>/hooks/vendor_hook.py <cli> <guard.py>     the guard's decision, in <cli>'s words
+    python3 <lighthouse>/hooks/vendor_hook.py <cli> guards         every guard at once, then the trailer: the entry
+    python3 <lighthouse>/hooks/vendor_hook.py <cli> <guard.py>     one guard's decision, in <cli>'s words
     python3 <lighthouse>/hooks/vendor_hook.py <cli> trailer        a `git commit` gains the CLI's Co-Authored-By
 
 `<cli>` is `codex` (Codex's ~/.codex/hooks.json) or `antigravity` (its ~/.gemini/config/hooks.json);
-bin/vendor-hooks writes one entry per guard into each. Why (the owner's D2-A, 2026-10-29,
+bin/vendor-hooks writes one `guards` entry into each (vendor-hooks-names, 2026-10-31: three entries with one
+command prefix read as one hook three times in Codex's /hooks, and cost three approvals and three Python starts
+per tool call). `guards` runs GUARDS at once — secrets_guard and wharf's checkpoint, each with the whole budget —
+and answers the first deny in that order; with no deny, the trailer. The one-guard and `trailer` forms are what a home not yet re-applied still runs,
+and what a suite judges one rule by. Why (the owner's D2-A, 2026-10-29,
 docs/codex-agy-gaps-2026-10-29.md): one rule set, each CLI's own socket — so the decision code stays the
 guard's alone, never a copy, and this file only translates. One adapter per payload shape:
 
@@ -49,11 +54,12 @@ guard's alone, never a copy, and this file only translates. One adapter per payl
   (decide), so the allow never carries a command a guard would refuse.
 
 Fails open, as the guards do: a crash, a guard that times out or prints no JSON lets the call through
-(Codex itself continues past a failed hook: its docs). Every guard run of one call shares BUDGET seconds,
-under the entry's 30 s timeout (an apply_patch of many files would otherwise outlive it and be killed
+(Codex itself continues past a failed hook: its docs). Every guard run of one call — all of GUARDS and the
+trailer's second pass, in the `guards` form — shares BUDGET seconds, under the entry's 30 s timeout (an apply_patch of many files would otherwise outlive it and be killed
 mid-judgement); past it the rest is not judged, said on stderr. A call this cannot translate is not judged —
 tests/parity.sh is what shows such a gap, as a red row. Tests: tests/parity.sh.
 """
+import concurrent.futures
 import json
 import os
 import re
@@ -69,10 +75,15 @@ try:   # a suite shortens it (tests/parity.sh); never longer
 except ValueError:
     pass
 HERE = os.path.dirname(os.path.abspath(__file__))
-# the guards a trailer's allow must pass first: the same two the other entries run (bin/vendor-hooks' guards())
-TRAILER_GUARDS = (os.path.join(HERE, "secrets_guard.py"),
-                  os.path.join(os.path.dirname(os.path.dirname(HERE)), "wharf", "hooks", "checkpoint.py"))
+# the guards `guards` runs, at once (its answer the first deny in this order), and a trailer's allow must pass first (bin/vendor-hooks' guards() names the
+# same two from the same checkout: this file sits at <root>/modules/lighthouse/hooks)
+GUARDS = (os.path.join(HERE, "secrets_guard.py"),
+          os.path.join(os.path.dirname(os.path.dirname(HERE)), "wharf", "hooks", "checkpoint.py"))
 CLIS = ("codex", "antigravity")
+# the entry forms this adapter answers; bin/vendor-hooks reads this line and refuses to write a `guards` entry
+# for an adapter without it: an older one read `guards` as a guard path that is not there, and allowed every call
+# (the finish review, 2026-10-31)
+ENTRIES = ("guards", "trailer")   # one line, as it is: bin/vendor-hooks' adapter_ok() matches it as text
 # (the trailer's name, its address): who a commit made in that CLI is co-authored by
 VENDORS = {"codex": ("Codex", "noreply@openai.com"), "antigravity": ("Antigravity", "noreply@google.com")}
 
@@ -248,7 +259,7 @@ def run_guard(guard, payload, timeout=BUDGET):
         return UNKNOWN
     try:
         p = subprocess.run([sys.executable, guard], input=json.dumps(payload), capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, errors="replace", timeout=timeout)   # bytes that are no UTF-8 raised ValueError: a crash, so an allow
     except (OSError, subprocess.SubprocessError):
         return UNKNOWN
     if p.returncode not in (0, 2):
@@ -359,10 +370,39 @@ def judge(cli, ev, guard, deadline):
     return UNKNOWN if unknown else None
 
 
+def judge_all(cli, ev, deadline):
+    """judge() of each of GUARDS, run at once, each with the whole deadline: in GUARDS' order. One after another,
+    a slow secrets_guard spent the budget checkpoint needed, and checkpoint's deny became an allow (the finish
+    review's probe, 2026-10-31: a 60-file apply_patch into the primary checkout, denied by main's one-guard entry,
+    allowed by the chain); at once, the wall time is the slower guard's, as with the one-guard entries."""
+    def one(g):   # one guard's crash is that guard's no answer, never the call's: the other's deny still stands
+        try:
+            return judge(cli, ev, g, deadline)
+        except Exception:
+            return UNKNOWN
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(GUARDS)) as pool:
+        return list(pool.map(one, GUARDS))
+
+
+def chain(cli, ev, deadline):
+    """The `guards` entry: every guard of GUARDS (judge_all), the first deny in their order the answer; with none,
+    the trailer, which rewrites only when every guard gave a clean pass (a guard with no answer leaves the call
+    allowed as it is)."""
+    unknown = False
+    for why in judge_all(cli, ev, deadline):
+        if why == UNKNOWN:
+            unknown = True
+        elif why:
+            return "deny", why
+    return ("allow", None) if unknown else decide(cli, "trailer", ev, deadline)
+
+
 def decide(cli, guard, ev, deadline=None):
     """('deny', reason) | ('rewrite', new command — a string, or the argv list with its script replaced) |
     ('allow', None) for one call of `cli`."""
     deadline = time.monotonic() + BUDGET if deadline is None else deadline
+    if guard == "guards":
+        return chain(cli, ev, deadline)
     if guard == "trailer":
         ti = ev.get("tool_input") if cli == "codex" and isinstance(ev.get("tool_input"), dict) else {}
         calls = codex_calls(ev) if cli == "codex" else ag_calls(ev)
@@ -375,8 +415,8 @@ def decide(cli, guard, ev, deadline=None):
             return "allow", None
         rewritten = dict(ev, tool_input=dict(ti, command=new)) if cli == "codex" else \
             dict(ev, toolCall=dict(ev.get("toolCall") or {}, args=dict((ev.get("toolCall") or {}).get("args") or {}, CommandLine=new)))
-        if any(judge(cli, rewritten, g, deadline) is not None for g in TRAILER_GUARDS):
-            return "allow", None   # a guard refuses it or gave no answer: its own entry says so; the trailer allows nothing
+        if any(why is not None for why in judge_all(cli, rewritten, deadline)):
+            return "allow", None   # a guard refuses it or gave no answer: the trailer allows nothing; the call as sent was judged (chain(), or a guard's own entry)
         raw = ti.get("command") if cli == "codex" else (ev.get("toolCall") or {}).get("args", {}).get("CommandLine")
         i = shell_script(raw)
         if i is not None:
@@ -408,6 +448,9 @@ def main(argv, data):
     if len(argv) != 2 or argv[0] not in CLIS:
         return "{}" if argv and argv[0] == "antigravity" else ""
     cli, guard = argv
+    if guard not in ENTRIES and not os.path.isfile(guard):
+        sys.stderr.write(f"regatta vendor-hooks: {guard} is no entry form and no guard file, so no guard ran; "
+                         "run vendor-hooks apply\n")
     try:
         ev = json.loads(data or "null")
     except ValueError:

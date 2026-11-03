@@ -31,6 +31,8 @@
     helm tick [--dry-run] [--json]   # every stall on both Macs (bin/stalls.py, S1–S7), gated, acted on
                                      # when armed (bin/stalls_tick.py; chain-manager E1/E3, D4 = C)
     helm tick --arm [--by WHO] | --disarm | --status   # the tick's switch; 3 h dry after arming
+    helm yard-on HOST SCOPE... [--dry-run] [--within H]   # name HOST the yard of each SCOPE, once its tick
+                                     #   drives and no blueprint ship of them is in flight here (bin/yardon.py)
     helm backends                    # the seams' rows (settings/surfaces.json)
     helm list
     helm skipper --hold --scope SCOPE [--once]   # the sidecar: take each ship of SCOPE the yard holds,
@@ -55,6 +57,13 @@
                                      #   yard over ssh, then the pickup's wait; PICKED UP says the session may close
     helm send --listen PLAN [BLOCK] [--every MIN] | --release [PLAN [BLOCK]] | --status [--json]
                                      # the listener (one pull, then exit), its kill, this session's sends
+    helm charter --join|--renew|--leave PLAN... [--by SESSION] [--from HOST] [--road ROAD] [--why W] [--json]
+                                     # the yard's half of a charter (docs/charterer-2026-11-01.md S1): the session
+                                     #   joins, renews or leaves each ship's charterers, whom the charter pass
+                                     #   hails every 5 minutes; on every road hail reads no end on (all, today;
+                                     #   none named included) a charter lapses after 15 min unrenewed. Exit 6: refused (an
+                                     #   unattended caller on this Mac joining or renewing, an ended ship, no
+                                     #   ship); 7: a renewal of no charter (join again); --json: one verdict per ship
 
 ship: a noun here (one launch or feature); the merge is a launch. A task is a block's execution (a
 block is its description in a blueprint; `wharf apply` makes one task per block, naming it with
@@ -499,6 +508,36 @@ def card_line(st):
         "%s of %s est." % (money(st["totals"]["cost"]), money(st["cost"])) if st.get("cost") is not None else "none")
 
 
+def ladder_line(st):
+    """The ship's ladder row (helm-board-ux S2): the projected ETA and its slip, the hill, where the money's
+    numbers come from — the same helmlib.ladder the board's Ships view reads."""
+    try:
+        import helm_render
+        decisions = helm_render.doc_decision_counts(st.get("docs"))
+    except Exception:   # noqa: BLE001 — no keel, no render: the hill's uphill unread
+        decisions = None
+    try:   # `helm show` runs at every dispatched run's start: a value that will not read costs the row, not the call
+        lad = helmlib.ladder(st, decisions=decisions)
+    except Exception as e:   # noqa: BLE001
+        return "ladder unread (%s)" % type(e).__name__
+    if lad["shipped"]:
+        when = "shipped %s" % helmlib.iso(lad["shipped"])[:16].replace("T", " ")
+    elif lad["eta"]:
+        how = ", ".join("%d %s" % (n, k) for k, n in sorted(lad["eta_from"].items()))
+        when = "ETA %s (%s)" % (helmlib.iso(lad["eta"])[:16].replace("T", " "), how)
+    else:
+        when = "ETA none (no steps)"
+    if lad["slip_days"] is not None:
+        when += " %+.1f d against due" % lad["slip_days"]
+    dec = lad["hill"]["decisions"]
+    hill = "hill %s decided, %d/%d built" % ("%d/%d" % tuple(dec) if dec else "?", lad["hill"]["steps"][0], lad["hill"]["steps"][1])
+    cf = lad["cost_from"]
+    money_ = "%s → %s from %s; %d step%s report cost%s" % (
+        money(lad["spent"]), money(lad["est"]), lad["est_from"], cf["reported"], "" if cf["reported"] == 1 else "s",
+        ", %d begun with none" % cf["unreported"] if cf["unreported"] else "")
+    return " · ".join([when, hill, money_])
+
+
 def show_text(st):
     # the skipper's record keeps its on-disk key, `manager` (helm-vocabulary section 6); printed skipper
     lines = ["ship %s — %s (%s %s on %s); as of %s" % (
@@ -506,7 +545,12 @@ def show_text(st):
         st["manager"].get("host") or "?", helmlib.iso(st["as_of"]))]
     tot = st["totals"]
     lines.append(card_line(st))
+    lines.append(ladder_line(st))
     lines.append("cost so far %s · estimate to go %s · open asks %d" % (money(tot["cost"]), money(tot["est_to_go"]), tot["open_asks"]))
+    if st.get("charterers"):   # the charterer design's S1: who the charter pass hails (none on most ships)
+        lines.append("charterers: %s" % "; ".join("%s@%s%s, renewed %s" % (
+            r["session"][:8], r.get("host") or "?", " by " + r["road"] if r.get("road") else "", ago(r["renewed"]))
+            for r in st["charterers"]))
     for m in st["milestones"]:
         lines.append("◆ %s on %s — %d open" % (m["name"], helmlib.iso(m["on"])[:16], m["open"]))
     for t in st["tasks"]:
@@ -752,8 +796,10 @@ def cmd_pull(a):
 
 
 def cmd_backends(a):
+    """The seams, then each problem with the file, as `ask backends` prints them (charterer S3)."""
     print(surfaces.describe())
-
+    for problem in surfaces.problems():
+        print("  ! %s" % problem)
 
 def cmd_list(a):
     for pid in helmlib.list_plans():
@@ -767,7 +813,8 @@ def cmd_render(a):
     need(pid)
     res = helm_render.render(pid, deploy=a.deploy)
     if a.json:
-        print(json.dumps(helmlib.public(helmlib.state(pid)), ensure_ascii=False, sort_keys=True))
+        # the value the live stream sends the ship's page: the copy render() wrote, its ladder included (S2)
+        print(json.dumps(dict(helm_render.plan_view(helmlib.state(pid)), kind="plan"), ensure_ascii=False, sort_keys=True))
         return
     for line in res:
         print(line)
@@ -1272,6 +1319,196 @@ def skipper_stand_down(a, leaselib):
     return rc
 
 
+# ---------------------------------------------------------------------------- the charter (charterer S1)
+# docs/charterer-2026-11-01.md: the yard's half of a session chartering a ship — the events helmlib's
+# charterers() reads. Run on the yard, over ssh from the charterer's Mac (S5's `helm charter PLAN…`), or by a
+# session on the yard itself. No lease fence: a charterer holds no lease and its events touch no task.
+# Refused, exit 6 (CHARTER_REFUSED; 2 stays argparse's and REMOTE's, 4 the lease's): a join or renewal by an
+# unattended caller (a dispatched run cannot listen, and a run that charters itself is woken every 5 minutes on
+# nobody's word: send's forced-detach rule, every marker), a ship that has ended, named with its end, and no such
+# ship. The unattended refusal reads this process's environment, so it holds for a caller on the yard only:
+# ssh carries none of a remote caller's markers (AGENTS.md: "a refusal only the peer makes is no refusal"),
+# and S5's `helm charter PLAN…` refuses every marker on the charterer's own Mac before its ssh call. A leave is
+# any caller's: it only narrows, and the charter pass (S4, the tick, unattended) leaves for a session hail
+# reads as ended — never --join or --renew: the launchd tick carries no marker, so this verb would not refuse
+# it, and a charter the tick renews would never lapse. Exit 7 (CHARTER_NONE): a renewal of a session not
+# chartering the ship (never joined, left or lapsed): the charterer joins again. Exit 1: a ship that could not be
+# read (its own row; the others still go). With several ships the exit is the gravest, 6 over 1 over 7; --json
+# prints one verdict per ship (chartered, renewed, left, not-chartering, refused, error) with its cause
+# (unattended, ended, no-ship; a not-chartering's left, lapsed or never; an error's crash), which is what a
+# caller with several reads. A leave's why stays in `why`, never in `cause`.
+
+CHARTER_REFUSED = 6
+CHARTER_NONE = 7
+CHARTER_RANK = (CHARTER_REFUSED, 1, CHARTER_NONE)   # the exit of several ships: the gravest of theirs
+SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")   # fullmatch: `$` would pass a trailing newline
+HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+
+def charter_unattended():
+    """`NAME=value` of the first marker of a caller nobody is at, or None: the core's names (its staged
+    rename's list, read live), a peer job's, a fired launchd job's label (wharf-runs' kicklib.UNATTENDED_MARKS),
+    a session with no background tasks, which only a dispatched run is (sendlib.FORCED), and what sendlib.laid_by
+    reads as a dispatched run besides: a DISPATCH_DEPTH past 0 and a ship's DISPATCH_SHIP or DISPATCH_PLAN."""
+    import sendlib
+    try:
+        names = tuple(helmlib._common().UNATTENDED_NAMES)
+    except Exception:   # no core here: its two names as of the vendor-fence stage
+        names = ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED")
+    names = tuple(dict.fromkeys(names + ("AUTOFINISH_CALLER_UNATTENDED", "DISPATCH_LABEL") + tuple(sendlib.FORCED)))
+    mark = next(("%s=%s" % (n, os.environ[n]) for n in names if os.environ.get(n)), None)
+    if mark:
+        return mark
+    depth = os.environ.get("DISPATCH_DEPTH") or "0"
+    if depth != "0":
+        return "DISPATCH_DEPTH=%s" % depth
+    return next(("%s=%s" % (n, os.environ[n]) for n in helmlib.ENV_NAMES["ship"] if os.environ.get(n)), None)
+
+
+END_AT_DONE = ("shell", "memo")   # a blueprint block's providers whose work lands nowhere: done is its end
+
+
+def block_ended(t, plan):
+    """A block that will move no more: a step the doc superseded, whatever its status (it never runs); launched
+    (or landed); or done, where done is its end — a person's block, a shell or memo block — or its branch has
+    landed (helmlib.dep_landed, landed.py's proof, the reader dispatch's --after uses). A built session block
+    is not over at `done` while its branch has not landed (keel writes done before /finish lands it), nor while
+    it names no branch yet; nor is a failed one (the skipper may start it again)."""
+    if t.get("superseded") or t["status"] in helmlib.LANDED:
+        return True
+    if t["status"] not in helmlib.DONE:
+        return False
+    if t.get("kind") == "human" or (t.get("blueprint") or {}).get("provider") in END_AT_DONE:
+        return True
+    return bool(t.get("branch")) and helmlib.dep_landed(t, plan)[0] == "landed"
+
+
+def ship_end(pid, st, plan):
+    """Why the ship has ended, or None: every block has ended (block_ended). wharf's close of its blueprint
+    record (leaselib.ended) is named as the end only then: wharf closes at `done`, before the landing a
+    charterer still waits to hear of. A ship with no block yet has not ended."""
+    import leaselib
+    tasks = st["tasks"]
+    if not tasks or not all(block_ended(t, plan) for t in tasks):
+        return None
+    if leaselib.ended(pid):
+        return "wharf closed its blueprint record"
+    return "every block ended: %s" % ", ".join(
+        "%s %s%s" % (t["id"], t["status"], " " + str(t["pr"]) if t.get("pr") else "") for t in tasks)[:300]
+
+
+def cmd_charter(a):
+    verb = "--join" if a.join else "--renew" if a.renew else "--leave"
+    pids = list(dict.fromkeys(a.join or a.renew or a.leave))
+    why = charter_usage(a, verb)
+    if why:   # exit 2, and with --json a row per ship still, so a caller that reads the rows reads this
+        if a.json:
+            print(json.dumps([{"plan": p, "verdict": "error", "cause": "usage", "why": why} for p in pids]))
+        print(why, file=sys.stderr)
+        return 2
+    sid = a.by or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    host = a.from_host or (None if verb == "--leave" else charter_host())   # a leave writes no host
+    mark = charter_unattended()
+    if mark and verb != "--leave":
+        text = ("helm charter %s: refused in an unattended caller (%s) — a run nobody is at does not charter a ship; "
+                "it sends with --detach" % (verb, mark))
+        if a.json:
+            print(json.dumps([{"plan": p, "verdict": "refused", "cause": "unattended", "why": text} for p in pids]))
+        print(text, file=sys.stderr)
+        return CHARTER_REFUSED
+    rc, rows = 0, []
+    for pid in pids:
+        try:
+            code, verdict, cause, text = charter_one(verb, pid, sid, host, a.road, a.why, a.from_host)
+        except Exception as e:   # one ship's torn read never costs the others their verdicts: exit 1, could not tell
+            code, verdict, cause, text = 1, "error", "crash", "helm charter %s: ship %s: %s: %s" % (verb, pid, type(e).__name__, e)
+        rows.append({"plan": pid, "verdict": verdict, "cause": cause, "why": text})
+        print(text, file=sys.stderr if code or a.json else sys.stdout, flush=True)
+        rc = next((c for c in CHARTER_RANK if c in (rc, code)), rc or code)
+    if a.json:
+        print(json.dumps(rows))
+    return rc
+
+
+def charter_host():
+    """This Mac's name, as a join with no --from writes it: sendlib.machine(), checked in charter_usage."""
+    import sendlib
+    return sendlib.machine()
+
+
+def charter_usage(a, verb):
+    """The line that refuses a call as a usage error, or None."""
+    sid = a.by or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return "helm charter %s: no charterer — pass --by <session id> (over ssh the shell has none)" % verb
+    if not SESSION_RE.fullmatch(sid):
+        return "helm charter %s: --by %r is no session id" % (verb, sid[:80])
+    if a.from_host is not None and not HOST_RE.fullmatch(a.from_host):
+        return "helm charter %s: --from %r is no host name" % (verb, a.from_host[:80])
+    if a.from_host is None and verb == "--join" and not HOST_RE.fullmatch(charter_host() or ""):
+        # a join is where this Mac's name is written; a bare renewal keeps the Mac it joined from (charter_one)
+        return ("helm charter %s: this Mac's name %r (HARNESS_HOST, PLAN_HOST, else its own) is no host name — "
+                "pass --from" % (verb, (charter_host() or "")[:80]))
+    if a.road and verb == "--leave":
+        return "helm charter --leave takes no --road"
+    if a.why and verb != "--leave":
+        return "helm charter %s takes no --why (a leave's)" % verb
+    return None
+
+
+def charter_one(verb, pid, sid, host, road, why, given_host):
+    """(exit, verdict, cause, line) for one ship. A join's or renewal's end is read first, outside the lock
+    (state() and landed.py may read git; landed.py's verdicts are then cached for the process), and read again
+    under the plan's lock from a fresh state, so a join is never written after wharf's close (written under the
+    same lock) of a ship whose blocks have ended. A block's own report appends without the lock, so a join may
+    still come just after a last `launched`: S4's pass skips ships that read as ended. A leave reads no state.
+    The charter's own read and its event under the lock, the event stamped at that read's time, so a renewal read live is never
+    written past its own lapse (charterers() reads lines in the file's order, so a clock that stepped back
+    reorders none). The charterer's Mac is written on a join and wherever --from
+    names it: a bare renewal keeps the one it joined from. A leave writes none (charterers() reads no host of a
+    gone row)."""
+    import leaselib
+    plan = helmlib.load_plan(pid)
+    if plan is None:   # an id that is no plan id reads as no plan too
+        return CHARTER_REFUSED, "refused", "no-ship", "helm charter %s: refused — no ship %s here (%s)" % (verb, pid, helmlib.plans_root())
+    st = None
+    if verb != "--leave":
+        st = helmlib.state(pid)
+        end = ship_end(pid, st, plan)
+        if end:
+            return CHARTER_REFUSED, "refused", "ended", "helm charter %s: refused — ship %s has ended (%s)" % (verb, pid, end)
+    with helmlib.locked(pid):
+        evs = helmlib.events(pid)
+        at = helmlib.now()
+        live, gone = helmlib.charterers(evs, at)
+        mine = next((r for r in live if r["session"] == sid), None)
+        was = None if mine else next((r for r in reversed(gone) if r["session"] == sid), None)
+        cause = "never" if not was else "lapsed" if was["why"] == "lapsed" else "left"
+        if verb == "--leave":
+            if not mine:
+                return 0, "not-chartering", cause, "ship %s: %s was not chartering it%s" % (pid, sid[:8], " (%s)" % cause if was else "")
+            helmlib.append_event(pid, {"t": at, "charter": "charter left", "charterer": sid,
+                                       "why": " ".join((why or "left").split())[:200]})
+            return 0, "left", None, "ship %s: %s left" % (pid, sid[:8])
+        st = helmlib.state(pid)   # under the lock: what ended since the read above
+        end = ship_end(pid, st, helmlib.load_plan(pid) or plan)
+        if end:
+            return CHARTER_REFUSED, "refused", "ended", "helm charter %s: refused — ship %s has ended (%s)" % (verb, pid, end)
+        if verb == "--renew" and not mine:
+            return CHARTER_NONE, "not-chartering", cause, \
+                "helm charter --renew: %s is not chartering ship %s%s — join it again (--join)" % (sid[:8], pid, " (%s)" % was["why"] if was else "")
+        ev = {"t": at, "charter": "chartered" if verb == "--join" else "charter renewed", "charterer": sid}
+        if given_host or not mine:
+            ev["charterer_host"] = host
+        if road:
+            ev["road"] = road
+        helmlib.append_event(pid, ev)
+    word = "renewed" if verb == "--renew" or mine else "chartered"
+    return 0, word, None, "ship %s: %s %s by %s@%s%s" % (pid, st.get("topic") or pid, word, sid[:8],
+                                                        host if given_host or not mine else mine.get("host") or host,
+                                                        " (%s)" % road if road else "")
+
+
 # ---------------------------------------------------------------------------- helm send (skipper-resilience S7)
 # bin/sendlib.py holds the verb; here only the forms. Exit codes are its own: 0 picked up (or laid,
 # detached), 3 not picked up in the wait (sendlib.NOT_PICKED; --mark: nothing to mark), 2 refused, 4 a
@@ -1344,6 +1581,8 @@ def main(argv=None):
     g.add_argument("--arm", action="store_true"); g.add_argument("--disarm", action="store_true"); g.add_argument("--status", action="store_true")
     s.add_argument("--by", default=os.environ.get("USER") or "?", help="--arm: who armed it")
     sp.add_parser("backends"); sp.add_parser("list")
+    s = sp.add_parser("yard-on"); s.add_argument("host"); s.add_argument("scopes", nargs="+")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true"); s.add_argument("--within", type=float, default=12.0)
     # the skipper's session verbs (S4), the tick's --start and --stop (S5), the listener's --line (S7)
     s = sp.add_parser("skipper"); g = s.add_mutually_exclusive_group(required=True)
     g.add_argument("--hold", action="store_true"); g.add_argument("--renew", metavar="PLAN")
@@ -1355,6 +1594,16 @@ def main(argv=None):
     s.add_argument("--scope"); s.add_argument("--once", action="store_true"); s.add_argument("--gen", type=int)
     s.add_argument("--json", action="store_true"); s.add_argument("--dry-run", dest="dry_run", action="store_true")
     s.add_argument("--why", help="--stop: the reason its record and the leases' events carry")
+    # the charterer design's S1: the yard's half of a charter, over ssh (S5's `helm charter PLAN…` calls it)
+    s = sp.add_parser("charter"); g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--join", nargs="+", metavar="PLAN"); g.add_argument("--renew", nargs="+", metavar="PLAN")
+    g.add_argument("--leave", nargs="+", metavar="PLAN")
+    s.add_argument("--by", help="the charterer's session id (default: CLAUDE_CODE_SESSION_ID)")
+    s.add_argument("--from", dest="from_host", help="the charterer's Mac (default: this one on a new join; a renewal, or a join of a live charterer, keeps the Mac it joined from)")
+    s.add_argument("--road", choices=helmlib.CHARTER_ROADS,
+                   help="hail's road to it, when known: a road with no end read-back lapses (all, today; none named included)")
+    s.add_argument("--why", help="--leave: why (hail read the session as ended, say)")
+    s.add_argument("--json", action="store_true", help="one verdict per ship on stdout, the lines on stderr")
     s = sp.add_parser("send"); s.add_argument("what", nargs="*", help="a blueprint file, a claude/* branch; PLAN [BLOCK] for --listen and --release")
     s.add_argument("--text"); s.add_argument("--repo"); s.add_argument("--topic"); s.add_argument("--blueprint", help="REL on the branch, when it adds more than one")
     s.add_argument("--tier"); s.add_argument("--model"); s.add_argument("--effort"); s.add_argument("--scope"); s.add_argument("--plan")
@@ -1373,6 +1622,8 @@ def main(argv=None):
             return cmd_send(a)
         except (ValueError, FileNotFoundError) as e:
             raise SystemExit("helm send: %s" % e)
+    if a.cmd == "charter":   # its own exit codes: 6 refused, 7 a renewal of no charter (2: a usage error)
+        return cmd_charter(a)
     if a.cmd == "skipper":   # its own exit codes: 4 is a refusal by the lease
         try:
             return cmd_skipper(a)
@@ -1383,6 +1634,10 @@ def main(argv=None):
             return cmd_page(a)
         except (ValueError, FileNotFoundError) as e:
             raise SystemExit("helm page: %s" % e)
+    if a.cmd == "yard-on":   # its own exit codes (bin/yardon.py): 1 refused, 3 a write that did not read back
+        import yardon
+        return yardon.run(a.host, a.scopes, dry=a.dry_run, within=a.within,
+                          err=lambda m: print(m, file=sys.stderr))
     if a.cmd in ("tail", "digest", "compile"):
         a.id, rest = (a.args[0], a.args[1:]) if len(a.args) > 1 else (None, a.args)
         setattr(a, {"tail": "task", "digest": "doc", "compile": "doc"}[a.cmd], rest[0])

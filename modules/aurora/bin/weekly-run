@@ -14,9 +14,10 @@
 # the classifier and checkpoint.py decide; the allowlist names the scripts the skills
 # call so the classifier is not asked about them, and test_hooks.sh pins the mode. No push by the
 # run (this script pushes the charts dry run's branch afterwards, charts_launch below, and after
-# sextant the embark memo's branch in regatta, whose `keel line` deploys its page: embark_step), no
-# deploy, nothing outside the two knowledge repos written by intent (a scope's pass: its anchor too,
-# the dream on the anchor's main) — Aurora's dream section only writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
+# sextant the embark memo's branch in regatta, whose `keel line` deploys its page: embark_step; a
+# scope's pass's `scope-pass record` pushes the anchor's records branch and readies its pull request,
+# which the anchor's own merge lands), no deploy, nothing outside the two knowledge repos written by
+# intent (a scope's pass: its anchor too) — Aurora's dream section only writes its proposal into the vault; /sextant opens its own layer worktrees (knowledge-commit --open,
 # then EnterWorktree: the same way every session reaches one — coding-on-workflow 3c, probed
 # under claude -p on 2026-09-26) and launches them with knowledge-commit --in.
 #
@@ -42,7 +43,8 @@
 # section's judgement of what classify left — skipped on a quiet week, when the report has no
 # C3–C6 and no probably-launched line: this script writes the section's log.md line itself, and
 # no Fable session starts. 4 charts. 5 review (planned). 6 dream — each a `claude -p` of its own, so
-# one that exits costs only itself. 7 trim — plumb's `trim` collect, report and verdict over each tuned
+# one that exits costs only itself. 7 asks — plumb's `asks run` (evolve S1), the week's owner prompts through the gate
+# into plumb's ledger, no session, about $1 list. 8 trim — plumb's `trim` collect, report and verdict over each tuned
 # repo, zero tokens and no session, last because on a Sunday night it waits until 00:30 for the other
 # hosts' day files (trim_step below). A session that hangs, or trim's calls together, are killed at WEEKLY_CAP
 # seconds (aurora 3600 per section, 3× the longest dream; sextant 10800, its 68 min ×2.6) —
@@ -109,7 +111,8 @@ job="${1:?aurora|sextant}"
 # `weekly-run aurora --scope <scope> [--dry-run]`: one scope's pass (knowledge-layers S5) instead of
 # the night — no tend, no classify, no due: the dream section alone, scoped, from the scope's anchor
 # (bin/scope-pass where finds it), on the scope's login when the registry names one, then
-# scope-pass record as a backstop and scope-pass proof as the night's LAUNCHED/FAILED line. Its
+# scope-pass record as a backstop and scope-pass proof as the night's LAUNCHED, WAITING (the dream's
+# pull request not merged yet: no failure) or FAILED line. Its
 # own log, $day-aurora-<scope>.log; what schedules it is the clock's (S7), not `due`.
 scope=""
 if [ "${2:-}" = --scope ]; then
@@ -170,8 +173,10 @@ for n in notes:
     print("note\t" + n)
 print(verdict + "\t" + line)
 '
-# embark runs on any Mac: its branch is claude/<host>/<day>-embark, one per host, so two Macs never
-# write the same file, and /embark writes the memo where the owner sits when the night left none.
+# embark runs on any Mac: its branch is claude/<host>/<day>-embark, one per host, and /embark writes
+# the memo where the owner sits when the night left none. The vault's whole copy,
+# dreams/<day>-embark.md, is one path for every host: the first written stays (embark-memo never
+# writes over it, which would wipe what was typed there).
 # So it skips the rule as WEEKLY_ANY_HOST does, never the import
 any_host=${WEEKLY_ANY_HOST:-}; [ "$job" = embark ] && any_host=1
 rule=$(python3 -c "$HOST_RULE" "$HOOKS" "$job" "$scope" "$any_host" 2>&1)
@@ -191,7 +196,7 @@ fi
 # log (a `<name>-missing` command where no step checks first), and the next step still runs.
 DOCS_INDEX=$(tool docs-index); BULLETIN=$(tool bulletin.py); KC=$(tool knowledge-commit)   # atlas
 TEND=$(tool tend); REPOS=$(tool repos); PR=$(tool pr)                                      # wharf
-TRIM=$(tool trim)                                                                           # plumb
+TRIM=$(tool trim); ASKS=$(tool asks)                                                        # plumb
 post() {  # post <why> <text>: one bulletin line through atlas; without atlas, the log line alone says it
   # From the vault in a scope's pass: the bulletin labels a line by its cwd, and every session reads
   # it — the anchor's name is a confidential scope's repo (knowledge-layers S5).
@@ -226,8 +231,12 @@ fi
 # The embark step (the owner, 2026-10-24: "I want embark presented to me on the helm whenever it runs
 # ... as its course doc"; its home is regatta, the 10-24 memo's D2-A of 2026-10-25). bin/embark-memo
 # writes the sitting as a course memo from the dream, its branches file, the sextant entry and the
-# night's FAILED lines — code, no session: the dream's items already carry their evidence. Here it
-# goes to docs/embark/embark-<day>.md in the regatta checkout this module sits in, on
+# night's FAILED lines — code, no session: the dream's items already carry their evidence. Vault
+# first (Evolve S2; TODO.md's embark-on-helm item as of 2026-11-02): the whole memo, the ventures' and the household's items included, goes
+# to <vault>/dreams/<day>-embark.md and is committed by knowledge-commit (dreams/ is the vault's
+# in_place); a vault copy that cannot be written stops the step, one that cannot be committed is a note
+# (the next records commit launches it). Then regatta's permitted view goes to
+# docs/embark/embark-<day>.md in the regatta checkout this module sits in, on
 # claude/<host>/<day>-embark (a worktree from local main, as every session starts one), is committed,
 # pushed (the repo's pre-push allows claude/*) and handed to `keel line`, which deploys its course;
 # the board puts it first in the owner's column. A memo already written today is kept, never
@@ -259,7 +268,14 @@ embark_step() {
     written=1
     echo "== $rel is already written today: kept as it is (the owner may be answering it)"
   else
-    embark_memo --fetch --out "$tmp" --meta "$meta" || { embark_failed "bin/embark-memo exit $? (no dream, or no vault)"; return; }
+    vm="$P/dreams/$day-embark.md"
+    embark_memo --fetch --out "$tmp" --meta "$meta" --vault-out "$vm" || { embark_failed "bin/embark-memo exit $? (no dream, or no vault)"; return; }
+    [ -s "$vm" ] || { embark_failed "the vault's copy $vm was not written — vault first, so no regatta view"; return; }
+    if ( cd "$P" && ${WEEKLY_COMMIT:-"${KC:-knowledge-commit-missing}"} "$VAULT_NAME" -m "Embark: $day — the vault's whole memo" "dreams/$day-embark.md" ) >/dev/null 2>&1; then
+      echo "== the vault's whole copy: dreams/$day-embark.md, committed"
+    else
+      echo "== the vault's whole copy: dreams/$day-embark.md written; knowledge-commit $VAULT_NAME failed — the next records commit launches it"
+    fi
     python3 "$REG" keel parse "$tmp" >/dev/null || { embark_failed "the memo does not parse: keel parse $tmp"; return; }
     if [ ! -d "$wt" ]; then
       git -C "$root" worktree add -q "$wt" -b "$br" main 2>&1 || git -C "$root" worktree add -q "$wt" "$br" 2>&1 \
@@ -297,8 +313,10 @@ if [ "$job" = embark ]; then
   exit 0
 fi
 # A scope's pass runs from its anchor: the fence (lighthouse's secrets_guard) keeps a confidential
-# scope's paths from any other cwd, and the dream is a record on the anchor's main. Not ready — no
-# anchor here, dreams/ not in its in_place, its checkout off main — is one line and no session.
+# scope's paths from any other cwd, and the dream goes to the anchor's records branch, which its pull
+# request lands. Not ready — no anchor here, dreams/ not in its in_place, a confidential one with no
+# word list — is one line and no session.
+sp_words=""
 if [ -n "$scope" ]; then
   sp_where=$("$MOD/bin/scope-pass" where "$scope" 2>&1); sp_rc=$?
   sp() { sed -n "s/^$1 //p" <<<"$sp_where" | head -1; }
@@ -306,9 +324,17 @@ if [ -n "$scope" ]; then
     say "$(date '+%H:%M') refused: ${sp_where##*$'\n'}"; refuse
   fi
   if [ $sp_rc != 0 ]; then
-    say "$(date '+%H:%M') refused: scope $scope is not ready — $(sp ready | sed 's/^no — //')"
-    [ -z "$dry" ] && post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: not ready (scope-pass where $scope says why). Log: $log"
-    refuse
+    sp_why=$(sp ready | sed 's/^no — //')
+    case "$sp_why" in
+      # the word list alone stops it (resolve names it only when nothing else does; "has no
+      # .claude/words.txt" is another reason): scope_run's first proof loop decides, so a LEAKED on the
+      # vault's main or a day already landed still stands over it, and no session starts
+      *"'s .claude/words.txt line "*|*"'s .claude/words.txt: "*) sp_words="scope-pass where $scope: $sp_why" ;;
+      *)
+        say "$(date '+%H:%M') refused: scope $scope is not ready — $sp_why"
+        [ -z "$dry" ] && post "Aurora's scope pass did not run" "weekly-run aurora --scope $scope $day: not ready (scope-pass where $scope says why). Log: $log"
+        refuse ;;
+    esac
   fi
   cwd=$(sp anchor); sp_login=$(sp login); sp_conf=$(sp confidential)
 fi
@@ -530,11 +556,15 @@ due() {
   # with nothing to judge writes no file, so its proof is the log.md line (branches_check).
   # trim: the same week, tried once, where some repo has a vertical file (trim_repos) and plumb's trim is
   # installed (absent, the night would only fail the step each week); zero tokens.
-  local ctried btried ttried
-  ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null); ttried=$(cat "$trim_tried" 2>/dev/null)
+  # asks: the same week, tried once, where plumb's asks is installed (evolve S1: the owner's asks as the loop's miss
+  # signal, ids and counts in plumb's state dir; about $1 list of gate calls and no session); after the dream, so a
+  # week's asks are counted once the week has ended.
+  local ctried btried ttried atried
+  ctried=$(cat "$charts_tried" 2>/dev/null); btried=$(cat "$branches_tried" 2>/dev/null); ttried=$(cat "$trim_tried" 2>/dev/null); atried=$(cat "$asks_tried" 2>/dev/null)
   if [ "$dow" = 7 ] && [ "$hour" -lt 20 ]; then :
   else
     if [[ "$btried" < "$sunday" ]]; then echo branches; fi
+    if [[ "$atried" < "$sunday" ]] && [ -n "${WEEKLY_ASKS:-}$ASKS" ]; then echo asks; fi
     if [[ "$ttried" < "$sunday" ]] && [ -n "${WEEKLY_TRIM:-}$TRIM" ] && [ -n "$(trim_repos)" ]; then echo trim; fi
     if [[ "$ctried" < "$sunday" ]] && [ -n "$C" ] && [ -n "$DOCS_INDEX" ] && [ "$(python3 "$DOCS_INDEX" mode --repo "$C" 2>/dev/null)" != none ]; then echo charts; fi
     if [[ "${newest%.md}" < "$sunday" ]] && [[ "$tried" < "$sunday" ]]; then echo dream; fi
@@ -545,8 +575,9 @@ tried_file="$(dirname "$log")/aurora-dream-tried"  # the date of the last dream 
 charts_tried="$(dirname "$log")/aurora-charts-tried"
 branches_tried="$(dirname "$log")/aurora-branches-tried"
 trim_tried="$(dirname "$log")/aurora-trim-tried"
+asks_tried="$(dirname "$log")/aurora-asks-tried"
 classified="$(dirname "$log")/$day-branches.txt"  # step 2's report, which the branches section reads
-ORDER="branches charts review dream trim"  # the night's order (skills/aurora/SKILL.md); review is planned
+ORDER="branches charts review dream asks trim"  # the night's order (skills/aurora/SKILL.md); review is planned
 # The night's order, whatever order the sections were named in; an unknown one runs last.
 in_order() {
   local s out=""
@@ -559,13 +590,15 @@ plan() {
   local n=0 s step what
   echo "aurora ${AURORA_TODAY:-$day} ${AURORA_HOUR:-$(date +%H)}h — the night's order (dry run: nothing runs, nothing is recorded)"
   [ -z "$sections" ] && echo "  nothing due tonight: no step runs, the tend neither"
-  for step in tend classify charts review dream trim; do
+  for step in tend classify charts review dream asks trim; do
     n=$((n + 1)); s=$step; [ "$step" = classify ] && s=branches; [ "$step" = tend ] && s=""
     case "$step" in
-      tend)     what="bin/tend — sync.py's tend in every repo of repos.json cloned here ($(t=$(tool tend) || { echo "wharf not installed"; exit; }; "$t" --list 2>/dev/null | grep -c .; true))" ;;  # --list reads only
+      tend)     what="bin/tend — sync.py's tend in every repo of repos.json cloned here ($(t=$(tool tend) || { echo "wharf not installed"; exit; }; "$t" --list 2>/dev/null | grep -c .; true)); then bin/evolve probes, on its own fixture" ;;  # --list reads only
       classify) what="bin/repos --branches --fetch --classify --reap > $classified, then claude -p \"/aurora branches\" from $cwd (a quiet week: its log.md line only)" ;;
       trim)     if [ -z "${WEEKLY_TRIM:-}$TRIM" ]; then what="plumb's trim is not installed (regatta which trim)"
                 else what="plumb's trim collect, report --write and verdict --write --night in $(trim_repos | grep -c .) repo(s), no session; on a Sunday night it waits until 00:30 for every host's day files"; fi ;;
+      asks)     if [ -z "${WEEKLY_ASKS:-}$ASKS" ]; then what="plumb's asks is not installed (regatta which asks)"
+                else what="plumb's asks run — the owner's week of prompts through the gate (one batched call per dimension per 50 prompts, about 15 a week, and a theme call per 50 asks), ids and counts into plumb's state dir; no session"; fi ;;
       charts)   what="claude -p \"/aurora charts\" from $C, then its PR" ;;
       review)   what="not built (skills/aurora/SKILL.md: planned)" ;;
       dream)    what="claude -p \"/aurora dream\" from $cwd, then dreams/<day>.md must be on $VAULT_NAME main" ;;
@@ -576,10 +609,22 @@ plan() {
     printf '  %d %-8s %-7s %s\n' "$n" "$step" "$st" "$what"
   done
 }
+words_stop() {   # words_stop <rc> <out>: scope-pass's exit 2 for the word list, not a torn read
+  [ "$1" = 2 ] && case "$2" in *words.txt*) true ;; *) false ;; esac
+}
 # --scope --dry-run: the pass's steps; runs and records nothing.
 scope_plan() {
   echo "aurora --scope $scope $day — one scope's pass (dry run: nothing runs, nothing is recorded)"
-  "$MOD/bin/scope-pass" proof "$scope" --day "$day" >/dev/null 2>&1 && echo "  already landed today: a real run ends at its proof"
+  local pout prc
+  pout=$("$MOD/bin/scope-pass" proof "$scope" --day "$day" 2>&1); prc=$?
+  case $prc in
+    0) echo "  already landed today: a real run ends at its proof" ;;
+    5) echo "  recorded today, waiting on its pull request: a real run ends at its proof" ;;
+    4) echo "  LEAKED on the vault's main: a real run stops at its proof, no session" ;;
+    *) if words_stop "$prc" "$pout" || [ -n "$sp_words" ]; then
+         echo "  its word list cannot judge (scope-pass proof $scope says why): a real run stops at its proof, no session"
+       fi ;;
+  esac
   if [ "$sp_login" = none ] || [ -z "$sp_login" ]; then echo "  1 login   the one this run starts on (the scope names none)"
   else echo "  1 login   $sp_login, by account pick --repo $cwd"; fi
   echo "  2 dream   claude -p \"/aurora dream --scope $scope\" from $cwd (confidential: $sp_conf)"
@@ -600,6 +645,7 @@ elif [ "$job" = aurora ]; then
   case " $sections " in *" charts "*) echo "$day" > "$charts_tried" ;; esac
   case " $sections " in *" branches "*) echo "$day" > "$branches_tried" ;; esac
   case " $sections " in *" trim "*) echo "$day" > "$trim_tried" ;; esac
+  case " $sections " in *" asks "*) echo "$day" > "$asks_tried" ;; esac
 elif [ -n "$dry" ]; then
   echo "$job: no steps but its one session (--dry-run plans Aurora's night)"; exit 0
 fi
@@ -813,6 +859,20 @@ tend_step() {
   [ $rc = 0 ] || step_failed tend "bin/tend exit $rc${which:+ — not tended: $which}"
 }
 
+# Step 1b, with the tend: the answer surface's probes (Evolve S2) — the journey a decision takes
+# (board, link, render, saved, ingested, resumed) through keel's own verbs, at zero tokens, on evolve's
+# own fixture in a scratch repo: the answer-write stage never touches a real decision. Never fatal; a
+# broken stage is `FAILED probes …`, which the embark memo carries as an item. WEEKLY_PROBES replaces
+# the command for the suite.
+probes_step() {
+  local out rc
+  echo "== probes at $(date)"
+  if [ -n "${WEEKLY_PROBES:-}" ]; then out=$($WEEKLY_PROBES 2>&1); rc=$?
+  else out=$("$MOD/bin/evolve" probes 2>&1); rc=$?; fi
+  printf '%s\n' "$out"
+  [ $rc = 0 ] || step_failed probes "bin/evolve probes exit $rc — $(printf '%s\n' "$out" | sed -n 's/^  FAIL *//p' | head -3 | tr '\n' ';' | sed 's/;$//')"
+}
+
 # Step 2: classify — the week's archive of superseded branches, before charts reads the
 # unmerged set and the dream lists what waits. The report goes to $classified for the branches
 # section; without it the section gathers for itself.
@@ -902,6 +962,23 @@ trim_step() {
   n=$(python3 -c "$TRIM_PY" "$HOOKS" retire ${pairs[@]+"${pairs[@]}"})
   [ "${n:-0}" -gt 0 ] && echo "RETIRED trim $day: $n verdict(s) of a repo or vertical the night no longer tunes (verdict.retired.json beside each)"
   true
+}
+
+# The owner's asks (evolve S1, docs/self-improvement-loop-2026-10-30.md): plumb's `asks run` counts the week's
+# improvement asks per session and theme into plumb's state dir — ids, labels and counts, never a prompt. The
+# gate's calls are its only spend; with a row off or the gate failing it records a sieve-only week and exits 0,
+# so a nonzero exit is a crash and fails the step. No session: nothing to snapshot, cap-note or retry. WEEKLY_ASKS
+# replaces the command, for the suite.
+asks_step() {
+  local out rc cmd=()
+  echo "== asks at $(date)"
+  if [ -z "${WEEKLY_ASKS:-}${ASKS}" ]; then step_failed asks "plumb's asks is not installed (regatta which asks)"; return; fi
+  if [ -n "${WEEKLY_ASKS:-}" ]; then read -ra cmd <<<"$WEEKLY_ASKS"; else cmd=("$ASKS"); fi
+  out=$(capped "${cmd[@]}" run 2>&1); rc=$?
+  if [ -e "$capmark" ]; then rm -f "$capmark"; rc=124; out="killed at the step's $((CAP / 60))-min cap (WEEKLY_CAP)"; fi
+  printf '%s\n' "$out"
+  [ $rc = 0 ] || { step_failed asks "asks run exit $rc: $(printf '%s\n' "$out" | tail -1)"; return; }
+  echo "ASKS $day: $(printf '%s\n' "$out" | grep '^asks: ' | tail -1)"
 }
 
 # A quiet week (open feedback 2026-10-05): classify's report has no C3–C6 line and no
@@ -1005,10 +1082,25 @@ else:
   echo "== account: $sp_login unproved ($dir) — the one this run started on, as an open scope may"
 }
 scope_run() {
-  local d rc out why
+  local d rc out why rout rrc ws="" wd=""
   for d in $(run_days); do
-    if out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); then echo "$out (already, before this run)"; return 0; fi
+    # 5 WAITING: the pass ran, its dream's pull request is the anchor's to merge
+    out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
+    case $rc in 0|5) echo "$out (already, before this run)"; return 0 ;; esac
+    # 4 LEAKED on any day stops here, first: a word-list stop on another day, before or after, must
+    # not replace it; a word-list stop is kept and every day still read (the vault's file is the
+    # scope's, its heading one day's: the other day may say landed or LEAKED)
+    [ "$rc" = 4 ] && break
+    words_stop "${rc:-}" "${out:-}" && { ws="$out"; wd="$d"; }
   done
+  # a list refused when it was read (where) stops the pass too, once no day said 4, 0 or 5
+  [ -z "$ws" ] && [ -n "$sp_words" ] && { ws="$sp_words"; wd="$day"; }
+  if [ "${rc:-}" != 4 ] && [ -n "$ws" ]; then rc=2; out="$ws"; d="$wd"; fi
+  # a leak on the vault's main needs the owner before any more text goes out; the node's word list
+  # cannot judge the vault's current inbox file (a re: line refused, or one past the scan's clock on it:
+  # scope-pass exit 2 naming words.txt): proof cannot tell whether that file leaks, and a new pass would
+  # write over it, so none runs; any other exit 2 (a torn registry) still runs the pass
+  [ "${rc:-}" = 4 ] || words_stop "${rc:-}" "${out:-}" || {
   scope_account || return 1
   snapshot
   echo "== dream --scope $scope in $cwd"
@@ -1018,20 +1110,34 @@ scope_run() {
   for d in $(run_days); do
     out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
     [ $rc = 1 ] || break
-    # wrote its files and stopped (or an earlier record moved the draft and its commit failed): record here
-    if [ -f "$cwd/dreams/$d.md" ] && { [ -f "$cwd/dreams/$d-upstream.md" ] || head -1 "$P/inbox/upstream/$scope.md" 2>/dev/null | grep -q -- "— $d"; }; then
+    # wrote its files and stopped (or an earlier record committed the dream on the records branch, or moved
+    # the draft, and a later commit failed, or the judge could not tell): record here, once; record reads
+    # a committed dream from its branch, and bytes a complete receipt names are not judged again
+    if [ -f "$cwd/dreams/$d-upstream.md" ] || head -1 "$P/inbox/upstream/$scope.md" 2>/dev/null | grep -q -- "— $d"; then
       echo "== the run left its files unrecorded — scope-pass record $scope --day $d"
-      "$MOD/bin/scope-pass" record "$scope" --day "$d" 2>&1
+      rout=$("$MOD/bin/scope-pass" record "$scope" --day "$d" 2>&1); rrc=$?
+      echo "$rout"
       out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
+      # a list only this draft trips (an empty match, the scan's clock): record's exit 2 says so, but never
+      # over proof's own verdict: LEAKED (4), HELD (3), landed (0) or WAITING (5) stand
+      case $rc in 0|3|4|5) ;; *) if words_stop "$rrc" "$rout"; then rc=2; out="$rout"; fi ;; esac
       break
     fi
   done
+  }
   echo "$out"
+  # the verified receipt, for the barrier: a pass is complete only where it says so (Evolve S2)
+  case $rc in 0|5) echo "RECEIPT $("$MOD/bin/scope-pass" receipt "$scope" --day "$d" 2>&1)" ;; esac
   case $rc in
-    0) return 0 ;;
-    3) why="its inbox file named the scope, so it was held inside the anchor and nothing went upstream" ;;
-    4) why="LEAKED: the inbox file on the vault's main names the scope — look now (scope-pass proof $scope)" ;;
-    *) why="its dream or inbox file is not on main$(cap_note dream)" ;;
+    0|5) return 0 ;;
+    3) why="its draft was held inside the anchor, nothing went upstream (it named the scope, or the judge found something: scope-pass proof $scope)" ;;
+    4) why="LEAKED: the inbox file on the vault's main is not what was judged clean — look now (scope-pass proof $scope)" ;;
+    2) if words_stop "$rc" "$out"; then
+         why="its anchor's .claude/words.txt cannot judge the text: a re: line refused, or one past the scan's clock on it (scope-pass proof $scope --day $d says why; fix it in the node, then the pass reruns)"
+       else
+         why="scope-pass could not read its inputs (exit 2; a torn registry, a missing core): the log's proof line says which (scope-pass proof $scope --day $d)"
+       fi ;;
+    *) why="not landed: its inbox file is not on the vault's main, or its dream has no ready pull request (a judge that could not tell, a commit, a push, no GitHub token: the log's proof line says which; scope-pass record $scope --day $d retries it)$(cap_note dream)" ;;
   esac
   echo "FAILED scope $scope $day: $why"
   post "Aurora's scope pass did not land" "weekly-run aurora --scope $scope $day: $why. Log: $log"
@@ -1044,6 +1150,7 @@ scope_run() {
     scope_run; exit $?
   elif [ "$job" = aurora ]; then
     tend_step
+    probes_step
     [[ " $sections " == *" branches "* ]] && classify_step
     # Each section is a session of its own, in the night's order: one that dies costs only
     # itself, and dream starts with a clean context. charts runs from the layer: EnterWorktree
@@ -1054,6 +1161,7 @@ scope_run() {
       if [ "$s" = branches ] && quiet_week; then continue; fi
       # no session: nothing to snapshot, cap or retry; set +f, as its vertical files are a glob
       if [ "$s" = trim ]; then set +f; trim_step; set -f; continue; fi
+      if [ "$s" = asks ]; then asks_step; continue; fi
       snapshot
       if [ "$s" = charts ]; then
         echo "== charts in $C"

@@ -3,6 +3,7 @@
 
   embark-memo --vault DIR --layer DIR --logs DIR [--date D] [--dream D] [--regatta CLI]
               [--projects DIR] [--keel-embark FILE] [--fetch] [--out FILE] [--meta FILE]
+              [--audience regatta|vault] [--vault-out FILE]
 
 The owner, 2026-10-24: "from now on, I want embark presented to me on the helm whenever it runs
 ... presented on helm dashboard as its course doc." Nobody typed /embark for three weeks, and the
@@ -25,9 +26,23 @@ What the memo holds, in order (the hand-built memo of 2026-10-24 is the shape):
   dry run's PR, when the night's log has a `DRY <url>` line; and one item per FAILED line.
 - The review prompts and Open feedback.
 
-Left out, with a one-line pointer each: a dream item about a venture or the household — one that
-links into the vault's `ventures/`, or says `Vault only: yes` — because regatta holds nothing
-personal; it is answered in the vault.
+**Vault first, then audience views** (Evolve S2; TODO.md's embark-on-helm item as of 2026-11-02, its (2) and (12)). One run builds the memo
+twice from the same parts: the **vault** view, whole — every item, the ventures' and the household's
+included, every Do-this-now line — which `--vault-out` writes (weekly-run: `<vault>/dreams/<day>-
+embark.md`, committed before regatta's copy exists); and the **regatta** view (`--out`, or stdout with
+`--audience regatta`, the default), the permitted one, because regatta holds nothing personal. What the
+regatta view leaves out is any item (the dream's, the branches file's, a sextant PROPOSE, the charts dry
+run, a FAILED line), a copied section or a Do-this-now line about a venture or the household: one that
+holds `ventures/` or `Vault only` anywhere (main's floor before S2, kept), a path to `me/household.md` or
+`me/pointers.md` in any form (`~/…`, another Mac's home, a vault worktree, relative — each source's links
+resolved against its own folder: the sextant entry's against the layer's), or names a venture — a name
+under the vault's `ventures/` (its file or folder name), on word edges, case-blind. A left-out item is one
+pointer line with its number and no title (a title can name the venture); a left-out section or line is
+counted, never dropped silently, and the count points at the vault's copy; a fence the filter empties
+goes with it. Answers are read from regatta's page (/embark parses it); a left-out item is answered where
+its pointer leads, in the vault. An existing vault copy is never written over: a second host or a re-run
+the same day would wipe what was typed there. The parts both views share (`keel embark`, the logs, the
+sextant entry) are read once.
 
 The vault and the layer are read from `origin/main` (after `git fetch` with --fetch), else `main`,
 else the working tree: on the host that runs the sextant the vault's checkout may lag the Mac that
@@ -57,7 +72,8 @@ KEEL_OPTION = re.compile(r"^\s*(?:[-*]\s+)?\*{0,2}[A-Z]\*{0,2}\s*[—–-]\s+\S"
 SKELETON = ("Do this now", "Numbers", "Branches", "P — ", "Q — ", "Feedback from", "Ventures", "What ")
 # the module that owns each step of the night (weekly-run's header): where a FAILED line's TODO goes
 STEP_MODULE = {"tend": "wharf", "classify": "wharf", "branches": "aurora", "charts": "aurora",
-               "dream": "aurora", "scope": "aurora", "proof": "wharf", "sextant": "sextant", "trim": "plumb"}
+               "dream": "aurora", "scope": "aurora", "proof": "wharf", "sextant": "sextant", "trim": "plumb",
+               "probes": "aurora"}
 REVIEW = ("What did you spend attention on this week, against what you planned?",
           "Which recurring manual thing could a session or a routine do?")
 
@@ -186,7 +202,9 @@ def arrow(cell):
     return "→" if now == was else ("↑" if now > was else "↓")
 
 
-def numbers_table(dream_lines, secs, base):
+def numbers_table(dream_lines, secs, base, drop=None):
+    """The dream's Numbers as a table; DROP, a test on a row as printed, leaves a row out (regatta's view)
+    and says how many (the S2 landing's third review)."""
     span = next((v for k, v in secs.items() if k == "Numbers"), None)
     if not span:
         return ["The dream has no Numbers section."]
@@ -197,7 +215,15 @@ def numbers_table(dream_lines, secs, base):
         if len(cells) < 2:
             continue
         out.append("| %s | %s | %s |" % (cells[0], " | ".join(cells[1:]), arrow(cells[1])))
-    return [absolute_links(l, base) for l in out]
+    out = [absolute_links(l, base) for l in out]
+    if drop:
+        kept = out[:2] + [l for l in out[2:] if not drop(l)]
+        gone = len(out) - len(kept)
+        if gone:
+            kept += ["", "%d row%s about a venture or the vault %s left out here: the vault's copy of this memo has %s." % (
+                gone, "" if gone == 1 else "s", "is" if gone == 1 else "are", "it" if gone == 1 else "them")]
+        out = kept
+    return out
 
 
 def do_this_now(text, bold=False):
@@ -214,31 +240,67 @@ def do_this_now(text, bold=False):
     return "\n".join(lines[span[0]:span[1]]).strip() if span else ""
 
 
-def vault_only(block, vault):
-    return bool(re.search(r"^\s*Vault only:\s*yes\b", block, re.M | re.I)) or ("](%s/" % os.path.join(str(vault), "ventures")) in block
+def venture_names(vault):
+    """The ventures' names: each file's stem and folder's name under the vault's `ventures/` (README and
+    names under 3 characters aside), as word-edge, case-blind patterns."""
+    out = []
+    for n in vault.names("ventures"):
+        stem = n[:-3] if n.endswith(".md") else n
+        if len(stem) >= 3 and stem.lower() not in ("readme", "index", "template") and not stem.startswith("."):
+            out.append(re.compile(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(stem), re.I))
+    return out
 
 
-def dream_items(dream, dream_lines, vault, base):
-    """([item text], [pointer line]) — the dream's D-items, made to stand alone, and the left-out ones."""
+# what regatta never holds. The floor is main's test before S2 (`ventures/|Vault only`, a substring
+# anywhere): a narrower one let `~/…`, another Mac's home and a vault worktree through (S2's landing
+# review, findings 1 and 2). The household's and the pointers' files, in any spelling of a path to them.
+FLOOR = re.compile(r"ventures/|Vault only")
+PERSONAL = re.compile(r"(?<![\w.-])me/(?:household|pointers)\.md\b")
+
+
+def vault_only(block, vault=None, names=()):
+    """Is BLOCK the vault's alone: FLOOR (`ventures/` or `Vault only`, anywhere), `Vault only: yes` in any
+    case, a path to the household's or the pointers' file (PERSONAL: `~/…`, absolute under any home, a
+    vault worktree, relative), or a venture's name (venture_names()). VAULT is kept for callers; the
+    test reads no absolute path, which differs from Mac to Mac."""
+    if FLOOR.search(block) or re.search(r"^\s*[-*]?\s*Vault only:\s*yes\b", block, re.M | re.I):
+        return True
+    if PERSONAL.search(block):
+        return True
+    return any(rx.search(block) for rx in names)
+
+
+def dream_items(dream, dream_lines, vault, base, public=True, names=()):
+    """([item text], [pointer line]) — the dream's D-items, made to stand alone, and the left-out ones
+    (PUBLIC, the regatta view: an item vault_only() calls the vault's becomes a pointer, and a copied
+    section it calls so is left out with a count; the vault view keeps both)."""
     secs = sections(dream_lines)
     copyable = {t: s for t, s in secs.items() if not t.startswith(SKELETON)}
     items, left = [], []
     for m, i, j in blocks(dream_lines, DREAM_ITEM):
         text = absolute_links("\n".join(dream_lines[i:j]), base)
         n, kind, title = m.group(1), m.group(2), m.group(3)
-        if vault_only(text, vault):
-            left.append("- The dream's D%s (%s): %s — answered in the vault: [dreams/%s#L%d](%s#L%d)" % (
-                n, kind, title.split("**")[0].strip(), dream.name, i + 1, dream, i + 1))
+        if public and vault_only(text, vault, names):
+            # no title: a title can name the venture (TODO.md's embark-on-helm item as of 2026-11-02, its (2))
+            left.append("- The dream's D%s (%s) — answered in the vault: [dreams/%s#L%d](%s#L%d)" % (
+                n, kind, dream.name, i + 1, dream, i + 1))
             continue
         body = text.split("\n")
-        extra = []
+        extra, held = [], 0
         head = re.sub(r"\*", "", body[0])
         for t, (s, e) in copyable.items():
             if s >= i and s < j:
                 continue
             quoted = re.search(r"[\"“]%s[\"”]" % re.escape(t), text)
             if quoted or t in head:
-                extra.append(copied_section(t, absolute_links("\n".join(dream_lines[s:e]), base)))
+                sec = absolute_links("\n".join(dream_lines[s:e]), base)
+                if public and vault_only(t + "\n" + sec, vault, names):
+                    held += 1
+                    continue
+                extra.append(copied_section(t, sec))
+        if held:
+            extra.append(indent("%d section%s this item quotes %s about a venture or the vault: in the vault's copy of this memo." % (
+                held, "" if held == 1 else "s", "is" if held == 1 else "are")))
         if extra:
             # before the options; with none, before the Reversible/Recommended/Answer tail (never after
             # `➤ Answer:`, where keel reads the copied section as the owner's answer)
@@ -250,8 +312,10 @@ def dream_items(dream, dream_lines, vault, base):
     return items, left
 
 
-def branches_item(text, n, path):
-    """The branches file as one D-item: a table per class, every branch in it."""
+def branches_item(text, n, path, drop=None, dropped=None):
+    """The branches file as one D-item: a table per class, every branch in it. DROP, a test on a row's
+    lines, leaves a row out (regatta's view: a row about a venture), counted in DROPPED; the item stays,
+    so its other rows are answered where /embark reads (the S2 landing's third review)."""
     lines = text.split("\n")
     rows = []
     for k, l in enumerate(lines):
@@ -260,10 +324,18 @@ def branches_item(text, n, path):
         if not m:
             continue
         v = re.match(r"^\s+➤ Answer:\s*(.*)$", lines[k + 1]) if k + 1 < len(lines) else None
+        if drop and drop(l + "\n" + (lines[k + 1] if v else "")):
+            if dropped is not None:
+                dropped.append("P" + m.group(1))
+            continue
         rows.append({"p": m.group(1), "repo": m.group(2), "branch": m.group(3), "cls": m.group(4),
                      "label": m.group(5), "why": m.group(6).replace("|", "\\|"), "verdict": (v.group(1).strip() if v else "") or "—"})
     if not rows:
         return None
+    left = ("  %d row%s about a venture or the vault (%s) %s left out here: the vault's copy of this memo has %s, and "
+            "its answer to this item decides %s; an answer here covers the rows listed."
+            % (len(dropped), "" if len(dropped) == 1 else "s", ", ".join(dropped), "is" if len(dropped) == 1 else "are",
+               "it" if len(dropped) == 1 else "them", "that row" if len(dropped) == 1 else "those rows")) if dropped else ""
     bset = set(re.findall(r"^- \S+ · `([^`]+)` · .*\(P\d+\)\s*$", text, re.M))
     tally = collections.Counter(r["verdict"].split()[0] for r in rows)  # "resume (/pickup x)" counts as resume
     out = ["- **D%d — The branches file's verdicts: %d branches, %s**" % (
@@ -273,7 +345,7 @@ def branches_item(text, n, path):
         "  archive is the owner's, never an agent's); **resume** becomes a `/todo handoff` in its repo, which",
         "  `/pickup` starts fresh; **wait** does nothing this week. A **B** in the last column: the branch is",
         "  on the file's \"B would have archived\" list (probably landed; the night archives only what is",
-        "  proved superseded). Source: [%s](%s)." % (Path(path).name, path), ""]
+        "  proved superseded). Source: [%s](%s)." % (Path(path).name, path), ""] + ([left, ""] if left else [])
     by = collections.OrderedDict()
     for r in sorted(rows, key=lambda r: (r["cls"], r["repo"], r["branch"])):
         by.setdefault((r["cls"], r["label"]), []).append(r)
@@ -422,6 +494,9 @@ def main(argv=None):
     ap.add_argument("--fetch", action="store_true", help="git fetch the vault and the layer first")
     ap.add_argument("--out")
     ap.add_argument("--meta", help="also write {dream, items} as JSON here (weekly-run's embark-latest.json)")
+    ap.add_argument("--audience", choices=("regatta", "vault"), default="regatta",
+                    help="the view --out (or stdout) gets: regatta's permitted one, or the vault's whole one")
+    ap.add_argument("--vault-out", help="also write the vault's whole view here, first")
     a = ap.parse_args(argv)
 
     vault = Source(a.vault, a.fetch)
@@ -455,22 +530,22 @@ def main(argv=None):
                 if len(t) > len(design):
                     design = t
 
-    secs = sections(dlines)
-    items, left = dream_items(dpath, dlines, Path(a.vault), dpath.parent)
+    names = venture_names(vault)
+    vault_memo = Path(a.vault_out) if a.vault_out else None
+
+    # The parts both views share, read once (S2's landing review, finding 9): `keel embark` scans every
+    # project, and two scans could also disagree. Their numbers follow the dream's, the same in both views.
     nums = [int(m.group(1)) for m, _, _ in blocks(dlines, DREAM_ITEM)]
     n = max(nums, default=0) + 1
-    legend = []
-    if items:
-        legend.append("the dream's D-items keep its numbers (%s), so its cross-references hold" % ", ".join(
-            re.match(r"- \*\*(D\d+ — [PQ]\d+)", t).group(1).replace(" — ", "/") for t in items))
+    others = []   # (D number, what, text)
     bitem = branches_item(btext, n, bpath) if btext else None
     if bitem:
-        legend.append("D%d the branches file" % n)
+        others.append((n, "the branches file", bitem))
         n += 1
     sitems, smissing = sextant_items(entry or "", design, n, Path(a.layer) / "DESIGN.md") if entry else ([], [])
-    if sitems:
-        legend.append("D%d–D%d the sextant entry's PROPOSE items" % (n, n + len(sitems) - 1) if len(sitems) > 1 else "D%d the sextant's PROPOSE item" % n)
-        n += len(sitems)
+    for s in sitems:
+        others.append((n, "a sextant PROPOSE item", s))
+        n += 1
     logs = [dday + "-aurora.log"] + ([epath.stem + "-sextant.log"] if epath else [])
     dry = None
     try:
@@ -479,58 +554,154 @@ def main(argv=None):
         pass
     citem = charts_item(n, dry[-1], Path(a.logs) / logs[0]) if dry else None
     if citem:
-        legend.append("D%d the charts dry run" % n)
+        others.append((n, "the charts dry run", citem))
         n += 1
     fails = failed_lines(a.logs, logs, [("dreams/" + dname, dtext), ("dreams/%s-branches.md" % dday, btext)]) if a.logs else []
-    fitems = []
     for step, day, why, src, before in fails:
-        fitems.append(failed_item(n, step, day, why, src, before))
+        others.append((n, "a FAILED line", failed_item(n, step, day, why, src, before)))
         n += 1
-    if fitems:
-        legend.append("D%d–D%d the night's FAILED lines" % (n - len(fitems), n - 1) if len(fitems) > 1 else "D%d the night's FAILED line" % (n - 1))
+    counts = embark_counts(keel_embark(a))
+    vault_ref = "[the vault's copy](%s#L1)" % vault_memo if vault_memo else "the vault's copy of this memo (`--vault-out`)"
 
-    out = ["# Embark %s — decision memo: the week's sitting" % a.date, "",
-           "The sitting, written by weekly-run's `embark` step: everything the %s dream, its branches file "
-           "and the sextant entry ask, one decision per item, each with its own context. Answer here; the "
-           "vault's files stay the record. Sources: [the dream](%s), %s, %s." % (
-               dday, dpath, "[the branches file](%s)" % bpath if btext else "no branches file this week",
-               "[the sextant entry](%s)" % epath if entry else "no sextant entry after the dream"), ""]
-    if left:
-        out += ["Left out on purpose: about a venture or the household, so answered in the vault, not here.", ""] + left + [""]
-    if entry and smissing:
-        out += ["The sextant entry names %s, which DESIGN.md on main does not hold yet (its reviewed `-changes` "
-                "worktree has not landed): %s." % ("a PROPOSE item" if len(smissing) == 1 else "PROPOSE items",
-                                                   ", ".join("D" + w for w in smissing)), ""]
-    out += ["## Numbers (the dream's, last week in brackets)", ""] + numbers_table(dlines, secs, dpath.parent) + [""]
-    def keep_public(t):  # regatta holds nothing personal: a line naming a venture or the vault stays there
-        keep = [l for l in (t or "").splitlines() if not re.search(r"ventures/|Vault only", l)]
-        return "\n".join(keep).strip()
-    dn = keep_public(do_this_now(dtext))
-    sn = keep_public(do_this_now(entry or "", bold=True))
-    if (dn and not dn.lower().startswith("nothing")) or sn:
-        out += ["## Do this now", ""]
-        if dn and not dn.lower().startswith("nothing"):
-            out += ["From the dream:", "", absolute_links(dn, dpath.parent), ""]
-        if sn:
-            out += ["From the sextant entry:", "", absolute_links(sn, epath.parent), ""]
-    out += ["## What the sweep cannot take", ""] + embark_counts(keel_embark(a)) + [""]
-    out += ["## Decisions", ""]
-    if legend:
-        out += ["Legend: " + "; ".join(legend) + ".", ""]
-    every = items + ([bitem] if bitem else []) + sitems + ([citem] if citem else []) + fitems
-    if not every:
-        out += ["Nothing to decide this week: the dream holds no D-items, and nothing else asks.", ""]
-    for t in every:
-        out += [t, ""]
-    out += ["---", "", "## Review (free text under each)", ""] + ["- " + q for q in REVIEW] + ["", "## Open feedback", ""]
-    text = "\n".join(out)
+    numbered = [True]   # False once a kept vault copy may number its items otherwise (TODO.md's embark-on-helm item as of 2026-11-02, its (15))
+
+    def pointer(k, what):
+        return ("- D%d (%s)" % (k, what) if numbered[0] else "- %s" % what[0].upper() + what[1:]) + \
+            " — about a venture or the vault: in %s" % vault_ref
+
+    def compose(public):
+        secs = sections(dlines)
+        items, left = dream_items(dpath, dlines, Path(a.vault), dpath.parent, public, names)
+        legend = []
+        if items:
+            legend.append("the dream's D-items keep its numbers (%s), so its cross-references hold" % ", ".join(
+                re.match(r"- \*\*(D\d+ — [PQ]\d+)", t).group(1).replace(" — ", "/") for t in items))
+        kept = []
+        for k, what, text in others:
+            if public and what == "the branches file" and vault_only(text, a.vault, names):
+                text = branches_item(btext, k, bpath, lambda l: vault_only(l, a.vault, names), [])
+                if text is None:   # every row was the vault's
+                    left.append(pointer(k, what))
+                    continue
+            if public and vault_only(text, a.vault, names):
+                left.append(pointer(k, what))
+            else:
+                kept.append((k, what, text))
+        groups = collections.OrderedDict()
+        for k, what, _ in kept:
+            groups.setdefault(what, []).append(k)
+        for what, ks in groups.items():
+            plural = {"the branches file": what, "a sextant PROPOSE item": "the sextant entry's PROPOSE items",
+                      "the charts dry run": what, "a FAILED line": "the night's FAILED lines"}[what]
+            one = {"a sextant PROPOSE item": "the sextant's PROPOSE item", "a FAILED line": "the night's FAILED line"}.get(what, what)
+            legend.append("D%d %s" % (ks[0], one) if len(ks) == 1 else "D%d–D%d %s" % (ks[0], ks[-1], plural))
+
+        out = ["# Embark %s — decision memo: the week's sitting%s" % (a.date, "" if public else " (the vault's whole copy)"), "",
+               "The sitting, written by weekly-run's `embark` step: everything the %s dream, its branches file "
+               "and the sextant entry ask, one decision per item, each with its own context. %s; the "
+               "vault's files stay the record. Sources: [the dream](%s), %s, %s." % (
+                   dday, "Answer here" if public else "Answer on regatta's page", dpath, "[the branches file](%s)" % bpath if btext else "no branches file this week",
+                   "[the sextant entry](%s)" % epath if entry else "no sextant entry after the dream"), ""]
+        if public and vault_memo:
+            out += ["The whole memo, ventures and the household included, is the vault's: [%s](%s#L1). This one "
+                    "is the view regatta may hold." % (vault_memo.name, vault_memo), ""]
+        elif not public:
+            out += ["This is the vault's whole copy, written first; regatta's board holds the permitted view, without "
+                    "the ventures' and the household's items. Answer on regatta's page, where /embark reads the "
+                    "answers; an item left out there is answered here (a dream's item in the dream, where its pointer "
+                    "leads), and /embark reads this copy for it.", ""]
+        if left:
+            out += ["Left out on purpose: about a venture or the household, so answered in the vault, not here.", ""] + left + [""]
+        if entry and smissing:
+            out += ["The sextant entry names %s, which DESIGN.md on main does not hold yet (its reviewed `-changes` "
+                    "worktree has not landed): %s." % ("a PROPOSE item" if len(smissing) == 1 else "PROPOSE items",
+                                                       ", ".join("D" + w for w in smissing)), ""]
+        out += ["## Numbers (the dream's, last week in brackets)", ""] + numbers_table(dlines, secs, dpath.parent, (lambda l: vault_only(l, a.vault, names)) if public else None) + [""]
+        dropped = [0]
+
+        def keep_public(t, base):
+            """Regatta holds nothing personal: a line vault_only() calls the vault's stays there, counted
+            (TODO.md's embark-on-helm item as of 2026-11-02, its (12)); a fence it empties goes with it. Each line's links are resolved against
+            BASE, its own source's folder, as they are printed (finding 2)."""
+            if not public:
+                return (t or "").strip()
+            def bad(l):
+                return l.strip() and (vault_only(l, a.vault, names) or vault_only(absolute_links(l, base), a.vault, names))
+            # a unit is a fenced block whole, or a line with the lines a trailing `\\`, `&&` or `|` joins to
+            # it: dropping one line of a paste would change what the rest runs (the S2 landing's third review)
+            units, cur, fence = [], [], None
+            for l in (t or "").splitlines():
+                cur.append(l)
+                m = re.match(r"^\s*(```|~~~)", l)
+                if fence is None and m:
+                    fence = m.group(1)
+                    continue
+                if fence is not None:
+                    if l.strip().startswith(fence) and len(cur) > 1:
+                        fence = None
+                        units.append(cur)
+                        cur = []
+                    continue
+                if l.lstrip().startswith("|") or not re.search(r"(\\|&&|\|\||\|)\s*$", l):   # a table row joins nothing
+                    units.append(cur)
+                    cur = []
+            if cur:
+                units.append(cur)
+            keep = []
+            for u in units:
+                if any(bad(l) for l in u):   # counted in lines, fence markers aside
+                    dropped[0] += max(1, sum(1 for l in u if l.strip() and not re.match(r"^\s*(```|~~~)", l)))
+                else:
+                    keep += u
+            text = re.sub(r"(?m)^(\s*)```[^\n]*\n(?:\s*\n)*\1```\s*$\n?", "", "\n".join(keep) + "\n")
+            return text.strip()
+        dn = keep_public(do_this_now(dtext), dpath.parent)
+        sn = keep_public(do_this_now(entry or "", bold=True), epath.parent if epath else dpath.parent)
+        live = bool(dn and not dn.lower().startswith("nothing"))
+        if live or sn or dropped[0]:
+            out += ["## Do this now", ""]
+            if live:
+                out += ["From the dream:", "", absolute_links(dn, dpath.parent), ""]
+            if sn:
+                out += ["From the sextant entry:", "", absolute_links(sn, epath.parent), ""]
+            if dropped[0]:
+                out += ["%d line%s about a venture or the vault %s left out here: %s has %s." % (
+                    dropped[0], "" if dropped[0] == 1 else "s", "is" if dropped[0] == 1 else "are",
+                    vault_ref, "it" if dropped[0] == 1 else "them"), ""]
+        out += ["## What the sweep cannot take", ""] + counts + [""]
+        out += ["## Decisions", ""]
+        if legend:
+            out += ["Legend: " + "; ".join(legend) + ".", ""]
+        every = items + [text for _, _, text in kept]
+        if not every:
+            out += ["Nothing to decide this week: the dream holds no D-items, and nothing else asks.", ""]
+        for t in every:
+            out += [t, ""]
+        out += ["---", "", "## Review (free text under each)", ""] + ["- " + q for q in REVIEW] + ["", "## Open feedback", ""]
+        return "\n".join(out), len(every)
+
+    # vault first: the whole copy is written before the permitted view exists — once: a copy already there
+    # (another host's, or this run's before a re-run) may hold the owner's typing (finding 4)
+    if vault_memo and vault_memo.exists():
+        print("embark-memo: %s exists — kept as it is, never written over" % vault_memo, file=sys.stderr)
+        # a re-run with new inputs may number the items otherwise than the kept copy: a pointer then names
+        # the item by what it is, never by a D-number the copy may give another item (TODO.md's embark-on-helm item as of 2026-11-02, its (15))
+        try:
+            numbered[0] = vault_memo.read_text(encoding="utf-8").startswith(compose(False)[0])
+        except OSError:
+            numbered[0] = False
+    elif vault_memo:
+        whole, _ = compose(False)
+        vault_memo.parent.mkdir(parents=True, exist_ok=True)
+        vault_memo.write_text(whole, encoding="utf-8")
+    text, count = compose(a.audience == "regatta")
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
     if a.meta:
-        Path(a.meta).write_text(json.dumps({"dream": dday, "items": len(every)}) + "\n")
+        Path(a.meta).write_text(json.dumps({"dream": dday, "items": count, "vault_memo": str(vault_memo) if vault_memo else None}) + "\n")
     return 0
 
 

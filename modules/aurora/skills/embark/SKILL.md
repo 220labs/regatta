@@ -58,7 +58,11 @@ is a D-item in the memo, answered on its course (the 10-24 memo's D2-A, 2026-10-
 
 ## 3. Read the answers
 
-`<regatta> keel parse <doc>` gives each item's answer. The memo keeps the dream's D-numbers, and
+`<regatta> keel parse <doc>` gives each item's answer. An item regatta's view lists under "Left out on purpose" is answered in
+the vault's copy (`dreams/<date>-embark.md`, linked at the memo's head): `keel parse` that copy for it. The branches item
+regatta's view keeps with rows left out ("1 row … (P3) is left out here"): its answer covers the rows it
+lists, and each left-out row takes its verdict from the vault copy's branches item (its title starts "The branches
+file's verdicts"; match by title, as a kept copy may number its items otherwise). The memo keeps the dream's D-numbers, and
 each title names its source: the dream's P- or Q-item, the branches file, a sextant D-number, the
 charts PR, a FAILED line, or an item section 1 added. An item with no answer stays open: it is
 neither applied nor recorded as *not now*. The review prompts' answers sit under the memo's Review

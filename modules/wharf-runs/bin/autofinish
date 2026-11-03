@@ -40,8 +40,15 @@ rules; E3, the triggers; E6's half, the /autofinish override.
         this Mac's switch, ~/.local/state/autofinish/armed (JSON {"by", "ts"}). Disarmed is the
         default and means: verdicts and logs only, nothing starts, whatever the trigger. The owner,
         2026-10-05: three hours of the dry log first, read by the parent, then armed. `arm`
-        refuses under CLAUDE_UNATTENDED (a runner, any dispatch session): an interactive session
+        refuses under REGATTA_UNATTENDED or CLAUDE_UNATTENDED (a runner, any dispatch session): an interactive session
         arms on the owner's word; nothing unattended arms itself.
+  autofinish arm --landings [--by <who>] | disarm [--landings]
+        the landing switch, ~/.local/state/autofinish/landings (JSON {"by", "ts"}; task-shape S3,
+        docs/task-shape-2026-10-29.md): dispatch reads it once, at a mode `default` build's prompt, and
+        that run, done, ends on the hand-over line and its landing starts at once, `autofinish-run
+        --by handed`. Apart from `armed` (it starts no sweep; yolo and dnd launches still need `armed`).
+        `arm --landings` refuses unattended as `arm` does; a plain `disarm` turns both off,
+        `disarm --landings` this one alone.
   autofinish override [now | off] [<branch>]
         /autofinish's verb (skills/autofinish): writes or removes the marker for this worktree,
         or for <branch>'s in this repo, then prints the branch's verdict and the switch. Refused
@@ -68,10 +75,12 @@ bin/autofinish-run.
 
 The run record — the contract E1's runner writes and the hooks read (hooks/common.py's readers):
   <git dir>/claude/autofinish.json, one per worktree, the last run on it:
-    {"started": iso, "session": uuid, "tip": sha, "by": "sweep|override|brief|typed|yolo|dnd",
+    {"started": iso, "session": uuid, "tip": sha, "by": "sweep|override|brief|typed|yolo|dnd|ship|chain|handed",
      "rule": "A|B|C|D|E|L|M", "window": str, "account": label|dir|"oauth-token"|null, "ended": iso|null,
-     "outcome": "launched|stopped|never-started|died"|null, "pr": int|null, "gate": str|null}
-    plus `"merge": true` for a run started with `--merge`, `"hold": "<why>"` for one held at a ready
+     "outcome": "launched|stopped|never-started|died"|null, "pr": int|null, "gate": str|null,
+     "pushed": sha|null, "base": str|null, "base_tip": sha|null}
+    (the last three written at the end of a run a gate let start: what --settle proves a landing by,
+    task-shape S1), plus `"merge": true` for a run started with `--merge`, `"hold": "<why>"` for one held at a ready
     PR (S3b; autofinish-run's header), `"host": "<peer>"` for one sent to the peer and `"from":
     "<host>"` on the peer for one that host sent (autofinish-run's header, Where: its end comes from
     there, through the waiter or dead()/bury()); each absent otherwise
@@ -87,7 +96,8 @@ The run record — the contract E1's runner writes and the hooks read (hooks/com
     <iso> died <branch> <tip7> <dispatch log's last line>   (the sweep's, for a runner that died)
   sync.py's session start says each new line once; `bin/repos --branches` groups the latest per
   branch as `autofinished` and `stopped` (never-started and died are stops).
-The state dir (AUTOFINISH_STATE_DIR, else ~/.local/state/autofinish): `armed`; `first-armed`
+The state dir (AUTOFINISH_STATE_DIR, else ~/.local/state/autofinish): `armed`; `landings` (the landing
+switch, task-shape S3: a done `default` build hands its landing to dispatch); `first-armed`
 ({"ts"}, the launch door's start, kept across disarm and re-arm); `tried.jsonl`,
 one {"ts","repo","branch","tip","rule","kind"} per runner started, so a tip is never started
 twice — unless its run record says gate `refused` (`not-launched` before 2026-10-17; dispatch refused
@@ -325,7 +335,7 @@ STATE = common.autofinish_state_dir()
 # is the brief's (2026-10-05): a runner is a whole /finish session, and the next tick is 10 min away.
 SWEEP_CAP = 1
 LOCK_TTL = 20 * 60  # a sweep lock older than this is a sweep that died: taken over (R12)
-RUNNER_TIMEOUT = 120  # start_runner's wait: autofinish-run detaches after its pick (15 + 5 s) and ending a warm run (90 s), 110 s at worst
+RUNNER_TIMEOUT = 120  # start_runner's wait: autofinish-run detaches after its origin read, its pick (15 + 5 s) and ending a warm run, inside its 110 s budget (start_here caps that end)
 TAIL_BYTES = 4_000_000  # a transcript's tail read for the last reply; tool output runs to MBs
 REFUSED_GATES = common.REFUSED_GATES  # bin/autofinish-run's gate for a run dispatch refused: nothing ran
 STOOD_BY = "Stood-By: autofinish"  # bin/keel's STOOD_TRAILER, on the commit `stand --apply` makes
@@ -389,7 +399,7 @@ def start_runner(worktree, rule, cfg=None):
     verdict bound (inside RUNNER_TIMEOUT; not confirmed exits 0). Rule C is the owner's /autofinish, so it is
     recorded as `override`; every other rule is the sweep's. A non-zero exit is a failed start
     (2: not a claude/* worktree, 3: refused — that tip tried, or a run already going, 5: dispatch
-    refused it, nothing ran)."""
+    refused it, 6: origin's branch holds what the tip lacks or moved it past what was judged; nothing ran)."""
     by = runner_by(worktree, rule)
     # without the login variables a hook or a dispatched session passed down: the runner picks
     # its login as week() did; only a typed hand-off (cold_prompt) keeps the caller's. `cfg`: the
@@ -671,6 +681,122 @@ def brief_held(repo, wt, main, cfg=None):
         why = "class 2, in_place, the list or the workflows: a yes at the brief never lands it"
     g = next((p for p in paths if held and p.startswith(held)), None)
     return f"a held path ({g}; {why})" if g else None
+
+
+# The slice a `--by handed` landing holds (task-shape D1). The owner answered C on 2026-10-29: a handed
+# landing lands what a typed /finish lands, so nothing is held — class 2 and the list included, a leak with
+# no undo accepted by that answer. The one line to change: D1-A is "exclude" (held_slice under yolo: the base's
+# `autofinish_exclude` and `in_place`), D1-B is "brief" (brief_held's slice: class 2, in_place, the list and the
+# workflows); a tuple of path prefixes holds those paths. Before A: repo_config reads a `git show` that times out
+# as "no .claude/workflow.json", which handed_held exempts (a repos.json opt-in), so A would fail open there;
+# B holds on every config problem (S2's review round 2).
+HANDED_SLICE = ()
+
+
+UNION_LINE_RE = re.compile(r"\s*(#.*)?|\s*/?(TODO|CHANGELOG)\.md\s+merge=union\s*")
+
+
+def union_lines_only(wt, base, tip, path):
+    """Whether a branch's change to a .gitattributes only adds blank lines, comments and `TODO.md merge=union` /
+    `CHANGELOG.md merge=union` (todo-md migrate's lines): a merge attribute never makes a binary read as text, so
+    the guard below has nothing to fear from it, and every repo's first `/todo` writes one (the todo-ids
+    landing review: one typed /finish per repo otherwise). Any removed line, or any other added line, holds.
+    The two versions' lines are compared in order, never a diff's text: a diff header skipped by its
+    `+++`/`---` prefix hid an added `++*.dat diff` (the todo-driver landing review), and bytes that do not
+    decode hold rather than crash."""
+    def lines(rev):
+        try:
+            r = subprocess.run(["git", "-C", str(wt), "show", f"{rev}:{path}"], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode != 0:
+            return [] if rev == base else None  # a new file: nothing before it
+        try:
+            text = r.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        # split as git does, on \n alone: splitlines() also breaks on \v, \f and the like, so `* text=auto\v#x
+        # diff` read as the old line and a comment while git set `diff` everywhere (round 3's review); a line
+        # holding any such character holds
+        out = text.split("\n")
+        if out and out[-1] == "":
+            out.pop()
+        if any(ch in ln for ln in out for ch in "\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+            return None
+        return [ln.rstrip("\r") for ln in out]
+    old, new = lines(base), lines(tip)
+    if old is None or new is None:
+        return False
+    # in order: the old lines, every one, in their order, with only union lines between them (round 2's
+    # review: as multisets, `*.bin -diff` moved above `*.bin diff` passed, and the later line is the one git reads)
+    k, added = 0, 0
+    for ln in new:
+        if k < len(old) and ln == old[k]:
+            k += 1
+        elif UNION_LINE_RE.fullmatch(ln):
+            added += 1
+        else:
+            return False
+    return k == len(old) and added > 0
+
+
+def handed_held(repo, wt, main, cfg=None, slice_=None):
+    """Why a `--by handed` landing stops at a ready PR, or None when it may merge (task-shape S2). `handed`
+    is a label dispatch types when a done `default` build hands its landing over, never a person's yes: it
+    is outside autofinish-run's PERSON_BY and MERGE_BY, so mode ask still holds it there and `--merge` is
+    refused. Under D1-C the slice (HANDED_SLICE) is empty and a readable branch of plain text lands as a
+    typed /finish does. Held whatever the slice, so a later A or B never inherits a pass: what does not read
+    (no merge-base, a path list that will not read or reads empty, a numstat that will not read or lacks a
+    path the list names, a workflow config that will not parse; a repo with none at all has nothing to hold),
+    a binary added or changed (the contract's "never a binary"; deleting one lands), a `.gitattributes` the
+    branch changes (numstat reads the worktree's attributes, so `*.bin diff` would hide a binary; an
+    uncommitted one or `info/attributes` still would: an accident guard, not a wall) bar a root one that only
+    adds the TODO.md / CHANGELOG.md union lines (union_lines_only), and the
+    launcher's own gates in the launcher's repo, which every unattended landing leaves to a person (the
+    git-workflow rule; held_slice holds them in every mode). Paths only, but for that one file's lines: no
+    other line of the diff is read, so a stray CR or byte never holds what a typed /finish lands (S2's review)."""
+    held = HANDED_SLICE if slice_ is None else slice_
+    tip = git(wt, "rev-parse", "HEAD")
+    base = git(wt, "merge-base", f"origin/{main}", tip) if tip else None
+    if not base:
+        return f"no merge-base with origin/{main}"
+    fields = (raw(wt, "diff", "--no-renames", "--name-status", "-z", base, tip) or "").split("\0")
+    status = {p: st[:1] for st, p in zip(fields[0::2], fields[1::2]) if p}
+    paths = sorted(status)
+    if not paths:
+        # git failing or timing out reads as empty as often as a branch with nothing in it (brief_held's finding 7)
+        return "the branch's diff could not be read (or is empty)"
+    counts = {}
+    for r in (raw(wt, "diff", "--no-renames", "--numstat", "-z", base, tip) or "").split("\0"):
+        parts = r.split("\t", 2)
+        if len(parts) == 3:
+            counts[parts[2]] = parts[0]
+    if any(p not in counts for p in paths):
+        return "the branch's diff could not be read in full"
+    # by basename, case folded: on a case-insensitive disk git reads `.GitAttributes`, even `.gitattributeſ`, as
+    # the file (S2's review rounds 3 and 4); casefold, not lower, as APFS folds
+    g = next((p for p in paths if p.rsplit("/", 1)[-1].casefold() == ".gitattributes"
+              and not (p == ".gitattributes" and union_lines_only(wt, base, tip, p))), None)
+    if g:
+        return f"a .gitattributes change ({g}): a binary cannot be told from text by the branch's own attributes"
+    binary = [p for p in paths if counts[p] == "-" and status[p] != "D"]
+    if binary:
+        return f"a binary ({binary[0]}): no landing carries one unread"
+    if Path(repo).name == LAUNCHER:
+        # case folded for the same disk: `Hooks/x.py` lands over hooks/ in a main checkout on APFS (round 4)
+        g = next((p for p in paths if p.casefold().startswith(tuple(x.casefold() for x in GATES))), None)
+        if g:
+            return f"the launcher's own gate ({g})"
+    _, _, problem, exclude = cfg or repo_config(repo, main)
+    # a repo with no list of its own (none, or one that opted out) has nothing to hold, as a typed /finish there
+    if problem and not problem.startswith(("no .claude/workflow.json", "unknown autofinish value")) \
+            and not problem.endswith("carries .claude/no-workflow"):
+        return f"the repo's config ({problem})"
+    if held == "brief":
+        return brief_held(repo, wt, main, cfg)
+    held = tuple(exclude or ()) if held == "exclude" else (held,) if isinstance(held, str) else tuple(held)
+    g = next((p for p in paths if held and p.startswith(held)), None)
+    return f"a held path ({g}; the handed slice, task-shape D1)" if g else None
 
 
 def mode_asks(wt, asks, status, fetch):
@@ -970,6 +1096,15 @@ def queue_hold(repo, branch):
     next step: held on it, a run idle in its warm hour waited for its own end (S3's third landing review,
     item 6); one running on another host stays a hold (the in-round review)."""
     return queue_holds().why(repo, branch, here=host())
+
+
+def queue_ended(repo, branch):
+    """BRANCH's finish tombstone in dispatch's queue (queue_holds' ended(): its tip, where it ran, its outcome), or
+    None — none, or a reader that cannot tell (why() holds the branch then)."""
+    try:
+        return getattr(queue_holds(), "ended", lambda *a: None)(repo, branch)
+    except Exception:   # noqa: BLE001 — a verdict never fails on it: why() above judged the queue's answer
+        return None
 
 
 def mtime(p):
@@ -1488,6 +1623,9 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
             return f"skip: open step ({why})"
     if unparsed:
         return f"skip: asks ({unparsed[0]}: unparsed diff)"
+    # a root .gitattributes that only adds the union lines rides with the records it serves (rule A): a
+    # repo's first `/todo` writes it beside TODO.md (union_lines_only)
+    ua = {p for p in status if p == ".gitattributes" and status[p] in ("A", "M") and union_lines_only(wt, base, tip, p)}
 
     # asks, and rule D — the only start a branch with asks lines can get, bar rule M
     asks = [h for p in sorted(status) for h in asks_in(p, added.get(p, []), status[p])]
@@ -1598,8 +1736,8 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
         else:
             if binary:
                 return f"skip: binary ({binary[0]})"
-            outside = next((p for p in sorted(status) if not under(p, records)), None)
-            untext = next((p for p in sorted(status) if not p.endswith(TEXT_SUFFIXES)), None)
+            outside = next((p for p in sorted(status) if p not in ua and not under(p, records)), None)
+            untext = next((p for p in sorted(status) if p not in ua and not p.endswith(TEXT_SUFFIXES)), None)
             if not outside and not untext:
                 skip = gate_skip(repo, main, exclude, status)  # in_place and excluded paths too
                 if skip:
@@ -1667,6 +1805,13 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
     held = queue_hold(repo, branch)
     if held:
         return f"skip: {held}"
+    # finish-as-task: a finish of this very tip ran on some host (its tombstone in the queue) — one run per tip, the
+    # queue's word on every host, as this worktree's own same-tip stop is (autofinish-run's put is refused alike).
+    # A run that died is retried once, by its tombstone too
+    tomb = queue_ended(repo, branch)
+    if tomb and tomb.get("tip") == tip and (tomb.get("outcome") != DIED or int(tomb.get("died_n") or 1) >= 2):
+        return (f"skip: its finish on this tip ran on {tomb.get('ran_on') or '?'} "
+                f"({tomb.get('outcome') or 'its end not recorded yet'}{' ' + tomb['gate'] if tomb.get('gate') else ''}) — waits for a new commit")
 
     # GitHub: pushed, not moved on, the PR still WIP and quiet since the tip
     remote = origin_tip(repo, branch)
@@ -1808,11 +1953,36 @@ def disarm():
         pass
 
 
+def arm_landings(by):
+    """The landing switch (task-shape S3): dispatch reads it once, at a `default` build's prompt, and
+    hands that run's landing to its launch (`--by handed`). Apart from `armed`: it starts no sweep."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    tmp = STATE / f".landings.{os.getpid()}"
+    tmp.write_text(json.dumps({"by": by, "ts": stamp().isoformat(timespec="seconds")}) + "\n")
+    os.replace(tmp, STATE / "landings")
+
+
+def disarm_landings():
+    try:
+        (STATE / "landings").unlink()
+    except FileNotFoundError:
+        pass
+
+
 def switch_line():
     a = armed()
     if not a:
         return "disarmed — verdicts and logs only; nothing starts (autofinish arm)"
     return f"armed by {a.get('by') or '?'} at {a.get('ts') or '?'} — `start` verdicts start runners (autofinish disarm)"
+
+
+def landings_line():
+    # a core older than wharf-runs (each module its own plugin) has no switch reader: the switch reads off
+    h = getattr(common, "autofinish_landings", lambda: None)()
+    if not h:
+        return "landings off — a done `default` build waits for a /finish (autofinish arm --landings)"
+    return (f"landings on, by {h.get('by') or '?'} at {h.get('ts') or '?'} — a done `default` build hands "
+            f"its landing to dispatch (autofinish disarm --landings)")
 
 
 TRIED = "tried.jsonl"
@@ -1822,9 +1992,11 @@ def unattended_refusal(verb):
     """Why `verb` is refused here, or None: a runner, or any dispatch session, never arms the
     launcher nor writes the owner's override (review, 2026-10-05: the marker says `by: <owner>`, and the
     runner's allowlist pre-approves bin/*)."""
-    if os.environ.get("CLAUDE_UNATTENDED"):
-        return (f"autofinish {verb}: refused in an unattended session (CLAUDE_UNATTENDED="
-                f"{os.environ['CLAUDE_UNATTENDED']}) — arming and the override are {OWNER_S}")
+    # the core's names (REGATTA_UNATTENDED beside the old one since vendor-fence), never a copy of the list
+    for n in getattr(common, "UNATTENDED_NAMES", ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED")):
+        if os.environ.get(n):
+            return (f"autofinish {verb}: refused in an unattended session ({n}="
+                    f"{os.environ[n]}) — arming and the override are {OWNER_S}")
     return None
 
 
@@ -2212,20 +2384,31 @@ def main(argv=None):
     ap.add_argument("--session", metavar="ID", help="with --worktree: the caller's session, never busy for itself")
     ap.add_argument("--reply", metavar="FILE", help="with --worktree: the last reply's text, in place of the transcript")
     ap.add_argument("--by", default=os.environ.get("USER") or "?", help="arm: who armed it")
+    ap.add_argument("--landings", action="store_true",
+                    help="arm | disarm: the landing switch alone (task-shape S3), not the sweep's")
     a = ap.parse_args(argv)
+    if a.landings and a.cmd not in ("arm", "disarm"):
+        ap.error("--landings goes with arm or disarm")
     if a.cmd == "arm":
-        why = unattended_refusal("arm")
+        why = unattended_refusal("arm --landings" if a.landings else "arm")
         if why:
             sys.exit(why)
-        arm(a.by)
-        print(switch_line())
+        arm_landings(a.by) if a.landings else arm(a.by)
+        print(landings_line() if a.landings else switch_line())
         return 0
     if a.cmd == "disarm":
+        # a plain disarm turns both off: the switch must not outlive the experiment (task-shape's risks)
+        if a.landings:
+            disarm_landings()
+            print(landings_line())
+            return 0
         disarm()
-        print(switch_line())
+        disarm_landings()
+        print(f"{switch_line()} · {landings_line()}")
         return 0
     if a.cmd == "status":
-        print(switch_line())
+        # one line: the overlay's bootstrap and install.sh read its first word, and print it after one label
+        print(f"{switch_line()} · {landings_line()}")
         return 0
     if a.cmd == "override":
         return set_override(a.args, Path.cwd())

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--room fable] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
-    account limits [LABEL | --all [--parked] [--orca]] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for
+    account limits [LABEL | --all [--parked] [--orca]] [--hide LABELS] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for; --hide: rows left out, never probed
     account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
-    account refresh [--force]                                   the Drive-backed files' local copies, re-read (the usage tick's, through claude-host; exit 3 outside it)
-    account tenant set NAME --repos KEY… --logins LABEL…        one tenant into the tenants file (a login in one tenant only), then its copy refreshed; a person's (exit 2 unattended)
+    account refresh [--force]                                   the Drive-backed files' local copies, re-read, and the budgets key linked beside the tenants file's target where it is missing (the usage tick's, through claude-host; exit 3 outside it)
+    account tenant set NAME --repos KEY… --logins LABEL… [--confine LABEL=KEY[,KEY…]…]   one tenant into the tenants file (a login in one tenant only; a confined routing login, named by --confine and never in --logins, owns only those of its repos; a bare --confine drops them), then its copy refreshed; a person's (exit 2 unattended)
     account tenant drop NAME                                    one tenant out of the tenants file, then its copy refreshed; a person's too
     account which                                               the label of the dir this process runs under
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
@@ -52,10 +52,14 @@ is empty.
 Limits are read without switching anything: a headless `claude -p` answering one `get_usage`
 control request — no model call, $0, about 4 s (probed 2026-10-03). It runs with
 `--setting-sources "" --no-session-persistence --strict-mcp-config`, so no user hook fires and
-no transcript is written (R8, checked the same day). Cached 60 s in <home>/usage-probe.json;
+no transcript is written (R8, checked the same day). Cached 60 s in <home>/usage-probe.json,
+stamped with the login it read; a cached reading of another seat, or, on a row Orca sets up, one with
+no stamp where the home's login reads, is no reading of this row (own_reading: Orca copies the default
+dir's top-level files into a profile at each selection, usage-probe.json included; cooldown-account,
+2026-11-02).
 --cached never probes (hooks use it). One retry on a failed probe, then the last reading of any
 age; with none, the row is "unknown" and skipped — except the primary, which pick takes at once
-rather than hand its work to a later row (the Pro fallback has no Fable) or block it. Never a loop.
+rather than hand its work to a later row (one whose plan may lack Fable) or block it. Never a loop.
 
 Paid overage (costs S8, docs/host-power-costs-2026-10-24.md finding 10): the probe's answer carries
 `rate_limits.extra_usage`, read by the core's `extra_usage()` (plumb's usage-report reads the /usage
@@ -64,12 +68,30 @@ may bill past the plan, unless `pick --allow-overage`, a person's yes, which an 
 (CLAUDE_UNATTENDED) is refused (exit 2). A reading without the field (a cache from before, a Codex
 row) is no refusal.
 
+Room (the principal tier's S6, docs/principal-tier-2026-10-26.md): `pick --room fable` takes only a
+Claude row whose reading carries a weekly window scoped to Fable (the plan runs it: a Pro plan's does
+not) with that week under the row's week ceiling, so a principal head (Fable at `xhigh`) never starts on a
+seat that cannot run it. A row whose Fable is unknown (no reading, none with `limits[]`) is skipped, the
+primary too: its "rather than nothing" would start a head that may not run. A ship pinned to a row whose plan
+lacks Fable, or whose Fable room is unknown (a cooling row's cached reading included), moves; one whose Fable
+week is full waits there. Any other value, and `--room` with a non-Claude
+provider or kind, refuses with exit 3 rather than fall back to the plain walk as an unknown `--kind` does
+(an unknown value before the registry's presence is checked, so with none, exit 3 — a torn one still exits 1 as
+every verb does; a non-Claude provider once it is read, so with none, exit 4).
+
 Exhaustion (D6): <home>/exhaustion.jsonl, one record per locked window. bin/statusline writes it
 when a window's used_percentage reaches 100; a probe writes it when a window reads 100 or carries
 a locked_reason (the design's "severity warning" was dropped: the probe's own `is_active` marks
 the binding window at any level, 68% included, 2026-10-03). Pick skips the account until that
 window resets (cooldown) and asks it for MARGIN more points of 5-hour headroom per record in the
-last MARGIN_DAYS days, up to MARGIN_CAP.
+last MARGIN_DAYS days, up to MARGIN_CAP. Both count only the home's own seat's records (own_record): each
+record carries its writer's login (`account`, and `org` since 2026-11-02), and another login's record that
+reached the log is ignored; a record with no `account`, or a home whose login does not read, counts as before.
+Another login's records reach a log because Orca's profile setup copies the default dir's top-level files into
+each profile at each selection (plain copies, read live on 2026-11-02): a profile's log then holds the primary's
+records, and loses its own, until it records again. Nothing here rewrites that file, since Orca would replace it at
+the next selection; with the filter the primary's records are skipped, a link (should one be made) is read the same
+way, and check and doctor name a log holding another seat's records (cooldown-account, 2026-11-02).
 
 Pace (2026-10-30, the owner: "if the spend is lower than pace and we still have 5-10% to go, we should
 just launch"): a row over its 5-hour limit (window_max less the margin) still runs while its 5-hour
@@ -153,9 +175,31 @@ privacy prompt nobody sees (Orca's app on the always-on Mac, 34 requests in one 
 reader a hook may run — `allowed`, `limits --cached` and everything else through load_registry, and the
 logins file as `allowed` reads it — takes the local copy first (`.tenants.json.last`, `.logins.json.last`)
 and opens the link only under claude-host (the core's `claude_host()`: the kernel's responsible process),
-or, with no copy yet, once to seed it (a missing copy must not fail open). `refresh` re-reads both
+or, with no copy yet, once to seed it (a missing copy must not fail open). `refresh` re-reads the
 links and rewrites the copies; the usage tick runs it every 15 min through claude-host, so a new tenant
 reaches the hooks within 15 min. doctor and setup read the links themselves: a person runs them.
+
+The budgets file (`lighthouse/budgets.json`, since 2026-10-31: the owner, "put the budget caps in a regatta
+config that I can edit myself, quickly"), `{label: {"week_max": N, "window_max": N, "free_below": N}}`,
+overrides those rules of a registry row; a key starting `_` is a comment. Where it links into a shared
+drive (refresh makes that link, below), one edit reaches every host whose key links there within the usage tick's 15 min
+(`refresh` copies it, as it does the tenants file); a host with no drive keeps a plain file. Optional
+in every way: absent (and with no `budgets.json` beside the tenants link's target to link), the registry's own rules stand; torn, its last good copy holds, else the
+registry's rules; a value that is no number from 0 to 100, or an unknown key, is skipped. Each but the
+absent file is said on stderr — a typo must never fail every pick. Outside claude-host, with no copy
+yet, the hooks never open the link to seed one (unlike the tenants file, a missing budget fails safe):
+the registry's rules stand until `refresh` writes it. A ceiling it sets says `week ceiling, budgets.json`.
+The key's link is made by `refresh` itself (budgets-link, 2026-11-01), not by an overlay line; by hand only where refresh refuses (doctor says why):
+where `budgets.json` is neither a file nor a link, `tenants.json` is a link, and a `budgets.json` sits beside
+that link's real target, refresh links the key to it (`budgets_link_text`: the folder of the tenants link's
+target as the kernel resolves it, every hop followed, so nothing names a drive or a host). It never replaces
+a file or a link, and resolves the tenants link only past its own claude-host gate (a person's `--force`, the
+usage tick, or a tenants link outside any drive); refresh, not setup, because the tick reaches every host and
+config dir within 15 min with no hand, a rebuilt one included. So deleting the key no longer keeps a host on
+the registry's rules where a sibling sits: a plain `{}` does, as refresh never replaces a file. doctor names
+a key that refresh would link and has not, a sibling it refuses (refresh's own line says why too: itself a link, or one the core's
+drive_backed() would judge otherwise than the tenants link), and a budgets link that leads nowhere (refresh
+keeps that link, and the hooks its last copy, until a person removes it).
 
 Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
 on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
@@ -181,6 +225,28 @@ from orca … automate this"), so one signed in there reaches the widget with no
 rows are no registry rows: never walked, picked or probed, and gone when Orca says the agent is
 signed out; Orca's other `unavailable` (a CLI too old, a provider switched off) and its errors keep
 the last reading (ORCA_SEEN) with its age and Orca's word, as does an Orca that cannot be read.
+An Antigravity row (`"provider": "antigravity"`, its home agy's own: `$GEMINI_CLI_HOME`, else `~/.gemini`)
+routes and nothing more (agy-tenant, 2026-10-31: the owner's word on a login of another person's put in the
+owner tenant): a tenant's `logins` may name it, so `pick --provider antigravity --repo` answers it and says it
+`owns` the tenant's repos, the vendor fence's yes. agy keeps its login in the keychain and picks it itself, so
+the row sets no environment, is never probed (its figures stay Orca's report card) and `limits --all` leaves it
+out; a label is taken only while its home is the one an agy run here uses, as a Codex row's is. Unlike a Codex
+row's, that home binds no account: the row stands for whichever agy login this Mac's keychain holds (review,
+2026-10-31), so confine it, and sign in to that agy only on a Mac where that person's login is meant to run.
+A tenant's entry may hold a routing login confined to part of its repos (`"confined": {label: [key or glob,
+…]}`, `tenant set --confine LABEL=KEY,…`): the row is then the tenant's, owns, and pick runs it on, only the
+tenant's repos those cover, and pick's skip line says so elsewhere in the tenant. Written for a login of
+another person's in the owner tenant, which holds the vault beside the scope it was meant for. The label is
+never in `logins` (agy-confine-fail-closed, 2026-11-01): the tenants file is one file in the shared drive, read
+by every Mac at its own regatta, and an account older than the confine reads `logins` alone, so a label there
+would own the whole tenant on that Mac; out of it, an older account takes the row for no tenant's and refuses
+it the tenant's repos. It only narrows, and fails closed: a label's value that does not read confines that
+row to nothing; a `confined` that is no object, or names a label no codex or antigravity row has (a typo, a
+seat), confines every routing login in the entry's `logins` to nothing (tenant_closed); a label in `logins`
+too is confined all the same (doctor says to take it out); a Claude row is never read from it, since a seat's
+guard reads `logins` whole. The first form, `"confine"` beside `logins` (#350, 2026-10-31), confines each
+label it names to nothing until `tenant set` rewrites it (a set without --confine carries it over once the
+label leaves --logins, and refuses while it is still there; the landing review, 2026-11-01).
 Orca reads those limits only while its window is focused, and keeps the last after it closes: when
 its newest reading is over an hour old, `--orca` runs `orca open` once an hour at most (orca_wake).
 Stdlib only, Python 3.9.
@@ -212,12 +278,14 @@ import fnmatch
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -240,6 +308,10 @@ def _fixture_registry():
 TENANTS = Path(os.environ.get("TENANTS_FILE")
                or (REGISTRY.with_name(REGISTRY.name + ".tenants") if _fixture_registry()
                    else CONFIG / "lighthouse" / "tenants.json"))
+BUDGETS = Path(os.environ.get("ACCOUNT_BUDGETS")
+               or (REGISTRY.with_name(REGISTRY.name + ".budgets") if _fixture_registry()
+                   else CONFIG / "lighthouse" / "budgets.json"))
+BUDGETS_SIBLING = "budgets.json"   # the name refresh links the budgets key to, beside the tenants file's target
 BIN = Path(__file__).resolve().parent
 CACHE_S = 60          # a probe answers for this long (R4: one probe per minute per account)
 PROBE_TIMEOUT = 30    # two tries per row: pickup's 150 s covers two rows (review 2026-10-03)
@@ -567,6 +639,61 @@ def load_logins(local=False, keep=True):
     return p, logins
 
 
+BUDGET_KEYS = ("week_max", "window_max", "free_below")
+
+
+def load_budgets(keep=True):
+    """→ {label: {rule: number}}, the budgets file's overrides of the registry rows' rules (header, "The
+    budgets file"). Optional: absent, unreadable or malformed reads as {} with one stderr line, so the
+    registry's own ceilings stand; a value that is not a number, or a key outside BUDGET_KEYS, is dropped
+    the same way (AGENTS.md's optional-key trap: a bad edit must never fail every pick). Drive-backed like
+    the logins file: outside claude-host the local copy answers first."""
+    p = BUDGETS
+    got = None
+
+    def budget_warn(msg):   # quiet under --json, which a caller may parse with stderr merged in (as tenancy's line)
+        if "--json" not in sys.argv:
+            print(msg, file=sys.stderr)
+
+    if local_first(p):
+        got = read_copy(local_copy(p))
+        if got is None:   # no copy yet: never open the link from a hook (header); the registry stands
+            return {}
+    if got is None:
+        if not (p.is_symlink() or p.exists()):   # a dangling link is a link: its copy holds, below
+            return {}
+        else:
+            try:
+                got = json.loads(BUDGETS.read_text())
+            except (OSError, ValueError) as e:
+                got = read_copy(local_copy(p))
+                budget_warn(f"account: {p} does not read ({e}); "
+                      + ("its last good copy holds" if got is not None else "the registry's ceilings stand"))
+                if got is None:
+                    return {}
+            else:
+                if keep and isinstance(got, dict):
+                    keep_copy(local_copy(p), got)
+    if not isinstance(got, dict):
+        budget_warn(f"account: {p} is not a JSON object; the registry's ceilings stand")
+        return {}
+    out = {}
+    for label, rules in got.items():
+        if label.startswith("_"):   # `_note` and the like: the owner's comments
+            continue
+        if not isinstance(rules, dict):
+            budget_warn(f"account: {p}: {label} is not an object; skipped")
+            continue
+        for k, v in rules.items():
+            # json reads NaN and Infinity as numbers, and a NaN ceiling never refuses (budgets review)
+            if (k not in BUDGET_KEYS or isinstance(v, bool) or not isinstance(v, (int, float))
+                    or not math.isfinite(v) or not 0 <= v <= 100):
+                budget_warn(f"account: {p}: {label}.{k} {v!r} is not one of {', '.join(BUDGET_KEYS)} as a number from 0 to 100; skipped")
+                continue
+            out.setdefault(label, {})[k] = v
+    return out
+
+
 def save_logins(p, logins):
     """Writes `logins` back; every other top-level key is kept as it was (`share`, which
     hooks/design_route.py reads: who a new design artifact is shared with, 2026-10-10)."""
@@ -624,6 +751,12 @@ def load_registry():
         a.setdefault("enabled", True)
         a["parked"] = a.get("label") in parked
         a.setdefault("rules", {})
+    budgets = load_budgets(keep=not READ_LINKS)   # doctor's read leaves the copy it judges as it was
+    for a in reg.get("accounts") or []:
+        mine = budgets.get(a.get("label")) or {}
+        if mine:
+            a["rules"] = {**(a["rules"] if isinstance(a["rules"], dict) else {}), **mine}
+            a["budgeted"] = sorted(mine)
     mark_same_logins(reg)
     apply_tenants(reg)
     return reg
@@ -635,15 +768,27 @@ def apply_tenants(reg):
     gets `routed` {entry: {tenant, logins}} — the other tenants' repos, which it may not run — and the
     registry `tenants` {name: [entry]}. A malformed entry is dropped, never a crash: the guard reads this."""
     raw = reg.get("tenants")
+    for a in reg.get("accounts") or []:   # only a tenants-file entry confines: a row's own key is never read (review)
+        a.pop("confine", None)
     if tenants_file():   # written, the tenants file is the whole of tenancy (header)
         raw = read_tenants_file()
         for a in reg.get("accounts") or []:
             a.pop("tenant", None)
+        rows = {a.get("label"): a for a in reg.get("accounts") or []}
         for n, t in raw.items():
-            logins = tenant_logins(t)
+            logins, confined, first = tenant_logins(t), tenant_confined(t), first_form(t)
+            closed = tenant_closed(t, rows)
             for a in reg.get("accounts") or []:
-                if a.get("label") in logins:
+                # a Claude row is a seat, whose guard reads `logins` whole: never read from `confined` (review)
+                routing = a.get("provider", "claude") in ROUTING_PROVIDERS
+                if a.get("label") in logins or (routing and a.get("label") in confined):
                     a["tenant"] = n   # a label in two tenants' logins is the later one's: doctor says so
+                    a.pop("confine", None)
+                    if routing and a.get("label") in confined:   # in `logins` too, confined all the same (header)
+                        a["confine"] = confined[a["label"]]
+                    elif routing and (closed or a.get("label") in first):
+                        # #350's form, which an older account reads whole, or a confine that does not read: nothing (header)
+                        a["confine"] = []
     raw = raw if isinstance(raw, dict) else {}
     # `repos` must be a list: a string would split into one-letter entries, and a `*` among them routes
     # every repo; a number would crash every command (code review 2026-10-20). An entry is a key under
@@ -654,6 +799,72 @@ def apply_tenants(reg):
                       for n, t in raw.items() if isinstance(n, str) and isinstance(t, dict)}
     for a in reg.get("accounts") or []:
         a["routed"] = routes_for(reg, a)
+
+
+def tenant_confined(t):
+    """→ {label: [entry]} of a tenants-file entry's `confined`, each entry normalised as `repos` are; {} for none.
+    A routing login of another person's may own only part of a tenant (agy-tenant, 2026-10-31: the owner tenant
+    holds the vault beside autopilot, and the fence's yes for one is its yes for all), and is named here, never in
+    `logins` (header). It only narrows, so it fails closed: a value that is no non-empty list of entries that read
+    confines that label to nothing, never to everything; a `confined` that is no object names no label, so none
+    joins the tenant and each is refused its repos as another tenant's login is. Doctor says which (tenancy_state)."""
+    c = t.get("confined") if isinstance(t, dict) else None
+    if not isinstance(c, dict):
+        return {}
+    return {l: (list(dict.fromkeys(tenant_entry(x) for x in v))
+                if isinstance(v, list) and v and all(isinstance(x, str) and tenant_entry(x) for x in v) else [])
+            for l, v in c.items() if isinstance(l, str)}
+
+
+def tenant_members(t):
+    """→ every label a tenants-file entry makes the tenant's: its `logins`, then its `confined` labels."""
+    return list(dict.fromkeys(tenant_logins(t) + list(tenant_confined(t))))
+
+
+def first_form(t):
+    """→ {label: [entry] or []} of #350's `"confine"` beside `logins` (header), read as tenant_confined reads
+    `confined`; {} when it is absent or no object (tenant_closed says what that does)."""
+    return tenant_confined({"confined": t.get("confine")}) if isinstance(t, dict) else {}
+
+
+def tenant_closed(t, rows):
+    """Why every routing login in a tenants-file entry's `logins` is confined to nothing, or None. A narrowing key
+    that is there but does not read narrows everything it could name (AGENTS.md's trap; the landing review,
+    2026-11-01): a `confined` or a first-form `confine` that is no object, a `confined` label that is no routing row
+    of ROWS ({label: row}: a typo, or a seat, which is never confined), a first-form label none of `logins`."""
+    if not isinstance(t, dict):
+        return None
+    for key in ("confined", "confine"):
+        if t.get(key) is not None and not isinstance(t.get(key), dict):
+            return f"its \"{key}\" is no object"
+    stray = [l for l in tenant_confined(t)
+             if l not in rows or (rows[l] or {}).get("provider", "claude") not in ROUTING_PROVIDERS]
+    if stray:
+        return f"its \"confined\" names {', '.join(stray)}, no codex or antigravity row of {REGISTRY.name}"
+    loose = [l for l in first_form(t) if l not in tenant_logins(t)]
+    if loose:
+        return f"its \"confine\" (the first form) names {', '.join(loose)}, none of its \"logins\""
+    return None
+
+
+def restore_args(t, labels):
+    """`--logins …` and `--confine LABEL=K,…` that write a tenants-file entry's logins back as `tenant set` takes them:
+    a confined label, in `confined` or the first form, goes in --confine and never in --logins (header), so the vault's
+    restore line never hands it the whole tenant (the landing review, 2026-11-01). A value that does not read is in
+    neither: the line then leaves the login out, which only narrows. A Claude row of LABELS ({label: row}) is never
+    confined (apply_tenants): it stays in --logins, out of --confine, or the line would drop the seat."""
+    conf = {l: v for l, v in {**{l: v for l, v in first_form(t).items() if l in tenant_logins(t)}, **tenant_confined(t)}.items()
+            if (labels.get(l) or {}).get("provider", "claude") in ROUTING_PROVIDERS or l not in labels}
+    logins = [l for l in tenant_logins(t) if l not in conf]
+    if tenant_closed(t, labels):
+        # apply_tenants had every routing login of `logins` confined to nothing: the line leaves them out, never whole
+        logins = [l for l in logins if (labels.get(l) or {}).get("provider", "claude") not in ROUTING_PROVIDERS]
+    out = [f"{l}={','.join(v)}" for l, v in conf.items() if v]
+    return ["--logins", *(logins or ["…"])] + (["--confine", *out] if out else [])
+
+
+def article(word):
+    return "an" if word[:1] in "aeiou" else "a"
 
 
 def tenant_logins(t):
@@ -740,16 +951,107 @@ def tenants_read(write=True):
     return got, "file", None
 
 
+def budgets_link_text():
+    """→ the text `refresh` links the budgets key to, or None (header, "The budgets file"): only where the key
+    is neither a file nor a link, the tenants key is a link, and a file `budgets.json` sits in the folder of
+    that link's real target. realpath, not the first hop's text: a chain (a local link into the drive) or a
+    `..` after a linked folder resolves as the kernel reads it, never lexically (the build's round 1). The target
+    is derived from the tenants link alone, so it names no drive. It resolves into what may be a drive:
+    callers are refresh past its gate and doctor (a person's)."""
+    if BUDGETS.is_symlink() or BUDGETS.exists():
+        return None
+    return budgets_sibling()
+
+
+def budgets_sibling():
+    """→ the budgets file the key belongs linked to, or None — refresh's link and doctor's judgement of a link
+    share this one rule (the build's round 3); budgets_candidate says why one was refused."""
+    return budgets_candidate()[0]
+
+
+def budgets_candidate():
+    """→ (the sibling's text, None), or (None, why it is refused) where one sits but may not be linked, or
+    (None, None). The tenants key is a link in the budgets key's own folder (one key overridden alone, a
+    caller's TENANTS_FILE, never links the other config dir's key: the build's round 2), its real target is a file, and a
+    plain file `budgets.json` sits beside that target. Refused: a sibling that is itself a link (it may lead
+    into a drive the gate never judged: the build's round 3), and one whose link the core's drive_backed() would judge
+    otherwise than the tenants link (a folder link on the way: the realpath text leaves, or enters, the drive
+    roots the tenants link's own text is judged by), as the hooks would then open one key and copy the other
+    (AGENTS.md Traps, a Drive link opened outside claude-host; landing review, 2026-11-02)."""
+    if not TENANTS.is_symlink() or os.path.realpath(BUDGETS.parent) != os.path.realpath(TENANTS.parent):
+        return None, None
+    try:
+        target = os.path.realpath(TENANTS)
+        if not os.path.isfile(target):   # a dangling tenants link: refresh's tenants half says so
+            return None, None
+        text = os.path.join(os.path.dirname(target), BUDGETS_SIBLING)
+        if os.path.islink(text):
+            return None, (f"the {BUDGETS_SIBLING} beside {TENANTS.name}'s target ({text}) is itself a link, "
+                          "which refresh never follows; link the key by hand")
+        if not os.path.isfile(text):
+            return None, None
+        tenants_drive = drive_link(TENANTS)
+        try:   # a scratch link that cannot be made is said, never a silent no-link (landing review 2, 2026-11-02)
+            judged = link_judged(text)
+        except OSError as e:
+            return None, f"a link to {text} could not be judged against the drive roots ({e}); the next pass tries again"
+        if judged != tenants_drive:
+            side = ("inside", "outside") if tenants_drive else ("outside", "inside")
+            # a hand link must read as the tenants link does, or it splits the verdict again; no path is named, as
+            # one built from a chain's first hop may be another file (landing review 3, 2026-11-02). Where the
+            # tenants link reads as outside, its real target is in a drive all the same: the tenants link is what
+            # slipped past drive_backed, so the advice is to relink it by its real path, never to copy the slip
+            # onto the budgets key (the /finish review, 2026-11-02)
+            advice = ("link the key by hand to that file by a path that reads as inside a drive" if tenants_drive
+                      else f"relink {TENANTS.name} by its real path, which reads as a drive; refresh then links "
+                           "the key itself")
+            return None, (f"{TENANTS.name}'s link reads as {side[0]} a drive and a link to {text} would read as "
+                          f"{side[1]} one (a folder link on the way), so the hooks would judge the two keys apart; "
+                          + advice)
+        return text, None
+    except (OSError, ValueError):
+        return None, None
+
+
+def link_judged(text):
+    """drive_link() of a link whose text is `text`, judged on a scratch link (the text is absolute, so where
+    the link sits changes nothing): the key's own judgement before refresh makes it."""
+    with tempfile.TemporaryDirectory() as d:
+        probe = os.path.join(d, BUDGETS_SIBLING)
+        os.symlink(text, probe)
+        return drive_link(probe)
+
+
+def link_budgets():
+    """refresh's half that makes the budgets key's link (budgets_link_text); → (the line it prints or None,
+    refresh's exit for it: 1 when the link could not be made). A key another refresh made meanwhile is kept."""
+    text = budgets_link_text()
+    if not text:
+        if not (BUDGETS.is_symlink() or BUDGETS.exists()):
+            why = budgets_candidate()[1]   # a refused sibling is said in the tick's log too (landing review 3)
+            if why:
+                return f"refresh: {BUDGETS.name} not linked: {why}", 0
+        return None, 0
+    try:   # the parent is TENANTS's own folder (budgets_link_text), so it exists
+        os.symlink(text, BUDGETS)
+    except FileExistsError:   # another refresh, or a person, made the key meanwhile: theirs stands
+        return None, 0
+    except OSError as e:
+        return f"refresh: {BUDGETS.name} not linked to {text} ({e})", 1
+    return f"refresh: {BUDGETS.name} linked to {text}, beside {TENANTS.name}'s target", 0
+
+
 def cmd_refresh(force=False):
     """`refresh`: re-read each Drive-backed file a hook's reader takes from its local copy — the tenants
-    file, the logins file — and rewrite the copies (header, Drive-backed reads). The usage tick's, every
+    file, the logins file, the budgets file — and rewrite the copies (header, Drive-backed reads); past the
+    gate, link a missing budgets key beside the tenants file's target first (link_budgets). The usage tick's, every
     15 min through claude-host. Outside claude-host, where either file is a link into a drive, it refuses
     with exit 3 unless --force: a tick on a Mac whose job lacks claude-host would put a privacy prompt on
     python3 every 15 min, the class S4 closes; a plain file, or a host with no drive, just reads. --force is
     a person's yes and refuses an unattended caller, which would hang on that prompt (AGENTS.md Traps).
     Exit 1 when a file did not read (its copy holds as it was)."""
     lp = logins_path()
-    blocks = any(local_first(f) for f in (TENANTS, lp) if f)
+    blocks = any(local_first(f) for f in (TENANTS, lp, BUDGETS) if f)
     if blocks and force and unattended():
         print("account refresh: --force is a person's, and this run is unattended — the local copies stay as they are")
         return 3
@@ -781,25 +1083,58 @@ def cmd_refresh(force=False):
         except SystemExit as e:
             rc = 1
             print(f"refresh: {e}; {local_copy(p).name} holds as it was")
+    said, failed = link_budgets()   # past the gate: the sibling may be in the drive (header, "The budgets file")
+    if said:
+        print(said)
+    rc = rc or failed
+    if BUDGETS.is_symlink() or BUDGETS.exists():
+        try:
+            got = json.loads(BUDGETS.read_text())
+            if not isinstance(got, dict):
+                raise ValueError("not a JSON object")
+            keep_copy(local_copy(BUDGETS), got)
+            print(f"refresh: {BUDGETS.name} → {local_copy(BUDGETS).name}")
+        except (OSError, ValueError) as e:
+            rc = 1
+            print(f"refresh: {BUDGETS.name} did not read ({e}); {local_copy(BUDGETS).name} holds as it was")
     return rc
 
 
-# The providers a tenant's `logins` may name. A Claude row is a seat (the guard, `run`, VS Code profiles); a Codex row
-# only routes: `pick --provider codex --repo` reads it as the tenant's own, and no hook stands in a Codex session.
-TENANT_PROVIDERS = ("claude", "codex")
+# The providers a tenant's `logins` may name. A Claude row is a seat (the guard, `run`, VS Code profiles); a Codex or
+# an Antigravity row only routes: `pick --provider P --repo` reads it as the tenant's own (header).
+TENANT_PROVIDERS = ("claude", "codex", "antigravity")
+ROUTING_PROVIDERS = ("codex", "antigravity")
+# A vendor no probe here reads: its row is never probed, and `limits --all` leaves it out (Orca's card is its figure)
+UNPROBED = ("antigravity",)
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
-def cmd_tenant(reg, what, name, repos=(), logins=()):
+def run_home(provider):
+    """The home a run of PROVIDER's CLI here signs in from — the caller's own, never the row pick names: Codex's
+    `$CODEX_HOME` (else ~/.codex), agy's `$GEMINI_CLI_HOME` (else ~/.gemini, as vendor-hooks reads it); None
+    for a Claude row, whose start sets its dir."""
+    if provider == "codex":
+        return Path(os.path.expanduser(os.environ.get("CODEX_HOME") or str(HOME / ".codex"))).resolve()
+    if provider == "antigravity":
+        return Path(os.path.expanduser(os.environ.get("GEMINI_CLI_HOME") or str(HOME / ".gemini"))).resolve()
+    return None
+
+
+def cmd_tenant(reg, what, name, repos=(), logins=(), confine=None):
     """`tenant set NAME --repos … --logins …` and `tenant drop NAME`: the tenants file's one writer
     (confidential-reach S7, 2026-10-26). A person's, so main refuses it under CLAUDE_UNATTENDED: the entry
     decides which seat may open which repo, and the link it writes may put a privacy prompt on a run nobody
     watches. It refuses rather than writes when the key is a last good copy only (bootstrap.sh --config
     relinks it), when the file does not read or parse (writing would drop every tenant it holds), when a
-    label is no claude or codex row of the registry (a Codex row is routing only: pick --provider codex reads it,
-    no hook guards a Codex session), when a login is in another tenant's `logins` already (one tenant
+    label is no claude, codex or antigravity row of the registry (the last two route only: pick --provider P
+    reads them), when a login is in another tenant's `logins` already (one tenant
     per login: the later would take it silently, as apply_tenants reads two), and when a repo entry is
-    another tenant's (both would refuse it, and it would run nowhere). It writes through the link to its
+    another tenant's (both would refuse it, and it would run nowhere). CONFINE (`LABEL=KEY[,KEY…]`, each)
+    replaces the entry's `confined` (an empty one, a bare `--confine`, drops it); absent, the entry's own is kept
+    and judged again. A confined label is the tenant's beside --logins, never among them (header: an older account
+    reads `logins` whole). It refuses one that --logins names too, a Claude one (a seat's guard reads `logins`
+    whole: confining it would say one thing and do another), and a key no entry of `repos` covers; the first form's
+    `confine` key goes at every set. It writes through the link to its
     target, reads the file back, and refreshes the hooks' copy (refresh's tenants half), so the guard holds
     the new entry at the next prompt."""
     if not TENANT_NAME.fullmatch(name or ""):
@@ -844,23 +1179,79 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
         if bad:
             why.append(f"repos {', '.join(map(repr, bad))} are no repo keys (a key is relative to {projects_dir()})")
         if unknown:
-            why.append(f"{', '.join(unknown)} is no claude or codex row of {REGISTRY.name} ({', '.join(labels) or 'none'})")
-        # A Codex label makes `pick --provider codex` say the row `owns` the tenant's repos, the core's vendor fence's
-        # yes for its confidential and guarded ones; every Codex road runs on the caller's CODEX_HOME (or the default Codex home),
+            why.append(f"{', '.join(unknown)} is no claude, codex or antigravity row of {REGISTRY.name} ({', '.join(labels) or 'none'})")
+        # A Codex or Antigravity label makes `pick --provider P` say the row `owns` the tenant's repos, the core's vendor
+        # fence's yes for its confidential and guarded ones; every such road runs on the caller's own home (run_home),
         # never on the row pick names. So a label is taken only while its home is that one (tenant-codex's review).
         if logins and not unknown and not any(labels[l].get("provider", "claude") == "claude" for l in logins):
             why.append(f"{', '.join(logins)} names no claude row: the tenant's Claude sessions would have nowhere to start "
-                       "(name its Claude login beside the Codex one)")
-        run_home = Path(os.path.expanduser(os.environ.get("CODEX_HOME") or str(HOME / ".codex"))).resolve()
-        elsewhere = [l for l in dict.fromkeys(logins) if l in labels and labels[l].get("provider") == "codex"
-                     and Path(os.path.expanduser(str(labels[l].get("home") or ""))).resolve() != run_home]
-        if elsewhere:
-            why.append(f"{', '.join(elsewhere)} is a codex row whose home is not {run_home}, the one a Codex run here uses: "
-                       "the vendor fence would pass a run on another login")
+                       "(name its Claude login beside the routing one)")
+        old_entry = raw.get(name) if isinstance(raw.get(name), dict) else {}
+        kept = confine is None
+        if kept:
+            # kept, and judged as if given, the first form's too: a set that drops a repo a confine covers, or names a
+            # confined label in --logins, is refused, never widened (the landing review, 2026-11-01)
+            # a Claude row there was never read (apply_tenants), so it is not carried: the seat stays as --logins says
+            old = {l: v for l, v in {**first_form(old_entry), **tenant_confined(old_entry)}.items()
+                   if (labels.get(l) or {}).get("provider", "claude") in ROUTING_PROVIDERS or l not in labels}
+            # a first-form label none of `logins` was no member under main: carrying it as `confined` would make it one
+            for l in [l for l in first_form(old_entry) if l not in tenant_logins(old_entry)]:
+                old.pop(l, None)
+                why.append(f"{name}'s \"confine\" (the first form) in {TENANTS.name} names {l}, none of its \"logins\": give "
+                           f"--confine {l}=KEY,… to confine it, or a bare --confine for none")
+            for key in ("confined", "confine"):
+                if old_entry.get(key) is not None and not isinstance(old_entry.get(key), dict):
+                    why.append(f"{name}'s \"{key}\" in {TENANTS.name} does not read: give each confine as --confine LABEL=KEY,…, "
+                               "or a bare --confine for none")
+            for l in (l for l, v in old.items() if not v):
+                why.append(f"{name}'s confine for {l} in {TENANTS.name} does not read: give --confine {l}=KEY,… again, "
+                           "or a bare --confine for none")
+            confine = [f"{l}={','.join(v)}" for l, v in old.items() if v]
+        if not kept:
+            # an explicit --confine replaces the first form, so a label it named and --logins still names would be read
+            # whole: refused, never widened, as the kept road refuses it (the landing review, 2026-11-01)
+            given = {c.partition("=")[0] for c in confine}
+            for l in first_form(old_entry):
+                if l in logins and l not in given and (labels.get(l) or {}).get("provider") in ROUTING_PROVIDERS:
+                    why.append(f"{l} is confined by {name}'s \"confine\" (the first form) in {TENANTS.name}, and --logins "
+                               f"names it while --confine does not: it would run every repo of {name}; give --confine "
+                               f"{l}=KEY,… and leave it out of --logins, or set once without it before naming it whole")
+        conf = {}
+        for c in confine:
+            l, _, keys = c.partition("=")
+            es = [tenant_entry(k) for k in keys.split(",") if k]
+            said = f"{name}'s confine for {l}, kept from {TENANTS.name}," if kept else f"--confine names {l},"
+            if not l or not es or not all(es):
+                why.append(f"--confine {c!r} is no LABEL=KEY[,KEY…]")
+            elif l in logins:
+                why.append((f"{said} and --logins names {l} too" if kept else f"--confine names {l}, which --logins names too")
+                           + ": a confined login is named by --confine alone (an account older "
+                           "than the confine reads --logins whole, and would give it every repo of the tenant)"
+                           + (f"; leave {l} out of --logins to keep it confined, or give a bare --confine for no confine" if kept else ""))
+            elif l not in labels:
+                why.append(f"{said} which is no claude, codex or antigravity row of {REGISTRY.name}"
+                           + (" (give --confine without it)" if kept else ""))
+            elif labels[l].get("provider") not in ROUTING_PROVIDERS:
+                why.append(f"{said} a claude row: a seat's guard reads its tenant whole, so only a routing "
+                           f"login ({', '.join(ROUTING_PROVIDERS)}) is confined")
+            else:
+                # covered as denied() routes it: the entry itself, a glob's match, or a key inside a folder entry
+                loose = [e for e in es if not any(e == r or e.startswith(r + "/") or (is_glob(r) and not is_glob(e)
+                                                  and fnmatch.fnmatchcase(e, r)) for r in entries)]
+                if loose:
+                    why.append(f"--confine {l}: {', '.join(loose)} is no repo of {name}'s --repos (a confine only narrows)")
+                conf[l] = list(dict.fromkeys(conf.get(l, []) + es))
+        members = list(dict.fromkeys(list(logins) + list(conf)))
+        for l in members:
+            p = labels[l].get("provider") if l in labels else None
+            if p in ROUTING_PROVIDERS and Path(os.path.expanduser(str(labels[l].get("home") or ""))).resolve() != run_home(p):
+                why.append(f"{l} is {article(p)} {p} row whose home is not {run_home(p)}, the one a {p} run here uses: "
+                           "the vendor fence would pass a run on another login")
         for n, t in raw.items():
             if n == name:
                 continue
-            both = [l for l in dict.fromkeys(logins) if l in tenant_logins(t)]
+            both = [l for l in members if l in tenant_logins(t)
+                    or (l in tenant_confined(t) and (labels.get(l) or {}).get("provider") in ROUTING_PROVIDERS)]
             if both:
                 why.append(f"{', '.join(both)} is {n}'s login already: a login is in one tenant only (take it out of {n} first)")
             theirs = [x for x in (tenant_entry(r) for r in ((t.get("repos") if isinstance(t, dict) and isinstance(t.get("repos"), list) else None) or [])
@@ -878,8 +1269,13 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
                 print(f"account tenant: {w}", file=sys.stderr)
             print("account tenant: nothing written", file=sys.stderr)
             return 1
-        entry = dict(raw.get(name)) if isinstance(raw.get(name), dict) else {}
+        entry = dict(old_entry)
         entry.update({"repos": entries, "logins": list(dict.fromkeys(logins))})
+        entry.pop("confine", None)   # #350's form: every set rewrites it as `confined` or drops it (header)
+        if conf:
+            entry["confined"] = conf
+        else:
+            entry.pop("confined", None)
         new[name] = entry
     target = TENANTS.resolve() if TENANTS.is_symlink() else TENANTS
     try:
@@ -909,14 +1305,15 @@ def cmd_tenant(reg, what, name, repos=(), logins=()):
         # out, is what opens it (S7 review; `set` and the restore line's quoting, the S7b landing review)
         print(f"account tenant: warning — {name} held the vault ({VAULT}): no tenant holds it now, so every login whose "
               f"deny list does not name it may open it, the work seats' included. Set it again: "
-              f"{shlex.join([str(BIN / 'account'), 'tenant', 'set', name, '--repos', *held, '--logins', *(tenant_logins(raw.get(name)) or ['…'])])}",
+              f"{shlex.join([str(BIN / 'account'), 'tenant', 'set', name, '--repos', *held] + restore_args(raw.get(name), {a.get('label'): a for a in reg['accounts']}))}",
               file=sys.stderr)
     print(f"tenant {name}: " + ("dropped" if what == "drop" else
-                                f"{', '.join(new[name]['repos'])} — runs on {', '.join(new[name]['logins'])} only")
+                                f"{', '.join(new[name]['repos'])} — runs on {', '.join(new[name]['logins'])} only"
+                                + "".join(f"; {l} confined to {', '.join(v)}" for l, v in tenant_confined(new[name]).items()))
           + f" ({target})")
     print(f"refresh: {TENANTS.name} → {tenants_last().name}")
     if what == "set":
-        off = [a["label"] for a in reg["accounts"] if a.get("provider") in TENANT_PROVIDERS and a["label"] not in logins]
+        off = [a["label"] for a in reg["accounts"] if a.get("provider") in TENANT_PROVIDERS and a["label"] not in tenant_members(new[name])]
         print(f"  refused to {', '.join(off) or 'no other row'}, the default dir unless it is one of its logins, "
               "and every Orca login no row names")
     return 0
@@ -986,10 +1383,26 @@ def tenant_entry(r):
 
 def own_tenant(reg, a, path):
     """True when path is a repo of row a's own tenant: there it is the one row that may run it, so an
-    unreadable reading runs the step rather than nothing, as the primary's does (review 2026-10-20)."""
+    unreadable reading runs the step rather than nothing, as the primary's does (review 2026-10-20). A confined
+    row's own are only the tenant's repos its `confined` entry also covers (tenant_confined)."""
     t = a.get("tenant")   # a list or object here would be unhashable: no tenant, never a crash (review 2026-10-21)
     entries = (reg.get("tenants") or {}).get(t) if isinstance(t, str) else None
-    return bool(entries and path and denied({"routed": dict.fromkeys(entries)}, path))
+    if not (entries and path and denied({"routed": dict.fromkeys(entries)}, path)):
+        return False
+    c = a.get("confine")
+    return c is None or bool(c and denied({"routed": dict.fromkeys(c)}, path))
+
+
+def confined_out(reg, a, path):
+    """Why row `a` may not run the repo at path though it is its tenant's (its `confine` leaves it out), or None."""
+    c = a.get("confine")
+    if c is None or not path or own_tenant(reg, a, path):
+        return None
+    t = a.get("tenant")
+    entries = (reg.get("tenants") or {}).get(t) if isinstance(t, str) else None
+    if not (entries and denied({"routed": dict.fromkeys(entries)}, path)):
+        return None
+    return f"{a['label']} is confined to {', '.join(c) or 'nothing'} of {t}'s repos (tenants)"
 
 
 def owns_repo(reg, a, path):
@@ -1005,9 +1418,10 @@ def owns_repo(reg, a, path):
 
 
 def routes_for(reg, a):
-    """{entry: {tenant, logins, default, codex}} for every tenant repo entry row `a` is not the tenant of. `logins`
-    are the tenant's enabled Claude rows: every line that tells a Claude session where to go (the guard's,
-    `run`'s, doctor's) reads them alone. `codex` are its enabled Codex rows, which only pick's skip line names."""
+    """{entry: {tenant, logins, default, codex, antigravity}} for every tenant repo entry row `a` is not the tenant
+    of. `logins` are the tenant's enabled Claude rows: every line that tells a Claude session where to go (the
+    guard's, `run`'s, doctor's) reads them alone. Each routing provider's key holds its enabled rows, which only
+    pick's skip line names."""
     out = {}
     for name, repos in (reg.get("tenants") or {}).items():
         if a.get("tenant") == name:
@@ -1015,12 +1429,12 @@ def routes_for(reg, a):
         rows = [r for r in reg.get("accounts") or [] if r.get("tenant") == name
                 and r.get("enabled", True) and r.get("provider", "claude") == "claude"]
         logins = [r["label"] for r in rows]
-        codex = [r["label"] for r in reg.get("accounts") or [] if r.get("tenant") == name
-                 and r.get("enabled", True) and r.get("provider") == "codex"]
+        routing = {p: [r["label"] for r in reg.get("accounts") or [] if r.get("tenant") == name
+                       and r.get("enabled", True) and r.get("provider") == p] for p in ROUTING_PROVIDERS}
         # the default dir has no VS Code profile of its own name: use_line names the default profile for it (S7)
         default = next((r["label"] for r in rows if r.get("home") == DEFAULT_DIR.absolute()), None)
         for e in repos:
-            out.setdefault(e, {"tenant": name, "logins": logins, "default": default, "codex": codex})
+            out.setdefault(e, dict(routing, tenant=name, logins=logins, default=default))
     return out
 
 
@@ -1062,6 +1476,8 @@ def env_of(a):
     """What a start on this account sets. Empty for the default dir (see the header)."""
     if a["provider"] == "codex":
         return {"CODEX_HOME": str(a["home"])}
+    if a["provider"] != "claude":   # agy picks its keychain login itself: nothing a start could set (header)
+        return {}
     return {} if is_default(a) else {"CLAUDE_CONFIG_DIR": str(a["home"])}
 
 
@@ -1072,7 +1488,7 @@ def start_env(a):
 
 
 def claude_json(a):
-    return HOME / ".claude.json" if is_default(a) else a["home"] / ".claude.json"
+    return home_claude_json(a["home"]) if a["provider"] == "claude" else a["home"] / ".claude.json"
 
 
 def login_of(a):
@@ -1310,9 +1726,10 @@ def off_reason(a, key):
     if t and t["tenant"] == CLOSED:
         return f"{key}: tenancy does not read and has no last good copy (closed until it reads)"
     if t:
-        codex = a.get("provider") == "codex"   # each vendor's pick is told its own vendor's rows
-        on = list(t.get("codex") or []) if codex else list(t["logins"])
-        return f"{key} is {t['tenant']}'s: it runs on {', '.join(on) or ('no codex login' if codex else 'no login')} only (tenants)"
+        p = a.get("provider")   # each vendor's pick is told its own vendor's rows
+        vendor = p in ROUTING_PROVIDERS
+        on = list(t.get(p) or []) if vendor else list(t["logins"])
+        return f"{key} is {t['tenant']}'s: it runs on {', '.join(on) or (f'no {p} login' if vendor else 'no login')} only (tenants)"
     return f"{key} is on its deny list"
 
 
@@ -1610,8 +2027,9 @@ def fable_window(lims):
 
 def parse_usage(u):
     rl = u.get("rate_limits") or {}
+    lims = limits_list(u)   # either shape, as fable_of reads it: no_five_hour judges by these kinds
     out = {"plan": u.get("subscription_type"), "locked": [], "fable": fable_of(u),
-           "kinds": [x.get("kind") for x in (rl.get("limits") or []) if isinstance(x, dict)]}
+           "kinds": [x.get("kind") for x in (lims if isinstance(lims, list) else []) if isinstance(x, dict)]}
     for w in WINDOWS:
         x = rl.get(w) or {}
         out[w] = x.get("utilization")
@@ -1667,14 +2085,51 @@ def rolled(lim, t=None):
     return out
 
 
+def read_cache(a):
+    """The row's usage-probe.json as a dict, or None (missing, torn, or no object)."""
+    try:
+        c = json.loads(cache_path(a).read_text(errors="replace"))
+    except (OSError, ValueError):
+        return None
+    return c if isinstance(c, dict) else None
+
+
+def own_reading(c, own, copied):
+    """Whether cached reading c is the seat `own`'s, (account, org) as login_ids gives it. Orca copied the default
+    dir's usage-probe.json into an Orca login's profile at each selection, so that login's row read the primary's
+    week and lock (cooldown-account's D1, 2026-11-02). A reading of another seat is never this one's. A reading with
+    no stamp (written before the stamp, or another dir's copied in) is no reading of this login on a row where a copy
+    can arrive (`copied`: Orca's profiles; the reading is replaced by the next probe, and the row is unknown
+    meanwhile); elsewhere it is the row's own, as own_record reads a record with no account, so the readings written
+    before the stamp do not read as unknown at rollout, which would hand every --cached pick to the primary "rather
+    than nothing". A home whose login does not read (a Codex home, a torn .claude.json) takes any reading, as before."""
+    if not own[0]:
+        return True
+    ra = id_prefix(c.get("account"))
+    return same_seat(ra, id_prefix(c.get("org")), own) if ra else not copied
+
+
+def probe_state(a):
+    """→ (level, text, fix) for doctor and check when the row's usage-probe.json is not its own seat's reading
+    (own_reading), else None. Info: limits() reads such a file as no reading and the next probe replaces it."""
+    c = read_cache(a)
+    own = login_ids(a["home"])
+    if c is None or own_reading(c, own, via_orca(a)):
+        return None
+    ra = id_prefix(c.get("account"))
+    what = (f"{seat_name(ra, id_prefix(c.get('org')))}'s reading" if ra else "a reading with no login stamp")
+    return ("info", f"usage cache {cache_path(a)} holds {what} (not this login's {seat_name(*own)}; not used — the"
+                    " next probe replaces it)", None)
+
+
 def limits(a, cached=False):
     """→ (limits dict or None, sampled epoch or None). Probes only when the cache is older than
-    CACHE_S and --cached was not asked for. A cached window past its reset reads 0 (rolled)."""
+    CACHE_S and --cached was not asked for. A cached window past its reset reads 0 (rolled). A cached
+    reading that is not this login's (own_reading) is none, for the stale fallback too."""
     if not a["home"].is_dir():
         return None, None
-    try:
-        c = json.loads(cache_path(a).read_text())
-    except (OSError, ValueError):
+    c = read_cache(a)
+    if c is not None and not own_reading(c, login_ids(a["home"]), via_orca(a)):
         c = None
     if c and (cached or now() - c.get("at", 0) < CACHE_S):
         return rolled(c.get("limits")), c.get("at")
@@ -1688,7 +2143,15 @@ def limits(a, cached=False):
         # --cached at every prompt, and a half-written file reads as "no probe yet".
         tmp = cache_path(a).with_name(cache_path(a).name + f".{os.getpid()}.tmp")
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"at": now(), "limits": lim}))
+        rec = {"at": now(), "limits": lim}
+        # the home's stored login, which the probe runs as unless a caller's CLAUDE_CODE_OAUTH_TOKEN rode along (as
+        # on main; no unattended caller probes under one); a Codex home reads none and is not stamped
+        acct, org = login_ids(a["home"])
+        if acct:
+            rec["account"] = acct
+            if org:
+                rec["org"] = org
+        tmp.write_text(json.dumps(rec))
         os.replace(tmp, cache_path(a))
     except OSError:
         try:
@@ -1711,51 +2174,171 @@ def exhaustion_log(home):
 def read_exhaustion(home):
     out = []
     try:
-        for line in exhaustion_log(home).read_text().splitlines():
+        # errors="replace": a torn or stray byte spoils its own line, never every reader (cooldown-account's review, 2026-11-02)
+        for line in exhaustion_log(home).read_text(errors="replace").splitlines():
             try:
-                out.append(json.loads(line))
+                r = json.loads(line)
             except ValueError:
-                pass
+                continue
+            if isinstance(r, dict):   # every reader asks .get of a record
+                # and compares its times as numbers: a hand-edited time (an ISO string) is read as one, or as none
+                for k in ("at", "resets_at"):
+                    if not (r.get(k) is None or isinstance(r[k], (int, float))):
+                        r[k] = num_or_epoch(r[k]) if isinstance(r[k], str) else None
+                out.append(r)
     except OSError:
         pass
     return out
 
 
-def account_id(home):
-    """The login's account id prefix (usage-report names logins by it, never by e-mail)."""
-    p = HOME / ".claude.json" if Path(home) == DEFAULT_DIR.absolute() else Path(home) / ".claude.json"
+def num_or_epoch(v):
+    """A time given as text: a number ("1794135600"), else ISO (epoch), else None."""
     try:
-        return ((json.loads(p.read_text()).get("oauthAccount") or {}).get("accountUuid") or "")[:8] or None
-    except (OSError, ValueError):
+        return float(v)
+    except ValueError:
+        return epoch(v)
+
+
+def home_claude_json(home):
+    """The .claude.json a config dir's login is kept in: the home folder's for the default dir (claude_json)."""
+    return HOME / ".claude.json" if Path(home) == DEFAULT_DIR.absolute() else Path(home) / ".claude.json"
+
+
+def login_ids(home):
+    """→ (account id prefix, organization id prefix) of the home's login, each None when it does not read
+    (usage-report names logins by the account prefix, never by e-mail). A seat is the pair (login_of: one
+    account in two orgs is two keys)."""
+    p = home_claude_json(home)
+    try:
+        st = p.stat()
+    except OSError:
+        return None, None
+    return _login_ids(str(p), st.st_mtime_ns, st.st_size)
+
+
+@functools.lru_cache(maxsize=64)
+def _login_ids(p, mtime_ns, size):
+    # cached by the file's stamp: pick asks cooldown() several times a row, and a .claude.json runs to megabytes
+    try:
+        o = json.loads(Path(p).read_text(errors="replace")).get("oauthAccount")
+    except (OSError, ValueError, AttributeError):
+        return None, None
+    return (id_prefix(o.get("accountUuid")), id_prefix(o.get("organizationUuid"))) if isinstance(o, dict) else (None, None)
+
+
+def id_prefix(v):
+    """An id's 8-character prefix, None for anything that is no id (a hand-edited or torn value)."""
+    return v[:8] if isinstance(v, str) and v else None
+
+
+def own_record(r, own):
+    """Whether exhaustion record r is the seat `own`'s, (account, org) as login_ids gives it (cooldown-account,
+    2026-11-02: the primary's week lock, in an Orca login's profile log, held that login a day past its own
+    reset). A record with no `account` counts as the home's own: one written before the field, or by a writer
+    whose home read no login, has nothing to say whose it is, and reading it as foreign would free a row a real
+    lock holds; a value that is no id reads as none, for the same reason. A home whose own account does not read
+    counts every record, as before: unknown is not "nobody's". The org judges only where both sides carry one
+    (records before 2026-11-02 carry none)."""
+    return own_reading(r, own, copied=False)
+
+
+def same_seat(ra, ro, own):
+    """Whether account prefix ra and org prefix ro are the seat `own`; the org judges only where both carry one."""
+    acct, org = own
+    return ra == acct and (not (org and ro) or ro == org)
+
+
+def seat_name(acct, org):
+    """A seat as reports name it: `account/org`, or the account alone where no org reads."""
+    return f"{acct}" + (f"/{org}" if org else "")
+
+
+def own_exhaustion(home):
+    """The home's records that are its own seat's (own_record)."""
+    own = login_ids(home)
+    return [r for r in read_exhaustion(home) if own_record(r, own)]
+
+
+def exhaustion_state(a, t=None):
+    """→ (level, text, fix) for doctor and check when the row's log is another dir's file (a link: Orca's mirror)
+    or holds another seat's records still in force (a lock not reset, or one margin still counts), else None.
+    Info: cooldown and margin count only the home's own records, so a shared log only says where another
+    login's locks are kept — bar a link on a row whose own login does not read, where every record counts and
+    the other login's locks do hold it ("fix")."""
+    t = now() if t is None else t
+    home = a["home"]
+    p = exhaustion_log(home)
+    target = os.path.realpath(p) if p.is_symlink() else None
+    if target and os.path.dirname(target) == os.path.realpath(home):
+        target = None
+    own = login_ids(home)
+    live = [r for r in read_exhaustion(home)
+            if (r.get("resets_at") or 0) > t or t - (r.get("at") or 0) < MARGIN_DAYS * 86400]
+    foreign = [r for r in live if not own_record(r, own)]
+    if target and not own[0]:
+        return ("fix", f"exhaustion log {p} is a link to {target}, and this login does not read: every record in it"
+                       " counts here, another login's locks included", orca_relogin_line(a) if via_orca(a) else None)
+    if not target and not foreign:
         return None
+    whose = sorted({seat_name(id_prefix(r.get("account")), id_prefix(r.get("org"))) for r in foreign})
+    held = (f"{len(foreign)} record{'s' if len(foreign) != 1 else ''} in force of {', '.join(whose)} (not this "
+            f"login's {seat_name(*own)}; not counted)" if foreign else "")
+    if target:
+        return ("info", f"exhaustion log {p} is a link to {target}, shared with that dir's login (each counts its own"
+                        " records only)" + (f"; it holds {held}" if held else ""), None)
+    return ("info", f"exhaustion log {p} holds {held}", None)
 
 
 def record_exhaustion(home, window, resets_at, used, session):
     """Append once per window and reset, whoever writes it. The probe's resets_at carries
     microseconds that differ per fetch and the status line's is whole seconds (review
     2026-10-03: three probes of one lock wrote three records, 30 points of margin), so the reset
-    is rounded to the minute and anything within SAME_RESET of a recorded one is that one."""
+    is rounded to the minute and anything within SAME_RESET of a recorded one is that one —
+    one of the home's own seat's records: another login's lock on the same week, in a log the two
+    share (exhaustion_state), is no record of this one's. → True written; False not written, and
+    nothing to try again: already recorded, or a home whose .claude.json holds no readable login
+    after one re-read (a record with no account would count for every login sharing the log,
+    own_record; a token's session in a dir with no stored login would otherwise retry at every
+    status-line render); None not written for now: a log that cannot be appended to. `exhausted`
+    exits 1 on None, so the status line tries again; a probe records at its next reading."""
     resets_at = epoch(resets_at)
     resets_at = round(resets_at / 60) * 60 if resets_at else resets_at
+    acct, org = login_ids(home)
+    if not acct and home_claude_json(home).is_file():   # a Codex home has none: its records carry no account
+        # read mid-rewrite, a .claude.json reads as no login: once more after Claude Code's write settles
+        time.sleep(0 if os.environ.get("ACCOUNT_SETTLE") == "0" else 0.3)
+        _login_ids.cache_clear()   # a torn read is cached by the file's stamp: the re-read must read the file again
+        acct, org = login_ids(home)
+        if not acct:
+            print(f"account: no login reads in {home_claude_json(home)} — the {window} lock is not recorded", file=sys.stderr)
+            return False
     for r in read_exhaustion(home):
-        if r.get("window") == window and abs((r.get("resets_at") or 0) - (resets_at or 0)) < SAME_RESET:
+        if (own_record(r, (acct, org)) and r.get("window") == window
+                and abs((r.get("resets_at") or 0) - (resets_at or 0)) < SAME_RESET):
             return False
     rec = {"at": now(), "window": window, "used": used, "resets_at": resets_at,
-           "session": session, "account": account_id(home)}
-    Path(home).mkdir(parents=True, exist_ok=True)
-    with exhaustion_log(home).open("a") as fh:
-        fh.write(json.dumps(rec) + "\n")
+           "session": session, "account": acct}
+    if org:
+        rec["org"] = org
+    try:
+        Path(home).mkdir(parents=True, exist_ok=True)
+        with exhaustion_log(home).open("a") as fh:   # through Orca's link too: it is left as Orca made it
+            fh.write(json.dumps(rec) + "\n")
+    except OSError as e:   # a link into a folder gone: never a traceback out of limits() and pick
+        print(f"account: {exhaustion_log(home)}: {e} — the {window} lock is not recorded", file=sys.stderr)
+        return None
     return True
 
 
 def cooldown(a, t):
-    """The latest reset among windows still locked, or None."""
-    ends = [r["resets_at"] for r in read_exhaustion(a["home"]) if (r.get("resets_at") or 0) > t]
+    """The latest reset among the row's own windows still locked, or None (own_record: never
+    another login's record that reached this home's log)."""
+    ends = [r["resets_at"] for r in own_exhaustion(a["home"]) if (r.get("resets_at") or 0) > t]
     return max(ends) if ends else None
 
 
 def margin(a, t):
-    n = sum(1 for r in read_exhaustion(a["home"]) if t - (r.get("at") or 0) < MARGIN_DAYS * 86400)
+    n = sum(1 for r in own_exhaustion(a["home"]) if t - (r.get("at") or 0) < MARGIN_DAYS * 86400)
     return min(MARGIN * n, MARGIN_CAP)
 
 
@@ -1769,9 +2352,57 @@ def when(t):
     return dt.datetime.fromtimestamp(t).strftime("%a %H:%M" if t - now() < 7 * 86400 else "%b %-d %H:%M")
 
 
+WEEK_MAX_KEY = "lighthouse/week-max"
+_WEEK_MAX = None
+_WEEK_MAX_SAID = set()
+
+
+def live_week_max(label):
+    """(ceiling, where from, bad line) from the config's `lighthouse/week-max` (live-limits, 2026-11-01): lines
+    `<login>:<pct>`, `*:<pct>` for any login without one, a number above 0 and at most 100. `regatta limit` writes it
+    in the config dir's live layer, so a ceiling changes on the next pick, with no registry edit and no landing.
+    The login's own line first; none naming it is (None, None, None). A line that is no ceiling reads as none, said
+    on stderr once and returned as the bad line, never a crash of every pick (AGENTS.md's optional-key trap). The
+    table is read once per run: a pick judges every row, some twice."""
+    global _WEEK_MAX
+    if _WEEK_MAX is None:
+        try:
+            c = core()
+            lines = c.config_lines(WEEK_MAX_KEY) or []
+            # the core's entry reader: an entry the overlay wrote one word per line (`acct:` then `80`) and a note
+            # after it read whole, as every other reader of a `<word>:<value>` key takes them (the round-1 review)
+            ents = c.config_entries(lines) if hasattr(c, "config_entries") else None
+        except Exception:   # no core here: no live ceiling, the registry's as ever
+            lines, ents = [], None
+        if ents is None:
+            ents = [(w.strip().lower(), v.strip()) for w, colon, v in (l.partition(":") for l in lines)
+                    if colon and w.strip()]
+        _WEEK_MAX = {}
+        for w, v in ents:
+            if w:
+                _WEEK_MAX.setdefault(w, v)
+    table = _WEEK_MAX
+    for name in (str(label).lower(), "*"):
+        if name in table:
+            v = table[name]
+            try:
+                n = float(v)
+            except ValueError:
+                n = None
+            if n is None or n != n or not 0 < n <= 100:
+                if name not in _WEEK_MAX_SAID:
+                    _WEEK_MAX_SAID.add(name)
+                    print(f"account: {WEEK_MAX_KEY} {name}:{v} is no ceiling (a number above 0, at most 100); "
+                          "the registry's rules.week_max judges", file=sys.stderr)
+                return None, None, f"{name}:{v}"
+            return (int(n) if n == int(n) else n), f"{WEEK_MAX_KEY} {name}:", None
+    return None, None, None
+
+
 def ceiling(a, lim, t):
     """The week ceiling now, and why. `reserve.day` (D2: Saturday) is a local weekday;
-    `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets."""
+    `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets. A reserve
+    judges first; then a live ceiling (live_week_max) over the row's `rules.week_max`."""
     rules = a["rules"]
     res = rules.get("reserve") or {}
     if res.get("day") and dt.datetime.fromtimestamp(t).strftime("%A").lower() == res["day"].lower():
@@ -1779,7 +2410,14 @@ def ceiling(a, lim, t):
     end = lim.get("seven_day_resets") if lim else None
     if res.get("last_hours") and end and 0 <= end - t <= res["last_hours"] * 3600:
         return res.get("week_max", 100), f"last {res['last_hours']} h of the week"
-    return rules.get("week_max", 100), "week ceiling"
+    live, src, _ = live_week_max(a.get("label"))
+    # a login's own live line stands over its registry ceiling and budgets.json's, both (the owner's word on that
+    # host, newest by being set there); `*:` only over a row that sets none in either, so a ceiling set low on
+    # purpose (a seat kept for its owner) is never raised by a fleet-wide line (the reviews); `regatta limit set`
+    # says so at each login's set (lighthouse/limits)
+    if live is not None and (not src.endswith(" *:") or "week_max" not in rules):
+        return live, "week ceiling, live"
+    return rules.get("week_max", 100), ("week ceiling, budgets.json" if "week_max" in (a.get("budgeted") or ()) else "week ceiling")
 
 
 def rule_num(a, key, default):
@@ -1804,6 +2442,25 @@ def pace(lim, t):
     return 100 * (1 - (end - t) / span)
 
 
+def no_five_hour(a, lim):
+    """True when the reading has a week and its plan has no 5-hour window at all, as opposed to a
+    lost figure. Codex says so by the window's absence (parse_codex). Claude by its `limits[]`: a
+    list that names windows but no `session` one (the primary's, 2026-11-01: get_usage's five_hour
+    null, and the inference headers' unifiedWindows the week alone). A reading with no `kinds`
+    (an old cache, a shape without `limits[]`) stays unknown."""
+    if not lim or lim.get("five_hour") is not None or lim.get("seven_day") is None:
+        return False
+    if a["provider"] == "codex":
+        return True
+    # a list that names the week (weekly_all) and only weekly kinds: a whole answer, not a partial one, and a kind
+    # not known here (a renamed session window) fails closed. Inferred from one day's answers across three logins
+    # (2026-11-01, above: an idle window keeps its `session` entry); a lost figure in a list that also lost its
+    # session entry would pass, and then only the exhaustion record (cooldown) stops a full 5-hour window.
+    kinds = lim.get("kinds")
+    return (a["provider"] == "claude" and isinstance(kinds, list) and "weekly_all" in kinds
+            and set(kinds) <= {"weekly_all", "weekly_scoped"})
+
+
 def judge(a, lim, t, allow_overage=False, at=None):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
     whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
@@ -1825,10 +2482,10 @@ def judge(a, lim, t, allow_overage=False, at=None):
     if a["provider"] == "codex" and lim.get("locked"):
         # the server said the limit is reached; with no reset time no cooldown was written to stop it
         return False, f"locked by Codex ({', '.join(lim['locked'])}); resets {when(lim.get('seven_day_resets') or lim.get('five_hour_resets'))}"
-    if a["provider"] == "codex" and (wk is None) != (fh is None):
-        # a window the plan does not have is no limit (prolite: the week alone)
-        if fh is None:
-            return (wk < week_max, f"week {wk}% {'<' if wk < week_max else '≥'} {week_max}% ({why}); no 5-hour window")
+    # a window the plan does not have is no limit (Codex prolite, a Claude plan without a session window)
+    if no_five_hour(a, lim):
+        return (wk < week_max, f"week {wk}% {'<' if wk < week_max else '≥'} {week_max}% ({why}); no 5-hour window")
+    if a["provider"] == "codex" and wk is None and fh is not None:
         wk = 0
     if wk is None or fh is None:
         return False, "limits unknown (no window figures)"
@@ -1849,6 +2506,40 @@ def judge(a, lim, t, allow_overage=False, at=None):
     return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% ≤ {win_max}%"
 
 
+ROOMS = ("fable",)
+
+
+def room_short(a, lim, t, room):
+    """→ None when the row has the room asked for, else (why, lasting): lasting when the plan itself
+    lacks it (a ship pinned there moves), not when its week is full (it waits). Fable's room is its own
+    week under the row's week ceiling (header, "Room")."""
+    if not room:
+        return None
+    if lim is None or lim.get("fable") is None:
+        return "Fable room unknown (no reading with limits[]): a principal head is never started on a guess", False
+    if not lim.get("fable"):
+        return f"no Fable on its plan ({lim.get('plan') or 'plan unknown'}): --room fable", True
+    fw = lim.get("fable_week")
+    if fw is None:
+        return "Fable room unknown (its week has no figure)", False
+    week_max, why = ceiling(a, lim, t)
+    if fw >= week_max:
+        return f"Fable's week {fw}% ≥ {week_max}% ({why}); resets {when(lim.get('fable_week_resets'))}", False
+    return None
+
+
+def room_refusal(reg, kind, provider, room):
+    """The reason pick refuses a --room it cannot honour, or None (header, "Room")."""
+    if room is None:
+        return None
+    if room not in ROOMS:
+        return f"unknown room {room!r}: --room takes {', '.join(ROOMS)}"
+    prov = provider_for(reg, kind, provider)
+    if prov != "claude":
+        return f"--room {room} is a Claude seat's; {prov} rows carry no Fable"
+    return None
+
+
 def provider_for(reg, kind, provider):
     if provider:
         return provider
@@ -1858,10 +2549,14 @@ def provider_for(reg, kind, provider):
     return "claude"
 
 
-def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False):
+def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False, room=None):
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
-    repo: the path the step runs in; a row whose deny list names its repo is skipped unprobed."""
+    repo: the path the step runs in; a row whose deny list names its repo is skipped unprobed.
+    room: `fable` takes only a row with Fable room (header, "Room")."""
     t = now()
+    bad = room_refusal(reg, kind, provider, room)
+    if bad:
+        raise Short([("room", bad)])
     prov = provider_for(reg, kind, provider)
     rows = [a for a in reg["accounts"] if a["enabled"] and a["provider"] == prov]
     if bound:
@@ -1882,22 +2577,35 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         if d:
             skipped.append((a["label"], off_reason(a, d)))
             continue
+        c = confined_out(reg, a, repo)
+        if c:
+            skipped.append((a["label"], c))
+            continue
         if not a["home"].is_dir():  # one registry for both Macs; the always-on Mac has the primary only
             skipped.append((a["label"], "its login is not in Orca here (no orca-sync has found it)" if via_orca(a)
                             else f"not set up on this machine ({a['home']} missing)"))
             continue
         if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
-            skipped.append((a["label"], judge(a, None, t)[1]))
+            # under --room, a plan its cached reading says lacks Fable is said first: no reset lifts it
+            # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts)
+            rs = room_short(a, limits(a, cached=True)[0], t, room) if room and not a.get("same_as") else None
+            skipped.append((a["label"], rs[0] if rs and rs[1] else judge(a, None, t)[1]))   # same_as: its own fix leads
             continue
         lim, at = limits(a, cached=cached)
         ok, why = judge(a, lim, t, allow_overage, at)
+        rs = room_short(a, lim, t, room)
+        if rs:   # before the fallbacks below: an unknown Fable is no room, the primary's included
+            # a plan without Fable alone: no reset lifts it, so judge's reason never leads (resets())
+            # judge's "limits unknown" is the same unread probe the room reads, so the room's reason stands alone
+            skipped.append((a["label"], rs[0] if ok or rs[1] or why.startswith("limits unknown") else f"{why}; {rs[0]}"))
+            continue
         if ok:
-            return a, why, skipped
+            return a, (f"{why}; Fable's week {lim['fable_week']}%" if room else why), skipped
         if a.get("primary") and (lim is None or why.startswith("limits unknown")):
             # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
             # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
             # and a blocked start costs more than a guess (review 2026-10-03). A row after the
-            # primary (the Pro fallback, the owner's last resort since 2026-10-16) is for a primary with no room,
+            # primary (the owner's last-resort row since 2026-10-16) is for a primary with no room,
             # never one whose room is unknown.
             return a, "limits unknown — the primary runs it rather than nothing", skipped
         if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
@@ -2136,6 +2844,9 @@ def cmd_check(reg):
             notes.append(f"Codex, {(lim or {}).get('plan') or 'plan ?'}; " + (f"probe {int((t - at) / 60)} min old" if at else "never probed"))
             print(f"  {'ok' if at else '⚠ '}  {a['label']}: " + "; ".join(notes))
             continue
+        if a["provider"] in UNPROBED:  # its login is the agent's own (agy: the keychain), out of this tool's reach
+            print(f"  ok  {a['label']}: {a['provider']}, routing only; its login is the agent's own, never read here")
+            continue
         st = auth_status(a)
         if not st or not st.get("loggedIn"):
             bad += 1
@@ -2169,11 +2880,18 @@ def cmd_check(reg):
             bad += 1
             notes.append(judge(a, None, t)[1])
         lim, at = limits(a, cached=True)
-        notes.append(f"probe {int((t - at) / 60)} min old" if at else "never probed")
+        ps = probe_state(a)
+        notes.append(f"probe {int((t - at) / 60)} min old" if at else "no reading of its own cached" if ps else "never probed")
         cd = cooldown(a, t)
         if cd:
             notes.append(f"cooling down until {when(cd)}")
-        mark = "ok" if not lp and not fs and not a.get("same_as") and (st or {}).get("loggedIn") else "⚠ "
+        ex = exhaustion_state(a, t)
+        if ex:
+            notes.append(ex[1])
+            bad += ex[0] == "fix"
+        if ps:
+            notes.append(ps[1])
+        mark = "ok" if not lp and not fs and not a.get("same_as") and (st or {}).get("loggedIn") and not (ex and ex[0] == "fix") else "⚠ "
         print(f"  {mark}  {a['label']}{' (primary)' if a.get('primary') else ''}: " + "; ".join(notes))
     return 1 if bad else 0
 
@@ -2196,6 +2914,10 @@ def open_in_terminal(argv, env):
 
 def cmd_add(reg, label, login, say_login=True):
     a = row(reg, label)
+    if a["provider"] == "antigravity":
+        # agy keeps its login in the keychain and picks it itself (header): the row has nothing to sign in
+        print(f"{label}: agy keeps its login itself; nothing to add")
+        return 0
     if a["provider"] != "claude":
         sys.exit(f"account: adding a {a['provider']} account is not built — sign its home in yourself "
                  f"(`CODEX_HOME={shlex.quote(str(a['home']))} codex login`), then `account limits {label}`; orca-sync makes rows of its own, never fills this one")
@@ -2484,6 +3206,48 @@ def agent_label(p, taken):
     return p if p not in taken else orca_label({"email": p}, taken)
 
 
+def bucket_words(name):
+    """An Orca bucket's name in the cards' words, (family, window): "Gemini Models · Five Hour Limit Remaining" is
+    ("Gemini", "5h"), "Claude and GPT models · Weekly Limit Remaining" ("Claude/GPT", "week") (Antigravity's,
+    2026-11-01), Cursor's "Other Models" ("Other", ""). One home for the words: the widget draws them, and
+    `limits --hide AGENT:FAMILY` matches the family."""
+    fam, _, w = str(name or "?").partition("·")
+    family = re.sub(r"\s+and\s+", "/", re.sub(r"\s+models$", "", fam.strip(), flags=re.I), flags=re.I) or "?"
+    w = w.strip()
+    win = ("5h" if re.search(r"five.?hour|\b5.?h\b", w, re.I) else "week" if re.search(r"week", w, re.I)
+           else "month" if re.search(r"month", w, re.I) else re.sub(r"\s*limit.*$", "", w, flags=re.I))
+    return family, win
+
+
+def hide_families(o, fams):
+    """An Orca row without the bucket families `--hide AGENT:FAMILY` names for it (by its label or Orca's name for
+    it), its 5h and week taken again from the buckets left, so a hidden family never comes back as a plain bar:
+    per window where the buckets name one, else the week as the fuller bucket left (parse_orca's rule). The
+    caller's view only; a row nothing names is returned as it is (the owner, 2026-11-01: "this setting is
+    client-side")."""
+    off = {f for who, f in fams if who in (str(o.get("label")).lower(), str(o.get("provider")).lower())}
+    lim = o.get("limits")
+    if not off or not isinstance(lim, dict):
+        return o
+    every = lim.get("buckets") or []
+    keep = [b for b in every if str(b.get("family", "")).lower() not in off]
+    if len(keep) == len(every):
+        return o
+    lim = dict(lim, buckets=keep)
+    num_ = lambda b: isinstance(b.get("percent"), (int, float))
+    if any(b.get("win") in ("5h", "week") for b in every):
+        for w, win in (("five_hour", "5h"), ("seven_day", "week")):
+            top = max((b for b in keep if b.get("win") == win and num_(b)), key=lambda b: b["percent"], default=None)
+            lim[w], lim[w + "_resets"] = (top["percent"], top.get("resets")) if top else (None, None)
+    elif lim.get("seven_day") is not None:   # Antigravity's week, its fuller bucket; Cursor's month buckets have no week
+        top = max((b for b in keep if num_(b)), key=lambda b: b["percent"], default=None)
+        lim["seven_day"], lim["seven_day_resets"] = (top["percent"], top.get("resets")) if top else (None, None)
+    lim["hidden"] = sorted(off)   # the widget says a card with every family hidden is that, not an unknown reading
+    # as parse_orca locks an agent with buckets: a full 5h only, never its week (a full bucket parks those models)
+    lim["locked"] = ["five_hour"] if (lim.get("five_hour") or 0) >= 100 else []
+    return dict(o, limits=lim)
+
+
 def orca_row(p, label, lim, at, why):
     """A `limits --orca` row, in limits_json's shape: report only, so never eligible. A bucket or
     window past its reset reads 0, as rolled() reads the others (an Orca down for a week)."""
@@ -2492,6 +3256,7 @@ def orca_row(p, label, lim, at, why):
         t = now()
         lim = dict(lim, **{k: [dict(b, percent=0, resets=None) if b.get("resets") and b["resets"] <= t else b
                                for b in lim.get(k) or [] if isinstance(b, dict)] for k in ("buckets", "windows")})
+        lim["buckets"] = [dict(b, **dict(zip(("family", "win"), bucket_words(b.get("name"))))) for b in lim["buckets"]]
     return {"label": label, "provider": p, "primary": False, "enabled": True, "here": True, "home": None,
             "env": {}, "limits": lim, "sampled": at, "eligible": False, "why": why,
             "denied": None, "same_as": None, "via": "orca", "report": True}
@@ -2910,8 +3675,12 @@ def load_ships():
             if isinstance(v, dict) and t - float(v.get("at") or 0) < PIN_DAYS * 86400}
 
 
-def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True, allow_overage=False):
+def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True, allow_overage=False,
+                  room=None):
     """pick, but a ship stays on its login (module docstring). → (row, reason, skipped); Short as pick."""
+    bad = room_refusal(reg, kind, provider, room)
+    if bad:
+        raise Short([("room", bad)])
     with ships_lock():
         ships = load_ships()
         pinned = ships.get(key)
@@ -2923,26 +3692,40 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             own = scope_login_of(repo)
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
                 or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
-                or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}")
+                or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}") \
+                or confined_out(reg, a, repo)
             if not gone:
                 t = now()
                 lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached)
                 ok, why = judge(a, lim, t, allow_overage, at)
-                if not ok and lim is None and a.get("primary") and not cooldown(a, t):
+                # cooling down: its cached reading still says whether its plan carries Fable
+                rs = room_short(a, limits(a, cached=True)[0] if cooldown(a, t) else lim, t, room) if room else None
+                unknown = rs and rs[0].startswith("Fable room unknown")
+                if rs and cooldown(a, t) and not rs[1]:
+                    rs = None   # a cooldown waits as before; a plan without Fable, or a Fable room unknown, moves the ship
+                if rs and rs[1]:   # its plan lacks the room: moved, as a disabled row is
+                    gone = rs[0].split(":")[0].replace("no Fable on its plan", "on a plan without Fable")
+                elif unknown:   # as pick skips it: an unknown Fable is no room, so the ship moves rather than wait
+                    gone = "of unknown Fable room (no reading with limits[])"
+                elif rs:
+                    ok, why = False, (rs[0] if ok else f"{why}; {rs[0]}")
+                elif not ok and (lim is None or why.startswith("limits unknown")) and a.get("primary") and not cooldown(a, t):
+                    # as pick reads it: a reading with no window figures too (pick's own branch; review 2026-11-01)
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
                 elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
                         and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
                     ok, why = True, "limits unknown — the tenant's own login runs it rather than nothing"
-                if ok:
+                if ok and not gone:
                     if pin:  # a pin lasts PIN_DAYS from its last use, so a long ship keeps it
                         ships[key]["at"] = int(now())
                         write_json(SHIPS, ships)
                     return a, f"ship {key} stays on it: {why}", []
-                raise Short([(a["label"], f"ship {key} stays on {a['label']} and waits: {why}")])
+                if not gone:
+                    raise Short([(a["label"], f"ship {key} stays on {a['label']} and waits: {why}")])
             moved = f"{pinned['label']} is {gone}"
         elif pinned:
             moved = f"{pinned.get('label')} is no row any more"
-        a, why, skipped = pick(reg, kind, provider, False, cached, repo, allow_overage)
+        a, why, skipped = pick(reg, kind, provider, False, cached, repo, allow_overage, room)
         if pin:
             ships[key] = {"label": a["label"], "at": int(now())}
             write_json(SHIPS, ships)
@@ -3201,12 +3984,30 @@ def stale_copies(peer=None):
             pairs.append((lp, local_copy(lp), json.loads(lp.read_text())))
         except (OSError, ValueError):
             pass
+    if drive_link(BUDGETS) and BUDGETS.is_file():
+        try:
+            pairs.append((BUDGETS, local_copy(BUDGETS), json.loads(BUDGETS.read_text())))
+        except (OSError, ValueError):
+            pass
     out = []
     fix = (wrap_peer(f"{BIN / 'account'} refresh --force", peer)
            + "   (the usage tick runs it through claude-host every 15 min; its log says why it did not)")
+    sib_text = budgets_link_text()
+    if sib_text:   # a plain file, or no tenants link, says nothing: a host with no drive
+        out.append(("-", "fix", f"{BUDGETS.name}: no link; refresh links it to {sib_text} "
+                    "(until then the hooks judge by the registry's ceilings alone)", fix))
+    elif not (BUDGETS.is_symlink() or BUDGETS.exists()):
+        why = budgets_candidate()[1]   # a sibling refresh refuses: never silent (landing review, 2026-11-02)
+        if why:
+            out.append(("-", "info", f"{BUDGETS.name}: no link, and refresh makes none: {why} "
+                        "(until then the hooks judge by the registry's ceilings alone)", None))
+    else:
+        out.extend(budgets_link_state(peer))
     for f, last, got in pairs:
         if not last.is_file():
-            out.append(("-", "fix", f"no local copy of {f.name}: the hooks open the link, which an ungranted app blocks on", fix))
+            out.append(("-", "fix", f"no local copy of {f.name}: "
+                        + ("the hooks judge by the registry's ceilings alone" if f == BUDGETS
+                           else "the hooks open the link, which an ungranted app blocks on"), fix))
             continue
         try:   # the filesystem's clock, never ACCOUNT_NOW (a suite's fake time)
             old = time.time() - last.stat().st_mtime
@@ -3215,6 +4016,53 @@ def stale_copies(peer=None):
         if read_copy(last) != got and old >= STALE_AFTER:
             out.append(("-", "fix", f"the hooks read {last.name}, which differs from {f.name} (last refreshed {age(old)} ago)", fix))
     return out
+
+
+def budgets_link_state(peer=None):
+    """→ doctor's lines on a budgets link refresh will not touch (it never replaces a link, the build's round 2): one that
+    leads nowhere, and one that no longer sits beside the tenants link's target (the tenants key relinked).
+    `rm` is advised only where refresh would link the key again (budgets_sibling), checked first: a fix where
+    the dead link points into the sibling's own folder, an info line (the rm offered) where it points elsewhere,
+    as that may be the owner's own link into a drive of its own that is away (landing review, 2026-11-02); with no sibling and the folder away (the drive unmounted) the link reads again once it mounts, and with no sibling an `rm` would only drop the key
+    and with it the hooks' copy (load_budgets reads no copy without a key)."""
+    if not BUDGETS.is_symlink():
+        return []
+    try:
+        text, real = os.readlink(BUDGETS), os.path.realpath(BUDGETS)
+    except OSError:
+        return []
+    held = ("the hooks hold its last copy" if local_copy(BUDGETS).is_file()
+            else "the hooks judge by the registry's ceilings alone")
+    sib = budgets_sibling()
+    relink = (wrap_peer(f"rm {shlex.quote(str(BUDGETS))} && {shlex.quote(str(BIN / 'account'))} refresh --force", peer)
+              + f"   (refresh links it again to {sib})") if sib else None
+    if not os.path.exists(real):
+        if sib and os.path.dirname(real) == os.path.dirname(sib):   # into the tenants target's own folder: a fix
+            return [("-", "fix", f"{BUDGETS.name} links to {text}, which is not there: {held}, and refresh keeps the link", relink)]
+        if sib:   # elsewhere: the vault moved, or the owner's own link into a drive of its own, away (landing review 2): info
+            return [("-", "info", f"{BUDGETS.name} links to {text}, which is not there, outside the folder of "
+                     f"{TENANTS.name}'s target (the vault moved, or a drive of its own away): {held}, and refresh "
+                     "keeps the link", relink)]
+        if not os.path.isdir(os.path.dirname(real)):
+            return [("-", "info", f"{BUDGETS.name} links to {text}, whose folder is not there (the drive away?): "
+                     f"{held}, and the link reads again once it mounts", None)]
+        # an rm would drop the key, and with it the copy, and refresh would make nothing (the build's round 3)
+        # and a removed key is linked again once a sibling is back: a plain {} is the lasting opt-out (landing review 2)
+        return [("-", "info", f"{BUDGETS.name} links to {text}, which is not there: {held}; put a "
+                 f"{os.path.basename(text)} back there, or make the key a plain {{}} to drop the owner's ceilings", None)]
+    try:   # a link whose text reads as outside a drive while its file is in one: every hook opens the drive
+        # outside claude-host (AGENTS.md Traps); a hand link refresh refused, or the 2026-10-31 ones (the /finish review)
+        split = not drive_link(BUDGETS) and link_judged(real)
+    except OSError:
+        split = False
+    if split:
+        return [("-", "fix", f"{BUDGETS.name} links to {text}, which reads as outside a drive while its file ({real}) "
+                 "is in one: the hooks open it outside claude-host, where an ungranted app blocks on it; relink it by its real path",
+                 wrap_peer(f"ln -sfn {shlex.quote(real)} {shlex.quote(str(BUDGETS))}", peer))]
+    if sib and real != os.path.realpath(sib):
+        return [("-", "info", f"{BUDGETS.name} links to {text}, not to the {BUDGETS_SIBLING} beside "
+                 f"{TENANTS.name}'s target ({sib}); refresh never replaces a link", relink)]
+    return []
 
 
 def tenancy_state(reg, peer=None):
@@ -3257,12 +4105,45 @@ def tenancy_state(reg, peer=None):
                         f"(got {json.dumps(repos)[:80]}) — every login may run its repos",
                         f"give {n} a \"repos\" list of repo keys or globs in {TENANTS}"))
         elif not any(r.get("tenant") == n and r.get("enabled") and r.get("provider") == "claude" for r in rows.values()):
-            codex = [r["label"] for r in rows.values() if r.get("tenant") == n and r.get("enabled") and r.get("provider") == "codex"]
-            # a Codex login routes `pick --provider codex` only: Claude sessions in the tenant's repos have no seat to start on
+            routing = [r for r in rows.values() if r.get("tenant") == n and r.get("enabled") and r.get("provider") in ROUTING_PROVIDERS]
+            # a Codex or agy login routes `pick --provider P` only: Claude sessions in the tenant's repos have no seat to start on
             out.append(("-", "fix", f"{n}'s repos run nowhere: no enabled claude login is {n}'s"
-                        + (f" (only {', '.join(codex)}, a codex login: it routes `pick --provider codex`, and no Claude session can start on it)"
-                           if codex else ""),
+                        + (f" (only {', '.join(r['label'] + ', ' + article(r['provider']) + ' ' + r['provider'] + ' login' for r in routing)}: "
+                           f"{'it routes' if len(routing) == 1 else 'they route'} "
+                           f"{', '.join('`pick --provider ' + v + '`' for v in dict.fromkeys(r['provider'] for r in routing))}"
+                           ", and no Claude session can start on it)" if routing else ""),
                         f"name its claude login in {n}'s \"logins\" in {TENANTS}"))
+        set_line = f"`{BIN / 'account'} tenant set {n} --repos … --logins … --confine LABEL=KEY,…`"
+        if first_form(t):
+            # apply_tenants confines each login it names to nothing: an account before #350 reads it whole (an empty
+            # one names none; one that is no object is tenant_closed's line)
+            out.append(("-", "fix", f"{n}'s \"confine\" in {TENANTS.name} is the first form, beside \"logins\": an account older "
+                        f"than the confine gives each login it names every repo of {n}, so here each is confined to nothing",
+                        f"rewrite it as \"confined\", each label out of \"logins\": {set_line} (a set without --confine "
+                        "carries it over once you take the label out of --logins)"))
+        closed = tenant_closed(t, rows)
+        if closed:
+            out.append(("-", "fix", f"{n} in {TENANTS.name}: {closed}, so every routing login in its \"logins\" is confined "
+                        "to nothing (a narrowing that does not read narrows everything it could name)",
+                        f"write \"confined\" as {{label: [repo key, …]}} naming codex or antigravity rows, or {set_line}"))
+        c = t.get("confined") if isinstance(t, dict) else None
+        for l, v in tenant_confined(t).items():
+            a = rows.get(l)
+            if a is None:
+                continue   # tenant_closed's line names it
+            if a.get("provider", "claude") not in ROUTING_PROVIDERS:
+                out.append((l, "fix", f"{l}, in {n}'s \"confined\" in {TENANTS.name}, is {article(a.get('provider', 'claude'))} "
+                            f"{a.get('provider', 'claude')} row: only a routing login is confined, so it is never read there"
+                            + (f" (its seat is {n}'s through \"logins\")" if l in tenant_logins(t) else f", and is no login of {n}"),
+                            f"take {l} out of {n}'s \"confined\"; a seat goes in \"logins\""))
+                continue
+            if not v:
+                out.append((l, "fix", f"{l}'s entry in {n}'s \"confined\" in {TENANTS.name} is no list of repo keys "
+                            f"(got {json.dumps(c.get(l))[:80]}): {l} is confined to nothing", f"write it as [repo key, …], or {set_line}"))
+            if l in tenant_logins(t):
+                out.append((l, "fix", f"{l} is in both {n}'s \"logins\" and its \"confined\" in {TENANTS.name}: confined here, "
+                            f"but an account older than the confine reads \"logins\" alone and gives it every repo of {n}",
+                            f"take {l} out of {n}'s \"logins\""))
     keys = None
     tenants = [(n, e) for n, e in (reg.get("tenants") or {}).items() if n != CLOSED]
     for i, (n, mine) in enumerate(tenants):
@@ -3274,7 +4155,9 @@ def tenancy_state(reg, peer=None):
                             f"to the other's logins, so it runs on neither", f"keep it in one tenant's \"repos\" in {TENANTS}"))
     named = {}
     for n, t in raw.items():
-        for l in tenant_logins(t):
+        # a confined label is the tenant's as a login is (apply_tenants), when it is a routing row; the rest, above
+        for l in tenant_logins(t) + [l for l in tenant_confined(t) if l not in tenant_logins(t) and l in rows
+                                     and rows[l].get("provider", "claude") in ROUTING_PROVIDERS]:
             named.setdefault(l, [])
             if n not in named[l]:
                 named[l].append(n)
@@ -3284,9 +4167,11 @@ def tenancy_state(reg, peer=None):
             if len(names) > 1:
                 owner = a.get("tenant")
                 others = [n for n in names if n != owner]
-                out.append((l, "fix", f"{l} is in the \"logins\" of {', '.join(names)} in {TENANTS.name}: it is "
+                # say where it sits in each: a label one tenant confines is in its "confined" (the landing review, 2026-11-01)
+                where = [f"{n}'s \"{'logins' if l in tenant_logins(raw[n]) else 'confined'}\"" for n in names]
+                out.append((l, "fix", f"{l} is in {', '.join(where)} in {TENANTS.name}: it is "
                             f"{owner}'s login only, and is refused {', '.join(others)}'s repos",
-                            f"keep {l} in one tenant's \"logins\" in {TENANTS}"))
+                            f"keep {l} in one tenant only in {TENANTS}"))
             continue
         if a is None:
             why, fix = "no row in accounts.json has it", f"correct the label in {TENANTS}"
@@ -3295,7 +4180,7 @@ def tenancy_state(reg, peer=None):
         elif not a.get("enabled"):
             why, fix = "its row is parked", f"enable {l} in {REGISTRY}, or take it out of {TENANTS}"
         else:
-            why, fix = f"its row is a {a.get('provider')} login, not claude or codex", f"take {l} out of {TENANTS}"
+            why, fix = f"its row is a {a.get('provider')} login, not claude, codex or antigravity", f"take {l} out of {TENANTS}"
         # info: whether its tenant still has a login is the per-tenant line above
         out.append((l, "info", f"{l}, in the \"logins\" of {', '.join(names)} in {TENANTS.name}, is no enabled login: {why}", fix))
     return out
@@ -3312,10 +4197,12 @@ def tenancy_roster(reg):
     out = []
     for n, entries in (reg.get("tenants") or {}).items():
         logins = [a["label"] for a in rows if a.get("tenant") == n and a["enabled"]]
-        codex = [a["label"] for a in reg["accounts"] if a["provider"] == "codex" and a.get("tenant") == n and a["enabled"]]
+        routing = {p: [a["label"] + (f" confined to {', '.join(a['confine']) or 'nothing'}" if a.get("confine") is not None else "")
+                       for a in reg["accounts"] if a["provider"] == p and a.get("tenant") == n and a["enabled"]]
+                   for p in ROUTING_PROVIDERS}
         if entries and logins:
             out.append(("-", "ok", f"tenant {n}: {', '.join(entries)} — runs on {', '.join(logins)} only ({tenants_source()})"
-                        + (f"; codex: {', '.join(codex)} (routing only, no hook guards a Codex session)" if codex else "")))
+                        + "".join(f"; {p}: {', '.join(ls)} (routing only)" for p, ls in routing.items() if ls)))
     implicit = set()
     for a in rows:
         for d in ((a.get("repos") or {}).get("deny")) or []:
@@ -3502,6 +4389,13 @@ def doctor_local(reg, logins, peer=None, record=True):
             pass  # the laptop keeps logins in the keychain: not read (it would prompt), said once below
         for rs in sorted(a["home"].glob("remote-settings*")) if not is_default(a) else sorted(DEFAULT_DIR.glob("remote-settings*")):
             f(lab, "info", f"{rs} exists — managed settings reached this dir (work-account P5); read it")
+        ex = exhaustion_state(a, t)
+        if ex:
+            problems += ex[0] == "fix"
+            f(lab, ex[0], ex[1], ex[2])
+        ps = probe_state(a)   # after limits(): a probe that answered has replaced it; a line is a failed or skipped call
+        if ps:
+            f(lab, ps[0], ps[1], ps[2])
         if a["enabled"] and not is_default(a):
             n = attribution(lab)
             if n is None:
@@ -3645,11 +4539,14 @@ def fable_word(lim):
     return "yes" if f else ("no" if f is False else "unknown")
 
 
-def limits_json(a, lim, at, t, repo=None):
+def limits_json(a, lim, at, t, repo=None, reg=None):
     ok, why = judge(a, lim, t, at=at)
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)
+    c = confined_out(reg, a, repo) if reg is not None else None
+    if c:
+        ok, why, d = False, c, d or c
     own = scope_login_of(repo)
     if own and own[1] != a["label"]:  # in `denied` too: dispatch's --force never crosses that
         ok, why, d = False, (f"scope {own[0]} runs on {own[1]}" if own[1] else own[0]), d or f"scope {own[0]}"
@@ -3658,6 +4555,8 @@ def limits_json(a, lim, at, t, repo=None):
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
             "here": a["home"].is_dir(), "home": str(a["home"]), "env": env_of(a), "limits": lim, "sampled": at, "eligible": ok, "why": why,
             "denied": d or None,  # --force never crosses a deny list (review 2026-10-06)
+            # the plan has no 5-hour window (no_five_hour): the widget and the tier check say so, never "unknown"
+            "no_five_hour": no_five_hour(a, lim),
             # dispatch's --force is a person's yes past overage: refused when unattended (pickup open refuses any)
             "overage": overage_on(lim),
             "same_as": a["same_as"][0] if a.get("same_as") else None}
@@ -3669,6 +4568,7 @@ def main(argv):
     p = sub.add_parser("pick")
     p.add_argument("--kind")
     p.add_argument("--provider")
+    p.add_argument("--room", help="fable: only a row whose plan carries Fable with room in its week (header, \"Room\")")
     p.add_argument("--bound", action="store_true")
     p.add_argument("--repo")
     p.add_argument("--ship")
@@ -3692,6 +4592,10 @@ def main(argv):
     p.add_argument("--all", action="store_true")
     p.add_argument("--parked", action="store_true", help="with --all: the rows accounts.json parks too, never an `orca off` one (the widget)")
     p.add_argument("--orca", action="store_true", help="with --all: a report-only row per other agent Orca reads limits for (the widget)")
+    p.add_argument("--hide", default="", metavar="LABELS",
+                   help="labels to leave out, by commas or lines: no row, and a registry login is not probed, so its cached"
+                        " reading ages for every --cached reader (pick probes for itself); AGENT:FAMILY drops one bucket family"
+                        " of an Orca agent's card (Antigravity's Claude/GPT); the widget passes plumb/widget-hide")
     p.add_argument("--repo")
     p.add_argument("--cached", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -3717,6 +4621,8 @@ def main(argv):
     q.add_argument("name")
     q.add_argument("--repos", nargs="+", required=True)
     q.add_argument("--logins", nargs="+", required=True)
+    # a bare --confine drops every confine: the labels it held then leave the tenant (cmd_tenant)
+    q.add_argument("--confine", nargs="*", action="extend", metavar="LABEL=KEY[,KEY…]", default=None)
     q = tsub.add_parser("drop")
     q.add_argument("name")
     p = sub.add_parser("add")
@@ -3726,16 +4632,22 @@ def main(argv):
     p.add_argument("--host", choices=sorted(PEERS))
     p.add_argument("--no-record", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)  # set by --host: login lines in the ssh -t form
+    p = sub.add_parser("week-max", help="a login's live week ceiling (lighthouse/week-max), or none; exit 2 on a line that is no ceiling")
+    p.add_argument("label")
     p = sub.add_parser("doctor")
     p.add_argument("--local", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.cmd == "week-max":   # `regatta limit`'s trial read: needs no registry
+        v, src, bad = live_week_max(args.label)
+        print("none" if v is None else f"{v} ({src})")
+        return 2 if bad else 0
     if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
         ra = args.resets_at
-        record_exhaustion(current_home(), args.window, float(ra) if ra.replace(".", "", 1).isdigit() else ra,
-                          args.used, args.session)
-        return 0
+        done = record_exhaustion(current_home(), args.window, float(ra) if ra.replace(".", "", 1).isdigit() else ra,
+                                 args.used, args.session)
+        return 1 if done is None else 0   # not recorded: the status line marks only a 0, so it tries again
     if args.cmd == "refresh":   # before load_registry: the copies are refreshed whatever the registry says
         return cmd_refresh(args.force)
     if args.cmd == "tenant" and unattended():
@@ -3751,7 +4663,8 @@ def main(argv):
         if not REGISTRY.is_file():
             print(f"account tenant: no registry at {REGISTRY} — the logins it names must be its rows", file=sys.stderr)
             return 1
-        return cmd_tenant(reg, args.what, args.name, getattr(args, "repos", ()), getattr(args, "logins", ()))
+        return cmd_tenant(reg, args.what, args.name, getattr(args, "repos", ()), getattr(args, "logins", ()),
+                          getattr(args, "confine", None))
     if args.cmd in ("pick", "limits") and args.repo is not None and REGISTRY.is_file():  # a key is a repo, a path its repo; neither → refused, never "no rule"
         args.repo, why = resolve_repo_arg(args.repo, reg)
         if why:
@@ -3940,13 +4853,24 @@ def main(argv):
         # login stays hidden: that is how a login leaves the widget. The walk, the tier check and
         # usage-report read `--all` alone and never see either.
         rows = [a for a in rows if a["enabled"] or (args.parked and a["parked"])]
+        if args.all or not args.label:   # an unprobed vendor's row has no card of its own: Orca's report row is its figure
+            rows = [a for a in rows if a["provider"] not in UNPROBED]
+        # --hide: a display choice of the caller's (the widget's per-Mac list), unlike `orca off` or
+        # `enabled: false`, which the walk reads too. A hidden row is not probed: no claude start for it.
+        # one item a line or a comma; `AGENT:FAMILY` hides one bucket family of an Orca agent's card (hide_families)
+        items = [x.strip() for x in re.split(r"[,\n]", args.hide) if x.strip() and not x.strip().startswith("#")]
+        hide = {x for x in items if ":" not in x}
+        fams = [(w.strip().lower(), f.strip().lower()) for w, _, f in (x.partition(":") for x in items if ":" in x)]
+        rows = [a for a in rows if a["label"] not in hide]
         t = now()
         out = []
         for a in rows:
             lim, at = limits(a, cached=args.cached)
-            out.append(limits_json(a, lim, at, t, args.repo))
+            out.append(limits_json(a, lim, at, t, args.repo, reg))
         if args.orca and (args.all or not args.label):
-            out += orca_reported({a["label"] for a in reg["accounts"]}, cached=args.cached)
+            # an Orca agent hides by its card's label or by Orca's name for it (`antigravity`, `cursor`)
+            out += [hide_families(o, fams) for o in orca_reported({a["label"] for a in reg["accounts"]}, cached=args.cached)
+                    if o["label"] not in hide and o["provider"] not in hide]
         if args.json:
             print(json.dumps(out, ensure_ascii=False))
             return 0
@@ -3959,6 +4883,9 @@ def main(argv):
                            for b in (lim.get("buckets") or []) + (lim.get("windows") or [])]) if lim else []
                 print(f"{o['label']} (Orca): {'; '.join(figs) if figs else 'no reading'}; {o['why']}")
                 continue
+            if not lim and o["provider"] in UNPROBED:
+                print(f"{o['label']}: never probed — {o['provider']} keeps its login to itself; `limits --all --orca` shows Orca's card")
+                continue
             if not lim:
                 print(f"{o['label']}: {'no cached probe' if args.cached else 'probe failed'}")
                 continue
@@ -3968,12 +4895,20 @@ def main(argv):
             except (OSError, ValueError):
                 org = None
             print(f"{o['label']}: "
-                  + (f"5h {lim['five_hour']}% (resets {when(lim['five_hour_resets'])}), " if lim.get("five_hour") is not None else "no 5-hour window, ")
+                  + (f"5h {lim['five_hour']}% (resets {when(lim['five_hour_resets'])}), " if lim.get("five_hour") is not None
+                     else "no 5-hour window, " if o.get("no_five_hour") else "5h unknown, ")
                   + (f"week {lim['seven_day']}% (resets {when(lim['seven_day_resets'])})" if lim.get("seven_day") is not None else "no week window")
                   + f"; plan {lim.get('plan')} / {org}; "
                   f"fable: {fable_word(lim)}; "
                   f"{'eligible' if o['eligible'] else 'not eligible'}: {o['why']}")
         return 0
+    if args.room is not None and args.room not in ROOMS:   # before any registry: a typo is no "no registry" (exit 4)
+        why = room_refusal(reg, args.kind, args.provider, args.room)
+        if args.json:
+            print(json.dumps({"account": None, "skipped": [["room", why]]}, ensure_ascii=False))
+        else:
+            print(f"account: {why}", file=sys.stderr)
+        return 3
     if not REGISTRY.is_file():  # exit 4: no registry on this machine — callers start as before
         print(f"account: no registry at {REGISTRY}", file=sys.stderr)
         return 4
@@ -3987,10 +4922,11 @@ def main(argv):
             sys.exit("account: --ship and --bound do not go together (bound work is the primary's, pinned already)")
         if args.ship:
             a, why, skipped = pick_for_ship(reg, args.ship, args.kind, args.provider, args.cached, args.repo,
-                                            pin=not (args.cached or args.no_pin), allow_overage=args.allow_overage)
+                                            pin=not (args.cached or args.no_pin), allow_overage=args.allow_overage,
+                                            room=args.room)
         else:
             a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo,
-                                   args.allow_overage)
+                                   args.allow_overage, args.room)
     except Short as s:
         if args.json:
             print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))

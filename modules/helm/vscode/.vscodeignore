@@ -1,0 +1,10 @@
+**
+!out/extension.js
+!out/regatta.js
+!out/regattaView.js
+!out/util.js
+!package.json
+!README.md
+!LICENSE
+!media/regatta.svg
+!media/walkthrough/*.md

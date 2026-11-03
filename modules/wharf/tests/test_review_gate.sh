@@ -132,6 +132,29 @@ week 50
 fi
 
 # the principal rule (principal tier S5): the top tier at any size, held through a tight week, never lowered
+# lighthouse's `account` stands in through REVIEW_GATE_ACCOUNT: $T/acct-rc and $T/acct-json are its answer
+# to `pick --repo <repo>` (none: exit 4, no registry); its arguments land in $T/acct-args. Under `--room fable`
+# it answers as account does when the only login with room lacks Fable room (its plan has none, or its Fable
+# week is full): a refusal, exit 3, so a hold that asked Fable room again would route nowhere (principal-s6-close).
+# The reasons are account's own strings (judge, off_reason, pick's last resorts)
+cat > "$T/account-stub" <<'EOF'
+#!/usr/bin/env python3
+import os, sys
+t = os.environ["T_ACCT"]
+open(t + "/acct-args", "w").write(" ".join(sys.argv[1:]))
+a = sys.argv[1:]
+if a[:1] != ["pick"] or "--repo" not in a or "--json" not in a or a.index("--repo") + 1 >= len(a):
+    print("account: usage", file=sys.stderr); sys.exit(2)
+try:
+    rc = int(open(t + "/acct-rc").read())
+except OSError:
+    print("account: no registry", file=sys.stderr); sys.exit(4)
+if "--room" in a:
+    print('{"account": null, "skipped": [["acct-pro", "no Fable on its plan (pro): --room fable"]]}'); sys.exit(3)
+print(open(t + "/acct-json").read())
+sys.exit(rc)
+EOF
+chmod +x "$T/account-stub"; export REVIEW_GATE_ACCOUNT="$T/account-stub" T_ACCT="$T"
 planp() { python3 "$B/review-gate" plan --repo "$1" --json ${2:+"$2"} | python3 -c "import json,sys; p=json.load(sys.stdin); print(p['tier'], p['budget'], p['reviewer']['agent'], p['code_review']['args'], (p['principal'] or {}).get('held'), (p['principal'] or {}).get('by'))"; }
 if [ -n "$TC" ]; then
 week 50
@@ -142,7 +165,98 @@ check "$(planp "$T/r1001" --principal)" "large tight reviewer xhigh main...HEAD 
 check "$(plan "$T/r1001")"              "large tight reviewer high main...HEAD"                       "  the same branch without it: the tight rule as before"
 python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
 has "$T/plan6.txt" "principal: --principal → the top tier at any size" "  plan names the rule"
-has "$T/plan6.txt" "principal: the week is tight, and the top tier holds — never lowered: run this review from a login with room" "  …and routes or waits, never downgrades"
+has "$T/plan6.txt" "principal: the week is tight, and the top tier holds — never lowered: run this review from a login with room (\`account pick --repo <repo>\`" "  …and, with no account answer, says to route or wait, never downgrades"
+# S6: the hold routes through `account pick --repo`, on pick's own room: both reviews run on Opus (principal-s6-close)
+route() { python3 "$B/review-gate" plan --repo "$T/r50" --principal --json | python3 -c "import json,sys; r=json.load(sys.stdin)['principal']['route']; print(r and (r['account'], r['here'], r['waits'], r['reread']))"; }
+check "$(route)" "None" "  no account answer (no registry): no route, the plain advice"
+check "$(cat "$T/acct-args")" "pick --repo $T/r50 --json" "  …asked with the repo, never --room fable"
+echo 0 > "$T/acct-rc"; printf '{"account": "acct-spare", "env": {"CLAUDE_CONFIG_DIR": "%s/spare"}, "reason": "week 10%% < 70%% (week ceiling), 5h 10%% ≤ 50%%", "skipped": []}' "$T" > "$T/acct-json"
+check "$(route)" "('acct-spare', False, False, False)" "  a login with room that is not this session's: routed there"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "never lowered: routed to acct-spare, a login that has room (week 10% < 70%" "  …the route line names it and why"
+has "$T/plan6.txt" "start the finish there: \`env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN autofinish-run <worktree> --session" "  …and the session starts it there itself, never a profile switch"
+lacks "$T/plan6.txt" "account run acct-spare" "    …no hand step for the owner"
+printf '{"account": "acct-pro", "env": {"CLAUDE_CONFIG_DIR": "%s/pro"}, "reason": "week 20%% < 70%% (week ceiling), 5h 5%% ≤ 50%%", "skipped": [["acct-main", "week 96%% ≥ 95%% (week ceiling); resets Mon 10:00"]]}' "$T" > "$T/acct-json"
+check "$(route)" "('acct-pro', False, False, False)" "  a login without Fable room but with room (no Fable on its plan): routed there, as for any review"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "never lowered: routed to acct-pro, a login that has room (week 20% < 70%" "  …said with its reason"
+lacks "$T/plan6.txt" "Fable" "  …and no Fable room asked or named"
+printf '{"account": "acct-main", "env": {}, "reason": "limits unknown — the primary runs it rather than nothing", "skipped": [["acct-spare", "limits unknown (no probe answered, none cached)"]]}' > "$T/acct-json"
+check "$(route)" "('acct-main', False, False, False)" "  an unread primary, pick's last resort: routed there, as account picks"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "routed to acct-main, a login that runs it unread (limits unknown — the primary runs it rather than nothing)" "  …said as unread, never as a login with room"
+lacks "$T/plan6.txt" "has room" "    …no room claimed"
+check "$(python3 "$B/review-gate" plan --repo "$T/r50" --principal --json | python3 -c "import json,sys; print(json.load(sys.stdin)['principal']['route']['unread'])")" "True" "    …and the JSON says unread"
+printf '{"account": "here", "env": {"CLAUDE_CONFIG_DIR": "%s"}, "reason": "limits unknown — the tenant'"'"'s own login runs it rather than nothing", "skipped": []}' "$CLAUDE_CONFIG_DIR" > "$T/acct-json"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "this session's login here runs it unread (limits unknown — the tenant's own login runs it rather than nothing) — spawn the reviews here" "  this session's own tenant login, unread: spawn here, said as unread"
+printf '{"account": "here", "env": {"CLAUDE_CONFIG_DIR": "%s"}, "reason": "room", "skipped": []}' "$CLAUDE_CONFIG_DIR" > "$T/acct-json"
+check "$(route)" "('here', True, False, False)" "  the pick is this session's own login: here"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "this session's login here has room (room) — spawn the reviews here" "  …spawn here, said"
+printf '{"account": "here", "env": {"CLAUDE_CONFIG_DIR": "%s"}, "reason": "limits unknown — the tenant'"'"'s own login runs it rather than nothing", "skipped": []}' "$CLAUDE_CONFIG_DIR" > "$T/acct-json"
+week 92
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "this session's login here runs it unread (limits unknown — the tenant's own login runs it rather than nothing) — spawn the reviews here" "  …a lowest week too: pick's last resort runs, as account picks (the brief), said as unread"
+week 85
+printf '{"account": "acct-spare", "env": {"CLAUDE_CONFIG_DIR": "%s/spare"}, "skipped": []}' "$T" > "$T/acct-json"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "routed to acct-spare, a login that has room (no reason given)" "  a pick with no reason: said so, never (None)"
+check "$(python3 "$B/review-gate" plan --repo "$T/r50" --principal --json | python3 -c "import json,sys; print(json.load(sys.stdin)['principal']['route']['reason'])")" "None" "    …and the JSON keeps it null"
+has "$T/plan6.txt" "unattended, stop, naming it: the owner's /finish there lands it, as nothing retries this tip" "  the routed line names the unattended road too"
+echo 3 > "$T/acct-rc"; printf '{"account": null, "skipped": [["acct-spare", "5h 80%% > 50%%; resets Mon 14:00"], ["acct-main", "week 96%% ≥ 95%% (week ceiling); resets Thu 10:00"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, True, False)" "  no login with room (exit 3): no account, it waits"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "no login has room (acct-spare: 5h 80% > 50%; resets Mon 14:00; acct-main: week 96% ≥ 95% (week ceiling); resets Thu 10:00) — the review waits for the reset each reason names (\`account limits\` names one a reason does not); spawn nothing" "  …the wait line names each login's reason, never only the week's reset"
+printf '{"account": null, "skipped": [["registry", "scope x: no run picks a seat until it does"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, False)" "  a scope with no login (account's own refusal, before any row): no wait"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "no login can take it (registry: scope x: no run picks a seat until it does), and no reset lifts that — fix what it names; spawn nothing" "  …said as that, never a wait"
+lacks "$T/plan6.txt" "waits for the reset" "    …no wait promised"
+printf '{"account": null, "skipped": [["acct-main", "r50 is on its deny list"], ["acct-spare", "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, False)" "  a deny list and extra usage on: no reset lifts either"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "and no reset lifts that" "  …said as that, never a wait"
+printf '{"account": null, "skipped": [["acct-main", "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"], ["acct-spare", "limits unknown (no probe answered, none cached)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, True)" "  an unread login beside one no reset lifts: read once more, not a wait"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "no login could be read with room (acct-main: extra usage on: work here may bill past the plan (account pick --allow-overage, attended only); acct-spare: limits unknown (no probe answered, none cached)) — run \`review-gate plan\` once more, a minute on; if that run prints this line again, stop: a login still unread needs \`account check\`; spawn nothing" "  …said as one more read, then account check: never a loop"
+lacks "$T/plan6.txt" "waits for the" "    …and no wait promised"
+printf '{"account": null, "skipped": [["acct-main", "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"], ["acct-spare", "limits unknown (no window figures)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, True)" "  a reading with no window figures: read once more, as account groups it with no reading"
+printf '{"account": null, "skipped": [["acct-main", "cooling down until Thu 10:00 (a window locked)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, True, False)" "  a cooldown lifts at its end: a wait, not a refusal for good"
+printf '{"account": null, "skipped": [["acct-main", "week 96%% ≥ 95%% (week ceiling); resets Thu 10:00"], ["acct-pro", "limits unknown (no probe answered, none cached)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, True, True)" "  a reset row beside an unread one: both said"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "run \`review-gate plan\` once more, a minute on" "  …the unread login is read once more first: it may have room"
+has "$T/plan6.txt" "and the rest wait for their reset" "  …and the reset row waits"
+printf '{"account": null, "skipped": [["acct-main", "r50: tenancy does not read and has no last good copy (closed until it reads)"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, True)" "  a tenancy file that does not read yet: read once more, not a refusal"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "stop: the tenancy file needs \`account refresh --force\` once its drive is mounted, or \`account setup\`" "  …and its fix is account's own, never account check"
+printf '{"account": null, "skipped": [["registry", "the registry does not read: no run picks a seat until it does"]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, True)" "  a registry that does not read (mid-write): read once more, not a refusal for good"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "stop: the registry still does not read: settle its write or merge; spawn nothing" "  …its own fix, never account check"
+lacks "$T/plan6.txt" "no reset lifts that" "    …never said as a refusal for good"
+printf '{"account": null, "skipped": [["acct-main", 5]]}' > "$T/acct-json"
+check "$(route)" "(None, False, False, False)" "  a reason that is no string: read as text, the plan never crashes"
+printf '{"account": null, "skipped": [["acct-main", 0]]}' > "$T/acct-json"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
+has "$T/plan6.txt" "(acct-main: 0)" "  a falsy reason is kept as text, never blanked"
+printf '{"account": null, "skipped": 7}' > "$T/acct-json"
+check "$(route)" "(None, False, False, False)" "  a skipped that is no list: read as none, the plan never crashes"
+echo 0 > "$T/acct-rc"; printf '{"account": "acct-spare", "env": "oops", "skipped": []}' > "$T/acct-json"
+check "$(route)" "('acct-spare', False, False, False)" "  an env that is no dict: read as none, the plan never crashes"
+printf '{"account": "acct-spare", "env": {"CLAUDE_CONFIG_DIR": 5}, "reason": 7, "skipped": []}' > "$T/acct-json"
+check "$(route)" "('acct-spare', False, False, False)" "  a config dir or reason that is no string: read as absent"
+echo 2 > "$T/acct-rc"; echo '{}' > "$T/acct-json"
+check "$(route)" "None" "  an account that refuses some other way: no route, the plain advice"
+week 50; rm -f "$T/acct-args"
+check "$(planp "$T/r50" --principal | cut -d" " -f6)" "None" "  a normal week holds nothing…"
+check "$(test -f "$T/acct-args" && echo asked || echo not)" "not" "  …and asks account nothing"
+week 85; rm -f "$T/acct-rc" "$T/acct-json"
 week 92
 check "$(planp "$T/r1001" --principal)" "large lowest reviewer xhigh main...HEAD lowest --principal"  "  a lowest week: held too"
 week 50
@@ -328,6 +442,28 @@ check "$(last 'print(r["wrong"])')" "{'S1': 0, 'S2': 1, 'S3': 0, 'S?': 0}" "conf
 check "$(last 'print(r["models"]["main"])')" "{'claude-opus-5-5': 3}" "main: on-branch calls only, de-duplicated, its worktree too, never another repo's"
 check "$(last 'print([(x["type"], x["model"], x["calls"]) for x in r["models"]["agents"]])')" \
       "[('reviewer-high', 'claude-opus-5-5', 1), ('worker', 'claude-sonnet-5-5', 2)]" "agents: type from meta, model from records; left out: the earlier one, one from a detour, /finish's reviewer, another repo's"
+check "$(last 'print("phase" in r)')" "False" "no --phase: the line has no phase key (a reader falls back to times)"
+python3 "$B/review-gate" merge --reviewer "$T/rev.txt" --code-review "$T/cr.txt" --repo "$T/rse" --no-model --no-shadow --phase build >/dev/null 2>&1
+check "$(last 'print(r.get("phase"))')" "build" "--phase build: a build round's line says so (TODO.md [second-review])"
+python3 "$B/review-gate" merge --reviewer "$T/rev.txt" --code-review "$T/cr.txt" --repo "$T/rse" --no-model --no-shadow --phase finish >/dev/null 2>&1
+check "$(last 'print(r.get("phase"))')" "finish" "--phase finish: the landing's line says so"
+python3 "$B/review-gate" merge --reviewer "$T/rev.txt" --code-review "$T/cr.txt" --repo "$T/rse" --no-model --no-shadow --phase land >/dev/null 2>&1
+check "$?" "2" "a phase it does not know: a usage error"
+check "$(last "print(r.get('head') == '$(git -C "$T/rse" rev-parse HEAD)')")" "True" "a merge's line names the commit it reviewed (build-review covers compares with it)"
+printf '#!/bin/sh\necho "not covered: no build-review record"\nexit 1\n' > "$T/covers-no"; chmod +x "$T/covers-no"
+printf '#!/bin/sh\necho "covered: stub"\n' > "$T/covers-yes"; chmod +x "$T/covers-yes"
+n0=$(wc -l < "$T/gate.jsonl")
+out=$(REVIEW_GATE_COVERS="$T/covers-no" python3 "$B/review-gate" skipped --why "build-reviewed clean" --repo "$T/rse" 2>&1)
+check "$?" "1" "skipped when build-review covers says no: refused"
+check "$(printf '%s' "$out" | grep -c 'covers says no: not covered: no build-review record')" "1" "  saying why"
+check "$(wc -l < "$T/gate.jsonl")" "$n0" "  and nothing logged"
+REVIEW_GATE_COVERS="$T/covers-yes" python3 "$B/review-gate" skipped --why "build-reviewed clean" --repo "$T/rse" >/dev/null 2>&1
+check "$?" "0" "skipped: logged once covers says yes"
+check "$(last 'print(r["phase"], r["skipped"], r["reviewer"], r["code_review"], r["branch"], r["project"])')" \
+      "finish build-reviewed clean 0 0 claude/x rse" "skipped: the landing's line, no agents (TODO.md [second-review] D1-B)"
+check "$(last 'print("diff" in r, "models" in r)')" "False False" "skipped: no diff or models, so usage-report numbers leaves it out"
+python3 "$B/review-gate" skipped --repo "$T/rse" >/dev/null 2>&1
+check "$?" "2" "skipped without --why: a usage error"
 rm -rf "$T/ud"
 if [ -n "$UR" ]; then
 (unset REVIEW_GATE_LOG; USAGE_DATA="$T/ud" python3 "$B/review-gate" merge --reviewer "$T/rev.txt" --code-review "$T/cr.txt" --repo "$T/rse" --no-model --no-shadow >/dev/null 2>&1)

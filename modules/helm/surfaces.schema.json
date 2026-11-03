@@ -26,8 +26,44 @@
     "plan": {"$ref": "#/properties/helm", "description": "the helm row's name before rename S5, read as helm's"},
     "notify": {
       "type": "object",
-      "description": "per host — an ask's by surfaces.host(), a stall's by helmlib.host() (the yard's own name, never cloud): how an ask nobody relays, or a stall the yard's tick escalates, reaches the owner; github-issue carries stalls only",
-      "additionalProperties": {"type": "array", "items": {"enum": ["banner", "github-issue", "telegram"]}}
+      "description": "two shapes side by side (charterer S3). The ladder keys: update, question and stall, each a list of rungs fired in order, once per message, at `after` from its first moment while it is unanswered; quiet, the hours every phone-reaching rung holds; cap, phone-reaching pushes an hour. Every other key is the old row per host — an ask's by surfaces.host(), a stall's by helmlib.host() (the yard's own name, never cloud): an ask nobody relays rings its banner, and a kind with no ladder reads the row as one rung, sent as before the ladder (bin/ask notice(); github-issue carries stalls only)",
+      "properties": {
+        "update": {"$ref": "#/$defs/ladder"},
+        "question": {"$ref": "#/$defs/ladder"},
+        "stall": {"$ref": "#/$defs/ladder"},
+        "quiet": {
+          "type": "object", "required": ["hours"], "additionalProperties": false,
+          "properties": {
+            "hours": {"type": "string", "pattern": "^\\s*([01]?\\d|2[0-3]):[0-5]\\d\\s*-\\s*([01]?\\d|2[0-3]):[0-5]\\d\\s*$", "description": "HH:MM-HH:MM in tz, else the host's local time; may wrap past midnight; equal ends are the whole day"},
+            "tz": {"type": "string", "description": "an IANA time zone (\"America/Los_Angeles\"); absent: the host's local time"},
+            "except": {"type": "array", "items": {"enum": ["question", "stall", "update"]}}
+          }
+        },
+        "cap": {"type": "object", "required": ["per_hour"], "additionalProperties": false, "properties": {"per_hour": {"type": "integer", "minimum": 1}}}
+      },
+      "additionalProperties": {"oneOf": [{"type": "array", "items": {"enum": ["banner", "github-issue", "telegram"]}},
+                                         {"enum": ["banner", "github-issue", "telegram"], "description": "one backend: a row an older --set wrote as a string"}]}
+    },
+    "hail": {
+      "type": "object",
+      "description": "wharf-runs' hail: the roads a hail may take, in order; the target's own road (socket, codex or orca) always goes first, then talk, mailbox and file in this row's order; a road left out is never taken",
+      "properties": {
+        "roads": {"type": "array", "items": {"enum": ["codex", "file", "mailbox", "orca", "socket", "talk"]}}
+      }
+    }
+  },
+  "$defs": {
+    "ladder": {
+      "type": "array",
+      "description": "one rung per channel: a channel named twice keeps its first rung",
+      "items": {
+        "type": "object", "required": ["via"], "additionalProperties": false,
+        "properties": {
+          "via": {"enum": ["banner", "charterer", "claude-app", "github-issue", "orca-app", "spacesheep-app", "telegram", "vscode-question"]},
+          "after": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 31622400}, {"type": "string", "pattern": "^(?=.*\\d)\\s*(\\d+h)?\\s*(\\d+m)?\\s*(\\d+s)?\\s*$"}], "description": "\"10m\", \"90s\", \"1h30m\" or seconds, at most a year (366 days); 0 when absent"},
+          "when": {"enum": ["present", null], "description": "hold the rung until the owner is at the Mac; null: no condition, as absent"}
+        }
+      }
     }
   }
 }

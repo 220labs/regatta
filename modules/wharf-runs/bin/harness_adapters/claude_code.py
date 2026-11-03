@@ -259,7 +259,9 @@ def _tail(path):
 def last_reply(session_id, records=None):
     """{"text", "at", "api_error", "last_at"} of a session's transcript, or None when no transcript
     is on this Mac. `text` is the last assistant entry's text (a streamed reply's last block with
-    text, as dispatch-rc's last_answer reads it); `api_error` is true when the last assistant
+    text), Claude Code's own `<synthetic>` entry for an API error or a limit included — helm's evidence line
+    and B3's classifier read its words — and an unflagged "No response requested." read past, as dispatch-rc's
+    last_answer does since task-shape S3 (the run's own reply before it is the one helm judges); `api_error` is true when the last assistant
     record is Claude Code's stand-in for a failed call; `last_at` is the last entry of any kind."""
     if records is None:
         path = transcript(session_id)
@@ -273,10 +275,14 @@ def last_reply(session_id, records=None):
         last_at = _epoch(e.get("timestamp")) or last_at
         if e.get("type") != "assistant":
             continue
-        api_error = bool(e.get("isApiErrorMessage"))
+        flagged = bool(e.get("isApiErrorMessage"))
         content = (e.get("message") or {}).get("content")
         if isinstance(content, builtins.list):   # `list` here is V4, the contract's verb
-            said = "\n".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text").strip()
+            said = "\n".join(c.get("text") or "" for c in content if isinstance(c, dict) and c.get("type") == "text").strip()
+            if (e.get("message") or {}).get("model") == "<synthetic>" and not flagged and said == "No response requested.":
+                continue   # "No response requested.": no reply of the run's, nor its flag (an API error before it stays one)
+        api_error = flagged
+        if isinstance(content, builtins.list):
             if said:
                 text, at = said, _epoch(e.get("timestamp"))
     return {"text": text[-TEXT_CAP:], "at": at, "api_error": api_error, "last_at": last_at}
@@ -439,7 +445,8 @@ def _record(ctx, reg=None, run=None, run_path=None, records=None, state=None, at
               "manager": run.get("manager"), "error_kind": err, "resumed_from": run.get("resumed_from"),
               "ended_at": _num(run.get("ended")) if ended else None,
               "end_reason": (run.get("end_reason") or ("gone: its claude ended with no end recorded" if run else None)) if ended else None}
-    return {"harness": HARNESS, "account": run.get("account"), "session_id": reg.get("sessionId") or run.get("session"),
+    # dispatch writes the pick's label as `login` (the Engine room's S2); `account` is the older spelling
+    return {"harness": HARNESS, "account": run.get("account") or run.get("login"), "session_id": reg.get("sessionId") or run.get("session"),
             "machine": _machine(ctx), "cwd": cwd, "branch": run.get("branch") or _branch_of(cwd, records),
             "pid": reg.get("pid") if reg else run.get("pid"),
             "started_at": (_num(reg.get("startedAt")) or 0) / 1000.0 or _num(run.get("started")),
@@ -653,7 +660,9 @@ def run(ctx, req):
     the id at fire time — the record is then `submitted` with no id; status finds it by its topic."""
     disp = _dispatch(ctx)
     if req.get("branch") and not req.get("prompt"):
-        argv = [disp, req["branch"], "--repo", req["repo"]] + (["--on", req["on"]] if req.get("on") else []) + _tier(req)
+        # the harness's --on names the machine the record says the run is on, so it is dispatch's --pin: dispatch's
+        # own --on is a preference another host may take (dispatch-queue S12), and the record would name the wrong one
+        argv = [disp, req["branch"], "--repo", req["repo"]] + (["--pin", req["on"]] if req.get("on") else []) + _tier(req)
         try:
             r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -664,7 +673,7 @@ def run(ctx, req):
         topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", req["branch"].rsplit("/", 1)[-1])
         rec = _record(ctx, None, {"branch": req["branch"], "repo": req["repo"], "topic": topic}, None, [], "submitted", None)
         rec["native"]["dispatch_said"] = said[-1] if said else None
-        # where it went: --on here is this Mac; no --on takes dispatch's default host (the build Mac
+        # where it went: --on here is this Mac (pinned there); no --on takes dispatch's default host (the build Mac
         # since 2026-10-13), this Mac only on its --fallback here — dispatch's own output says which
         on, default = req.get("on"), os.environ.get("DISPATCH_DEFAULT_ON") or getattr(ctx, "dispatch_host", "")
         if on == "here":

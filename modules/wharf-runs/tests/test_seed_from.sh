@@ -11,7 +11,7 @@ T=$(mktemp -d); T="$(cd "$T" && pwd -P)"; trap '[ -n "${KEEP:-}" ] || rm -rf "$T
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -30; fails=$((fails+1)); fi; }
-hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -30; fails=$((fails+1)); else echo "  ok   $3"; fi; }
+hasnt() { if [ ! -f "$1" ]; then echo "  FAIL $3: no file $1 to read"; fails=$((fails+1)); elif grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -30; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"   # PyYAML for the blueprint, as test_pickup
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"
@@ -89,6 +89,10 @@ has "$T/out" "vlt is the owner's vault" "  naming it"
 check "$(S alpha --from node --repo "$P/tenantrepo" --file "$T/clean.md")" 1 "a tenant's repo: refused"
 has "$T/out" "tenantrepo is tenant own's repo" "  naming the tenant"
 check "$(S alpha --from node --repo "$P/demo" --file "$T/clean.md" --start)" 1 "--start: refused (dispatch or nothing)"
+# S6's third landing review, item 5: a --note would ride with the run unreviewed, and dispatch refuses it for
+# good; seed takes none, so it is refused before the seed is written or pushed (the check below: nothing)
+check "$(S alpha --from node --repo "$P/demo" --file "$T/clean.md" --note "context")" 2 "--note: refused at the arguments, before anything is written"
+has "$T/out" "unrecognized arguments: --note" "  seed takes no --note"
 echo '{"accounts": [' > "$T/torn-accounts.json"
 check "$(ACCOUNTS_FILE="$T/torn-accounts.json" S alpha --from node --repo "$P/demo" --file "$T/clean.md")" 1 "tenancy that will not read: refused (fails closed)"
 has "$T/out" "could not say whether demo is a tenant's" "  saying so"
@@ -145,6 +149,28 @@ has "$T/dispatch.calls" "dispatch $SN --repo $P/demo --next --origin $NM" "  sta
 hasnt "$T/out" "vscode://" "  no tab"
 (cd "$P/demo" && python3 "$B/pickup" show epsilon --no-fetch) > "$T/show" 2>&1
 has "$T/show" "brief docs/handoff/$TODAY-epsilon.md" "  pickup reads the .md as the seed's brief, never the .review"
+# confidential-reach S6: the review the verb wrote is the one dispatch's gate reads (the core's spawn_gate,
+# spawn_review_ok), judged from the caller's directory as dispatch judges it
+cat > "$T/gate.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import core_path
+core_path.require()
+import common
+repo, ref, cwd, origin = sys.argv[2:6]
+why, mark = common.spawn_gate(repo, ref, cwd, origin or None)[:2]
+print("refused: %s" % why if why else "ok %s" % mark)
+PY
+gate() { python3 "$T/gate.py" "$B/../lib" "$P/demo" "$1" "${2:-$P/node-knowledge}" "${3:-}"; }
+check "$(gate "$SN")" "ok $NM" "S6: the seed the verb wrote passes dispatch's gate from inside the node, its origin the review's marker"
+check "$(gate "$SN" "$P/demo")" "ok $NM" "  and from an open caller (a --next of the spawned run)"
+EM="confidential:$(printf else | shasum -a 256 | cut -c1-8)"
+check "$(gate "$SN" "" "$EM")" "refused: its review's origin $NM is not the origin given ($EM)" "  an --origin other than its review's: refused"
+check "$(gate main)" "refused: its seed carries no docs/handoff/*.review of its own topic: the brief was never reviewed on its way out" \
+  "  an unreviewed branch asked from inside the node: refused (G2)"
+check "$(gate main "$P/demo")" "ok None" "  the same branch from an open caller is an open run"
+check "$(gate main "$P/sec")" "refused: its seed carries no docs/handoff/*.review of its own topic: the brief was never reviewed on its way out" \
+  "  from the scope's other repo too: every checkout of the scope is inside it"
 mark; check "$(S zeta --from node --repo "$P/demo" --file "$T/clean.md" --no-start)" 0 "--no-start: seeded"
 has "$T/out" "--next --repo $P/demo --origin $NM" "  the start line carries the marker"
 check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" 0 "  and nothing started"
@@ -195,11 +221,34 @@ check "$(git -C "$P/sec" rev-parse "claude/laptop/$TODAY-lookin^")" "$(git -C "$
 mark; check "$(S lookout2 --file "$T/look.md" --beside "$RB" --repo "$P/demo" --no-start)" 1 "a --beside seed from a cwd in a confidential scope into an open repo: refused (why the lookout runs pickup in the doc's repo)"
 has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
 check "$(nothing lookout2)" "none" "  nothing written"
+# item 7 of S6's fourth landing review: pickup judges the caller as dispatch does — its session's own folder
+# by record, and a repo the registry lists nowhere that a confidential glob takes
+SDIR="$T/u/.claude/sessions"
+printf '{"pid": 99998, "sessionId": "node-sess-7", "cwd": "%s", "updatedAt": 1}\n' "$P/demo" > "$SDIR/99998.json"
+printf '{"pid": 99999, "sessionId": "node-sess-7", "cwd": "%s", "updatedAt": 99}\n' "$P/node-knowledge" > "$SDIR/99999.json"
+mark; check "$(CWD="$P/demo" CLAUDE_CODE_SESSION_ID=node-sess-7 S look7 --file "$T/look.md" --repo "$P/demo" --no-start)" 1 \
+  "item 7: a node session's \`cd <open repo> && pickup seed\`: refused by its session's folder (its newest record)"
+has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
+check "$(nothing look7)" "none" "  nothing written"
+(cd "$P/demo" && CLAUDE_CODE_SESSION_ID=node-sess-7 python3 "$B/pickup" brief "$RB" --text 'Task: the step after' --no-fetch) > "$T/out" 2>&1
+check "$?" "1" "  its \`pickup brief\` from the open repo: refused too"
+has "$T/out" "a seed out of it goes by --from" "  saying so"
+rm -f "$SDIR/99999.json"
+mark; check "$(CWD="$P/demo" CLAUDE_CODE_SESSION_ID=node-sess-7 S look7b --file "$T/look.md" --repo "$P/demo" --no-start)" 0 \
+  "  the same session whose newest record is the open repo: seeded (a resumed session is judged by its newest record)"
+rm -f "$SDIR/99998.json"
+repo glob-node workflow
+sed 's/"node": {"repos": \["node-knowledge", "sec"\]/"node": {"repos": ["node-knowledge", "sec", "glob-*"]/' "$CLAUDE_REPOS_JSON" > "$T/glob7.json"
+mark; check "$(CWD="$P/glob-node" CLAUDE_REPOS_JSON="$T/glob7.json" S look7c --file "$T/look.md" --repo "$P/demo" --no-start)" 1 \
+  "  a caller in an unregistered repo a confidential glob takes: refused, as dispatch refuses it"
+check "$(nothing look7c)" "none" "  nothing written"
 mark; check "$(S lookout3 --from node --beside "$RB" --repo "$P/demo" --file "$T/clean.md")" 1 "--from SCOPE with --beside: refused (the review reads the brief alone, never a branch's commits)"
 has "$T/out" "--from takes no --beside" "  saying so"
 check "$(wc -l < "$T/claude.calls" | tr -d ' ') $(nothing lookout3)" "0 none" "  no judge, nothing written"
 
-# a seed beside a spawn inherits its source's `.review` under the source's topic: the queue still confines it
+# a seed beside a spawn inherits its source's `.review` under the source's topic: by the core's one rule of
+# which review counts (its own topic's: the fourth landing review, item 1) it is an open run, for the queue,
+# the gate and pickup's branch_origin alike
 Q="$(cd "$(dirname "$0")/.." && pwd)/bin/dispatch-queue"
 git -C "$P/demo" checkout -q -b claude/laptop/2026-10-28-childtopic main
 mkdir -p "$P/demo/docs/handoff"; echo '{"origin":"confidential:x"}' > "$P/demo/docs/handoff/2026-10-28-spawntopic.review"
@@ -210,8 +259,52 @@ l = importlib.machinery.SourceFileLoader("dq", sys.argv[1]); sp = importlib.util
 m = importlib.util.module_from_spec(sp); l.exec_module(m)
 print(m.has_review(sys.argv[2], sys.argv[3]))
 PY
-check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" claude/laptop/2026-10-28-childtopic)" "True" "dispatch-queue's has_review: a .review under another topic still marks the branch a spawn"
+check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" claude/laptop/2026-10-28-childtopic)" "False" "dispatch-queue's has_review: a .review under another topic marks no spawn (item 1)"
 check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" "$RB")" "False" "  and a branch with none is not"
+check "$(python3 "$T/hasrev.py" "$Q" "$P/demo" "$SN")" "True" "  a branch with its own topic's review is"
+check "$(cd "$P/demo" && python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pk", sys.argv[1]).load_module(); from pathlib import Path; print(m.branch_origin(Path(sys.argv[2]), {"name": sys.argv[3], "local": True}))' "$B/pickup" "$P/demo" claude/laptop/2026-10-28-childtopic)" "None" \
+  "  pickup's branch_origin reads it so: no --origin for a seed beside a spawn"
+
+echo "S6's fifth landing review: two scopes that share a repo; pickup next and open --note ask the gate first"
+# item 2: a caller in two scopes is one scope's own run only where every scope it is in takes the repo — main's
+# confined_refusal refused a caller in a repo two scopes share writing a repo of only one (the narrowed-guard trap)
+repo shared workflow
+sed 's/"node": {"repos": \["node-knowledge", "sec"\]/"node": {"repos": ["node-knowledge", "sec", "shared"]/; s/"else": {"repos": \["other-conf"\]/"else": {"repos": ["other-conf", "shared"]/' \
+  "$CLAUDE_REPOS_JSON" > "$T/two5.json"
+mark; check "$(CWD="$P/shared" CLAUDE_REPOS_JSON="$T/two5.json" S two5 --file "$T/look.md" --repo "$P/sec" --no-start)" 1 \
+  "item 2: a caller in a repo node and else share, seeding a repo of node alone: refused, as main refused it"
+has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
+CWD="$P/shared" CLAUDE_REPOS_JSON="$T/two5.json" S two5own --file "$T/look.md" --repo "$P/shared" --no-start --dry-run > /dev/null
+hasnt "$T/out" "a seed out of it goes by --from" "  the shared repo's own seed from inside it: no confined refusal (both scopes take it)"
+printf '{"pid": 99997, "sessionId": "node-sess-5", "cwd": "%s", "updatedAt": 5}\n' "$P/other-conf" > "$SDIR/99997.json"
+mark; check "$(CWD="$P/sec" CLAUDE_CODE_SESSION_ID=node-sess-5 S two5b --file "$T/look.md" --repo "$P/sec" --no-start)" 1 \
+  "  a shell in node's repo whose session folder is in else, seeding node's repo: refused (else is not node's)"
+rm -f "$SDIR/99997.json"
+# the sixth landing review: `seed --from node` from a repo node and else share — the review vouches for node, and
+# the session is in else too, whose text it may carry. Refused before scope-pass is asked
+mark; check "$(CWD="$P/shared" CLAUDE_REPOS_JSON="$T/two5.json" S two6 --from node --repo "$P/demo" --file "$T/clean.md")" 1 \
+  "sixth review: seed --from node from a repo node and else share: refused"
+has "$T/out" "not node alone" "  saying the session is in two scopes"
+check "$(nothing two6) $(wc -l < "$T/claude.calls" | tr -d ' ')" "none 0" "  nothing written, no judge asked"
+printf '{"pid": 99995, "sessionId": "node-sess-6", "cwd": "%s", "updatedAt": 6}\n' "$P/other-conf" > "$SDIR/99995.json"
+mark; check "$(CLAUDE_CODE_SESSION_ID=node-sess-6 S two6b --from node --repo "$P/demo" --file "$T/clean.md")" 1 \
+  "  a shell in node whose session folder is in else: refused"
+rm -f "$SDIR/99995.json"
+# item 3: `pickup next` commits its prompt as a brief (seed_next) or hands it to a tab as --note; `pickup open
+# --note` hands the note to a new session in the repo. From inside a node into an open repo no review read it
+printf '{"pid": 99996, "sessionId": "node-sess-3", "cwd": "%s", "updatedAt": 3}\n' "$P/node-knowledge" > "$SDIR/99996.json"
+git -C "$P/demo" checkout -q "$LN"; H0=$(git -C "$P/demo" rev-parse HEAD)
+(cd "$P/demo" && CLAUDE_CODE_SESSION_ID=node-sess-3 python3 "$B/pickup" next "the next step, from the node" --no-fetch) > "$T/out" 2>&1
+check "$?" "1" "item 3: a node session's \`cd <open repo> && pickup next\`: refused"
+has "$T/out" "next: this session runs in a confidential scope" "  by confined_refusal, before anything is read"
+check "$(git -C "$P/demo" rev-parse HEAD) $(git -C "$P/demo" status --porcelain | wc -l | tr -d ' ') $(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$H0 0 0" \
+  "  no brief committed or written, no dispatch"
+git -C "$P/demo" checkout -q main; rm -f "$SDIR/99996.json"
+(cd "$P/node-knowledge" && python3 "$B/pickup" open "$LN" --repo "$P/demo" --note "a note from the node" --fresh --dry-run --no-fetch) > "$T/out" 2>&1
+check "$?" "1" "  \`pickup open --note\` from inside the node on an open repo's branch: refused"
+has "$T/out" "open --note: this session runs in a confidential scope" "  by confined_refusal, before any road opens"
+(cd "$P/node-knowledge" && python3 "$B/pickup" open "$LN" --repo "$P/demo" --fresh --dry-run --no-fetch) > "$T/out" 2>&1
+hasnt "$T/out" "open --note:" "  the same open without a note: not refused by the gate (it hands on no text of the node's)"
 
 echo
 [ "$fails" -eq 0 ] && echo "all seed --from tests pass" || { echo "$fails seed --from test(s) FAILED"; exit 1; }

@@ -11,7 +11,8 @@ on a branch with parameters, wait for it, and fetch a job's step output and arti
     ci-circleci [REPO] wait PIPELINE [--timeout S] [--every S]
                                     the same, polled until every workflow ends: exit 0 when all
                                     succeeded, 1 when one did not, 3 on the timeout (default 3600 s;
-                                    polled every 60 s)
+                                    polled every 60 s). A workflow rerun counts by its newest run
+                                    of each name: the failed original stays in the pipeline's list
     ci-circleci [REPO] steps JOB --out DIR
                                     each step's output into DIR, one file per step, and one line
                                     per step: status, exit code, lines, whole or tail, file
@@ -20,6 +21,15 @@ on a branch with parameters, wait for it, and fetch a job's step output and arti
     ci-circleci [REPO] run [--branch B] [--param K=V]... --out DIR [--timeout S]
                                     trigger, wait, then every job's steps and artifacts into
                                     DIR/<job number>/; exit as wait
+    ci-circleci [REPO] rerun JOB [--branch B]
+                                    rerun JOB's workflow from failed (CircleCI's "Rerun workflow from
+                                    failed": the failed jobs and what waits on them, on the same
+                                    commit); prints `workflow <name> <id> rerun from failed: <new id>
+                                    (pipeline <number>)`, the number `wait` takes. Refused unless the
+                                    workflow ended failed or error; refused once a rerun of it exists,
+                                    and when its pipeline ran on a branch other than B (the checkout's);
+                                    never retried, as a trigger is not (2026-10-31: a PR's red Linux
+                                    share was one click in the web app and no command here)
 
 K=V: `true`/`false` are booleans, digits an integer, the rest a string (CircleCI refuses a
 parameter whose type differs from the config's).
@@ -28,7 +38,10 @@ The project: `--slug`, else $CIRCLECI_PROJECT_SLUG, else the first line of the r
 `.circleci/project-slug` that is not a comment. A project set up through CircleCI's GitHub App
 has a slug of the form `circleci/<org id>/<project id>` (the project's settings page shows it);
 an OAuth one `gh/<owner>/<repo>`. $CIRCLECI_DEFINITION_ID picks a pipeline definition (Project
-Settings > Pipelines) where the project has more than one; unset, CircleCI picks.
+Settings > Pipelines) where the project has more than one; unset, CircleCI picks. Lighthouse's pick may
+move a pull request's run to another org's project (the repository variable CI_LINUX_TARGET), which
+this tool never reads, and numbers are per project: reach such a run with --slug (`jobs` and `wait` also
+take its id).
 
 The token: $CIRCLECI_TOKEN, else the `CIRCLECI_TOKEN=` line of the main checkout's `.env` (the
 checkout of `git rev-parse --git-common-dir`, so a worktree finds it without a link of its own).
@@ -43,7 +56,12 @@ A step's output, whole: v1.1's (each action's output_url) holds about 390 KB, th
 first and falls back to output_url, saying `tail` beside a step read that way. A job's artifacts
 (regatta's Linux job keeps each suite's log) are the documented road to the same text. The rest
 is from the API docs (v2: pipeline, workflow, job, artifacts; v1.1: a job's steps), shapes read
-back on the first live call (2026-10-26).
+back on the first live call (2026-10-26). `GET project/<slug>/job/<n>` and its `latest_workflow`
+are in no published spec: read back live (2026-10-31), as was a rerun's place in the list, beside
+its original, which stays `failed`, each with `created_at`, `pipeline_id`, `pipeline_number`.
+A rerun reruns the failed jobs under new numbers and copies the rest, and check-linux's attach took
+the rerun jobs' workspace layers and not the failed originals' (pipeline 56), so a rerun's verdict
+replaces the failed one.
 
 A transient failure (a 5xx, a dropped connection) is retried twice per call, 10 s apart; a
 trigger is never retried (a second POST would start a second pipeline, which costs credits).
@@ -51,6 +69,7 @@ Stdlib only. Tests: wharf's tests/test_ci_circleci.sh, against a local stand-in 
 ($CIRCLECI_API, $CIRCLECI_API_V1).
 """
 import argparse
+import calendar
 import gzip
 import json
 import os
@@ -69,7 +88,8 @@ API_RAW = os.environ.get("CIRCLECI_API_RAW", "https://circleci.com/api/private/o
 TOKEN_HOSTS = ("circleci.com", "circle-artifacts.com")
 DONE = {"success", "failed", "error", "canceled", "unauthorized", "not_run"}
 RETRIES, RETRY_WAIT = 2, 10
-VERBS = ("trigger", "jobs", "wait", "steps", "artifacts", "run")
+VERBS = ("trigger", "jobs", "wait", "steps", "artifacts", "run", "rerun")
+JOB_VERBS = ("steps", "artifacts", "rerun")   # the verbs whose argument is a JOB number
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -258,11 +278,31 @@ def state(c, pid):
 def show(flows, out=sys.stdout):
     if not flows:
         print("  no workflow yet (or none matched the config's `when`)", file=out)
+    latest = {id(w) for w, _ in newest(flows)}
     for w, jobs in flows:
-        print("  workflow %s: %s" % (w["name"], w["status"]), file=out)
+        print("  workflow %s: %s%s" % (w["name"], w["status"],
+                                       "" if id(w) in latest else " (replaced by its rerun)"), file=out)
         for j in jobs:
             print("    job %s %s: %s" % (j.get("job_number", "-"), j["name"], j["status"]), file=out)
     out.flush()
+
+
+def stamp(w):
+    """A workflow's created_at in seconds: compared as text, `…:00Z` sorts after `…:00.5Z`, and a
+    null or missing one reads as the oldest rather than a TypeError. CircleCI writes UTC (`Z`)."""
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?", w.get("created_at") or "")
+    if not m:
+        return 0.0
+    return calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")) + float(m.group(2) or 0)
+
+
+def newest(flows):
+    """Each workflow name's latest run: a rerun sits beside its original, which stays failed for good."""
+    best = {}
+    for w, jobs in flows:
+        if w["name"] not in best or stamp(w) > stamp(best[w["name"]][0]):
+            best[w["name"]] = (w, jobs)
+    return list(best.values())
 
 
 def wait(c, pid, timeout, every):
@@ -275,7 +315,7 @@ def wait(c, pid, timeout, every):
             show(flows)
             last = now
         if flows and all(w["status"] in DONE for w, _ in flows):
-            return flows, (0 if all(w["status"] == "success" for w, _ in flows) else 1)
+            return flows, (0 if all(w["status"] == "success" for w, _ in newest(flows)) else 1)
         if not flows:
             # a pipeline whose config ran no workflow ends with none: give it 3 polls, then say so
             empty_since = empty_since or time.time()
@@ -345,11 +385,86 @@ def artifacts(c, slug, job, out):
         print("  %8d bytes  %s" % (len(raw), dest))
 
 
+def listed_wait():
+    """$CIRCLECI_LISTED_WAIT read before any request: after the POST a bad value would turn a
+    started rerun into a traceback, and `nan` would never pass the deadline."""
+    raw = os.environ.get("CIRCLECI_LISTED_WAIT") or "30"
+    try:
+        v = float(raw)
+    except ValueError:
+        v = -1.0
+    if not 0 <= v <= 600:  # false for nan as well
+        raise Refusal("CIRCLECI_LISTED_WAIT %r: seconds, 0 to 600" % raw)
+    return v
+
+
+def rerun(c, slug, job, branch=None, repo="."):
+    """JOB's workflow rerun from failed: v2's job (its latest_workflow), the workflow's status and
+    its pipeline's list, then the rerun POST, once: a second would start a second rerun, which costs
+    credits. The list is what stops a caller repeating this, as the original's status never moves;
+    a POST that answered badly may still have started one, and the next call finds it there. Once
+    per pipeline's workflow, not per workflow: a rerun's own job is refused too, or a loop over the
+    newest red job would buy a run each time. Two callers at the same moment can both pass the list
+    (the POST answers 202 before the rerun is listed); this guards a caller after a caller, not a race.
+    After the POST it waits, up to $CIRCLECI_LISTED_WAIT s (30), for the rerun to be listed: a `wait`
+    on the pipeline before then sees only the failed original, all ended, and exits 1.
+    The pipeline's branch must be BRANCH (the checkout's by default): job numbers are per project,
+    and a number copied from a run in another project (CI_LINUX_TARGET may move a PR's share
+    there; reach it with --slug) can name a failed workflow here nobody meant to pay for."""
+    wait_s = listed_wait()
+    branch = branch or git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        raise Refusal("a detached HEAD: pass --branch, the branch the job ran on")
+    wf = (c.json("%s/project/%s/job/%s" % (API, q(slug), job)).get("latest_workflow") or {}).get("id")
+    if not wf:
+        raise Refusal("job %s: CircleCI's answer names no workflow" % job)
+    w = c.json("%s/workflow/%s" % (API, wf))
+    name, st = w.get("name"), w.get("status")
+    if st not in DONE:
+        raise Refusal("workflow %s is %s: a rerun waits until it ends" % (name, st))
+    if st not in ("failed", "error"):
+        raise Refusal("workflow %s is %s: nothing failed to rerun" % (name, st))
+    if not w.get("pipeline_id"):
+        raise Refusal("workflow %s: CircleCI's answer names no pipeline" % name)
+    on = ((c.json("%s/pipeline/%s" % (API, w["pipeline_id"])).get("vcs") or {}).get("branch"))
+    if on != branch:
+        raise Refusal("job %s in %s ran on %s, not %s: pass --branch %s if it is the one meant, or --slug"
+                      " for a job of another project" % (job, slug, on, branch, on))
+    listing = "%s/pipeline/%s/workflow" % (API, w["pipeline_id"])
+    for x in c.pages(listing):
+        if x["name"] != name or x["id"] == wf:
+            continue
+        if stamp(x) >= stamp(w):
+            raise Refusal("workflow %s %s was rerun already: %s is %s" % (name, wf, x["id"], x["status"]))
+        raise Refusal("workflow %s %s is a rerun of %s already: one rerun per pipeline's workflow"
+                      % (name, wf, x["id"]))
+    maybe = "it may have started: read `jobs %s` before any retry" % w.get("pipeline_number")
+    try:
+        res = c.json("%s/workflow/%s/rerun" % (API, wf), data={"from_failed": True}, retry=False)
+    except Refusal as e:
+        raise Refusal("the rerun POST: %s; %s" % (e, maybe))
+    if not res.get("workflow_id"):
+        raise Refusal("the rerun answered without a workflow id: %s; %s" % (json.dumps(res)[:300], maybe))
+    new = res["workflow_id"]
+    print("workflow %s %s rerun from failed: %s (pipeline %s)" % (name, wf, new, w.get("pipeline_number")))
+    sys.stdout.flush()
+    deadline = time.time() + wait_s
+    try:
+        while not any(x["id"] == new for x in c.pages(listing)):
+            if time.time() > deadline:
+                print("  %s is not listed in its pipeline yet: a `wait` before it is reads the failed original" % new)
+                break
+            time.sleep(1)
+    except (Refusal, ValueError) as e:
+        # the rerun started (a ValueError: a body that is not JSON); only the read-back failed, which is no reason to say it did not
+        print("  could not read the pipeline's list back (%s): a `wait` may read the failed original" % e)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="ci-circleci", description=__doc__.split("\n\n")[0])
     ap.add_argument("repo", nargs="?", default=".")
     ap.add_argument("verb", choices=VERBS)
-    ap.add_argument("what", nargs="?", help="PIPELINE (jobs, wait) or JOB (steps, artifacts)")
+    ap.add_argument("what", nargs="?", help="PIPELINE (jobs, wait) or JOB (steps, artifacts, rerun)")
     ap.add_argument("--slug")
     ap.add_argument("--branch")
     ap.add_argument("--param", action="append", default=[])
@@ -364,11 +479,11 @@ def main(argv):
         repo = top(a.repo)
         slug = project_slug(repo, a.slug)
         c = Client(token(repo))
-        if a.verb in ("jobs", "wait", "steps", "artifacts") and not a.what:
-            raise Refusal("%s needs %s" % (a.verb, "a JOB number" if a.verb in ("steps", "artifacts") else "a PIPELINE"))
+        if a.verb in ("jobs", "wait") + JOB_VERBS and not a.what:
+            raise Refusal("%s needs %s" % (a.verb, "a JOB number" if a.verb in JOB_VERBS else "a PIPELINE"))
         if a.verb in ("steps", "artifacts", "run") and not a.out:
             raise Refusal("%s needs --out DIR" % a.verb)
-        if a.verb in ("steps", "artifacts") and not a.what.isdigit():
+        if a.verb in JOB_VERBS and not a.what.isdigit():
             raise Refusal("JOB %r: its number" % a.what)
         if a.verb == "trigger":
             trigger(c, repo, slug, a.branch, a.param)
@@ -380,6 +495,8 @@ def main(argv):
             steps(c, slug, a.what, a.out)
         elif a.verb == "artifacts":
             artifacts(c, slug, a.what, a.out)
+        elif a.verb == "rerun":
+            rerun(c, slug, a.what, a.branch, repo)
         else:
             pid = trigger(c, repo, slug, a.branch, a.param)
             flows, rc = wait(c, pid, a.timeout, a.every)

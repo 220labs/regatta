@@ -103,7 +103,7 @@ pass, a week with nothing to send included (its heading is the proof the pass ra
 after its check, puts the draft there:
 
 ```markdown
-# Upstream — <scope> — <date> (<U> lines)
+# Upstream — <date>
 
 Generalised lines from the scope's weekly pass, for the global dream to read as inbox.
 
@@ -112,9 +112,13 @@ U1. <the line, as it would read in its destination> — <rules/<file> | lessons/
 ```
 
 For a **confidential** scope, no line of the inbox file may name one of `<members>`, a path of the
-scope's, or a word of `<words>`; the scope's name alone is allowed (the file carries it). A
-learning that cannot be said without them stays in the scope's dream. `scope-pass check <scope>`
-runs the same test on the draft that the Record step will — run it, and rewrite until it says `clean`.
+scope's, a word of `<words>`, or the scope itself: the heading is `# Upstream — <date>`, no scope
+and no count (Record sets it if not), Record scans the exact bytes that leave with the scope's own
+name included, and
+then a judge (the gate's `scope.upstream` row) reads them for what a word list misses — a client's
+city, a domain, a figure. A learning that cannot be said without them stays in the scope's dream.
+`scope-pass check <scope> --judge` runs the same scan and Record's judge (the `scope.upstream` row, its
+question) on the draft — run it, and rewrite until it says `clean`.
 
 ## 4. Record
 
@@ -122,13 +126,29 @@ runs the same test on the draft that the Record step will — run it, and rewrit
 <module>/bin/scope-pass record <scope>
 ```
 
-It checks the draft once more — a hit holds the whole draft back inside the anchor
-(`dreams/<date>-upstream-held.md`) and exits 1; then say so, write the draft again without the hits,
-and run it again — commits the dream on the anchor's main (in place), moves the draft to `<inbox>`,
-appends the vault's `log.md` line and commits both. Never commit either file any other way, and never
-copy or `knowledge-commit` the draft yourself: the check is what lets it leave.
+It is the export gate: the heading made export-safe, the scan and (confidential) the judge over the
+exact bytes, and their SHA-256 as the receipt. Its exit says what to do next:
+
+- **0** — recorded: it committed the dream and `dreams/<date>-receipt.json` on the anchor's records
+  branch (`<records-branch>` from `where`), pushed it and made its pull request ready — the anchor's own
+  merge lands it —, removed their working-tree copies (read the dream with
+  `git show <records-branch>:dreams/<date>.md`), wrote `<inbox>` from the judged bytes, appended the
+  vault's `log.md` line and committed both.
+- **3** — held: a name of the scope or a `leak` moved the whole draft inside the anchor
+  (`dreams/<date>-upstream-held.md`). Say so, write the draft again without them, and run it again.
+- **1** — not finished: the judge could not tell, a commit or a push failed, or the draft is not this
+  pass's (no draft, a wrong heading). Record says which. Fix only what it names — a heading, say — and
+  never rewrite the lines for a judge or a push that failed: say so in one line and stop. weekly-run's
+  backstop runs record once more after the session, and bytes already judged clean are not judged again.
+- **4** — LEAKED: stop, and say only that; weekly-run posts it.
+- **2** — the node's word list cannot judge the draft (a `re:` line it refuses, or a scan past its time
+  limit): say so in one line and stop; the owner fixes `.claude/words.txt` in the node, and nothing
+  you rewrite in the draft changes it.
+
+Never commit either file any other way, and never copy or `knowledge-commit` the draft yourself: the
+check is what lets it leave.
 
 ## 5. Report
 
 Unattended: nothing else. Interactive: the upstream lines in one line each, the P-item that matters
-most, and "the scope's dream is `<dream>`".
+most, and "the scope's dream is on `<records-branch>`, its pull request ready".

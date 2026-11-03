@@ -1,0 +1,12 @@
+{
+  "_": "wharf's call sites: the council's arms (bin/council). Read through the core's gate as module_table(\"wharf\"); your own values go in the config dir's wharf/models.json, which wins over this file, whole.",
+  "defaults": {
+    "claude": {"model": "claude-opus-5-5"}
+  },
+  "sites": {
+    "council.opus": {"kind": "generate", "provider": "claude", "model": "claude-opus-5-5", "effort": "high", "when_off": "skip", "note": "the Claude arm: claude -p in its box, a writable copy of the home repo, under the core's fence (seatbelt, proxy, scratch config, its login on a pipe: docs/principal-council-isolation-2026-10-29.md)"},
+    "council.codex": {"kind": "generate", "provider": "codex", "effort": "xhigh", "when_off": "skip", "note": "the Codex arm: harness run --mode research in its box, a writable copy, under the core's fence (seatbelt, proxy, scratch CODEX_HOME); no model = the plan login's default"},
+    "council.antigravity": {"kind": "generate", "provider": "antigravity", "model": "gemini-3.8-flash-high", "when_off": "skip", "note": "the Gemini arm on the owner's own agy sign-in (D3's last reply); the effort is in the id (low, medium, high; max refused); moves to Gemini 4's id after one agy -p call answers on it"},
+    "council.antigravity-claude": {"kind": "generate", "provider": "off", "when_off": "skip", "note": "the Anthropic arm through Antigravity: off by default (D3-C only, harness diversity, not model diversity); on for a question about Claude Code's harness itself"}
+  }
+}

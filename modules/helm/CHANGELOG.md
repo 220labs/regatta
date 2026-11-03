@@ -2,6 +2,108 @@
 
 ## Unreleased
 
+- The board's state for the Decide feed and the ship ladder (helm-board-ux S2): ask poll carries each open
+  item's own section (the heading, the prose above, its options table, the item), its options, line, the steps
+  that wait on it, a content hash, the worktree on this host and the doc's title and Summary; `helm board --json`
+  gains `queue` (the docs in the feed's order with their reason, then the other cards by what they need) and
+  `later` (a snooze or done from board-state.json while the card's hash stands), and every card in the owner's
+  column a unique `key`; the deploy check moves with an item's hash, pick and lock. Each ship gains its
+  `ladder`: start, due, a projected ETA along the dependency order (the skipper's ETAs, else the median built
+  step) with its slip in days, the hill's counts (answered of the docs' decisions, built of the steps) and the
+  money with where each number comes from; the timeline's bars end at the projected end, and `helm show`
+  prints the row. The header's count of what needs the owner leaves out the cards Later holds.
+- node-road (2026-11-02): `helm send` reaches a confidential scope's yard by its node folder's own
+  `ssh` (orca-host's `node_peers`), never `wharf-runs/ssh`, and refuses one no node folder names; a node peer's
+  yard goes the same way for any scope. In a sandboxed session (`SRT_SSH_PROXY_COMMAND`) its ssh is
+  `$GIT_SSH_COMMAND`, run as git runs it. skipperlib and `install.sh` load the skipper and the ask poll through
+  wharf-runs' `systemd-launchctl` off a Mac.
+  A repo a confidential scope takes by a glob or an absolute entry is confidential too (the core's `entry_takes`),
+  an `-Agent` yard in any case is a node's, `--listen` judges a record's repo under `--scope`, and a send dir that
+  takes no file is refused before anything is laid.
+- The notify ladder (charterer S3): `surfaces.json`'s `notify` seam takes a ladder per kind (`update`,
+  `question`, `stall`), quiet hours and an hourly cap beside the old per-host rows, with the schema;
+  the tick's stall road fires each rung at its own `after` in place of the fixed `ESCALATE_AFTER`, one
+  `escalations.jsonl` row per rung (keyed `rung_of`, so a reader from before the ladder never takes one as its
+  key's state), and withdraws an answered question on the second pass in a row that reads it answered. A kind
+  with no ladder reads its `notify.<host>` row as one rung sent by `notice()`, as before. Quiet hours read in
+  `quiet.tz` (an IANA zone) when it names one, and hold the issue machine's comments, a close's included.
+  `orca-app` has no road: Orca 1.4.245's CLI names no call that notifies the app (probed); `spacesheep-app` is
+  reserved. A `notify` seam that is no object, or a file that will not read, holds every phone rung (the
+  defaults would drop quiet hours and the cap); any other seam that is no object reads as its defaults, as hail's
+  S2 made it, and `ask backends` and `helm backends` print every problem as `  ! <problem>` (`surfaces.problems()`).
+- The charterer design's S1 (docs/charterer-2026-11-01.md): a ship's charterers — the sessions the yard's charter
+  pass (S4) will hail every 5 minutes — as three ship-level events in its `events.jsonl` (`chartered`, `charter
+  renewed`, `charter left`); `state()` derives `charterers` and `charterers_gone`, a charter lapsing 15 minutes after
+  its last renewal unless its road is one `CHARTER_SEES_END` names, a road the charter pass reads an end on (none
+  today: hail's verdicts carry no `ended`), and only the verb's own lines counting; `public()` drops each one's session id and host,
+  and rewrites a free-text why as `left`; `helm show` names them; `ask`'s REPORT intake drops a charter's keys. The yard's
+  `helm charter --join|--renew|--leave PLAN… [--by SESSION] [--from HOST] [--road ROAD] [--why W] [--json]` writes
+  them: a join or a renewal is refused (exit 6) under every unattended marker of a caller on the yard (the core's, a peer job's, a
+  launchd label, no background tasks, a dispatch depth or ship) (ssh carries
+  none of a remote caller's: S5 refuses on the charterer's Mac) and for an ended ship (every block launched, superseded,
+  or done where done is its end — a person's, a shell or memo block — or its branch has landed; a failed block, or a
+  built one not landed, is not, wharf's close at done notwithstanding), named with its end, read again under the
+  plan's lock; a renewal of no charter exits 7 (join again); a bare renewal keeps the
+  Mac its charterer joined from (and so needs no host name of this Mac's: only a join with no `--from` does);
+  `charterers()` reads charter lines in the file's order (each written under the plan's lock), never sorted by time,
+  `state()` included, so a clock that stepped back never reads a rejoin as before the leave it follows; a leave is any caller's; `--json` gives one verdict and cause per ship, and one
+  ship's crash costs the others nothing.
+- The VS Code extension `220labs.regatta` 0.1.0 in `vscode/` (regatta-vscode, 2026-11-02): Sheepfold 0.8.0's regatta
+  (now `regatta.board`, "Board") and Meetings (`regatta.meetings`) views moved into their own activity-bar container,
+  commands `regatta.board.*` and `regatta.meetings.*`, settings `regatta.cli`, `regatta.boardFile`, `regatta.perSection`
+  and `regatta.nudges` (Sheepfold's `sheepfold.regatta.enabled` goes: disable the extension instead). It exports
+  `RegattaApi` (apiVersion 1: `helmNotes()`, `onDidChangeHelmNotes`) and reads Sheepfold's `SheepfoldApi` when that is
+  installed, neither in the other's `extensionDependencies`. Without Sheepfold a board row takes its card's title and a
+  ThemeIcon and a session card opens its page in the browser. Beyond 0.8.0: helm's Intake column is its own
+  section (not "Waiting on Intake"), a ship with a failed task shows ✗ and an error icon, a timed-out
+  `regatta root` or `has` keeps what was known, and a failed calendar read is kept in the profile's shared
+  answer so every window says it. Prepare the Brief is offered only for a meeting with a calendar event id
+  (0.8.0 fell back to `navigate brief --next`); a look that could not tell looks again by itself, backing
+  off from 30 s to 10 minutes. A setting left unset here takes its Sheepfold 0.8.0 value
+  (`sheepfold.regatta.cli`, `.boardFile`, `.perSection`, `sheepfold.nudges`). Without the CLI the Board view says so and offers the
+  walkthrough. helm's `tests/check.sh` runs `npm ci --ignore-scripts && npm run check` in a temp copy beside its two suites. Not installed or
+  published: the owner's, at Regatta's release.
+- `helm yard-on HOST SCOPE... [--dry-run] [--within H]` names HOST the yard of each scope once HOST's tick
+  reads armed and no blueprint ship of those scopes is in flight here (bin/yardon.py). Moved from the overlay's
+  `bootstrap.sh --yard-on`, with the hosts and scopes as arguments. Its in-flight check counts only ships wharf
+  laid from a blueprint, the ones the fence would strand: a typed session's ship refused every arming before
+  (TODO.md [arm-yard] (b)). A task's repo is looked up by its registry key as the fence does (a nested
+  `org/repo` key included); a repo in no scope does not count, one whose scope cannot be told does.
+- A TODO card drops the item's id (`- [porch-bulb] …`, wharf's `/todo` since 2026-10-31) from its words.
+- A stalled run that ran its builder-rotation draw (dispatch's, trim S6) is retried on that draw: the stall record
+  keeps the run's `arm`, and the re-dispatch hands it as `DISPATCH_ARM` in place of a typed `--model`/`--effort`,
+  which would run the same model unrecorded and leave trim reading the landing as pinned. The tick's own
+  `DISPATCH_ARM` and `DISPATCH_COIN` never reach a re-dispatch (`STRIP_ENV`).
+- stalls' S3 (ended at max lifetime) names what the cap cut, from the run record's `cut`: a check whose verdict
+  nobody read, a usage-limit stop (yard-followups, 2026-11-02).
+- `helm send --text` refuses a brief over pickup's cap (60 lines, 4,000 characters) before anything is
+  seeded, saying the cap and to put the design in docs/ with a short `--text` pointing at it
+  (send-road-start; sendlib's `BRIEF_LINES`, `BRIEF_CHARS`, held to pickup's by test_helm.sh).
+- stalls' `NET_RE` reads a login's usage-limit stop as S4 (relaunch), still character for character
+  autofinish-run's `S4_RE`; the card reads "stopped: the network, sleep or a usage limit". The tick marks a
+  relaunch refused because this Mac's own pick found no login with room (`no_account`, the refusal's own
+  last line only), and such a refusal neither counts toward REFUSALS nor dates the backoff: the week check
+  holds the next tick. A peer's relayed no-account counts as any refusal does. The S4 card's title names
+  the usage limit.
+- The skipper's session is named `steer-<scope>` (the core's session_name), its screen still `skipper-<scope>`.
+- surfaces.json gains the `hail` seam, `hail.roads` (wharf-runs' hail reads it: which roads, in which order), in
+  the schema and `ask backends`; `ask poll` runs `hail mail --pull` after the fulfil, on every host (the charterer
+  design's S2). hail reads that row as narrowing only: a surfaces.json that does not parse, or a `hail` seam or
+  `hail.roads` row of another shape, stops every hail on that Mac; `ask backends` names each such problem
+  (`surfaces.file_problems`), and `--set` refuses a seam that is no object. helm's own seams (`ask.relay`, `notify.*`)
+  keep helm's stance for a file that does not read: a seam that is no object reads as its defaults (it raised
+  in every hook that loads surfaces.py before), named by `ask backends`; whether they should narrow as hail's
+  does is open (TODO.md [charterer-s2]).
+- stalls names a review stop `gate G1r` (task-shape S1 split step 1), not "stopped mid-work".
+- stalls_tick's follow-up reads a fire-time `FAILED` that says "refused for good" (dispatch's spawn gate,
+  confidential-reach S6's fourth landing review) as a spent retry, action `spent`, so the cap stops it; any
+  other `FAILED` voids the retry as before.
+- The README's issue road names lighthouse's CI budget alarm, filed through `ask`'s `issue_open`, and the `budget` label.
+- The stall tick's retry keeps `dispatch --on` (here, or the peer with `--at` and `--fallback here`): since
+  dispatch-queue S12 that is a preference, and the queue pins the retry to the host only when its worktree there
+  holds what origin lacks — commits its gone session never pushed, uncommitted work, pending answers — for that
+  step alone (a typed `--pin` would ride the whole chain after it). Its header says so.
+
 - `ask` prints the marked WAITING (🛑) and RELAYED (⏳) lines; stalls' `ends_waiting` reads past a mark.
 - dispatch-queue S9: a build step's dependency on another build step with a branch is met once that branch has
   landed (`landed`, `launched`, or proved by wharf-runs' `landed.py`, read without a fetch and asking GitHub at

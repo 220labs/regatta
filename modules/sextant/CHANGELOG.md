@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- `pitch check`: `claims.retired` normalises the scanned paths before `check <document>` keeps that
+  document's, so a `retired_scan` glob that climbs out of the root (`../notes/*.md`) is read there as the
+  root's check reads it; a planted retired claim passed. The paths are normalised, never resolved through
+  a link, and a file under the root named from no document's stem is read by every document's check too. The rule
+  now fires on a scan that reads no file, a guard that compares nothing, and, with
+  `claims.require_retired: true` (new, opt-in, default false), on an empty `retired` list. An adopter whose
+  `pitch.json` has no retired claim stays green.
+  `require_pins` and `require_retired` take `true` or `false` only; anything else, or a `claims` that is
+  no object, exits 2.
+
+- `/pitch` and `/captain` (pitch-skill-wording, 2026-11-02): where the skill is linked in by hand, the
+  tool is the module's `bin/pitch` by its real absolute path (`realpath "<base directory>/../.."`, now in
+  both skills' `allowed-tools`; `cd -P` before macOS 13), typed in a call of its own, bare, never a
+  relative `../../bin/pitch` from the link (which an allow rule on the module path never matches); `/pitch`'s `description:` is quoted, so its frontmatter
+  parses as YAML; its hand-over wires a project's check through `PITCH`, as config.md section 13
+  does, never a bare `pitch` or one machine's path.
+
+- sparks: a recording's WAV is this pass's own (`memo-<hash>-<pid>.wav`), not one per recording. Two passes of one
+  login given the same recording at once (two inboxes of one speaker, or two CI jobs on one Mac) wrote one file, and
+  afconvert failed -48 or -54 in one of them; the memo stayed in the inbox (runner-interference, 2026-11-02).
+
+- The sounder's shared body (wharf's architects') sizes a step by the block rule and writes `· lines: <n>` on each
+  step line (trim S4, 2026-11-02).
+
+- Off a Mac, the check's two macOS-only lines say they are not run on the host and, in regatta, run by the pull request's
+  macOS check, which `pr merge` waits for (node-lands, 2026-10-31).
+
 - `sparks acts [--days N]` (routed comments S6): the ideas pool's fresh `status: new` notes and the owner's open promises in a meeting note's `## Promises` (`- [me] …` or navigate's `- <owner>: …`, the line's own owner only, a ticked `[x]` line not) as JSON, for keel's notes reader, each with `rel`, the path as every Mac reads it, and an id from `rel` and the words. No model; a note's `by:` is not read; a note's day is its name's date or its front matter's `date:`, never its mtime. Read on the Mac the ideas pool's configs name (exit 3 elsewhere, so one host cards a note); an unreadable registry reads nothing and exits 4, a confidential scope's repo is never read, and with an overlay but no `sextant/source` no pool note is read.
 
 - `soundings refresh` reads dispatch's queue through wharf-runs' `queue_holds` (dispatch-queue S4): one

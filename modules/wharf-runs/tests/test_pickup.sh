@@ -749,6 +749,8 @@ echo "\$* | session \$CLAUDE_CODE_SESSION_ID" >> "$T/dispatch.calls"
 [ -n "\${STUB_RS_UNTOLD:-}" ] && { echo "dispatch: could not tell whether the queue holds it (queue entry fleet:demo--stage) — dispatch-queue watch exit 5: x — and no run header in log after 0 s — not handed off. End with the WAITING line — the next step waits for a run to end and for the queue to read" >&2; exit 2; }
 [ -n "\${STUB_RS_HELD:-}" ] && { echo "dispatch: \$1 is claimed on buildbox (queue entry fleet:demo--stage) — one branch, one host: end with the WAITING line — the next step waits for a run to end" >&2; exit 2; }
 [ -n "\${STUB_RS_NOHOST:-}" ] && { echo "dispatch: no host meets this run — laptop lacks feat-z — refused, never queued" >&2; echo "dispatch: \$1 is refused, never queued — end with the WAITING line — the next step waits for a run to end and for a host to meet it" >&2; exit 2; }
+[ -n "\${STUB_RS_S6NOTE:-}" ] && { echo "== the spawn check could not run here (exit 1: no regatta core to judge by), and nothing here may be a spawn: going on (confidential-reach S6)" >&2; echo "dispatch: 3 runs are live already — refused" >&2; exit 2; }
+[ -n "\${STUB_RS_S6:-}" ] && { echo "dispatch: \$1 is refused for good, a run out of a confidential scope with no review that vouches for its brief — its seed carries no review (confidential-reach S6)" >&2; exit 2; }
 [ -n "\${STUB_RS_QUEUED:-}" ] && { echo "queued as fleet:demo--stage (normal), rank 2: no room on this Mac now — it starts once a slot frees"; echo "end your turn on this line: THIS SESSION IS WAITING FOR SOMETHING — queued \$1 (normal); the next step waits for a run to end; the skipper finishes it"; exit 0; }
 echo "started: claude is running \$1 (opus high) in screen run-demo-stage; dispatch --status"
 SH
@@ -928,6 +930,15 @@ check "$(STUB_RS_FAIL=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PIC
 has "$T/out" "it needs feat-a,feat-b — no tab" "  …naming the needs"
 hasnt "$T/out" "not opened (PICKUP_NO_START)" "  …and no window opens"
 hasnt "$T/out" "not opened (PICKUP_NO_START)" "  …and no tab or window opens on a Mac that lacks the feature"
+# S6's sixth landing review: the spawn gate's refusal of a seed with no needs and no origin — never the tab or window
+# a plain refusal gets, which would start the run around the gate (the fourth landing review, item 2)
+check "$(STUB_RS_S6=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 1 \
+  "dispatch refusing at the spawn gate: a stop…"
+has "$T/out" "at the spawn gate — no tab or window" "  …naming why"
+hasnt "$T/out" "not opened (PICKUP_NO_START)" "  …and no tab or window opens"
+check "$(STUB_RS_S6NOTE=1 CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_DISPATCH="$T/dispatch" PICKUP_NO_START=1 P open "$SP" --fresh --no-fetch)" 0 \
+  "  a plain refusal after an \`==\` note that carries the S6 tag: the tab or window as before, not the gate's stop"
+hasnt "$T/out" "at the spawn gate" "  …never read as the gate's"
 : > "$T/dispatch.calls"
 { printf -- '---\nneeds: [Feat-A, feat-b]\n---\n'; cat "$SB"; } > "$T/brief-list.md"
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed needsd --file "$T/brief-list.md" --no-fetch)" 0 "a bracketed list…"
@@ -1098,7 +1109,7 @@ has "$T/out" "$GB is gone from origin" "…never seeded from the stale local bra
 check "$(git branch --list "*-fromg" | wc -l | tr -d ' ')" "0" "…and no branch made"
 check "$(P seed fromg --file "$SB" --beside $GB --dry-run --no-fetch) $(grep -c 'gone from origin' "$T/out")" "0 0" "…while --no-fetch seeds from what this machine has, as the refusal says"
 git update-ref -d "refs/heads/$GB"
-# the --beside wording (routed S4's fix, TODO 29 (e)): local main behind origin's says nothing of a seed off a
+# the --beside wording (routed S4's fix, TODO.md [routed-s4] (e)): local main behind origin's says nothing of a seed off a
 # branch's tip, which carries none of main's lag; and a blueprint already on that branch is "already on" it, not on main
 OLDOM=$(git rev-parse refs/remotes/origin/main)
 git update-ref refs/remotes/origin/main "$(git commit-tree "main^{tree}" -p main -m 'main moves on, on origin')"

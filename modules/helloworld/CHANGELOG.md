@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `helloworld nightly` (twin-nightly, 2026-10-31): `publish --pr` of each checkout the config dir's
+  `helloworld/nightly-repos` names, and where the repo's `.helloworld/nightly` says `mode: on-green`,
+  a rebase merge pinned to the pushed head once the twin PR's checks and each `main-check:` on the
+  private main are green. A held night (a refusal, a red or unfinished check, a refused merge) merges
+  nothing and files one issue per twin on the logbook (`helm/logbook-repo`), its private words cut to
+  two letters (a short one whole, the title too). The merging gh account's login and name are scanned
+  before the merge, which writes them into the twin's history; a private word holds the night, and
+  fails the dry run. Refuses on a CI runner, and a real night in an agent's shell; `--dry-run` is the
+  agent's. `install.sh --schedule`, never from an unattended run, loads it as a launchd agent at 03:30 where its dry run passes;
+  `--remove` unloads it; `--check` names the host's nightly repos and the schedule.
+- The scan caches by blob: every blob is read once (one `cat-file --batch` per scan, a dict after),
+  and a file's findings, exemption counts and cut-list keys are kept per (path, blob, the word list
+  less the credits, the file's exemptions, masking), so a replay re-scans only what changed. The
+  same findings, byte for byte (the suite runs a span with and without, `HELLOWORLD_NO_CACHE=1`).
 - git's stdin goes through a temporary file, never a pipe: a `cat-file --batch` fed the gate's
   object ids hung for hours on macOS 12 (git 2.37, Python 3.9). A temp dir that will not take the
   file is a refusal (exit 2).

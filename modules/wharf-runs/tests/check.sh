@@ -33,12 +33,18 @@ else
   echo "  --   skipped: no lib/core_path.py here, or no wharf beside it"
 fi
 # Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
-# Linux launcher, stood in), and test_autofinish (made
-# portable and run on ubuntu in the overlay's CI since 2026-10-07). The rest read launchd, plutil,
+# Linux launcher, stood in), test_autofinish (made
+# portable and run on ubuntu in the overlay's CI since 2026-10-07) and test_builder_coin (written portable, trim S6). The rest read launchd, plutil,
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
-LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd "
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_build_review test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_systemd test_wharf"
+LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin "
+# Off macOS the rest do not run on this host. In regatta a pull request's `check` runs on a macOS runner (the
+# whole line, or with CircleCI's Linux share the rest: WHARF_RUNS_SKIP_LINUX_OK, .circleci/share.sh), and
+# `pr merge` waits for that required check before it merges, so a /finish on the Linux node (node-lands,
+# 2026-10-31) passes on these lines and its PR does not until they ran on a Mac. Elsewhere (a twin's Linux CI)
+# nothing runs them. Said per suite, and once at the end with the list.
+LEFT_TO_MAC="not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_build_review test_builder_coin test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_systemd test_wharf"
 # Lane 2 is named; lane 3 is every other suite, so a suite added to SUITES lands there by itself.
 # Balanced on measured passes (the build Mac, load 8–12, 2026-10-27; seconds): test_dispatch 413 alone; lane 2
 # 669 (harness 64, pickup 335, autofinish 270); lane 3 830, test_autofinish_run 335 and test_wharf 244
@@ -52,7 +58,7 @@ run_suite() {   # <suite>: its header and the suite, or the line saying why it i
   local s=$1 t r
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  --   skipped: not in this checkout"; return 0; fi
-  if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only (runs in /finish)"; return 0; fi
+  if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only, $LEFT_TO_MAC"; return 0; fi
   # the PR check's macOS share (.circleci/share.sh): CircleCI's Linux job ran these already
   if [ -n "${WHARF_RUNS_SKIP_LINUX_OK:-}" ] && [ "${LINUX_OK#* $s }" != "$LINUX_OK" ]; then echo "  --   skipped: run on Linux (the macOS share)"; return 0; fi
   t=$(date +%s); bash "$D/$s.sh"; r=$?
@@ -96,6 +102,12 @@ stop_lanes() {   # <exit code>: TERM each running lane's whole tree, so no suite
 }
 trap 'rm -rf "$logs"' EXIT
 trap 'stop_lanes 130' INT; trap 'stop_lanes 143' TERM; trap 'stop_lanes 129' HUP
+# Each lane's log is printed with cat, which stops at the first full pipe when the pipe is O_NONBLOCK (the
+# CLI leaves CI's step pipe so): every lane printout of regatta#388's runs stopped near 64 KiB, the failing
+# case unprinted, and cat's own EAGAIN line lost with it. Blocking again before the lanes print, whoever set it
+# (docs/runner-interference-2026-11-02.md; check.yml's claude wrapper is the other half). Stderr is
+# cleared as fd 3, a copy of it: a plain 2>/dev/null would clear /dev/null's flag and leave the pipe's.
+python3 -c 'import fcntl, os; [fcntl.fcntl(f, fcntl.F_SETFL, fcntl.fcntl(f, fcntl.F_GETFL) & ~os.O_NONBLOCK) for f in (1, 3)]' 3>&2 2>/dev/null
 echo "== lanes: ${#lanes[@]} at once, each printed whole, in order"
 t0=$(date +%s)
 for i in "${!lanes[@]}"; do
@@ -118,4 +130,9 @@ for i in "${!lanes[@]}"; do
   fi
 done
 echo "== lanes: all ended in $(( $(date +%s) - t0 )) s"
+if [ "$(uname)" != Darwin ]; then
+  left=""
+  for s in $SUITES; do [ -f "$D/$s.sh" ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ] && left="$left $s"; done
+  [ -z "$left" ] || echo "== macOS only, $LEFT_TO_MAC:$left"
+fi
 exit $rc

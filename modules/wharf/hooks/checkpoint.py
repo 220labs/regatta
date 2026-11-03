@@ -296,9 +296,11 @@ VENDOR = ""
 # itself, so `git -C x push` and `env X=1 gh …` are caught too. wharf's test_checkpoint.sh reads the list
 # from wharf-runs' dispatch and fails on an entry no test here covers.
 # kick, --kick and dispatch-rc kick-listen: dispatch-queue S8 added them to dispatch's list (landed beside this
-# rule, which then failed its own count on main; build-review's landing, 2026-10-31)
-DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue", "kick"}
-DISPATCH_FLAGS = ("--claim", "--poll", "--requeue", "--kick")
+# rule, which then failed its own count on main; build-review's landing, 2026-10-31). kicked, the receiver, is on
+# no list of dispatch's: Claude's substring rule `*dispatch-queue kick*` denies it, so this denies it too (queue-rank)
+# finished: a finish's outcome into the fleet's tombstone, the waiter's word outside any session (finish-as-task's review)
+DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue", "kick", "kicked", "finished"}
+DISPATCH_FLAGS = ("--claim", "--poll", "--requeue", "--kick", "--queue-finish")   # --queue-finish: finish-as-task
 DISPATCH_RC_VERBS = {"kick-listen"}
 
 
@@ -1382,7 +1384,8 @@ def records_re():
 
 
 # The force mark (dispatch-queue S4, D3-A): wharf-runs' force_mark.py writes force/<session> in run-seed's
-# cache folder when the owner's typed message says "use the force", and dispatch spends it for one force run.
+# cache folder when the owner's typed message asks for force (any wording since 2026-10-30), and dispatch spends it
+# for one force run.
 # Unlike the records above, an attended session is the one that reads it, so a write there is denied to every
 # session, attended or not: a session that wrote one would be writing itself the owner's words.
 FORCE_DIR = "Library/Caches/run-seed/force"
@@ -1450,9 +1453,9 @@ def ssh_split(words):
 
 
 def force_reason(what):
-    return (f"⛔ `{what}` writes the force mark by hand ({FORCE_DIR} under HOME): it stands for the owner saying \"use the "
-            f"force\", so only wharf-runs' force_mark hook writes it, from the owner's typed message, and only dispatch "
-            f"spends it. Reading it is fine; to dispatch with force, ask the owner to say it.")
+    return (f"⛔ `{what}` writes the force mark by hand (`{FORCE_DIR}` under HOME): it stands for the owner asking for \"force\", "
+            f"in any wording, so only wharf-runs' force_mark hook writes it, from the owner's typed message, and only dispatch "
+            f"spends it. Reading it is fine; to dispatch at the force rank, ask the owner.")
 
 
 def record_write(command, rx=None):

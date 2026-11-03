@@ -2,6 +2,7 @@
 """What the owner actually typed this week, per project — the raw material the dream (Aurora) reads.
 
     week-digest [--days 7] [--max-chars 400] [--scope <scope>]
+    week-digest --json [--days 7] [--scope <scope>]
     week-digest --promote-tags [--scope <scope>]
 
 A week of transcripts is hundreds of megabytes of tool output; the signal the dream needs is
@@ -9,15 +10,24 @@ the human side: requests, corrections, preferences, "remember this", "never do t
 This prints only human-typed prompts (origin kind "human", IDE context blocks stripped),
 grouped by project and session, oldest first, each cut to --max-chars. It reads the archive
 (~/projects/transcripts, kept past Claude Code's 30-day sweep) and the live transcript
-directory, de-duplicated by session id. A fork's prompts at or before its `forked-from` cutoff
-are its source's and are skipped (bin/fork_claude_session.py; teleport design E1). Read-only.
+directory of every login dir (the core's login_dirs), de-duplicated by session id. A prompt counts
+by its own timestamp, not its file's. A fork's prompts at or before its `forked-from` cutoff
+are its source's and are skipped (bin/fork_claude_session.py; teleport design E1), and a prompt
+another session of the project already holds, same time and same words, is not counted twice.
+Read-only.
+
+`--json` is the same read without the cut: one object, `sessions` (project, session, title, start,
+source, and each prompt's `ts`, full `text` and `marked`) and `fenced` (the confidential sessions
+counted, `sessions` only) — the input of plumb's `asks` (evolve S1). The text interface is unchanged.
 
 Lines that look like corrections are marked `✱` so the dream can count repeats: they contain
 "again", "still", "I told you", "don't", "never", "stop", "wrong", "remember", "always".
 
 The fence (knowledge-layers S4): a session of a confidential scope (the registry's
 `"confidential": true`, read through the core's gather_fence) is counted, never quoted — its own
-scope's pass reads it. `--scope <scope>` reads that scope alone, a confidential one included.
+scope's pass reads it. The verdict is judged from the path before the file is opened (evolve S1),
+so a fenced transcript is counted by name and never read, and its prompts are not counted.
+`--scope <scope>` reads that scope alone, a confidential one included.
 
 `--promote-tags` is the dream's other raw read: every `<!-- promote:` line in a Markdown file
 under the projects folder, as `grep -rn` prints it, never descending into a confidential scope's
@@ -37,7 +47,12 @@ sys.path.insert(0, find_core.hooks())
 import common  # noqa: E402  gather_fence, PROJECTS
 
 HOME = Path.home()
-SOURCES = [common.PROJECTS / "transcripts", HOME / ".claude" / "projects"]
+
+
+def sources():
+    """The archive, then the live transcript folder of every login dir here (evolve S1: the one
+    the home login's alone missed every other login's sessions)."""
+    return [common.PROJECTS / "transcripts"] + [d / "projects" for d in common.login_dirs()]
 PROMOTE_TAG = "<!-- promote:"
 IDE_BLOCK = re.compile(r"<(ide_\w+)>.*?</\1>", re.S)
 COMMAND = re.compile(r"<command-message>.*?</command-message>\s*<command-name>(.*?)</command-name>"
@@ -49,7 +64,13 @@ def arg(name, default):
     return type(default)(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
 
 
-def prompts(path):
+def stamp(epoch):
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def prompts(path, since=""):
+    """(session id, title, [(timestamp, text)]); `since`: an ISO second, a prompt stamped before it
+    is outside the window (the file's mtime only says when the last line was written)."""
     sid = title = cut = None
     out = []
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -75,6 +96,8 @@ def prompts(path):
                 out.append((r.get("timestamp") or "", text))
     if cut:  # the record follows what it describes, so the skip waits for the whole file
         out = [(ts, text) for ts, text in out if ts > cut]
+    if since:
+        out = [(ts, text) for ts, text in out if ts[:19] >= since]
     return sid, title, out
 
 
@@ -133,31 +156,50 @@ def main():
             print(f"({fenced} folder(s) of a confidential scope not read — its own pass reads them)")
         return 0
     cutoff = time.time() - days * 86400
-    seen, by_project, hidden = set(), {}, [0, 0]
-    for root in SOURCES:
+    since = stamp(cutoff)
+    seen, held, by_project, fenced_seen = set(), set(), {}, set()
+    for root in sources():
         for f in sorted(root.glob("*/*.jsonl")):
             if f.stat().st_mtime < cutoff:
                 continue
-            verdict = fence(f)
+            verdict = fence(f)   # from the path, before the file is opened
             if verdict == "outside" or scope and verdict != "quote":   # under --scope, only its own counts
                 continue
-            sid, title, ps = prompts(f)
+            if verdict == "fenced":   # counted by name, never opened
+                fenced_seen.add(f.stem)
+                continue
+            sid, title, ps = prompts(f, since)
             key = sid or f.stem
             if key in seen or not ps:
                 continue
             seen.add(key)
-            if verdict == "fenced":   # counted in the heading, never quoted
-                hidden[0] += 1
-                hidden[1] += len(ps)
-                continue
-            by_project.setdefault(project_of(f), []).append((ps[0][0], key, title, ps))
-    total = sum(len(s[3]) for v in by_project.values() for s in v) + hidden[1]
+            project = project_of(f)
+            fresh = []
+            for ts, text in ps:   # a fork's copy of a prompt another session holds
+                ident = (project, ts, text)
+                if ident not in held:
+                    held.add(ident)
+                    fresh.append((ts, text))
+            if fresh:
+                by_project.setdefault(project, []).append(
+                    (fresh[0][0], key, title, fresh, "archive" if f.parts[-3] == "transcripts" else "live"))
+    if "--json" in sys.argv:
+        print(json.dumps({
+            "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days,
+            "scope": scope, "fenced": {"sessions": len(fenced_seen)},
+            "sessions": [{"project": project, "session": key, "title": title, "start": start, "source": source,
+                          "prompts": [{"ts": ts, "text": text, "marked": bool(CORRECTION.search(" ".join(text.split())))}
+                                      for ts, text in ps]}
+                         for project in sorted(by_project) for start, key, title, ps, source in sorted(by_project[project])]},
+            ensure_ascii=False))
+        return 0
+    total = sum(len(s[3]) for v in by_project.values() for s in v)
     marked = 0
     print(f"# Week digest — last {days} days, {len(seen)} sessions, {total} prompts "
           f"({dt.date.today().isoformat()})" + (f" — scope {scope}" if scope else "") + "\n")
     for project in sorted(by_project):
         print(f"## {project}\n")
-        for start, key, title, ps in sorted(by_project[project]):
+        for start, key, title, ps, _ in sorted(by_project[project]):
             print(f"### {start[:16].replace('T', ' ')} · {key[:8]}" + (f" · {title}" if title else ""))
             for ts, text in ps:
                 flat = " ".join(text.split())
@@ -165,8 +207,8 @@ def main():
                 marked += mark == "✱ "
                 print(f"{mark}{flat[:limit]}{' […]' if len(flat) > limit else ''}")
             print()
-    if hidden[0]:
-        print(f"_{hidden[0]} sessions ({hidden[1]} prompts) of a confidential scope: counted above, not quoted — "
+    if fenced_seen:
+        print(f"_{len(fenced_seen)} sessions of a confidential scope: counted, never opened — "
               "its own pass reads them._\n")
     print(f"_{marked} prompts marked ✱ as possible corrections — read them, don't count them blindly._")
     return 0

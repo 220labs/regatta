@@ -192,7 +192,7 @@ def notify(data):
     sys.path.insert(0, str(C / "bin"))
     import surfaces
     host = surfaces.host()
-    if "banner" not in (surfaces.load()["notify"].get(host) or []):
+    if "banner" not in surfaces.host_row(surfaces.load()["notify"], host):
         return
     try:
         import helmlib

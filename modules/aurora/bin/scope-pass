@@ -6,15 +6,28 @@
     scope-pass check SCOPE [FILE] [--judge] [--json]
                                         exit 1, naming each line, where FILE (default: the pass's draft)
                                         names a confidential scope's repos, paths or words; --judge: a
-                                        clean scan then goes to the gate's `scope.brief` judge, exit 1
+                                        clean scan then goes to a judge (the draft: record's `scope.upstream`; another FILE: `scope.brief`), exit 1
                                         on its `leak`; 2 when either cannot tell; --json: one verdict
                                         object on stdout, the lines on stderr
-    scope-pass record SCOPE [--day D]   land the pass: the dream on the anchor's main, in place; the
-                                        draft, checked, as the vault's inbox file with one log.md line,
-                                        by knowledge-commit
-    scope-pass proof SCOPE [--day D]    exit 0 when both are on their mains and the inbox file passes
-                                        check; 3 when record held the draft back; 4 when the inbox file
-                                        on the vault's main names the scope (LEAKED); 1 otherwise
+    scope-pass record SCOPE [--day D]   land the pass: the dream on the anchor's records branch, pushed, its
+                                        pull request opened and made ready; the draft, scanned and
+                                        (confidential) judged, as the vault's inbox file with one log.md line
+                                        (a word: complete or held), by knowledge-commit. Exit 0 recorded,
+                                        3 held (rewrite the draft), 4 LEAKED, 1 could not finish (a judge that
+                                        could not tell, a commit, a push: run it again), 2 a usage error or a
+                                        word list that cannot judge (a `re:` line, the scan's clock)
+    scope-pass receipt SCOPE [--day D]  the day's receipt, verified against the vault's file, as JSON: exit 0
+                                        certified, 3 held, 1 otherwise (weekly-run logs it; the barrier reads it)
+    scope-pass proof SCOPE [--day D]    exit 0 LAUNCHED when the dream is on the anchor's main and the inbox
+                                        file, certified, on the vault's main; 5 WAITING when the dream is
+                                        pushed on its records branch with a ready pull request (the anchor's
+                                        merge lands it) — no origin, no GitHub, no token or no ready PR is
+                                        MISSING, never WAITING; 3 HELD when record held the draft back; 4 LEAKED
+                                        when the inbox file on the vault's main names the scope, or a
+                                        confidential one's bytes match no complete receipt of the day; 2 when
+                                        the node's word list cannot judge and the receipts settle no LAUNCHED,
+                                        WAITING or LEAKED (record would refuse the same list; a HELD reads so too); 1 otherwise — a missing or stale
+                                        receipt is never LAUNCHED
 
 **The pass** (`/aurora dream --scope <scope>`, sections/dream-scope.md) is the global dream bounded
 to one scope of the registry: its Gather reads that scope alone (S4's `--scope` readers), and it
@@ -26,14 +39,46 @@ lies in its in_place paths, so unchecked text written there would reach GitHub b
 (S5 landing review, 2026-10-22). It holds generalised lines the global dream reads as inbox (the design's D2-A: "nothing reads down into a
 confidential node; only generalised knowledge flows upstream"). The anchor is the scope's first repo,
 named, never a glob — its knowledge repo, `<scope>-knowledge` by convention (atlas's `knowledge-home`
-reads it the same way); `dreams/` must be in its `in_place` (`knowledge-home init` writes it), as
-the dream is a record written on its main.
+reads it the same way). The dream reaches GitHub on the anchor's **records branch**,
+`claude/<host>/<day>-scope-pass` (kl-s5 D1-B, Evolve S2): record commits it there with git's plumbing
+— never a checkout, so the anchor's own checkout may be on any branch — pushes it, and opens its pull
+request and makes it ready: the anchor's own merge policy lands it (its automerge, as a `/finish`'s ready
+PR, or the owner's merge), D1-B's "B goes through a PR, so it survives a protected main". Not autofinish:
+its sweep judges a worktree's branch only, and it would skip this one four times over — `dreams/` is
+`in_place` (a gate), the receipt is JSON (not text), the dream's `➤ Answer:` lines are asks, and no
+session wrote it (probed with `autofinish --dry-run` on scratch anchors, S2's landing review). `dreams/`
+must be in the anchor's `in_place` (`.claude/workflow.json`): the session writes the files in the
+anchor's checkout, on main (`knowledge-home init` writes it). Before D1-B the dream was committed on
+the anchor's main and never pushed, which a protected main or a pre-commit that refuses main stops
+outright. Once committed, the untracked working-tree copies go: an untracked file of the same path
+blocks the fast-forward that brings the landed branch into the checkout (git refuses even an identical
+one, probed 2026-10-31); a copy the checkout's main tracks stays.
 
 **check** is the mechanical half of "generalised": for a confidential scope, a line that names one
 of its repos (a registry key, its last segment, case-blind on word edges), a path of the scope's
 (the core's `scope_match`: checkouts, worktrees, transcripts, each login's project folder, `~`
 forms) or a word of the node's own list fails. The list is `<anchor>/.claude/words.txt`, one word
-per line, `#` comments: the node's names (clients, people, products) live in the node, never here.
+per line, `#` comments (at a line's start or after a space): the node's names (clients, people, products) live in the node, never here.
+A line `re:<pattern>` holds an open-ended family (`re:TKT-[0-9]+`, every ticket id): a Python
+regular expression, case-blind, on the same word edges, `^` and `$` per line; one that does not
+compile alone, sets a flag (a global `(?i)`, or a group's `(?-i:…)`; only `(?:…)` groups), matches the
+empty string or a single character (its least width under two, by re's own parser: `[a-z]`, `\\b`,
+`x[0-9]*`, a bare lookahead `(?=@)`), matches plain text at all (`--`, `\\w\\w`, `[a-z]{2,}`, `\\d\\d`) or backtracks past
+the clock on it, or a list that cannot be read, makes check exit 2 (and, caught when the
+list is read, the scope not ready), never a pass; a hit is named by its words.txt line, never the
+pattern; two lines that differ only in letter case are both kept; a `#` at a line's start or after a space starts a comment there too (elsewhere it is text); a list not in UTF-8, or a line holding a NUL or a BOM, is one that cannot be read; a pattern
+spells its own whitespace (`\\s+`: a literal space matches one space, never a wrap), and its word edges
+hold even where it starts or ends with punctuation (`re:-v[0-9]+` never matches `build-v2`); a pattern
+that backtracks past SCOPE_PASS_SCAN_SECONDS (60) stops the scan with exit 2. A pattern's match that
+is the scope's own name is exempt where the name is, so never offer the name as an alternative
+(`re:node|node-x` passes `node-x` there). Write what 3.9 compiles (no possessive or atomic groups): a
+list ready on one host's Python may be refused on another's. A line that began `re:` before the form
+existed, a literal then, is a pattern now. The scan reads the whole text, not a line at a time: a
+space in a word or a repo name matches spaces and tabs, or one hard wrap whose next line may open with a
+quote or comment marker (never a blank line: no name spans paragraphs), and a hit is named by the line
+it starts on. proof reports a leak its other
+terms find even when a `re:` line is broken: every term but the one that fails, each pattern on its
+own clock.
 The anchor's own name is one, registered or not. The scope's name alone is not a hit, even where a
 repo or a word shares it: the inbox file is named by it and its heading carries it, by design. A
 confidential scope with no word list is not ready: an empty file (comments only) is the owner's
@@ -55,16 +100,42 @@ term, the scope's own name included (`scope` is the core's scope_marker() of a c
 caller writes it into an open repo; the lines naming each hit go to stderr. Under --judge the scan
 refuses the scope's own name too, which the pass's draft may carry (its heading does).
 
-**record** runs check on the draft first. A hit holds the whole draft back: its text moves to
-`<anchor>/dreams/<day>-upstream-held.md`, the vault is not touched but for a log line that says
-`held` with a count and nothing else, and exit 1. A clean draft becomes the inbox file (the draft is
-removed; the dream's "Sent upstream" keeps its lines), and a clean record after a hold the same day
-replaces the held log line. Then it commits the dream (and the held file) on the anchor's main, those paths alone (in place, never pushed: the
-anchor's main moves on origin through its own flow); appends `- <day> dream --scope <scope>: …` to
-the vault's log.md once; and commits the inbox file and log.md through atlas's `knowledge-commit
-<vault-name>` (its straight form: in_place paths on main, pushed). `SCOPE_PASS_COMMIT` replaces that
-command for the suite. A session runs record as its Record step; weekly-run runs it again as a
-backstop when the session wrote the files and stopped. Calling it twice is safe.
+**record** is the export gate (Evolve S2, docs/self-improvement-scope-pass-2026-10-30.md): fence
+before open (resolve() reads the registry once, fails closed), scan, judge, exact-byte receipt.
+1. **The export-safe heading.** The draft's first line becomes `# Upstream — <day>`: no scope, no count
+   (heading_ok, record and proof agree on it; the file's path says which scope). The text that leaves
+   names no term of the node, so the scan below refuses the scope's own name as well.
+2. **The scan** (check's, with the own name) over those exact bytes. A hit holds the whole draft back:
+   its text moves to `<anchor>/dreams/<day>-upstream-held.md`, the vault is not touched but for the
+   log line, which says `held` and nothing else, and exit 3.
+3. **The judge**, a confidential scope's alone (open scopes are read whole anyway): the gate's
+   `scope.upstream` row, kind classify, Claude only. `leak` holds the draft as a hit does (exit 3); a
+   missing, `off` or failing judge leaves the draft where it is, logs `held` and exits 1, for a retry:
+   no judgment is no export. A draft whose exact bytes already carry a `complete` receipt of the same
+   judge revision is not judged again (a re-record after a failed push or commit).
+4. **The receipt**, `<anchor>/dreams/<day>-receipt.json` on the records branch beside the dream: {receipt
+   (complete, held or failed), scope (a confidential one's marker), day, cycle (`--cycle`, else the ISO
+   week), records_ref, sha256 and bytes of the text that leaves, scan, judge, judge_rev (a hash of the
+   row, the question and the labels), provider, model, cost_usd, time} — no term. A held or failed one
+   never replaces a `complete` one: it goes beside it, `<day>-receipt-held.json`. The inbox file is
+   written from those bytes and read back; a file whose hash differs is removed (exit 1). proof (and
+   `receipt`, which weekly-run logs and the barrier reads) certifies a pass only on a `complete` receipt
+   of that day, label and judge revision whose sha256 is the vault's file's, under the safe heading: a
+   legacy file never certifies a new pass. A confidential file on main whose bytes no `complete`
+   receipt of the day ever named (the branch's history read too) is LEAKED; one a receipt of another
+   judge revision named is MISSING a current receipt.
+Then the dream, the receipt (and a held file) are committed on the records branch, those paths alone,
+and pushed when the anchor has an origin, its pull request opened and readied (on GitHub, with the
+token git has; `SCOPE_PASS_PR` replaces that for the suite); `- <day> evolve --scope <scope>: complete|held` — a word,
+never a count, as the log is pushed to the vault's main — is appended to the vault's log.md once (a
+clean record after a hold the same day replaces the held line); and the inbox
+file and log.md are committed through atlas's `knowledge-commit <vault-name>` (its straight form:
+in_place paths on main, pushed). `SCOPE_PASS_COMMIT` replaces that command for the suite. A session
+runs record as its Record step; weekly-run runs it again as a backstop when the session wrote the files
+and stopped. Calling it twice is safe: a dream already on the branch is read from there.
+
+A confidential scope's pass runs on its own yard, whose dispatch keeps its own local queue (dispatch's
+per-host state dir) and reads no central path: nothing of the node waits in another host's queue.
 
 Read-only but for record. Nothing here names a scope, path or word of the owner's: the registry is
 read through the core (`common`), the vault through `weekly-run where`.
@@ -73,10 +144,19 @@ import datetime as dt
 import hashlib
 import json
 import os
+import bisect
+import contextlib
 import re
+import signal
+import warnings
 import subprocess
 import sys
+import time
 from pathlib import Path
+try:   # the parser re itself uses, to find a scoped flag group anywhere in a pattern (3.11+ moved it)
+    import re._parser as sre_parse
+except ImportError:
+    import sre_parse
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "lib"))
@@ -104,7 +184,26 @@ JUDGE_LABELS = {
     "clean": "nothing in it identifies or describes the confidential project, its clients, people or data",
     "leak": "it carries something specific to the confidential project, its clients, people or data",
 }
+SITE_UP = "scope.upstream"   # the gate's row for record's judge of the upstream lines
+UP_CONTEXT = (
+    "A confidential project's weekly review is about to send these lines out: they become an open "
+    "knowledge base's inbox, read by sessions of every other project, which must learn nothing about the "
+    "confidential project. Each line is meant to be a generalised lesson that holds for any project. A "
+    "scan has already found none of the project's own names (its repositories, paths, clients, people "
+    "and products as the project lists them). Judge what such a list misses.")
+UP_ASK = (
+    "Does this text carry anything specific to the confidential project it comes from: a detail that "
+    "identifies a client, a person or an organisation (a city, an address, a domain, an email, a company "
+    "or account name, a contract, a unique description), their data or figures (revenue, prices, user "
+    "counts, dates of their events, their system's internals), or a business fact about them? A "
+    "generalised engineering or working lesson, counts of sessions or corrections, a tool's name, a public "
+    "library or standard, a path in the open knowledge base and a `confidential:` marker are clean.")
 HELD = "-upstream-held"
+RECEIPT = "-receipt.json"
+HELD_RECEIPT = "-receipt-held.json"   # a held or failed receipt beside a complete one, never over it
+# the draft's heading, as the section writes it (`# Upstream — <scope> — <day> (<U> lines)`) or already safe
+UP_HEAD = re.compile(r"^# Upstream — (?:.*? — )?(\d{4}-\d{2}-\d{2})(.*)$")
+LOG_KEY = "- {day} evolve --scope {scope}:"   # the vault's log line: a word after it, never a count
 PATHLIKE = re.compile(r"(?:~|/)[^\s`'\"()<>\[\]{},;|]+")
 
 
@@ -159,6 +258,13 @@ def resolve(scope, day):
         "section": top / ".claude" / "scope-pass.md" if top else None,
         "words": words if words and words.is_file() else None,
     }
+    # the scope's paths, matched against the registry as it reads now, once: a matcher built later
+    # re-reads it, and a torn read then would pass every path hit (S2 landing review, finding 3). The
+    # anchor's checkout is one of its paths whenever the anchor is registered: a matcher that misses it
+    # was built from a torn read, and the pass fails closed.
+    info["match"] = common.scope_match(scope) if conf else (lambda p: False)
+    if conf and top and anchor in repos and not info["match"](str(top)):
+        die(f"the scope's paths read back without its anchor ({common.repos_json()} torn mid-read?) — fails closed", 2)
     info["memory"] = (([top / "memory"] if top else []) if conf else
                       [vault / "memory" / k.rsplit("/", 1)[-1] for k in members] if vault else [])
     info["memory"] = [m for m in info["memory"] if m and m.is_dir()]
@@ -180,29 +286,74 @@ def resolve(scope, day):
             w = {}
         main = (w or {}).get("main") or "main"
         info["main"] = main
-        branch = git(top, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
-        in_place = [str(e).rstrip("/") for e in ((w or {}).get("in_place") or [])]
+        in_place = [str(e).rstrip("/") for e in ((w or {}).get("in_place") or []) if isinstance(e, str)]
         if w is not None and "dreams" not in in_place:
-            why = (f"dreams/ is not in {anchor}'s in_place ({wf}): the checkpoint hook denies the dream "
-                   f"on its main — `knowledge-home init {scope}` names the fix")
-        elif branch != main:
-            why = f"{top} is on {branch or 'a detached HEAD'}, not {main}: the dream is a record written on {main}"
+            why = (f"dreams/ is not in {anchor}'s in_place ({wf}): the checkpoint hook denies the session's "
+                   f"draft in its checkout — add \"dreams/\" to its \"in_place\" list on a claude/* branch of "
+                   f"{anchor} (`knowledge-home init {scope}` names it too)")
+        # after the workflow read, so `main` is the anchor's own even when the list is what stops the pass
+        if conf and words_error(info) and not why:   # judged whatever stopped it first: proof reads it
+            why = f"{anchor}'s {info['words-error']} — the scan would hold nothing of that family"
     info.setdefault("main", "main")
+    info["records-branch"] = records_branch(day)
     return info, why
 
 
-def terms(info, own_name=False):
+def records_branch(day):
+    """The anchor's records branch for DAY on this host (kl-s5 D1-B): one a day, whatever the scope —
+    the anchor is the scope's own repo, and the name carries no term of it."""
+    return f"claude/{common.host_name()}/{day}-scope-pass"
+
+
+def label(info):
+    """What text bound out of the node calls the scope: a confidential one's marker, never its name."""
+    return common.scope_marker(info["scope"]) if info["confidential"] else info["scope"]
+
+
+class WordsError(Exception):
+    """A `re:` line of the word list that cannot hold anything: not ready, exit 2, never a pass. Its
+    text names the line, never the pattern (check --json writes its error into an open repo). Not a
+    ValueError: a helper's `except ValueError` on the scan's path (scope_match) would swallow it."""
+
+
+class _ScanLate(BaseException):
+    """The scan's clock ran out: a BaseException, so no `except Exception` between the signal and
+    hits_in can swallow it (AGENTS.md's SIGALRM trap); hits_in turns it into WordsError."""
+
+
+# Between a term's words: any run of whitespace, or a hard wrap whose next line opens with a quote,
+# comment or list marker (`> `, `# `, `// `, ` * `, `- `, `-- `), so a wrap inside a blockquote, a block
+# comment or a bullet cannot split a term past the scan (`*` and `-`: the finish review, 2026-11-03).
+# One newline at most (a blank line is a paragraph break, which no name spans), and each marker one
+# character or `//`, never `#+` or `--` inside the `*`, which backtracked exponentially on a line of `#`s.
+WRAP = r"(?:[^\S\n]*\n(?:[^\S\n]*(?:>|#|//|\*|-))*[^\S\n]*|[^\S\n]+)"
+
+
+# Plain text a pattern must not match at all: it holds no name, so a match here (`[a-z]`, `--`, `\w\w`)
+# would hold every draft; literal words under two characters are skipped the same way.
+PROBE = "a I 1 - . _x x_, y -- --- *** ___ |---| ==\nThe 12 cats ran.\n"   # Markdown's runs (`re:--` would hold every table), and a
+# plain sentence: `re:[a-z]{2,}`, `re:\d\d` or `re:the` would hold every draft (the round-1 review, 2026-11-02)
+
+
+def term_rx(t):
+    """A literal term, case-blind on word edges; between its words, WRAP."""
+    body = WRAP.join(re.escape(w) for w in t.split())
+    return re.compile(r"(?<![A-Za-z0-9])" + body + r"(?![A-Za-z0-9])", re.I)
+
+
+def terms(info, own_name=False, strict=True):
     """[(kind, term, regex)] that check refuses for a confidential scope. OWN_NAME: the scope's own name
     is one (check --judge: a brief bound for an open repo); without it the name is exempt, for the
-    pass's draft, whose file the vault names by it and whose heading carries it."""
-    out, seen = [], set()
+    pass's draft, whose file the vault names by it and whose heading carries it. STRICT: a `re:` line
+    that cannot hold anything raises WordsError; without it the line is skipped (proof's LEAKED read)."""
+    out, seen, pats = [], set(), set()
 
     def add(kind, t):
         t = t.strip()
         if len(t) < 2 or t.lower() in seen:
             return
         seen.add(t.lower())
-        out.append((kind, t, re.compile(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", re.I)))
+        out.append((kind, t, term_rx(t)))
     if own_name:
         add("scope", info["scope"])
     else:
@@ -211,33 +362,228 @@ def terms(info, own_name=False):
         add("repo", k)
         add("repo", k.rsplit("/", 1)[-1])
     if info["words"]:
-        for line in info["words"].read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.split("#", 1)[0]
-            if line.strip():
+        try:
+            # -sig: a BOM must not hide line 1; strict: a Latin-1 or UTF-16 list decoded with replacement
+            # loaded its words as text that never matched, a silent pass (the finish review, 2026-11-03)
+            lines = info["words"].read_bytes().decode("utf-8-sig").splitlines()
+        except OSError as e:   # a list that cannot be read judges nothing: not ready, exit 2, never a traceback
+            raise WordsError(f".claude/words.txt: cannot be read ({type(e).__name__})") from None
+        except UnicodeDecodeError:
+            raise WordsError(".claude/words.txt: not UTF-8 — its words would never match") from None
+        for n, line in enumerate(lines, 1):
+            # `#` starts a comment at the line's start or after whitespace only: `re:ACME-#?\d+` and `C# Labs`
+            # keep their `#` (a cut there loaded `ACME-` and dropped `C`, the finish review)
+            line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0].strip()
+            if any(c in line for c in "\x00\ufeff\ufffd"):   # a BOM mid-file, a NUL: a word that never matches
+                if strict:
+                    raise WordsError(f".claude/words.txt line {n}: holds a NUL, a BOM or a replacement character")
+                continue
+            if line[:3].lower() == "re:":
+                pat = line[3:].strip()
+                # alone first: wrapped, `TKT-[0-9` compiles, its class closed by the edge's `]`. The error
+                # names a position, never re's message, which can quote the pattern (a node's name).
+                why, head = None, r"(?<![A-Za-z0-9])(?:"
+                with warnings.catch_warnings():
+                    # 3.9 warns of a flag mid-pattern, quoting the pattern on stderr; 3.11+ refuses it: as
+                    # an error here, both refuse it alike and nothing prints it
+                    warnings.simplefilter("error")
+                    warnings.simplefilter("ignore", FutureWarning)   # a possible nested set: compiles, prints nothing
+                    try:
+                        alone = re.compile(pat)
+                        if alone.flags & ~re.UNICODE or re.search(r"\(\?[aiLmsux]+\)", pat):
+                            why = "sets a global flag ((?i), (?u)…): the scan sets its own"
+                        elif scoped_flags(parsed := sre_parse.parse(pat)):
+                            # `(?-i:tkt)` turns the scan's case-blindness off inside it: only `(?:` groups
+                            why = "sets a flag in a group ((?-i:…), (?s:…)…): only (?:…) groups"
+                        elif parsed.getwidth()[0] < 2:
+                            # exact where the probe line is a sample: `[2-9]`, `q`, `x[0-9]*` and a bare
+                            # lookahead `(?=@)` can each match an empty string or one character somewhere
+                            why = "can match an empty string or one character (`[a-z]`, `\\b`, `(?=@)`)"
+                        else:
+                            rx = re.compile(head + pat + r")(?![A-Za-z0-9])", re.I | re.M)
+                            # under the scan's clock: `(.|.|.|.)*Q` backtracks on the probe line itself,
+                            # and `where` (weekly-run runs it with no timeout) reads the list here
+                            with clock(scan_limit()):
+                                if not pat or rx.fullmatch(""):
+                                    why = "matches the empty string"
+                                elif any(rx.finditer(PROBE)):
+                                    # the probe line holds no name: any match there would hold every draft
+                                    why = "matches plain text (a, 1, --, |---|)"
+                    except _ScanLate:
+                        why = f"backtracks past {scan_limit():g} s on a line of plain text"
+                    except re.error as e:
+                        at = e.pos if e.pattern == pat or e.pos is None else max(e.pos - len(head), 0)
+                        why = f"does not compile (at character {at})"
+                    # RuntimeError: 3.9 compiles a conditional on a group that is not there, `(?(1)>)`, to
+                    # "invalid SRE code" (3.11+ says re.error); RecursionError is one too
+                    except (Warning, OverflowError, RuntimeError, ValueError) as e:
+                        why = f"does not compile ({type(e).__name__})"
+                if why:
+                    if strict:
+                        raise WordsError(f".claude/words.txt line {n}: its re: pattern {why}")
+                    continue
+                # the exact text (re.I already folds letter case; `\d` and `\D` differ only so), named by its
+                # line: what check prints, and hold() writes, never quotes the pattern (a node's name)
+                if pat not in pats:
+                    pats.add(pat)
+                    out.append(("pattern", f"words.txt line {n}", rx))
+            elif line:
                 add("word", line)
     return out
 
 
-def hits_in(info, text, own_name=False):
+def words_error(info):
+    """The word list's WordsError text, or None; kept as info["words-error"]."""
+    try:
+        terms(info)
+        info["words-error"] = None
+    except WordsError as e:
+        info["words-error"] = str(e)
+    return info["words-error"]
+
+
+def hits_in(info, text, own_name=False, strict=True):
     """[(line number, kind, term)] — what a confidential scope's inbox file may not say (and, with
-    OWN_NAME, what a brief leaving it may not: the scope's own name too, terms())."""
+    OWN_NAME, what a brief leaving it may not: the scope's own name too, terms()). A `re:` pattern
+    that matches an empty string anywhere in TEXT (a bare lookahead) raises WordsError: it holds no
+    name, and would hold every draft. A pattern runs on the whole text with `^`/`$` per line; a scan
+    past SCOPE_PASS_SCAN_SECONDS (default 60: one that backtracks catastrophically) raises WordsError,
+    so the night's job says so and moves on rather than hang."""
     if not info["confidential"]:
         return []
-    ts, match = terms(info, own_name), common.scope_match(info["scope"])
-    out = []
-    for n, line in enumerate(text.splitlines(), 1):
-        for kind, t, rx in ts:
-            if rx.search(line):
-                out.append((n, kind, t))
+    ts, match = terms(info, own_name, strict), info["match"]
+    lines = text.splitlines()
+    # Scanned with every line end as `\n`: re.M's `^`/`$` know no other, and splitlines() numbers the
+    # lines by all of them (CRLF, CR, form feed…), so a `$` pattern on CRLF text matched nothing.
+    flat = "\n".join(lines)
+    starts, at = [], 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    out = names(info, ts, flat, starts, own_name, strict)
+    for n, line in enumerate(lines, 1):   # a path holds no whitespace: a line at a time, off the clock
         for p in PATHLIKE.findall(line):
             if match(p.rstrip(".:")):
                 out.append((n, "path", p))
+    return sorted(out, key=lambda h: h[0])   # stable: per line, the names before the paths
+
+
+def scan_limit():
+    """SCOPE_PASS_SCAN_SECONDS as a finite positive number of seconds; anything else is the default 60."""
+    try:
+        v = float(os.environ.get("SCOPE_PASS_SCAN_SECONDS") or 60)
+    except ValueError:
+        return 60.0
+    return v if 0 < v < 86400 else 60.0
+
+
+@contextlib.contextmanager
+def clock(limit):
+    """Raise _ScanLate in the body once LIMIT seconds pass: re checks signals as it matches (probed on
+    3.9). A signal between the body's end and the disarm still raises, which fails closed (exit 2)."""
+    armed, outer, t0 = [True], signal.getitimer(signal.ITIMER_REAL)[0], time.monotonic()
+
+    def late(*_):
+        if armed[0]:
+            raise _ScanLate()
+    old = signal.signal(signal.SIGALRM, late)
+    # nested: never past the outer clock, and the outer clock's remainder re-armed on the way out
+    signal.setitimer(signal.ITIMER_REAL, min(limit, outer) if outer else limit)
+    try:
+        yield
+    finally:
+        armed[0] = False
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+        if outer:
+            signal.setitimer(signal.ITIMER_REAL, max(outer - (time.monotonic() - t0), 0.001))
+
+
+def scoped_flags(sub):
+    """True when parsed pattern SUB holds a group that sets or clears a flag, at any depth."""
+    for op, av in sub:
+        if op is sre_parse.SUBPATTERN and (av[1] or av[2]):
+            return True
+        for x in av if isinstance(av, (list, tuple)) else (av,):
+            for y in x if isinstance(x, (list, tuple)) else (x,):
+                if isinstance(y, sre_parse.SubPattern) and scoped_flags(y):
+                    return True
+    return False
+
+
+def names(info, ts, flat, starts, own_name, strict):
+    """The terms' hits, the regex half of hits_in, under a clock: the patterns are the owner's and may
+    backtrack. Only this loop is timed; the path loop does filesystem I/O inside scope_match. STRICT:
+    one clock for every term, and a pattern that fails (an empty match, the clock) is WordsError. Not
+    strict (proof's leak read): the literals, then each pattern on its own clock, and a pattern that
+    fails is skipped alone, so a broken line hides no leak another pattern finds."""
+    limit = scan_limit()
+    late = WordsError(f".claude/words.txt: the scan ran past {limit:g} s — a re: line backtracks")
+    if strict:
+        try:
+            with clock(limit):
+                return term_hits(info, ts, flat, starts, own_name)
+        except _ScanLate:
+            raise late from None
+    literal = [t for t in ts if t[0] != "pattern"]
+    try:
+        with clock(limit):
+            out = term_hits(info, literal, flat, starts, own_name)
+    except _ScanLate:
+        raise late from None
+    for t in ts:
+        if t[0] != "pattern":
+            continue
+        got = []   # filled as the pattern matches: its hits before a stall still count
+        try:
+            with clock(limit):
+                term_hits(info, [t], flat, starts, own_name, out=got)
+        except _ScanLate:
+            pass
+        out += got
     return out
+
+
+def term_hits(info, ts, flat, starts, own_name, out=None):
+    """The terms' hits, appended to OUT as found. STRICT (OUT not given) raises WordsError on a pattern's
+    empty match; the fallback (OUT given) skips that match alone and keeps the pattern's other hits."""
+    strict, out, seen = out is None, [] if out is None else out, set()
+    # The whole text at once: a term a hard wrap split across two lines is still one hit, on the line
+    # it starts on (one per line and term, as before).
+    scope = " ".join(info["scope"].lower().split())
+    for kind, t, rx in ts:
+        for m in rx.finditer(flat):
+            if kind == "pattern":
+                if m.end() == m.start():
+                    if not strict:
+                        continue
+                    raise WordsError(".claude/words.txt: a re: line matches an empty string in this text (a bare "
+                                     "lookahead?)")
+                if not own_name and " ".join(m.group(0).lower().split()) == scope:
+                    continue   # the scope's own name, exempt for the pass's draft as a literal word is
+            hit = (bisect.bisect_right(starts, m.start()), kind, t)
+            if hit not in seen:
+                seen.add(hit)
+                out.append(hit)
+    return out
+
+
+def leak_hits(info, text):
+    """True when the vault's file names the scope (proof, hold()): a word list with a broken `re:` line,
+    or a pattern past the clock, still reports a leak its other terms find (a second read that skips
+    only the patterns that fail, names()), before the WordsError (exit 2) that says the list cannot be
+    judged whole."""
+    try:
+        return bool(hits_in(info, text, own_name=True))
+    except WordsError:
+        if hits_in(info, text, own_name=True, strict=False):
+            return True
+        raise
 
 
 def cmd_where(info, why):
     for k in ("scope", "confidential", "login", "anchor-name", "anchor", "dream", "draft", "inbox", "section",
-              "words", "vault", "vault-name"):
+              "words", "vault", "vault-name", "records-branch"):
         v = info.get(k)
         v = ("yes" if v else "no") if k == "confidential" else (v if v else ("none" if k in ("section", "words", "login") else "MISSING"))
         print(f"{k} {v}")
@@ -248,20 +594,21 @@ def cmd_where(info, why):
     return 1 if why else 0
 
 
-def judge(info, text):
-    """(verdict, details) from the gate's scope.brief row: "clean" | "leak" | "error" (with its reason).
-    Loaded from the core's bin/gate (one reader of the table); any failure is "error", never a pass."""
+def judge(info, text, site=SITE, context=JUDGE_CONTEXT, ask=JUDGE_ASK):
+    """(verdict, details) from the gate's SITE row (scope.brief for check --judge, scope.upstream for
+    record): "clean" | "leak" | "error" (with its reason). Loaded from the core's bin/gate (one reader of
+    the table); any failure is "error", never a pass."""
     gate_bin = Path(find_core.hooks()).parent / "bin" / "gate"
-    d = {"site": SITE, "provider": None, "model": None, "cost_usd": None}
+    d = {"site": site, "provider": None, "model": None, "cost_usd": None}
     try:
         from importlib.machinery import SourceFileLoader
         gate = SourceFileLoader("gate", str(gate_bin)).load_module()
-        r = gate.classify(SITE, {"text": text}, JUDGE_ASK, JUDGE_LABELS, context=JUDGE_CONTEXT,
+        r = gate.classify(site, {"text": text}, ask, JUDGE_LABELS, context=context,
                           source=info["anchor-name"] or (info["members"] or ["?"])[0], caller=PROG)
     except Exception as e:   # GateError (a missing or off row, a refused vendor, a bad reply), or a missing core
         return "error", {**d, "error": str(e)[:300]}
     if r is None:   # off + skip: no judgment is no pass
-        return "error", {**d, "error": f"the gate's {SITE} row is off (when_off: skip) — no judge, no pass"}
+        return "error", {**d, "error": f"the gate's {site} row is off (when_off: skip) — no judge, no pass"}
     d.update(provider=r.get("provider"), model=r.get("model"), cost_usd=r.get("cost_usd"))
     label = ((r.get("items") or {}).get("text") or {}).get("label")
     if label not in JUDGE_LABELS:
@@ -269,12 +616,17 @@ def judge(info, text):
     return label, d
 
 
-def cmd_check(info, path, judged=False, as_json=False):
+def cmd_check(info, path, judged=False, as_json=False, day=None):
     p = Path(path) if path else info["draft"]
     if not p or not p.is_file():
         die(f"no file to check ({p})")
     raw = p.read_bytes()
     text = raw.decode("utf-8", errors="replace")
+    # the draft is checked as record will send it: its heading made export-safe, and record's judge below
+    draft = bool(info.get("draft")) and p.resolve() == Path(info["draft"]).resolve()
+    if draft and day and heading_ok(text, info, day):
+        text = export_text(text, info, day)
+        raw = text.encode("utf-8")
     say = (lambda m: print(m, file=sys.stderr)) if as_json else print
     v = {"file": p.name, "sha256": hashlib.sha256(raw).hexdigest(),
          "scope": common.scope_marker(info["scope"]) if info["confidential"] else info["scope"], "scan": None,
@@ -299,7 +651,12 @@ def cmd_check(info, path, judged=False, as_json=False):
         print(f"{PROG} check: scope {info['scope']} is {v['error']} {info['anchor-name']} — the scan would miss its names; an empty "
               f"file (comments only) says there are none", file=sys.stderr)
         return done(2)
-    hits = hits_in(info, text, own_name=judged)
+    try:
+        hits = hits_in(info, text, own_name=judged)
+    except WordsError as e:
+        v.update(scan="error", error="a re: line of the node's word list cannot hold anything")
+        print(f"{PROG} check: {e} — no scan, no pass", file=sys.stderr)
+        return done(2)
     for n, kind, t in hits:
         say(f"{p}:{n}: names {kind} {t}")
     if hits:
@@ -307,11 +664,12 @@ def cmd_check(info, path, judged=False, as_json=False):
         say(f"{v['hits']} line(s) of {p} name confidential scope {info['scope']} — none of it may go upstream")
         return done(1)
     v["scan"] = "clean"
-    words = sum(1 for kind, _, _ in terms(info) if kind == "word")
+    words = sum(1 for kind, _, _ in terms(info) if kind in ("word", "pattern"))
     say(f"clean: {p} names none of {info['scope']}'s {len(info['members'])} repo(s), its paths or its {words} word(s)")
     if not judged:
         return done(0)
-    verdict, d = judge(info, text)
+    # the draft is judged as record judges it (the gate's scope.upstream row); another file, as a brief
+    verdict, d = judge(info, text, SITE_UP, UP_CONTEXT, UP_ASK) if draft else judge(info, text)
     v.update(judge=verdict, **d)
     if verdict == "error":
         say(f"{PROG} check: the judge could not tell ({d['error']}) — no pass")
@@ -327,15 +685,32 @@ def count(path, rx):
         return 0
 
 
-def heading_ok(text, info, day):
+def heading_ok(text, info, day, safe=False):
+    """Does TEXT open with DAY's heading: a draft's form (SAFE False: with the scope, a line count or
+    neither), or exactly the export-safe one, `# Upstream — <day>` (SAFE: what record writes and proof
+    certifies — a legacy file's heading never certifies a new pass)."""
     first = next((l for l in text.splitlines() if l.strip()), "")
-    return first.startswith("# Upstream — ") and day in first
+    if safe:
+        return first.rstrip() == f"# Upstream — {day}"
+    m = UP_HEAD.match(first)
+    return bool(m) and m.group(1) == day
+
+
+def export_text(text, info, day):
+    """The draft with its heading made export-safe: `# Upstream — <day>` — no scope, no count (the
+    judged scan refuses the scope's own name, and the file's path already says which scope it is).
+    Only the heading line changes, so the session's lines are the bytes it wrote."""
+    lines = text.split("\n")
+    i = next((k for k, l in enumerate(lines) if l.strip()), 0)
+    if lines and UP_HEAD.match(lines[i]):
+        lines[i] = f"# Upstream — {day}"
+    return "\n".join(lines)
 
 
 def log_line(info, day, body):
     """The pass's log.md line, once a day; a clean record replaces the day's held line."""
     log = info["vault"] / "log.md"
-    key = f"- {day} dream --scope {info['scope']}:"
+    key = LOG_KEY.format(day=day, scope=info["scope"])
     have = log.read_text(encoding="utf-8") if log.is_file() else ""
     lines = have.splitlines()
     mine = [i for i, l in enumerate(lines) if l.startswith(key)]
@@ -365,25 +740,282 @@ def vault_commit(info, day, paths, what):
     return True
 
 
-def anchor_commit(info, day, rels):
+def branch_refs(top, day):
+    """The refs that may hold DAY's records branch: this host's local branch first, then any host's
+    on origin as last fetched, then any host's local one."""
+    out = [f"refs/heads/{records_branch(day)}"]
+    for pat in ("refs/remotes/origin/claude/*/%s-scope-pass", "refs/heads/claude/*/%s-scope-pass"):
+        r = git(top, "for-each-ref", "--format=%(refname)", pat % day)
+        out += [l for l in r.stdout.split() if l not in out]
+    return out
+
+
+def has_origin(top):
+    return git(top, "remote", "get-url", "origin").returncode == 0
+
+
+def main_refs(info):
+    """The anchor's main as this Mac knows it: origin's (as last fetched) where there is an origin —
+    the landing is GitHub's — else the local one."""
+    top, main = info["anchor"], info["main"]
+    return [f"refs/remotes/origin/{main}"] if has_origin(top) else [f"refs/heads/{main}"]
+
+
+def anchor_text(info, day, rel):
+    """REL's text in the anchor: the working tree, else the day's records branch, else main; None."""
     top = info["anchor"]
-    git(top, "add", "--", *rels)
-    if git(top, "diff", "--cached", "--quiet", "--", *rels).returncode == 0:
-        return True   # already committed: a second record, or the backstop after the session's
-    r = git(top, "commit", "-q", "-m", f"Dream: {info['scope']} {day} (scope-pass record)", "--", *rels)
+    p = top / rel
+    if p.is_file():
+        return p.read_text(encoding="utf-8", errors="replace")
+    return committed(info, day, rel)
+
+
+def committed(info, day, rel):
+    """REL's text as committed in the anchor (the day's records branch, else main, origin's and the
+    local one) — never the working tree, which holds what a record has not finished."""
+    top = info["anchor"]
+    for ref in branch_refs(top, day) + main_refs(info) + [f"refs/heads/{info['main']}"]:
+        r = git(top, "show", f"{ref}:{rel}")
+        if r.returncode == 0:
+            return r.stdout
+    return None
+
+
+def records_pr(info, day, verb):
+    """(state, where) of the records branch's pull request. VERB `open`: open one where none is (a
+    draft, then ready — a ready claude/* PR is what the anchor's automerge lands, as /finish's step 11
+    readies its own; kl-s5 D1-B). `find`: read only. state: ready | draft | held (a `hold` label stays) | none | unknown (no GitHub
+    origin, no token, GitHub unreachable); `where` its URL or why. `SCOPE_PASS_PR` names a command that
+    stands in for GitHub: `<cmd> open|find <anchor> <branch> <main>` prints `<state> <where>`."""
+    top, br, main = info["anchor"], info["records-branch"], info["main"]
+    cmd = os.environ.get("SCOPE_PASS_PR")
+    if cmd:
+        r = subprocess.run([*cmd.split(), verb, str(top), br, main], capture_output=True, text=True)
+        state, _, where = r.stdout.strip().partition(" ")
+        return (state if state in ("ready", "draft", "held", "none") else "unknown"), where or r.stderr.strip()[-200:]
+    slug = common.repo_slug(git(top, "remote", "get-url", "origin").stdout.strip())
+    if not slug:
+        return "unknown", "origin is not on GitHub, so no pull request lands it: merge it into main by hand"
+    tok = common.token()
+    if not tok:
+        return "unknown", "no GitHub token here (GH_TOKEN, git's credential store or `gh auth token`)"
+    pr = common.find_pr(slug, br, tok)
+    if not pr and verb == "open":
+        pr = common.open_pr(slug, br, main, f"Dream: {day} (scope-pass record)",
+                            f"The scope pass's dream and its receipt for {day}, from `{common.host_name()}`'s "
+                            f"`scope-pass record`: `dreams/` alone. It lands by this repository's own merge "
+                            f"policy (kl-s5 D1-B).", tok)
+        if not pr:
+            return "unknown", "GitHub refused the pull request (is the branch pushed?)"
+    if not pr:
+        return "none", f"no pull request open for {br}"
+    if verb == "open" and (pr.get("draft") or pr.get("_held") or getattr(common, "HOLD_NOTE", "\0") in (pr.get("body") or "")) \
+            and common.ready_pr(pr, tok):
+        pr["draft"] = False
+    # a `hold` label ready_pr did not take off (the owner's brake, or a failed removal) never lands: not ready
+    held = pr.get("_held") is True or (pr.get("_held") is not False
+                                        and any((l or {}).get("name") == "hold" for l in pr.get("labels") or []))
+    return ("draft" if pr.get("draft") else "held" if held else "ready"), pr.get("html_url") or f"#{pr.get('number')}"
+
+
+def anchor_commit(info, day, rels):
+    """Commit RELS (those present in the working tree) on the anchor's records branch with git's
+    plumbing — a private index, never a checkout — then push the branch and open its pull request
+    when the anchor has an origin. The branch starts from main (origin's, where there is one); a second
+    record adds to it, unless its dream already landed, when it starts again from main. True when the
+    paths are committed (and pushed, where there is an origin). The untracked working-tree copies are
+    removed once committed (the module docstring says why), so a later record reads them from the
+    branch (anchor_text); a copy the checkout tracks stays (S2 landing review, finding 11)."""
+    import tempfile
+    top, br = info["anchor"], records_branch(day)
+    here = [r for r in rels if (top / r).is_file()]
+    ref = f"refs/heads/{br}"
+    old = git(top, "rev-parse", "-q", "--verify", ref + "^{commit}").stdout.strip()
+    if has_origin(top):   # what origin's main holds now: a landing this Mac has not fetched is a landing
+        try:
+            subprocess.run(["git", "-C", str(top), "fetch", "-q", "origin", info["main"]], capture_output=True,
+                           text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
+    mains = main_refs(info) + [f"refs/heads/{info['main']}"]
+    main_tip = next((s for s in (git(top, "rev-parse", "-q", "--verify", m + "^{commit}").stdout.strip()
+                                 for m in mains) if s), "")
+    # landed: the branch's own dream files of the day are on main as the branch holds them, read by content
+    # (a rebase merge leaves no ancestry). A dream file of the day on main is not enough: a later record's
+    # commit not merged yet would be started again from main and force-pushed away (the third review)
+    landed = False
+    if main_tip and git(top, "cat-file", "-e", f"{main_tip}:dreams/{day}.md").returncode == 0:
+        if not old:
+            landed = True
+        else:
+            mine = [l.split("\t", 1) for l in git(top, "ls-tree", "-r", old, "--", "dreams/").stdout.splitlines()]
+            mine = [(m[0].split()[2], m[1]) for m in mine if len(m) == 2 and m[1].startswith(f"dreams/{day}")]
+            landed = all(git(top, "rev-parse", "-q", "--verify", f"{main_tip}:{path}").stdout.strip() == blob
+                         for blob, path in mine)
+    base = main_tip if (landed or not old) else old
+    made = False   # a new commit: after a landing, only that is worth a push (a tracked copy is no news)
+    if here:
+        with tempfile.TemporaryDirectory(prefix="scope-pass-") as tmp:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+
+            def g(*a):
+                return subprocess.run(["git", "-C", str(top), *a], capture_output=True, text=True, env=env)
+            steps = [g("read-tree", base) if base else g("read-tree", "--empty")]
+            for r in here:
+                h = g("hash-object", "-w", "--", r)
+                steps.append(h)
+                if h.returncode == 0:
+                    steps.append(g("update-index", "--add", "--cacheinfo", f"100644,{h.stdout.strip()},{r}"))
+            tree = g("write-tree")
+            steps.append(tree)
+            bad = next((x for x in steps if x.returncode != 0), None)
+            if bad:
+                print(f"{PROG} record: the records commit in {top} failed — {(bad.stderr or bad.stdout).strip()}", file=sys.stderr)
+                return False
+            tree = tree.stdout.strip()
+            if not base or git(top, "rev-parse", base + "^{tree}").stdout.strip() != tree:
+                c = g("commit-tree", tree, *(["-p", base] if base else []), "-m",
+                      f"Dream: {info['scope']} {day} (scope-pass record)")
+                u = c.returncode == 0 and g("update-ref", ref, c.stdout.strip(), *([old] if old else [])).returncode == 0
+                if not u:
+                    print(f"{PROG} record: the records commit in {top} failed — {(c.stderr or c.stdout).strip()}", file=sys.stderr)
+                    return False
+                made = True
+        for r in here:
+            if git(top, "ls-files", "--error-unmatch", "--", r).returncode != 0:   # untracked: ours to remove
+                (top / r).unlink()
+    if git(top, "rev-parse", "-q", "--verify", ref).returncode != 0:
+        return True   # nothing here and no branch: every path was committed by an earlier run on another host
+    if not has_origin(top):
+        return True   # no origin: the branch stays local (proof says so)
+    if landed and not made:
+        return True   # landed, nothing new: pushing the old tip would bring back the branch its merge deleted
+    # the branch is record's own (its host is in its name): a fresh start after a landing replaces what origin
+    # had, if anything — GitHub deletes a merged head, so a lease on the stale tracking ref would refuse
+    try:
+        r = subprocess.run(["git", "-C", str(top), "push", "-q", "origin", f"+{ref}:{ref}"],
+                           capture_output=True, text=True, timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        r = subprocess.CompletedProcess([], 1, "", "timed out after 120 s")
     if r.returncode != 0:
-        print(f"{PROG} record: the commit in {top} failed — {(r.stderr or r.stdout).strip()}", file=sys.stderr)
+        print(f"{PROG} record: the push of {br} from {top} failed — {(r.stderr or r.stdout).strip()[-300:]}; "
+              f"committed there, the next record pushes it", file=sys.stderr)
         return False
+    if not landed or made:
+        state, where = records_pr(info, day, "open")
+        if state != "ready":
+            print(f"{PROG} record: {br} is pushed, its pull request not ready ({state}: {where}) — the next "
+                  f"record opens it", file=sys.stderr)
+        else:
+            print(f"pull request {where} ready: the anchor's merge lands {br}")
     return True
 
 
-def cmd_record(info, why, day):
-    if why:
-        die(f"record: not ready — {why}")
-    dream, draft, inbox, top = info["dream"], info["draft"], info["inbox"], info["anchor"]
+def cycle_of(day):
+    """The cycle a pass belongs to: `--cycle`, else DAY's ISO week (`2026-W44`), the weekly loop's unit."""
+    return arg("--cycle") or dt.date.fromisoformat(day).strftime("%G-W%V")
+
+
+def judge_rev():
+    """The judge's revision: what it was asked, by what row — a change to any of it is a new revision."""
+    return hashlib.sha256(json.dumps([SITE_UP, UP_CONTEXT, UP_ASK, JUDGE_LABELS], sort_keys=True).encode()).hexdigest()[:12]
+
+
+def receipt(info, day, raw, word, v):
+    """The pass's receipt: no term of the scope; the sha256 of the bytes that leave (or would have), the
+    scope's label, the cycle, the records ref it is committed on and the judge's revision. proof, weekly-run
+    (through proof and `receipt`) and the barrier verify it; a missing or mismatched one is never complete."""
+    return {"receipt": word, "scope": label(info), "day": day, "cycle": cycle_of(day),
+            "records_ref": info["records-branch"], "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw), "scan": v.get("scan"), "judge": v.get("judge"),
+            "judge_rev": judge_rev() if v.get("judge") else None, "site": v.get("site"),
+            "provider": v.get("provider"), "model": v.get("model"), "cost_usd": v.get("cost_usd"),
+            "time": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+
+
+def read_receipt(text):
+    try:
+        rc = json.loads(text or "null")
+    except ValueError:
+        return None
+    return rc if isinstance(rc, dict) else None
+
+
+def current_complete(info, day, raw):
+    """The day's `complete` receipt (working tree, else committed) when it names exactly these bytes, under
+    this judge revision: a re-record of them needs no judge and no new receipt (finding 12). Else None."""
+    rc = read_receipt(anchor_text(info, day, f"dreams/{day}{RECEIPT}"))
+    if not rc or rc.get("receipt") != "complete" or rc.get("day") != day or rc.get("scope") != label(info):
+        return None
+    if rc.get("sha256") != hashlib.sha256(raw).hexdigest():
+        return None
+    if info["confidential"] and rc.get("judge_rev") != judge_rev():
+        return None
+    return rc
+
+
+def current_leak(info, day, raw):
+    """A `held` receipt of the day whose judge said `leak` of exactly these bytes, under this judge revision:
+    a retry after a failed commit or push holds them again unjudged, as a model's second roll might pass
+    what its first flagged (the landing's scoped review). Else None."""
+    for rel in (f"dreams/{day}{RECEIPT}", f"dreams/{day}{HELD_RECEIPT}"):
+        rc = read_receipt(anchor_text(info, day, rel))
+        if (rc and rc.get("receipt") == "held" and rc.get("judge") == "leak" and rc.get("day") == day
+                and rc.get("sha256") == hashlib.sha256(raw).hexdigest() and rc.get("judge_rev") == judge_rev()):
+            return rc
+    return None
+
+
+def write_receipt(info, day, rc):
+    """Write RC; return its path, relative to the anchor. A held or failed one never replaces a complete
+    one (the vault's file it certified stays certified): it goes beside it (finding 6)."""
+    rel = f"dreams/{day}{RECEIPT}"
+    if rc["receipt"] != "complete":
+        have = read_receipt(anchor_text(info, day, rel))
+        if have and have.get("receipt") == "complete":
+            rel = f"dreams/{day}{HELD_RECEIPT}"
+    (info["anchor"] / rel).write_text(json.dumps(rc, indent=1) + "\n", encoding="utf-8")
+    return rel
+
+
+def hold(info, day, text, why, lines, rrel):
+    """Hold the whole draft inside the anchor: the held file on the records branch, a `held` log line."""
+    top, draft, inbox = info["anchor"], info["draft"], info["inbox"]
     rel = f"inbox/upstream/{info['scope']}.md"
-    if not dream.is_file():
-        die(f"record: no dream at {dream} — the section writes it first")
+    held = top / "dreams" / f"{day}{HELD}.md"
+    held.write_text(f"# Held upstream lines — {day}\n\n{why}, so none of it left the node. Rewrite the lines in "
+                    f"dreams/{day}-upstream.md and run `scope-pass record {info['scope']}` again, or leave them here.\n\n"
+                    + "".join(f"- line {n}: {kind} {t}\n" for n, kind, t in lines) + "\n---\n\n" + text, encoding="utf-8")
+    if draft.is_file():
+        pass   # removed below, once the held file is committed: until then the next record retries from it
+    elif inbox.is_file():   # the hit sat in the vault's inbox file (a record before this check knew a term): put back main's
+        old = git(info["vault"], "show", f"HEAD:{rel}")
+        try:
+            leaked = old.returncode == 0 and leak_hits(info, old.stdout)
+        except WordsError:   # the list cannot judge main's copy: put it back (it is main's already), then say so
+            inbox.write_text(old.stdout, encoding="utf-8")   # reached only when main has it (leak_hits ran)
+            raise
+        if leaked:   # already committed, likely pushed: no hold can undo it
+            print(f"LEAKED {rel} on {info['vault-name']}'s main names confidential scope {info['scope']} — "
+                  f"its text is in {held}; take it out of the vault's history", file=sys.stderr)
+            return 4, held, True
+        inbox.write_text(old.stdout, encoding="utf-8") if old.returncode == 0 else inbox.unlink()
+    ok = anchor_commit(info, day, [f"dreams/{day}.md", f"dreams/{day}{HELD}.md", rrel])
+    if ok and draft.is_file():
+        draft.unlink()
+    return 3, held, ok
+
+
+def cmd_record(info, why, day):
+    if why:   # a word list that cannot judge is exit 2, as check says: a retry never passes it
+        we = info.get("words-error")   # named too when another reason stopped the scope first
+        more = f"; and {info['anchor-name']}'s {we}" if we and we not in why else ""
+        die(f"record: not ready — {why}{more}", 2 if we else 1)
+    draft, inbox, top = info["draft"], info["inbox"], info["anchor"]
+    rel = f"inbox/upstream/{info['scope']}.md"
+    dream = anchor_text(info, day, f"dreams/{day}.md")
+    if dream is None:
+        die(f"record: no dream at {info['dream']} — the section writes it first")
     if draft.is_file():
         text = draft.read_text(encoding="utf-8", errors="replace")
     elif inbox.is_file() and heading_ok(inbox.read_text(encoding="utf-8", errors="replace"), info, day):
@@ -391,46 +1023,166 @@ def cmd_record(info, why, day):
     else:
         die(f"record: no draft at {draft} — the section writes it every week, a quiet one included")
     if not heading_ok(text, info, day):
-        die(f"record: {draft} does not start with this pass's heading (`# Upstream — {info['scope']} — {day} …`)")
-    rels = [f"dreams/{day}.md"]
-    hits = hits_in(info, text)
-    if hits:
-        held = top / "dreams" / f"{day}{HELD}.md"
-        held.write_text(f"# Held upstream lines — {day}\n\n`scope-pass check` found {len(hits)} name(s) of this scope "
-                        f"in the draft, so none of it left the node. Rewrite the lines without them in "
-                        f"dreams/{day}-upstream.md and run `scope-pass record {info['scope']}` again, or leave them here.\n\n"
-                        + "".join(f"- line {n}: {kind} {t}\n" for n, kind, t in hits) + "\n---\n\n" + text, encoding="utf-8")
-        if draft.is_file():
-            draft.unlink()
-        else:   # the hit sat in the vault's inbox file (a record before this check knew a term): put back main's
-            old = git(info["vault"], "show", f"HEAD:{rel}")
-            if old.returncode == 0 and hits_in(info, old.stdout):   # already committed, likely pushed: no hold can undo it
-                print(f"LEAKED {rel} on {info['vault-name']}'s main names confidential scope {info['scope']} — "
-                      f"its text is in {held}; take it out of the vault's history", file=sys.stderr)
+        die(f"record: {draft} does not start with this pass's heading (`# Upstream — {day}`)")
+    text = export_text(text, info, day)
+    raw = text.encode("utf-8")
+    v = {"scan": "open" if not info["confidential"] else None}
+    rc = current_complete(info, day, raw)
+    if rc:   # these exact bytes were judged clean already: finish the commits, no second judge — the scan
+        # still runs, as it is free and the word list may have grown since (the S2 landing's third review)
+        print(f"{PROG} record: these bytes carry {day}'s complete receipt already — not judged again", file=sys.stderr)
+    if info["confidential"]:
+        if not info["words"]:   # resolve() says not ready first; kept so no road reaches the scan without them
+            die("record: confidential, and no .claude/words.txt in its anchor — the scan would miss its names", 2)
+        hits = hits_in(info, text, own_name=True)
+        if hits:
+            v["scan"] = "hits"
+            rrel = write_receipt(info, day, receipt(info, day, raw, "held", v))
+            n = len({k for k, _, _ in hits})
+            code, held, ok = hold(info, day, text, f"`scope-pass record` found {len(hits)} name(s) of this scope in the draft", hits, rrel)
+            if code == 4:
                 return 4
-            inbox.write_text(old.stdout, encoding="utf-8") if old.returncode == 0 else inbox.unlink()
-        ok = anchor_commit(info, day, rels + [f"dreams/{day}{HELD}.md"])
-        lines = len({n for n, _, _ in hits})
-        log_line(info, day, f"held — {lines} line(s) named the scope, nothing went upstream")
-        vault_commit(info, day, ["log.md"], "the log line")   # commits only what differs: a retry's line too
-        die(f"record: held — {lines} line(s) of the draft name confidential scope {info['scope']}; its text is in "
-            f"{held}{'' if ok else ' (uncommitted)'}, nothing went upstream")
-    if not anchor_commit(info, day, rels):
+            log_line(info, day, "held")
+            vault_commit(info, day, ["log.md"], "the log line")   # commits only what differs: a retry's line too
+            die(f"record: held — {n} line(s) of the draft name confidential scope {info['scope']}; its text is in "
+                f"{held}{'' if ok else ' (not yet committed or pushed: the next record retries)'}, nothing went upstream", 3)
+        v["scan"] = "clean"
+        if not rc:
+            lk = current_leak(info, day, raw)
+            if lk:   # judged leak already: held again, never re-rolled
+                print(f"{PROG} record: these bytes carry {day}'s held receipt (the judge's leak) — held again, not judged",
+                      file=sys.stderr)
+                verdict, d = "leak", {k: lk.get(k) for k in ("site", "provider", "model")}
+            else:
+                verdict, d = judge(info, text, SITE_UP, UP_CONTEXT, UP_ASK)
+            v.update(judge=verdict, **{k: d.get(k) for k in ("site", "provider", "model", "cost_usd")})
+            if verdict == "error":
+                rrel = write_receipt(info, day, receipt(info, day, raw, "failed", v))
+                anchor_commit(info, day, [f"dreams/{day}.md", rrel])   # the dream is the node's own
+                log_line(info, day, "held")
+                vault_commit(info, day, ["log.md"], "the log line")
+                die(f"record: not recorded — the judge could not tell ({d.get('error')}); the draft stays at {draft}, "
+                    f"nothing went upstream; run record again (exit 1: a retry, not a hold)", 1)
+            if verdict == "leak":
+                rrel = write_receipt(info, day, receipt(info, day, raw, "held", v))
+                code, held, ok = hold(info, day, text, "The judge (the gate's scope.upstream row) found something specific "
+                                      "to this scope that its word list misses", [], rrel)
+                if code == 4:
+                    return 4
+                log_line(info, day, "held")
+                vault_commit(info, day, ["log.md"], "the log line")
+                die(f"record: held — the judge found something of confidential scope {info['scope']} in the draft; its "
+                    f"text is in {held}{'' if ok else ' (not yet committed or pushed: the next record retries)'}, nothing went upstream", 3)
+    if not rc:
+        rc = receipt(info, day, raw, "complete", v)
+        write_receipt(info, day, rc)
+    if not anchor_commit(info, day, [f"dreams/{day}.md", f"dreams/{day}{RECEIPT}"]):
         return 1
     inbox.parent.mkdir(parents=True, exist_ok=True)
-    inbox.write_text(text, encoding="utf-8")
+    inbox.write_bytes(raw)
+    if hashlib.sha256(inbox.read_bytes()).hexdigest() != rc["sha256"]:   # the exact bytes judged, or nothing
+        inbox.unlink()
+        die(f"record: {inbox} read back differs from the bytes judged — removed, nothing went upstream")
     if draft.is_file():
         draft.unlink()
-    p, u = count(dream, r"^P\d+\."), count(inbox, r"^U\d+\.")
-    log_line(info, day, f"{p} P-items in the scope's dream, {u} upstream line(s)")
+    u = count(inbox, r"^U\d+\.")
+    log_line(info, day, "complete")   # a word, never a count: the log is pushed to the vault's main
     if not vault_commit(info, day, [rel, "log.md"], "the inbox file"):
         return 1
-    print(f"recorded: {top.name}'s dreams/{day}.md on its {info['main']}; {u} upstream line(s) in "
+    print(f"recorded: {top.name}'s dreams/{day}.md on {info['records-branch']}; {u} upstream line(s) in "
           f"{info['vault-name']}'s {rel}")
+    print(f"receipt {rc['receipt']} sha256 {rc['sha256']} scan {rc['scan']} judge {rc['judge'] or 'none'}")
     return 0
 
 
+def dream_where(info, day):
+    """Where DAY's dream is committed in the anchor: ("main", ref) once on the anchor's main (origin's,
+    fetched first, where there is an origin) with the records branch's newest receipt — a second
+    record of the day after a landing waits for its own —, ("pushed", ref) on a records branch origin
+    holds, ("local", ref) on one it does not; else (None, None)."""
+    top, rel, rrel = info["anchor"], f"dreams/{day}.md", f"dreams/{day}{RECEIPT}"
+
+    def blob(ref, path):
+        return git(top, "rev-parse", "-q", "--verify", f"{ref}:{path}").stdout.strip()
+    if has_origin(top):
+        try:
+            subprocess.run(["git", "-C", str(top), "fetch", "-q", "origin", info["main"]],
+                           capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            pass   # what was last fetched is all proof can read: a landing not seen yet reads WAITING
+    tip = next((b for b in (blob(r, rrel) for r in branch_refs(top, day)) if b), "")
+    for ref in main_refs(info):
+        if blob(ref, rel) and (not tip or blob(ref, rrel) == tip):
+            return "main", ref
+    for ref in branch_refs(top, day):
+        if git(top, "cat-file", "-e", f"{ref}:{rel}").returncode == 0:
+            if ref.startswith("refs/remotes/"):
+                return "pushed", ref
+            name = ref[len("refs/heads/"):]
+            on_origin = has_origin(top) and git(top, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{name}").stdout.strip() == \
+                git(top, "rev-parse", ref).stdout.strip()
+            return ("pushed" if on_origin else "local"), ref
+    return None, None
+
+
+def complete_shas(info, day):
+    """{sha256: judge_rev} of every `complete` receipt of DAY and this scope's label the anchor ever
+    committed — each ref's history of the receipt read, not only its tip."""
+    top, rel = info["anchor"], f"dreams/{day}{RECEIPT}"
+    out = {}
+    for ref in branch_refs(top, day) + main_refs(info) + [f"refs/heads/{info['main']}"]:
+        for c in git(top, "log", "--format=%H", ref, "--", rel).stdout.split():
+            rc = read_receipt(git(top, "show", f"{c}:{rel}").stdout)
+            if rc and rc.get("receipt") == "complete" and rc.get("day") == day and rc.get("scope") == label(info):
+                out.setdefault(rc.get("sha256"), rc.get("judge_rev"))
+    return out
+
+
+def verify(info, day):
+    """(receipt or None, the vault's inbox bytes or None, why it does not certify or None). It certifies
+    only a `complete` receipt for this day, scope label and judge revision whose sha256 is the sha256 of
+    the inbox file on the vault's main, under the export-safe heading."""
+    rel = f"inbox/upstream/{info['scope']}.md"
+    rc = read_receipt(committed(info, day, f"dreams/{day}{RECEIPT}"))
+    raw = subprocess.run(["git", "-C", str(info["vault"]), "cat-file", "blob", f"main:{rel}"], capture_output=True)
+    data = raw.stdout if raw.returncode == 0 else None
+    if not rc:
+        return None, data, "no receipt committed"
+    if rc.get("receipt") != "complete":
+        return rc, data, f"the receipt says {rc.get('receipt')}"
+    if rc.get("day") != day or rc.get("scope") != label(info):
+        return rc, data, "the receipt is another day's or scope's"
+    if info["confidential"] and rc.get("judge_rev") != judge_rev():
+        return rc, data, "the receipt's judge is another revision"
+    if data is None:
+        return rc, data, f"no {rel} on the vault's main"
+    if not heading_ok(data.decode("utf-8", "replace"), info, day, safe=True):
+        return rc, data, "the vault's file has no export-safe heading"
+    if hashlib.sha256(data).hexdigest() != rc.get("sha256"):
+        return rc, data, "its sha256 differs from the receipt"
+    return rc, data, None
+
+
+def cmd_receipt(info, day):
+    """The day's receipt, verified, as one JSON object: exit 0 certified, 3 held, 1 otherwise (a failed
+    judge is no hold: record retries it)."""
+    rc, _, why = verify(info, day)
+    print(json.dumps({"receipt": (rc or {}).get("receipt"), "verified": why is None, "why": why,
+                      **{k: (rc or {}).get(k) for k in ("cycle", "records_ref", "sha256", "judge", "judge_rev")}}))
+    return 0 if why is None else 3 if (rc or {}).get("receipt") == "held" else 1
+
+
 def cmd_proof(info, day):
+    """proof's verdict. On a word list that cannot judge, only a verdict the receipts decide stands
+    (LAUNCHED, WAITING, LEAKED); anything else is the list's exit 2 (a MISSING here, and a HELD
+    too: no session would land it either), so weekly-run starts no session that would end on the same list (record refuses it)."""
+    rc = proof_verdict(info, day)
+    if rc == 1 and info.get("proof-words"):
+        raise WordsError(info["proof-words"])
+    return rc
+
+
+def proof_verdict(info, day):
     top, rel = info["anchor"], f"inbox/upstream/{info['scope']}.md"
     if not top or not info["vault"]:
         print(f"MISSING the anchor or the vault for {info['scope']}")
@@ -438,26 +1190,79 @@ def cmd_proof(info, day):
     # The vault's main first: a leak there is the one state that needs the owner at once, whatever the
     # log or the anchor says.
     r = git(info["vault"], "show", f"main:{rel}")
-    if r.returncode == 0 and hits_in(info, r.stdout):
+    try:
+        leaked = r.returncode == 0 and leak_hits(info, r.stdout)
+        if not leaked and info.get("words-error"):   # no vault file to trip it: the list is still broken
+            raise WordsError(info["words-error"])
+    except WordsError as e:
+        # the list cannot judge the names; the receipts still judge the bytes, as below
+        info["proof-words"] = str(e)
+        _, data, why = verify(info, day)
+        if why is None:
+            leaked = False   # these bytes carry the day's complete receipt: judged clean when recorded
+        elif (info["confidential"] and data is not None
+                and heading_ok(data.decode("utf-8", "replace"), info, day, safe=True)
+                and hashlib.sha256(data).hexdigest() not in complete_shas(info, day)):
+            print(f"LEAKED {rel} on {info['vault-name']}'s main is not the text judged ({why}) — look now")
+            return 4
+        else:
+            raise
+    if leaked:
         print(f"LEAKED {rel} on {info['vault-name']}'s main names confidential scope {info['scope']} (scope-pass check)")
         return 4
-    if git(top, "cat-file", "-e", f"{info['main']}:dreams/{day}.md").returncode != 0:
-        print(f"MISSING dreams/{day}.md on {top.name}'s {info['main']}")
+    rc, data, why = verify(info, day)
+    landed = data is not None and heading_ok(data.decode("utf-8", "replace"), info, day, safe=True)
+    if landed and why:
+        # LEAKED only for bytes no complete receipt of the day ever named (finding 6): a later held or
+        # failed run, or a judge's new revision, is no leak of what was judged clean
+        shas = complete_shas(info, day)
+        if info["confidential"] and hashlib.sha256(data).hexdigest() not in shas:
+            print(f"LEAKED {rel} on {info['vault-name']}'s main is not the text judged ({why}) — look now")
+            return 4
+        print(f"MISSING a current receipt that certifies {rel} of {day} ({why})")
         return 1
-    landed = r.returncode == 0 and heading_ok(r.stdout, info, day)
-    log = git(info["vault"], "show", "main:log.md").stdout
-    if not landed and any(l.startswith(f"- {day} dream --scope {info['scope']}: held") for l in log.splitlines()):
-        print(f"HELD the draft of {info['scope']} {day}: it named the scope; its text is in {top.name}'s dreams/{day}{HELD}.md")
+    where, ref = dream_where(info, day)
+    if not where:
+        print(f"MISSING dreams/{day}.md on {top.name}'s records branch {info['records-branch']} or its {info['main']}")
+        return 1
+    # the day's newest record decides, the one beside a complete receipt included
+    last = max([r for r in (rc, read_receipt(committed(info, day, f"dreams/{day}{HELD_RECEIPT}"))) if r],
+               key=lambda r: str(r.get("time") or ""), default={})
+    if not landed and last.get("receipt") == "held":
+        print(f"HELD the draft of {info['scope']} {day}: nothing went upstream; its text is in {top.name}'s "
+              f"dreams/{day}{HELD}.md")
         return 3
-    if not landed:
-        print(f"MISSING {rel} of {day} on {info['vault-name']}'s main")
+    if not landed and last.get("receipt") == "failed":
+        print(f"MISSING {rel} of {day}: the judge could not tell, the draft waits in {top.name} — record retries it")
         return 1
-    print(f"LAUNCHED dreams/{day}.md on {top.name}'s {info['main']}, {rel} on {info['vault-name']}'s main")
-    return 0
+    if not landed:
+        print(f"MISSING {rel} of {day} on {info['vault-name']}'s main, under the export-safe heading")
+        return 1
+    tail = f"{rel} on {info['vault-name']}'s main; receipt complete, cycle {rc['cycle']}, sha256 {rc['sha256'][:12]}"
+    short = ref.replace("refs/heads/", "").replace("refs/remotes/", "")
+    if where == "main":
+        print(f"LAUNCHED dreams/{day}.md on {top.name}'s {short}; {tail}")
+        return 0
+    if where == "local":
+        if not has_origin(top):
+            print(f"MISSING dreams/{day}.md on {top.name}'s {info['main']}: {short} has no origin, so nothing lands "
+                  f"it — merge it into {info['main']} by hand")
+            return 1
+        print(f"MISSING dreams/{day}.md on origin: {short} is committed in {top.name}, not pushed")
+        return 1
+    # WAITING only where something will land it: a ready pull request. No token, no GitHub origin, GitHub
+    # unreachable: MISSING, so the night says so rather than reading as done (the fix round's review)
+    state, url = records_pr(info, day, "find")
+    if state != "ready":
+        print(f"MISSING a ready pull request for {short} ({state}: {url}) — scope-pass record opens and readies it")
+        return 1
+    print(f"WAITING dreams/{day}.md on {top.name}'s {short}, pushed; its pull request is ready, {url}: the "
+          f"anchor's merge lands it; {tail}")
+    return 5
 
 
 def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ("where", "check", "record", "proof"):
+    if len(sys.argv) < 3 or sys.argv[1] not in ("where", "check", "record", "proof", "receipt"):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
     cmd, scope = sys.argv[1], sys.argv[2]
@@ -465,13 +1270,22 @@ def main():
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         die(f"--day {day}: not yyyy-mm-dd", 2)
     info, why = resolve(scope, day)
+    try:
+        return run(cmd, info, why, day)
+    except WordsError as e:   # record and proof: a word list that cannot be read holds, never passes
+        die(f"{cmd}: {e}", 2)
+
+
+def run(cmd, info, why, day):
     if cmd == "where":
         return cmd_where(info, why)
     if cmd == "check":
         rest = [a for a in sys.argv[3:] if not a.startswith("--") and a != arg("--day")]
-        return cmd_check(info, rest[0] if rest else None, "--judge" in sys.argv, "--json" in sys.argv)
+        return cmd_check(info, rest[0] if rest else None, "--judge" in sys.argv, "--json" in sys.argv, day)
     if cmd == "record":
         return cmd_record(info, why, day)
+    if cmd == "receipt":
+        return cmd_receipt(info, day)
     return cmd_proof(info, day)
 
 

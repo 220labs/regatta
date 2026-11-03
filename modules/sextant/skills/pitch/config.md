@@ -110,9 +110,10 @@ slide). Neither is part of any check.
 | `must_appear` | `{}` | `"<document stem>": [phrases]` that the document and every render but a deck with its own list (the admiral's, the commodore's) carry, matched on normalised text (tags, backticks and case dropped). The figures that were wrong once and had to be corrected in two places | `{"spring-plan-2026-03-01": ["$18K", "12 weeks"]}` |
 | `admiral_must_appear` | `{}` | the same for the admiral render: the few claims that must survive simplification | `{"spring-plan-2026-03-01": ["$18K"]}` |
 | `commodore_must_appear` | `{}` | the same for the commodore render, which `must_appear` no longer binds: the sent deck's own list, usually between the admiral's and the page's | `{"spring-plan-2026-03-01": ["$18K", "12 weeks"]}` |
-| `retired` | `[]` | `[[phrase, why]]`: corrected claims that must not come back in any file under the root. When a decision retires a claim, retire its pinned phrase in the same change | `[["opens every evening", "it opens three evenings a week"]]` |
-| `retired_scan` | `["**/*.md", "**/*.html"]` | globs, relative to the root, that the retired check reads | as default |
+| `retired` | `[]` | `[[phrase, why]]`: corrected claims that must not come back in any file the scan reads. When a decision retires a claim, retire its pinned phrase in the same change. Empty, it is a `claims.retired` finding only where `require_retired` is `true` | `[["opens every evening", "it opens three evenings a week"]]` |
+| `retired_scan` | `["**/*.md", "**/*.html"]` | globs, relative to the root, that the retired check reads; one may climb out of it (`../notes/*.md`); `pitch check <document>` reads what it finds there, and any file under the root whose top-level name is no document's stem followed by `-`, `.` or `_`, as the root's check does. A scan that reads no file while `retired` holds claims is a `claims.retired` finding | as default |
 | `require_pins` | `true` | a render whose document has no entry is a finding, rather than a render nothing compares | `true` |
+| `require_retired` | `false` | opt-in: `true` makes an empty `retired` a finding, a guard that keeps nothing out; it turns on nothing else. This and `require_pins` take `true` or `false` only: anything else exits 2 | `true` |
 
 ## 9. `builder`
 

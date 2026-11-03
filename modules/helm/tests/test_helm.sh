@@ -77,9 +77,10 @@ export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" P
 unset DISPATCH_PLAN DISPATCH_MANAGER DISPATCH_PLAN_SPACE CLAUDE_UNATTENDED REGATTA_UNATTENDED DISPATCH_REPO DISPATCH_MANAGER_HOST DISPATCH_DEPTH \
       DISPATCH_SHIP DISPATCH_SKIPPER DISPATCH_SKIPPER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_TASK DISPATCH_MODE DISPATCH_BRIEF \
       SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT \
-      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
-      HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST \
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS AUTOFINISH_CALLER_UNATTENDED HELM_LISTEN_PARENT HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
+      HELM_SEND_LAY_TIMEOUT HELM_PICKUP HARNESS_SSH HARNESS_HOST SRT_SSH_PROXY_COMMAND GIT_SSH_COMMAND \
       DEADMAN_CONFIG DEADMAN_URL DEADMAN_PING_SECRET DEADMAN_HOST   # the lease's inputs (S4); S7's (a dispatched run sets the first); deadman's (S11)
+# SRT_SSH_PROXY_COMMAND and GIT_SSH_COMMAND: a sandboxed caller's, which would send every ssh case by git's ssh (node-road)
 # and every other DISPATCH_* a dispatched run carries: a list by name fell behind dispatch's
 # DISPATCH_TASK, _MODE and _BRIEF, and "no run variable either" failed only in a dispatched run (2026-10-23)
 unset $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p')
@@ -815,9 +816,9 @@ PY
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['columns'][0]['name'], len(d['columns']))")" "Needs Sam 7" "seven columns (Intake last, lighthouse-ops S4), Needs Sam first"
   check "$(echo "$ov" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(c['title'] for col in d['columns'] if col['name']=='Blocked' for c in col['cards']))")" "['Sam reviews']" "a human task whose dependency is not done is Blocked"
   "$HM" task mgr-1 sign --kind human $BY alex --title "Alex signs" > /dev/null
-  mkdir -p "$T/projects-root/garden"; printf -- '- swap the porch bulb @sam\n- a session item\n' > "$T/projects-root/garden/TODO.md"
+  mkdir -p "$T/projects-root/garden"; printf -- '- [porch-bulb] swap the porch bulb @sam\n- [session-item] a session item\n' > "$T/projects-root/garden/TODO.md"
   ov=$("$HM" $BOARD --json)
-  check "$(echo "$ov" | python3 -c "import json,sys; d={c['name']:[x['title'] for x in c['cards']] for c in json.load(sys.stdin)['columns']}; print(d['Needs Alex'], d['Needs Sam'])")" "['Alex signs'] ['swap the porch bulb']" "human tasks and @-tagged TODO lines are cards in their owner's column"
+  check "$(echo "$ov" | python3 -c "import json,sys; d={c['name']:[x['title'] for x in c['cards']] for c in json.load(sys.stdin)['columns']}; print(d['Needs Alex'], d['Needs Sam'])")" "['Alex signs'] ['swap the porch bulb']" "human tasks and @-tagged TODO lines are cards in their owner's column, the item's id off the card"
   check "$(echo "$ov" | python3 -c "import json,sys; d={c['name']:[x['title'] for x in c['cards']] for c in json.load(sys.stdin)['columns']}; print('guarded — open it' in d['Running'])")" "True" "a guarded task keeps its column and nothing else"
   check "$(echo "$ov" | python3 -c "import json,sys; r=json.load(sys.stdin)['timeline'][0]; print(r['plan'], len(r['bars']) > 3, r['milestones'][0]['name'])")" "demo True alpha" "the timeline: a row per plan, bars and milestones (B7)"
   hasnt "$ov" "IBAN" "the board never carries a guarded row's text"
@@ -827,7 +828,7 @@ PY
   printf 'import json, sys\nd = json.load(sys.stdin)\nprint(json.dumps([[c["title"], c.get("repo"), c.get("ref"), c.get("evidence")] for col in d["columns"] if col["name"] == "Needs Sam" for c in col["cards"] if c["kind"] == "lookout"]))\n' > "$T/lc.py"
   lc() { python3 "$T/lc.py"; }
   check "$(PLAN_KEEL="$T/keelstub" "$HM" $BOARD --json | lc)" \
-    '[["docs/d.md D1", "demo", "claude/buildbox/2026-10-21-x", "no live session for demo@claude/buildbox/2026-10-21-x:docs/d.md D1 \u2014 the run would start here"], ["guarded \u2014 open it", "transcripts", null, null]]' \
+    '[["docs/d.md D1", "demo", "claude/buildbox/2026-10-21-x", "no live session for demo@claude/buildbox/2026-10-21-x:docs/d.md D1 \u2014 the run would start here"], ["guarded \u2014 open it", "guarded", null, null]]' \
     "the lookout's open cards: doc, branch and why in the owner's column; a guarded repo's card keeps its column and nothing else"
   check "$("$HM" $BOARD --json | lc)" "[]" "no lookout cards without keel's status (PLAN_NO_MEMO): none, the board renders"
   printf '#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n' > "$T/keelold"
@@ -1070,7 +1071,7 @@ PY
   say sid-taxes "IBAN 5555 is the account."
   # S3 on "buildbox": its own HOME, read through the stubbed ssh; `started` a digit string, as dispatch wrote before B2
   IS="$T/buildbox"; mkdir -p "$IS/Library/Logs/claude-weekly/run-seed-runs"
-  printf '{"mode":"rc","repo":"%s","topic":"lifetime-step","branch":"claude/t/2026-10-14-lifetime-step","session":"sid-life","started":"%s","ended":"%s","end_reason":"max lifetime 8.0 h"}' \
+  printf '{"mode":"rc","repo":"%s","topic":"lifetime-step","branch":"claude/t/2026-10-14-lifetime-step","session":"sid-life","started":"%s","ended":"%s","end_reason":"max lifetime 8.0 h","cut":{"checks":[{"pid":4242,"out":"/tmp/ck5"}],"limit":"You have hit a limit"}}' \
     "$D" "$((now-40000))" "$((now-10000))" > "$IS/Library/Logs/claude-weekly/run-seed-runs/x.json"
   printf '#!/bin/sh\nfor a; do last=$a; done\nHOME="%s" exec sh -c "$last"\n' "$IS" > "$T/ssh-ok"
   printf '#!/bin/sh\necho "ssh: connect to host buildbox port 22: Operation timed out" >&2; exit 255\n' > "$T/ssh-down"
@@ -1084,6 +1085,7 @@ PY
   { echo "2026-10-13T00:00:00-07:00 stopped claude/t/2026-10-14-net-launch G1 ⚠ an earlier stop"
     echo "2026-10-14T01:00:00-07:00 stopped claude/t/2026-10-14-net-launch no-landing API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)"
     echo "2026-10-14T01:10:00-07:00 stopped claude/t/2026-10-14-gate-launch G4 ⚠ step 4: I stopped before launching."
+    echo "2026-10-14T01:15:00-07:00 stopped claude/t/2026-10-14-gate-launch G1r ⚠ step 1 — the review found a defect"
     echo "2026-10-14T01:20:00-07:00 stopped claude/t/2026-10-14-quote-launch no-landing $WAIT — API Error: retry it by hand"
     echo "2026-10-14T01:30:00-07:00 stopped claude/t/2026-10-14-gone-launch no-landing API Error: Your computer went to sleep mid-response."
     echo "2026-10-14T01:40:00-07:00 stopped claude/t/2026-10-14-moved-launch no-landing API Error: Your computer went to sleep mid-response."
@@ -1108,11 +1110,13 @@ PY
   has "$(got "print([x['title'] for x in d['stalls'] if x['topic']=='gone-step'][0])")" "gone-step · S1 gone 2h" "  its title says how long"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S2'][0]; print(s['action'], any(e.startswith('runs busy now: ') for e in s['evidence']))")" "start True" \
     "  S2: start, with dispatch-rc live --no-reap's count"
+  check "$(got "s=[x for x in d['stalls'] if x['class']=='S3'][0]; print([e for e in s['evidence'] if e.startswith('cut ')])")" \
+    "['cut its check pid 4242, out /tmp/ck5', 'cut at a usage limit: You have hit a limit']" "  S3: what the cap cut, from the record's cut (yard-followups)"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S3'][0]; print(s['host'], s['action'], s['column'], s['since'] > 0)")" "buildbox raise Needs Sam True" \
     "  S3: read on buildbox through ssh, its digit-string start typed, raised"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S4'][0]; print(s['action'], s['key'][1], s['key'][2] == '$tip', s['worktree'].endswith('/net'))")" \
     "relaunch claude/t/2026-10-14-net-launch True True" "  S4: relaunch, keyed (host, branch, tip), the last stop of its branch counts"
-  check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S5'))")" "['S4 stop, but the tip moved since (1111111 → ${tip:0:7})', 'WAITING line', 'gate G4']" "  S5: a gate; a WAITING line that quotes an API error is no S4 (R4); nor a network stop on a tip that moved"
+  check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S5'))")" "['S4 stop, but the tip moved since (1111111 → ${tip:0:7})', 'WAITING line', 'gate G1r']" "  S5: a gate (the review's G1r too, its branch's last stop); a WAITING line that quotes an API error is no S4 (R4); nor a network stop on a tip that moved"
   check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S6'))")" "['closing line: RELAYED, its skipper gone', 'closing line: WAITING', 'live: waiting']" \
     "  S6: a parked WAITING line, a permission prompt, an orphaned relay"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S7'][0]; print(s['key'], s['raise_to'], s['column'])")" "['testhost', 's7', 'b'] owner Needs Sam" \
@@ -1288,6 +1292,37 @@ PY
     "B3: autofinish-run's S4_RE is stalls.py's NET_RE, character for character"
   check "$(grep 'LOGIN_RE = re.compile' "$B/stalls.py")" "$(grep 'LOGIN_RE = re.compile' "$(src autofinish-run)")" \
     "  and its LOGIN_RE is stalls.py's"
+  cat > "$T/net_re.py" <<'PY'
+import re, sys
+src = next(l for l in open(sys.argv[1]) if l.startswith("NET_RE = re.compile"))
+NET_RE = eval(src.split("=", 1)[1], {"re": re})
+print([bool(NET_RE.match(t)) for t in sys.argv[2:]])
+PY
+  check "$(python3 "$T/net_re.py" "$B/stalls.py" "You've hit your 5-hour limit · resets 9:20pm (America/Los_Angeles)" \
+    "You’ve hit your weekly limit · resets Fri" "⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — You've hit your 5-hour limit" "You've hit your Opus limit · resets Fri" "You've hit your limit · resets Fri")" \
+    "[True, True, False, False, False]" "  NET_RE: a login's usage limit is S4 (queue-followthrough); quoted in a WAITING line it is not (R4), nor a per-model one or the bare extra-usage form no pick judges"
+  cat > "$T/no_account.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+sys.path.insert(0, sys.argv[2])
+m = SourceFileLoader("stalls_tick", sys.argv[1]).load_module()
+m.run_tool = lambda argv, env, timeout: (3, "", "autofinish-run: not starting b — no account may run this now — acct-a: 5h 99%")
+m.relaunch_cmd = lambda s: (["/x/autofinish-run", "/w", "--by", "chain"], {})
+line = m.act({"key": ["h", "b", "t"]}, {"what": "relaunch", "attempt": 1}, 1000)
+key = ["h", "b", "t"]
+lines = [dict(line, key=key, t=1000 + i, retry_t=1000 + i) for i in range(7)]
+lines.append({"action": "refused", "tool": "autofinish-run", "key": key, "t": 2000, "retry_t": 2000, "why": "other"})
+peer = "autofinish-run: refused on buildbox: no account may run this now — acct-a: 5h 99%"
+m.run_tool = lambda argv, env, timeout: (5, "stays on this Mac — no account may run this now", peer)
+pl = m.act({"key": key}, {"what": "relaunch", "attempt": 1}, 1000)
+m.run_tool = lambda argv, env, timeout: (3, "earlier: no account may run this now", "autofinish-run: not starting b — its dispatch run could not be ended first")
+ol = m.act({"key": key}, {"what": "relaunch", "attempt": 1}, 1000)
+print(line["action"], line.get("no_account"), len(m.Memory(lines).refusals(key)), pl.get("no_account"), ol.get("no_account"))
+PY
+  check "$(python3 "$T/no_account.py" "$B/stalls_tick.py" "$B" 2>&1 | tail -1)" "refused True 1 None None" \
+    "  the tick: a relaunch this Mac's pick refused is marked, neither counted toward REFUSALS nor dating the backoff; a peer's relayed no-account, or another refusal that only quotes the words, counts"
+  check "$(grep -qF 'print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)' "$(src autofinish-run)" && grep -qF 'why = "no account may run this now — %s" % e' "$(src autofinish-run)" && echo both)" "both" \
+    "  and NO_ACCOUNT_RE reads autofinish-run's own words: refuse()'s line and start_here's no-account reason"
 
   echo "B3: the tick's actions — the switch, the dry hours, the gates, two retries with their backoff, the classifier"
   # Stubs: dispatch and autofinish-run record their argv and the chain's env; bin/account answers
@@ -1509,6 +1544,33 @@ PY
 )" \
     "True ['--model', 'sonnet', '--effort', 'high', '--yolo', '--account', 'bound', '--on', 'buildbox', '--at', '@1120', '--fallback', 'here'] 2" \
     "an buildbox run retries on buildbox (--at @now+120, --fallback here), its mode and bound pin kept"
+  check "$(python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import stalls_tick as k
+arm = {"name": "sonnet-high", "model": "claude-sonnet-5-5", "effort": "high", "coin": 1, "until": "2026-11-30", "forced": False}
+s = {"host": "buildbox", "branch": "claude/x", "repo": "demo", "depth": 3, "class": "S1", "run": "x.json",
+     "dispatch": {"repo": "/elsewhere", "model": "claude-sonnet-5-5", "effort": "high", "arm": arm}}
+argv, env = k.dispatch_cmd(s, "redispatch", 1, 1000)
+print("--model" in argv, "--effort" in argv, env.get("DISPATCH_ARM"))
+s["dispatch"]["model"] = "claude-opus-5-5"   # a pair other than the arm pair: typed, as before
+argv, env = k.dispatch_cmd(s, "redispatch", 1, 1000)
+print(argv[argv.index("--model") + 1], env.get("DISPATCH_ARM"))
+PY
+)" "False False sonnet-high:1:2026-11-30:0
+claude-opus-5-5 None" "a stalled builder-rotation run retries on its drawn arm (DISPATCH_ARM), not a typed pair that records it pinned"
+  check "$(DISPATCH_ARM=sonnet-high:1:2026-11-30:1 DISPATCH_COIN=1 python3 - "$B" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import stalls_tick as k
+s = {"host": "buildbox", "branch": "claude/x", "repo": "demo", "depth": 3, "class": "S1", "run": "x.json",
+     "dispatch": {"repo": "/elsewhere", "model": "claude-opus-5-5", "effort": "high"}}
+for what in ("redispatch", "start"):
+    argv, env = k.dispatch_cmd(s, what, 1, 1000)
+    print(env.get("DISPATCH_ARM"), env.get("DISPATCH_COIN"))
+PY
+)" "None None
+None None" "the tick's own DISPATCH_ARM and DISPATCH_COIN never reach a re-dispatch or an S2 start (STRIP_ENV)"
   L="$T/launches"; git init -q -b main "$L"; git -C "$L" commit -q --allow-empty -m x
   for b in ns nl died ol nw; do git -C "$L" branch "claude/t/2026-10-14-$b"; done; mkdir -p "$L/.git/claude"
   # ol and nw stopped, then merged: the old word and rename S4's (M7) both end the stall
@@ -1538,6 +1600,26 @@ runs = {"runs": [{"repo": "demo", "topic": "s", "brief_blob": "next-blob", "star
 print([len(k.follow_up(k.Memory([retry(w)]), runs, 2000, False, "dry")) for w in ("start", "redispatch")])
 PY
 )" "[1, 0]" "a follow-up: an S2 start's run is the next step's brief (any blob); a re-dispatch's must be its own"
+  # S6's fourth landing review: a FAILED "refused for good" (dispatch's spawn gate) spends the retry, so the cap
+  # stops it; any other FAILED at fire time voids it, as before
+  cat > "$T/forgood.py" <<'PY'
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import stalls_tick as k
+out = []
+for text in ("FAILED: refused for good, a run out of a confidential scope with no review that vouches for its brief — x; not running (confidential-reach S6)\n",
+             "FAILED: screen did not start\n"):
+    fd, log = tempfile.mkstemp(); os.write(fd, text.encode()); os.close(fd)
+    r = {"action": "retry", "what": "redispatch", "t": 1000, "repo": "demo", "topic": "s", "key_kind": "step",
+         "key": ["h", "demo", "s", "b"], "log": log, "log_offset": 0}
+    line = k.follow_up(k.Memory([r]), {"runs": []}, 2000, False, "dry")[0]
+    m = k.Memory([r, line])
+    out.append("%s %d %d" % (line["action"], len(m.retries(r["key"])), len(m.pending())))
+    os.unlink(log)
+print(" | ".join(out))
+PY
+  check "$(python3 "$T/forgood.py" "$B")" "spent 1 0 | refused 0 0" \
+    "a fire-time FAILED 'refused for good' spends its retry (counted, followed); any other voids it, as before"
   unset STALLS_LOG STALLS_STATE_DIR STALLS_DISPATCH STALLS_AUTOFINISH_RUN AUTOFINISH_ACCOUNT AUTOFINISH_STATE_DIR GATE_PLAN_STALL_PROVIDER CLAUDE_BIN GATE_LOG DISPATCH_MAX_RUNS
   rm_own "$R" "$T/sess/work.json" "$T/sess/wait.json"
 
@@ -2177,7 +2259,7 @@ $SID
 --remote-control
 skipper · dock
 -n
-skipper-dock
+steer-dock
 --permission-mode
 auto
 --model
@@ -2185,7 +2267,7 @@ claude-opus-5-5
 --effort
 high
 --disallowedTools
-AskUserQuestion" "  then the session id, Remote Control, the name, auto mode, Opus high, no AskUserQuestion"
+AskUserQuestion" "  then the session id, Remote Control, the name (steer-<scope>, the core's session_name), auto mode, Opus high, no AskUserQuestion"
 has "$argv" "skipper --hold --scope dock --once" "  the brief: --hold --once first"
 env5=$(cat "$S5/claude.env")
 has "$env5" "cwd=$(cd "$S5/projects/dockrepo" && pwd -P)" "  cwd the anchor's checkout"
@@ -2917,6 +2999,22 @@ out=$(HELM_PICKUP="$S7/pickup-stub" "$LX/helm" send --text "a principal task" --
 has "$out" "pickup seed a-principal-task" "--tier principal-worker passes the tier check, on to pickup seed"
 check "$(grep -c '^Tier: principal-worker$' "$S7/pickup-stub.brief")" "1" "  the brief's Tier: line names it, which dispatch reads"
 check "$(gt "$SR" branch --list '*a-principal-task*' | wc -l | tr -d ' ')" "0" "  no branch was seeded by any of the three"
+echo "  --text past pickup's brief cap (send-road-start): refused before anything is seeded"
+rm -f "$S7/pickup-stub.brief"
+long=$(python3 -c 'print("design " * 600)')
+out=$(HELM_PICKUP="$S7/pickup-stub" "$LX/helm" send --text "$long" --topic too-long-brief --repo "$SR" 2>&1); check "$?" "2" "a --text brief over 4,000 characters: exit 2"
+has "$out" "over pickup's cap of 60 lines or 4,000 characters, so no ship was laid" "  says the cap"
+has "$out" "put the design in docs/ on a branch, and send a short --text that points at it" "  and where the design goes"
+check "$([ -e "$S7/pickup-stub.brief" ] && echo called || echo none)" "none" "  pickup was never run"
+check "$(gt "$SR" branch --list '*too-long-brief*' | wc -l | tr -d ' ')/$(calls | grep -c too-long-brief)" "0/0" "  no branch seeded, nothing reached the yard"
+check "$(python3 - "$B" "$(peer pickup)" <<'PY'
+import re, sys
+sys.path.insert(0, sys.argv[1])
+import sendlib
+m = re.search(r"^BRIEF_LINES, BRIEF_CHARS = (\d+), (\d+)", open(sys.argv[2]).read(), re.M)
+print(m and (int(m.group(1)), int(m.group(2))) == (sendlib.BRIEF_LINES, sendlib.BRIEF_CHARS))
+PY
+)" "True" "  sendlib's caps are pickup's own"
 
 echo "  --text: pickup seed --no-start, the blueprint as sent, the lay over the alias"
 out=$("$LX/helm" send --text "Fix the widget's frobnicator" --repo "$SR" --tier sr-worker --model opus --effort high --detach --json 2>"$S7/err"); rc=$?
@@ -3092,6 +3190,133 @@ w0=$(gt "$WT" rev-parse HEAD)
 out=$( cd "$SR" && "$LX/helm" send "$BR" --blueprint "${P7#"$WT/"}" --detach 2>&1 ); check "$?" "0" "a branch another worktree holds, sent by name from elsewhere: exit 0"
 has "$out" "/.claude/worktrees/sendbp pull --ff-only\` there brings" "  its worktree named, never moved (git's own path: /private on macOS)"
 check "$(gt "$WT" rev-parse HEAD)" "$w0" "  that worktree's HEAD untouched (one writer per worktree)"
+echo "  a confidential scope's yard (node-road): its node folder's own ssh, never wharf-runs/ssh"
+# vaultbox's node folder names its alias; wharf-runs/ssh names the node too (orca-host's check faults that
+# row on a real Mac), so a case that took it would dial wrong-alias. The stub ssh records which alias it got.
+cat > "$S7/reg.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["repos"].update({"vaultrepo": {}, "vault2repo": {}, "openrepo": {}})
+d["scopes"].update({"vault": {"repos": ["vaultrepo"], "yard": "vaultbox-agent", "confidential": True},
+                    "vault2": {"repos": ["vault2repo"], "yard": "yardhost", "confidential": True},
+                    "opennode": {"repos": ["openrepo"], "yard": "vaultbox-agent"},
+                    "vault3": {"repos": ["secret*", sys.argv[2]], "confidential": True},
+                    "opencase": {"repos": ["caserepo"], "yard": "vaultbox-Agent"}})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+cp "$CLAUDE_REPOS_JSON" "$S7/repos.keep"; python3 "$S7/reg.py" "$CLAUDE_REPOS_JSON" "$S7/absrepo"
+NF="$REGATTA_CONFIG/wharf-runs/nodes"; mkdir -p "$NF/vaultbox"; echo vault-alias > "$NF/vaultbox/ssh"
+cp "$REGATTA_CONFIG/wharf-runs/ssh" "$S7/ssh.keep"; echo vaultbox-agent:wrong-alias >> "$REGATTA_CONFIG/wharf-runs/ssh"
+cat > "$S7/dest.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sendlib
+bl = sendlib.blueprintlib()
+try:
+    print("ok", sendlib.destination(bl, sys.argv[2])[3])
+except sendlib.Refused as e:
+    print("refused", e)
+PY
+cat > "$S7/argv.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sendlib
+print(" ".join(sendlib.ssh_argv("a", "c")))
+PY
+dest() { python3 "$S7/dest.py" "$B" "$1" 2>&1; }
+: > "$S7/ssh.calls"
+check "$(dest vaultrepo)" "ok vault-alias" "a confidential scope's yard: the node folder's ssh"
+has "$(calls)" "vault-alias sh -s -- helm send --status --json" "  the yard's check went over it"
+check "$(calls | grep -c wrong-alias)" "0" "  never over the wharf-runs/ssh row that names the node"
+check "$(dest openrepo)" "ok vault-alias" "an open scope whose yard is a node's peer: the node folder's ssh too (orca-host's reach)"
+: > "$S7/ssh.calls"
+out=$(dest vault2repo); has "$out" "refused scope vault2 is confidential: its yard yardhost is reached only by a node folder's own ssh" "a confidential yard no node folder names: refused"
+has "$out" "never wharf-runs/ssh" "  though wharf-runs/ssh names that yard"
+check "$(calls | wc -l | tr -d ' ')" "0" "  nothing reached any yard"
+rm "$NF/vaultbox/ssh"
+out=$(dest vaultrepo); has "$out" "is the node vaultbox, whose folder names no ssh (wharf-runs/nodes/vaultbox/ssh" "a node folder with no ssh: refused, naming the key"
+echo vault-alias > "$NF/vaultbox/ssh"; echo not-a-folder > "$NF/torn"
+out=$(dest vaultrepo); has "$out" "refused scope vault's yard vaultbox-agent: the node folders do not read (" "a torn nodes folder: a confidential yard is refused"
+check "$(dest sendrepo)" "ok yard-alias" "  an open scope's Mac yard keeps wharf-runs/ssh"
+rm "$NF/torn"
+cat > "$S7/ya.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sendlib
+scope, yard, key, absent = sys.argv[2], sys.argv[3], sys.argv[4] or None, sys.argv[5] == "absent"
+if absent:
+    sendlib.orca_host = lambda: None
+try:
+    print("ok", sendlib.yard_alias(scope, yard, key))
+except sendlib.Refused as e:
+    print("refused", e)
+PY
+ya() { python3 "$S7/ya.py" "$B" "$1" "$2" "${3:-}" "${4:-}" 2>&1; }
+has "$(ya vault2 yardhost)" "refused scope vault2 is confidential" "yard_alias, one registry read: a confidential scope by name"
+has "$(ya dock yardhost vault2repo)" "refused scope dock's send of vault2repo (a confidential scope holds it) is confidential" "  a repo a confidential scope holds, sent under an open scope's name: confidential too (every scope walked)"
+check "$(ya dock yardhost sendrepo)" "ok yard-alias" "  an open repo under an open scope: as before"
+has "$(ya vault otherhost)" "refused scope vault's yard read otherhost, and the registry now says vaultbox-agent: it moved under the send" \
+    "  a yard the registry no longer names for the scope: refused, never judged against another read"
+has "$(ya opennode vaultbox-agent '' absent)" "could be a node's, and wharf-runs' orca-host is not here" "  orca-host absent: an -agent yard is refused, even an open scope's"
+check "$(ya dock yardhost '' absent)" "ok yard-alias" "  orca-host absent: a Mac yard is not a node's, and never loads it"
+has "$(ya dock yardhost secretx)" "(a confidential scope holds it) is confidential" "  a confidential scope's glob over a key the registry lacks: confidential (the core's entry_takes)"
+has "$(ya dock yardhost "$S7/absrepo")" "(a confidential scope holds it) is confidential" "  a confidential scope's absolute entry: confidential (the core's entry_takes)"
+check "$(ya opencase vaultbox-Agent)" "ok vault-alias" "  an -Agent yard in another case: still a node's peer, the node folder's ssh (never wharf-runs/ssh's row)"
+out=$(HELM_SEND_DIR=/dev/null/send dest sendrepo); has "$out" "refused the send dir /dev/null/send takes no file" "a send dir that takes no file: refused before anything is seeded"
+: > "$S7/ssh.calls"
+printf '{"plan": "plan-rec", "ship": "s", "blocks": ["b"], "scope": "vault", "yard": "vaultbox-agent", "alias": "stale-alias"}\n' > "$S7/send/send-plan-rec.json"
+"$LX/helm" send --listen plan-rec --every 0 > /dev/null 2>&1
+check "$(calls | grep -c 'vault-alias sh -s -- helm skipper --line plan-rec')/$(calls | grep -c stale-alias)" "1/0" \
+      "--listen judges a recorded send's alias again: the node folder's, never the one the record kept"
+printf '{"plan": "plan-rk", "ship": "s", "blocks": ["b"], "scope": "dock", "yard": "yardhost", "alias": "yard-alias", "repo": "vault2repo"}\n' > "$S7/send/send-plan-rk.json"
+out=$("$LX/helm" send --listen plan-rk --every 0 2>&1); check "$?" "2" "--listen of a recorded send whose repo a confidential scope holds: refused (the record's repo judged)"
+has "$out" "vault2repo (a confidential scope holds it) is confidential" "  saying why"
+check "$(calls | grep -c plan-rk)" "0" "  and never dialed the alias the record kept"
+printf '{"plan": "plan-mv", "ship": "s", "blocks": ["b"], "scope": "vault", "yard": "oldbox-agent", "alias": "x", "repo": "vaultrepo"}\n' > "$S7/send/send-plan-mv.json"
+mkdir -p "$NF/oldbox"; echo old-alias > "$NF/oldbox/ssh"
+"$LX/helm" send --listen plan-mv --every 0 > /dev/null 2>&1; check "$?" "0" "--listen of a ship laid before its scope's yard moved: still pulled"
+check "$(calls | grep -c 'old-alias sh -s -- helm skipper --line plan-mv')" "1" "  from the yard it was laid on, by that node's folder"
+printf '{"plan": "plan-na", "ship": "s", "blocks": ["b"], "alias": "hand-alias"}\n' > "$S7/send/send-plan-na.json"
+"$LX/helm" send --listen plan-na --scope vault --every 0 > /dev/null 2>&1
+check "$(calls | grep -c hand-alias)/$(calls | grep -c 'vault-alias sh -s -- helm skipper --line plan-na')" "0/1" "  a record's alias with no scope or yard: judged by --scope, never dialed as written"
+printf '{"plan": "plan-rn", "ship": "s", "blocks": ["b"], "repo": "vault2repo"}\n' > "$S7/send/send-plan-rn.json"
+out=$("$LX/helm" send --listen plan-rn --scope dock --every 0 2>&1); check "$?" "2" "  a record with its repo and no scope or yard, judged by an open --scope: the record's repo still judged, refused"
+check "$(calls | grep -c plan-rn)" "0" "  and nothing dialed"
+printf '{"plan": "plan-ns", "ship": "s", "blocks": ["b"], "scope": {}, "yard": ["x"], "alias": "ns-alias"}\n' > "$S7/send/send-plan-ns.json"
+out=$("$LX/helm" send --listen plan-ns --every 0 2>&1); check "$?" "2" "  a record whose scope or yard is no string: no crash, judged as one with none (refused: no --scope)"
+has "$out" "name its scope with --scope" "    saying what to do"
+printf '{\n' > "$S7/torn-reg.json"
+out=$(CLAUDE_REPOS_JSON="$S7/torn-reg.json" "$LX/helm" send --listen plan-na --scope vault --every 0 2>&1); check "$?" "2" "  --scope on a torn registry: refused"
+has "$out" "does not read: no scope's yard can be told" "    as torn, never \"scope vault has no yard\""
+echo "  the sandboxed sender: \$GIT_SSH_COMMAND, run as git runs it, when SRT_SSH_PROXY_COMMAND is set"
+: > "$S7/ssh.calls"
+out=$(env -u HARNESS_SSH SRT_SSH_PROXY_COMMAND="the-proxy %h %p" GIT_SSH_COMMAND="$S7/bin/ssh -o ProxyCommand=\"\$SRT_SSH_PROXY_COMMAND\"" \
+      "$LX/helm" send --listen plan-vault --scope vault --every 0 2>&1); check "$?" "0" "--listen to the confidential yard from a sandbox: exit 0"
+has "$(calls)" "-o ProxyCommand=the-proxy %h %p -o BatchMode=yes -o ConnectTimeout=10 vault-alias sh -s -- helm skipper --line plan-vault" \
+    "  the pull went by git's ssh, its ProxyCommand through the sandbox's proxy, to the node folder's alias"
+has "$out" "plan-vault: ended: " "  and the yard answered (no such ship there)"
+check "$(SRT_SSH_PROXY_COMMAND=x GIT_SSH_COMMAND=gitssh python3 "$S7/argv.py" "$B" | cut -d' ' -f1)" "$S7/bin/ssh" "  HARNESS_SSH still stands in first, sandbox or not"
+out=$(env -u HARNESS_SSH -u GIT_SSH_COMMAND SRT_SSH_PROXY_COMMAND="the-proxy %h %p" "$LX/helm" send --listen plan-vault --scope vault --every 0 2>&1)
+has "$out" "with no GIT_SSH_COMMAND: plain ssh is refused there" "  a sandbox with no GIT_SSH_COMMAND: refused, and plain ssh never tried"
+check "$(env -u HARNESS_SSH -u GIT_SSH_COMMAND SRT_SSH_PROXY_COMMAND=x HELM_LISTEN_PARENT=$$ "$LX/helm" send --listen plan-vault --scope vault --every 5 > /dev/null 2>&1; echo $?)" "2" \
+      "  at once, exit 2, never a pull that waits --every minutes and comes back for ever"
+check "$(env -u HARNESS_SSH GIT_SSH_COMMAND=gitssh python3 "$S7/argv.py" "$B")" "ssh -o BatchMode=yes -o ConnectTimeout=10 a c" \
+      "  no sandbox (SRT_SSH_PROXY_COMMAND unset): plain ssh, GIT_SSH_COMMAND or not"
+check "$(grep -c '<<' "$B/sendlib.py")" "0" "  sendlib runs no shell heredoc on the send path"
+cp "$S7/ssh.keep" "$REGATTA_CONFIG/wharf-runs/ssh"; cp "$S7/repos.keep" "$CLAUDE_REPOS_JSON"; rm_own "$NF"
+echo "  the yard's launcher on a Linux node (node-road): the skipper and the ask poll load by systemd-launchctl"
+cat > "$S7/lc.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import skipperlib
+lc = skipperlib.launchctl()
+print("launchctl" if lc == "launchctl" else lc.rsplit("/", 1)[-1])
+PY
+want=systemd-launchctl; [ "$(uname -s)" = Darwin ] && want=launchctl   # never `$(case …)`: bash 3.2 cuts it at `)`
+check "$(env -u HELM_LAUNCHCTL python3 "$S7/lc.py" "$B")" "$want" \
+      "skipperlib's launchctl: launchd's on a Mac, wharf-runs' systemd-launchctl elsewhere"
+check "$(HELM_LAUNCHCTL=/x/stub python3 "$S7/lc.py" "$B")" "stub" "  HELM_LAUNCHCTL first"
+check "$(grep -c 'Darwin) dlc=launchctl' "$B/../install.sh")" "1" "  install.sh picks the same way for the ask poll"
 kill $SKP $WK $LPAR $SLEEPS 2>/dev/null
 unset PLANS_DIR ASK_MANAGER_DIR CLAUDE_REPOS_JSON HARNESS_SSH HELM_SEND_DIR HELM_SEND_POLL HELM_SEND_WAIT \
       PICKUP_HOST GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
@@ -3214,7 +3439,7 @@ has "$(call8 $C 'b["body"]')" "waits on you: gated on docs/d.md (D1 open)" "  sa
 cn; out=$(TK $((N0 + 1000))); check "$(ncalls)" "$C" "  the next tick: nothing new"
 PLAN_NO_RENDER=1 "$HM" report r2 --task g1 --status done > /dev/null
 out=$(TK $((N0 + 1300))); out=$(TK $((N0 + 1600)))
-has "$out" "r2/g1 on testhost: waits on the owner (gated) — the block ended (done)" "  the block done 10 minutes: closed, saying so"
+has "$out" "r2/g1 on testhost: waits on the owner (gated) — the block ended (done)" "  the block done: settled on two passes in a row, closed, saying so"
 
 echo "  a question on a yard's ship: unanswered 15 minutes, a failed open tried once more, --escalate a class change"
 "$HM" $SHIP r3 --id r3 > /dev/null; "$HM" task r3 q1 > /dev/null; ll yard r3 dock > /dev/null
@@ -3247,9 +3472,10 @@ check "$(call8 $((C + 1)) 'c["path"]')/$(call8 $((C + 2)) 'c["path"] + " " + b["
 has "$(call8 $((C + 1)) 'b["body"]')" "followed in #$Q2" "  pointing at the second"
 check "$(erow -1 '(r["state"], r["issue"], r["was"], r["class"])')" "('class-changed', $Q2, $Q1, \"owner's (escalated)\")" "  one class-changed row"
 PLAN_NO_RENDER=1 "$HM" report r3 --task q1 --answered docs/q.md#D2 > /dev/null
-out=$(TK $((N0 + 2460)))
+# withdraw on answer (charterer S3): read answered on two passes in a row, closed then (one misread never closes it)
+cn; out=$(TK $((N0 + 2460))); check "$(ncalls)" "$C" "answered: the first pass that reads it so closes nothing"
 out=$(GH_FAIL_MATCH='^PATCH' TK $((N0 + 2760)))
-has "$out" "not closed — tried once more next pass" "a failed close: said"
+has "$out" "not closed — tried once more next pass" "  the second withdraws it; a failed close said"
 check "$(erow -1 '(r["state"], r.get("close_tries"))')" "('class-changed', 1)" "  the row kept open, the close to be tried once more"
 out=$(TK $((N0 + 3060))); has "$out" "escalation closed (#$Q2)" "  the next pass closes it"
 has "$out" "— answered" "  answered, it says"
@@ -3348,7 +3574,18 @@ def issue_state(num, state, comment):
     calls.append((state, num, comment))
     return (False, "down") if state in fail or num in failnums else (True, None)
 road = [True]
-st._ASK = types.SimpleNamespace(notice=notice, issue_state=issue_state, stall_road=lambda h=None: (road[0], None if road[0] else "github-issue: no helm/logbook-repo value in the config dir"))
+def rung_road(via):   # as bin/ask's: a github-issue road alone here (no osascript, the rest unbuilt)
+    if via != "github-issue":
+        return (False, "%s: no road in this stub" % via)
+    return (road[0], None if road[0] else "github-issue: no helm/logbook-repo value in the config dir")
+def push(via, title, body, labels=("stall",)):   # the ladder's github-issue rung (charterer S3): as bin/ask's push, one channel
+    ok, why = rung_road(via)
+    if not ok:
+        return {"road": "none", "issue": None, "said": why}
+    assert via == "github-issue", via   # bin/ask's push opens an issue for github-issue only
+    return notice(title, body, labels=labels)
+st._ASK = types.SimpleNamespace(notice=notice, issue_state=issue_state, push=push, rung_road=rung_road,
+                                withdraw=lambda via, row: None, stall_road=lambda h=None: rung_road("github-issue"))
 me = helmlib.host()
 def stall(cls, key="k1", **kw):
     return dict({"class": cls, "host": me, "key": [me, key], "key_kind": "step", "run": "r", "title": "%s %s" % (key, cls),
@@ -3491,6 +3728,435 @@ PY
 check "$(env -u CLAUDE_CODE_SESSION_ID HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" STALLS_ESCALATIONS="$S8/unit.jsonl" STALLS_STATE_DIR="$S8/unit-st" PLANS_DIR="$S8/empty" python3 "$S8/unit.py" "$B"
 )" "from:True was:2 card:True late:0:True unrouted:0 routed:5:True unread:1 moved-clear:True guarded-since:cleared older:True:True faults:['c1'] absent:0:1 partial:1:2 back-partial:True:True:True back-carded:True:True ship:False half:False:{}:['KeyError'] yard:['laptop-x'] banner:banner failed: FileNotFoundError noruns:['canary', 'launches', 'orca', 'skippers']" \
   "a second move's from-class; a followed issue closed once more then carded; no call near the kill time; unrouted calls nothing, then 5 a pass; an unread source keeps its keys; a move whose new issue never opened closes the first at its clear; a block guarded since says nothing; a second move carries the older open issue and its clear closes it; a banner retry is no card, a closed card names the issue left open and ages out; refused passes keep the absence clock; a close retry closes only what failed; back before that retry reopens its own and closes the followed; back after a carded close carries it; a ship that raises costs its keys, all of them, and names its error's class; a yard acts on its own store; no osascript fails the banner; no wharf-runs reads as nothing read"
+
+echo "  the notify ladder (charterer S3): rungs per kind, quiet hours, the cap, withdraw on answer"
+# In-process, over synthetic messages (wanted() stubbed): the real bin/ask with the stub GitHub ($S8/gh) and a
+# stub osascript, each case its own surfaces.json, log and state. UTC, so the quiet hours read as written.
+# one line per call, whatever the body holds (notice()'s body is three lines)
+printf '#!/bin/sh\necho call >> "%s/osa.ladder"\n' "$S8" > "$S8/osa-l"; chmod +x "$S8/osa-l"
+printf '#!/bin/sh\necho call >> "%s/osa.ladder"\necho "osascript: down" >&2; exit 1\n' "$S8" > "$S8/osa-fail"; chmod +x "$S8/osa-fail"
+cat > "$S8/ladder.py" <<'PY'
+import json, os, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1]); S8 = Path(sys.argv[2])
+os.environ["TZ"] = "UTC"; time.tzset()
+import stalls_tick as st, surfaces, helmlib
+me = helmlib.host()
+DAY = 20000 * 86400
+out = []
+def case(name, notify):
+    for v, f in (("STALLS_ESCALATIONS", "%s.jsonl"), ("GH_CALLS", "%s.calls")):
+        os.environ[v] = str(S8 / ("ladder-" + f % name))
+    os.environ["STALLS_STATE_DIR"] = str(S8 / ("ladder-st-" + name))
+    p = S8 / ("ladder-%s.json" % name)
+    p.write_text(json.dumps({"notify": notify, "ask": {"parked": True}}))
+    surfaces.FILE = p
+    (S8 / "osa.ladder").write_text("")
+def msg(key, ladder="question", kind="ask", since=DAY, cls="owner's (escalated)", floor=0, ready=False, src="ships"):
+    k = [me, "p", key]
+    return st._k([kind, k]), {"kind": kind, "key": k, "key_kind": kind, "src": src, "class": cls, "rule": "r",
+                              "plan": "p", "block": "b", "since": since, "after": 600, "ready": ready, "guarded": False,
+                              "title": "q %s" % key, "body": ["b"], "ladder": ladder, "floor": floor, "frozen": 0}
+def run(msgs, t, answered=(), dry=False, res=None):
+    st.wanted = lambda res, d, mem, t_: (dict(msgs), {"ships": True, "plans": set(), "answered": set(answered)})
+    return st.escalate(res or {"hosts": [me]}, [], st.Memory([]), t, dry=dry, mode_now="armed")
+def gh():
+    f = Path(os.environ["GH_CALLS"])
+    return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+def opened():
+    return [c["body"]["title"] for c in gh() if c["method"] == "POST" and c["path"].endswith("/issues")]
+def rows():
+    return st.read_escalations(rungs=True)
+def osa():
+    return len((S8 / "osa.ladder").read_text().splitlines())
+
+# a rung's after in place of the fixed 10 minutes
+case("after", {"question": [{"via": "github-issue", "after": "2m"}]})
+a = dict([msg("a")])
+run(a, DAY + 60); n1 = len(opened()); run(a, DAY + 130)
+r = rows()[-1]
+out.append("after:%d:%d:%s" % (n1, len(opened()), (r["state"], r["rung"], r["via"], r["ladder"], r["pushed"] == DAY + 130)))
+# a skipper's question waits its 15 minutes, whatever the rung's after
+case("floor", {"question": [{"via": "github-issue", "after": "2m"}]})
+f = dict([msg("f", cls="unanswered", floor=900)])
+run(f, DAY + 300); n1 = len(opened()); run(f, DAY + 910)
+out.append("floor:%d:%d" % (n1, len(opened())))
+# no ladder in the file: the old row is the stall ladder, a question charterer then the same rungs
+case("legacy", {me: ["github-issue"]})
+out.append("legacy:%s:%s" % ([r["via"] for r in surfaces.ladder("stall", me)], [(r["via"], r["after"]) for r in surfaces.ladder("question", me)]))
+q = dict([msg("q")])
+l1 = run(q, DAY); l2 = run(q, DAY + 300); run(q, DAY + 610)
+said = [l for l in l1 + l2 if l.startswith("escalation: q q — rung charterer: no road yet")]
+out.append("charterer:%d:%d:%d" % (len(said), len([x for x in rows() if x.get("via") == "charterer"]), len(opened())))
+# one row per rung: a banner at once, the issue at 10 minutes; neither twice
+case("rows", {"stall": [{"via": "banner"}, {"via": "github-issue", "after": "10m"}]})
+s = dict([msg("s", ladder="stall", kind="stall", cls="S7")])
+run(s, DAY); run(s, DAY + 300); run(s, DAY + 610); run(s, DAY + 900)
+out.append("rows:%d:%s:%d" % (osa(), [(x["state"], x["rung"], x["via"]) for x in rows()], len(opened())))
+# quiet hours hold a phone rung, the excepted kind passes, the held one fires when they end
+case("quiet", {"question": [{"via": "github-issue"}], "stall": [{"via": "github-issue"}],
+               "quiet": {"hours": "22:00-07:00", "except": ["stall"]}})
+night = DAY + 23 * 3600
+qq = dict([msg("n", since=night), msg("s2", ladder="stall", kind="stall", cls="S7", since=night)])
+dl = run(qq, night + 60, dry=True); run(qq, night + 60); n1 = opened()
+run(qq, DAY + 86400 + 7 * 3600 + 60)
+out.append("quiet:%s:%s:%s" % (any(l.endswith("q n — held: quiet hours") for l in dl), n1, opened()[len(n1):]))
+# the cap: the newest message first, the rest the next hour
+case("cap", {"question": [{"via": "github-issue"}], "cap": {"per_hour": 1}})
+cc = dict([msg("old", since=DAY), msg("new", since=DAY + 100)])
+run(cc, DAY + 200); n1 = opened(); run(cc, DAY + 1000); n2 = opened(); run(cc, DAY + 3800)
+out.append("cap:%s:%d:%s" % (n1, len(n2), opened()[len(n2):]))
+# a rung that waits for the owner's presence holds (read from S5); orca-app and spacesheep-app say why, once
+case("roads", {"question": [{"via": "banner", "when": "present"}, {"via": "orca-app"}, {"via": "spacesheep-app"}]})
+rr = dict([msg("r")])
+dl = run(rr, DAY, dry=True); l1 = run(rr, DAY); l2 = run(rr, DAY + 300)
+out.append("present:%s:%d" % (any("via banner — held: until the owner is at the Mac" in l for l in dl), osa()))
+out.append("roads:%s:%d:%d" % (sorted(l.split(" — rung ")[1].split(":")[0] for l in l1 if " — rung " in l),
+                               len([l for l in l2 if " — rung " in l]), len(rows())))
+# withdraw on answer: an answered question's issue closes the next pass, and its rungs are forgotten
+case("answer", {"question": [{"via": "banner"}, {"via": "github-issue"}]})
+w = dict([msg("w")])
+run(w, DAY); ek = list(w)[0]
+had = ek in json.loads((S8 / "ladder-st-answer" / "escalations-rungs.json").read_text())
+run({}, DAY + 60, answered=[ek])
+kept1, calls1 = ek in json.loads((S8 / "ladder-st-answer" / "escalations-rungs.json").read_text()), len(gh())
+run({}, DAY + 360, answered=[ek])
+kept = ek in json.loads((S8 / "ladder-st-answer" / "escalations-rungs.json").read_text())
+out.append("answer:%s:%s:%d:%s:%s:%s" % (had, kept1, calls1, kept, [c["method"] for c in gh()][1:], rows()[-1]["state"]))
+# one pass that misreads it answered, then raised again: nothing closed, nothing rung twice
+case("flap", {"question": [{"via": "banner"}, {"via": "github-issue"}]})
+fl = dict([msg("fl")]); fk = list(fl)[0]
+run(fl, DAY); run({}, DAY + 300, answered=[fk]); run(fl, DAY + 600); run(fl, DAY + 900)
+out.append("flap:%s:%d" % ([c["method"] for c in gh()], osa()))
+# an empty ladder for its kind: unrouted once due, as a host with no row was
+case("empty", {"stall": []})
+e = dict([msg("e", ladder="stall", kind="stall", cls="S7", ready=True)])
+run(e, DAY + 700)
+out.append("empty:%s" % [(x["state"], x["why"]) for x in rows()])
+# only a rung with no road (the charterer, until S4): unrouted, so the poll's log still names it
+case("nowhere", {"question": [{"via": "charterer"}]})
+run(dict([msg("c", ready=True)]), DAY + 700)
+out.append("nowhere:%s" % [(x["state"], x["why"].split(" (")[0]) for x in rows()])
+# an old row of banner then github-issue: the first with a road alone, as notice() did
+case("both", {me: ["banner", "github-issue"]})
+bb = dict([msg("bb", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(bb, DAY + 610); run(bb, DAY + 900)
+out.append("both:%d:%d" % (osa(), len(opened())))
+# a class that flips back never rings again; a new one does
+case("flip", {"stall": [{"via": "banner"}]})
+for c_, t_ in (("S5", 0), ("S7", 300), ("S5", 600), ("S7", 900)):
+    run(dict([msg("fl", ladder="stall", kind="stall", cls=c_, src="runs")]), DAY + t_)
+out.append("flip:%d" % osa())
+# a failed push: tried once more next pass, then not again
+case("fail", {"stall": [{"via": "banner"}]})
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-fail"
+ff = dict([msg("ff", ladder="stall", kind="stall", cls="S7", src="runs")])
+l1 = run(ff, DAY); run(ff, DAY + 300); run(ff, DAY + 600)
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+out.append("fail:%d:%s:%s:%s" % (osa(), any("push via banner failed" in l and "tried once more" in l for l in l1),
+                                 [x.get("retried", False) for x in rows()], [r.get("via") for r in st.road_faults()]))
+# a source unread 15 minutes keeps the message's rungs: back, its banner does not ring again
+case("gap", {"stall": [{"via": "banner"}]})
+gp = dict([msg("gp", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(gp, DAY)
+for t_ in (300, 600, 900):
+    run({}, DAY + t_, res={"hosts": [me], "unread": {"hosts": True}})
+run(gp, DAY + 1200)
+out.append("gap:%d" % osa())
+# …and back after one read miss that follows the gap: still no second ring (a miss is never a clear by itself)
+case("gap2", {"stall": [{"via": "banner"}]})
+run(gp, DAY)
+for t_ in (300, 600, 900):
+    run({}, DAY + t_, res={"hosts": [me], "unread": {"hosts": True}})
+run({}, DAY + 1200); run(gp, DAY + 1500)
+out.append("gap2:%d" % osa())
+# an old row of banner then github-issue whose banner fails: the issue in the same call, as notice() did, no card
+case("fallback", {me: ["banner", "github-issue"]})
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-fail"
+fb = dict([msg("fb", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(fb, DAY + 610); run(fb, DAY + 900)
+card = [r.get("via") for r in st.road_faults()]
+run(fb, DAY + 1200)
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+out.append("fallback:%d:%d:%s" % (osa(), len(opened()), card))
+# a host row with no road at first sight is re-checked each pass: a road written later is taken
+case("late", {me: ["banner", "github-issue"]})
+am = st.ask_mod(); real_lb = am.logbook
+am.logbook = lambda: (None, "no helm/logbook-repo value in the config dir")
+os.environ["ASK_OSASCRIPT"] = "/nonexistent/osascript"
+lt_ = dict([msg("lt", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+run(lt_, DAY); run(lt_, DAY + 700)
+am.logbook = real_lb
+run(lt_, DAY + 1000)
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+out.append("late:%s:%d" % ([x["state"] for x in rows()], len(opened())))
+# a host row's issue open: a pass whose logbook glitches rings no banner on top of it
+case("glitch", {me: ["github-issue", "banner"]})
+gl = dict([msg("gl", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(gl, DAY + 610)
+am.logbook = lambda: (None, "no helm/logbook-repo value in the config dir")
+run(gl, DAY + 900)
+am.logbook = real_lb
+run(gl, DAY + 1200)
+out.append("glitch:%d:%d" % (len(opened()), osa()))
+# a plain miss, then an answer: the issue closes on the next answered pass, not on the first
+case("miss", {"question": [{"via": "github-issue"}]})
+mm = dict([msg("mm")]); mk = list(mm)[0]
+run(mm, DAY); run({}, DAY + 200); run({}, DAY + 400, answered=[mk]); c3 = len(gh()); run({}, DAY + 550, answered=[mk])
+out.append("miss:%d:%d" % (c3, len(gh())))
+# a ladder that is there and no list: no rung (unrouted), never the host row instead
+case("notlist", {me: ["github-issue"], "stall": {"via": "github-issue", "after": "1h"}})
+run(dict([msg("nl", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)]), DAY + 700)
+out.append("notlist:%s:%d" % ([x["state"] for x in rows()], len(opened())))
+# a torn surfaces.json: every phone rung held, the tick says so
+case("torn", {"question": [{"via": "github-issue"}]})
+surfaces.FILE.write_text('{"notify": {"question": [')
+lt = run(dict([msg("tq", ready=True)]), DAY + 700)
+out.append("torn:%d:%s:%d" % (len(opened()), any(l.startswith("escalations: ladder-torn.json is no JSON") for l in lt), len(rows())))
+# an ended task: its block and its escalated question are both settled
+real_state = st.helmlib.state
+st.helmlib.state = lambda pid, at=None: {"tasks": [{"id": "b", "status": "done", "kind": "build", "deps": [], "progress": "",
+                                                   "asks": [{"ref": "docs/x.md#D1", "open": True}]}]}
+got = set()
+st._ship_wanted1({}, "p", {}, me, DAY, None, got)
+st.helmlib.state = real_state
+out.append("ended:%s" % sorted("%s:%s" % (json.loads(k)[0], json.loads(k)[1][2]) for k in got))
+# the host row's default wait is the stall road's own, kept equal here (the tick passes its own besides)
+out.append("same:%s" % (st.ESCALATE_AFTER == surfaces.LEGACY_AFTER))
+# a malformed ladder and an unreadable quiet: no crash, every phone rung held, the tick says so
+case("bad", {"stall": [{"via": ["github-issue"]}, {"via": "banner", "when": {}}], "question": [{"via": "github-issue"}],
+             "quiet": {"hours": "22-07"}})
+lb = run(dict([msg("bq")]), DAY + 700)
+out.append("bad:%d:%s" % (len(opened()), any(l.startswith("escalations: notify.quiet does not read") for l in lb)))
+# an old row of banner alone on a host with no osascript yet: unrouted, re-checked each pass, rung once one is
+# there, as before the ladder
+case("later", {me: ["banner"]})
+os.environ["ASK_OSASCRIPT"] = "/nonexistent/osascript"
+la = dict([msg("la", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+l1 = run(la, DAY + 610)
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+run(la, DAY + 900); run(la, DAY + 1200)
+out.append("later:%d:%s:%s" % (osa(), any(" — rung banner" in l for l in l1), [x["state"] for x in rows()]))
+# an explicit banner then an issue that never opens: the banner delivered, the issue still carded
+case("mixed", {"stall": [{"via": "banner"}, {"via": "github-issue", "after": "10m"}]})
+os.environ["GH_FAIL"] = "1"
+mx = dict([msg("mx", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(mx, DAY); run(mx, DAY + 610); run(mx, DAY + 900)
+del os.environ["GH_FAIL"]
+out.append("mixed:%d:%s" % (osa(), [(r["state"], r.get("via")) for r in st.road_faults()]))
+# a delivered rung that is no legacy pick beside a legacy row that failed: the issue's card still shows
+case("through", {"stall": []})
+sd = S8 / "ladder-st-through"; sd.mkdir(exist_ok=True)
+(sd / "escalations-rungs.json").write_text(json.dumps({"x": {"first": DAY}}))
+rws = [{"ekey": "x", "state": "rung", "via": "claude-app", "road": "claude-app", "pushed": DAY + 1, "t": DAY + 1},
+       {"ekey": "x", "state": "rung", "via": "banner", "legacy": True, "road": "none", "retried": True, "t": DAY + 2},
+       {"ekey": "x", "state": "open", "road": "none", "issue": None, "retried": True, "t": DAY + 3}]
+out.append("through:%s" % [r["state"] for r in st.road_faults(rws)])
+# an explicit ladder's rung with a key it does not know (a misspelt when, a reader's own mark) is dropped, never fired unheld
+case("marks", {"stall": [{"via": "banner", "legacy": True}, {"via": "github-issue", "When": "present"}, {"via": "orca-app", "after": "1m"}]})
+out.append("marks:%s" % [(r["via"], r["at"], r["legacy"], r["implicit"]) for r in surfaces.ladder("stall", me)])
+# refused passes keep a gone message's rungs: back before an acting pass, its banner does not ring again
+case("refused", {"stall": [{"via": "banner"}]})
+rf = dict([msg("rf", ladder="stall", kind="stall", cls="S7", src="runs")])
+run(rf, DAY)
+st.wanted = lambda res, d, mem, t_: ({}, {"ships": True, "plans": set(), "answered": set()})
+for t_ in (300, 600, 900, 1200):
+    st._escalate({"hosts": [me]}, [], st.Memory([]), DAY + t_, True, keep=True)
+run(rf, DAY + 1500)
+out.append("refused:%d" % osa())
+# a host with no osascript whose old row is banner, github-issue, and an issue that fails its open and retry:
+# the issue stays the pick (no road elsewhere), never tried a third time, carded; no pass raises
+case("noosa", {me: ["banner", "github-issue"]})
+os.environ["ASK_OSASCRIPT"] = "/nonexistent/osascript"; os.environ["GH_FAIL"] = "1"
+no = dict([msg("no", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+for t_ in (610, 910, 1210, 1510):
+    run(no, DAY + t_)
+del os.environ["GH_FAIL"]; os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+out.append("noosa:%d:%s" % (len(opened()), [r["state"] for r in st.road_faults()]))
+# an old open row of the pick's road from before the ladder: the banner it rang is never rung again at the upgrade
+case("upg", {me: ["banner", "github-issue"]})
+uk, uw = msg("up", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": uk, "key": uw["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "banner", "issue": None, "state": "open", "title": "q up"})
+run({uk: uw}, DAY + 610); run({uk: uw}, DAY + 910)
+fresh = dict([msg("fr", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+u1 = osa(); run(fresh, DAY + 1210)
+# notice() fell past a failed banner to an issue before the ladder; with osascript now, the banner is never rung on top
+gk, gw = msg("gi", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": gk, "key": gw["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "github-issue", "issue": 7, "state": "open", "title": "q gi"})
+u2 = osa(); run({gk: gw}, DAY + 1510)
+out.append("upg:%d:%d:%d:%d" % (u1, u2, osa() - u2, len(opened())))
+# a rungs entry whose times will not read (a hand edit) is forgotten, never a pass that raises
+case("badt", {"stall": [{"via": "banner"}]})
+sd = S8 / "ladder-st-badt"; sd.mkdir(exist_ok=True)
+(sd / "escalations-rungs.json").write_text(json.dumps({"gone": {"t": "yesterday", "missed": 1}, "g2": {"first": True},
+    "g3": {"first": 1, "tries": {"S7": {"banner": "1"}}}, "g4": {"first": 1, "noroad": {"S7": [{}]}},
+    "g5": {"first": 1, "t": 1, "src": ["runs"], "missed": 1}}))
+run(dict([msg("bt", ladder="stall", kind="stall", cls="S7", src="runs")]), DAY + 10)
+out.append("badt:%d:%s" % (osa(), len(json.loads((sd / "escalations-rungs.json").read_text()))))
+# a rung that does not read is dropped, and the unrouted reason names its problem, not only `ask backends`
+case("typo", {"stall": [{"via": "github-issue", "after": "10 min"}]})
+run(dict([msg("ty", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)]), DAY + 700)
+out.append("typo:%d:%s" % (len(opened()), [("10 min" in (r.get("why") or "")) for r in rows()]))
+# --set refuses a seam that is no object, never a traceback
+pr = S8 / "ladder-setrow.json"; pr.write_text(json.dumps({"notify": ["banner"]}))
+try:
+    surfaces.set_row("notify.yard=github-issue", pr); sr = "written"
+except ValueError as e:
+    sr = "fix it by hand" in str(e)
+out.append("setrow:%s:%s" % (sr, json.loads(pr.read_text())))
+# a problem with the key written still refuses (a string parked never written over by another string), and a
+# seam that is not there is a refusal, never a KeyError
+pr.write_text(json.dumps({"ask": {"parked": "yes"}}))
+surfaces.set_row("parked=no", pr)
+try:
+    surfaces.set_row("foo.bar=x", pr); fs = "written"
+except ValueError as e:
+    fs = "no seam" in str(e)
+out.append("setkey:%r:%s" % (json.loads(pr.read_text())["ask"]["parked"], fs))
+# a host row an older --set wrote as a string is that one backend, as `ask backends` reads it
+case("strrow", {me: "github-issue"})
+out.append("strrow:%s:%s" % (surfaces.host_row(surfaces.load()["notify"], me), st.ask_mod().notify_row("stall", me)[1]))
+# a reader from before the ladder over the new log: a rung row never reads as its key's state (no ekey)
+def old_reader(path):
+    last = {}
+    for d in st.read_log(path):
+        if d.get("ekey"):
+            last[d["ekey"]] = d
+    return last
+case("oldreader", {"stall": [{"via": "banner"}, {"via": "github-issue"}]})
+ok_ = dict([msg("ol", ladder="stall", kind="stall", cls="S7", src="runs")])
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-fail"
+run(ok_, DAY); run(ok_, DAY + 300)   # the issue opens on the first pass, the failed banner's retry after it
+os.environ["ASK_OSASCRIPT"] = sys.argv[2] + "/osa-l"
+ol = old_reader(os.environ["STALLS_ESCALATIONS"])
+out.append("oldreader:%s:%d" % ([v["state"] for v in ol.values()], len([x for x in rows() if x["state"] == "rung"])))
+# quiet hours hold a close's comment too: answered at night, closed when the hours end
+case("qclose", {"question": [{"via": "github-issue"}], "quiet": {"hours": "22:00-07:00"}})
+qc = dict([msg("qc")]); qk = list(qc)[0]
+run(qc, DAY + 12 * 3600)
+night = DAY + 23 * 3600
+dq = run({}, night, answered=[qk]); run({}, night + 300, answered=[qk]); n1 = [c["method"] for c in gh()]
+run({}, DAY + 86400 + 7 * 3600 + 60, answered=[qk])
+out.append("qclose:%s:%s:%s" % (n1, [c["method"] for c in gh()][len(n1):], rows()[-1]["state"]))
+# a rung that does not read is named every pass, beside a rung that has a road too
+case("typo2", {"stall": [{"via": "banner"}, {"via": "github-issue", "after": "10 min"}]})
+t2 = run(dict([msg("t2", ladder="stall", kind="stall", cls="S7", src="runs")]), DAY + 700)
+out.append("typo2:%d:%s" % (osa(), any("notify.stall[1]: after '10 min' is no duration" in l for l in t2)))
+# a ladder whose rungs have no road is unrouted once its first rung is due, not at the fixed wait
+case("unrdue", {"stall": [{"via": "charterer", "after": "1h"}]})
+ud = dict([msg("ud", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+run(ud, DAY + 700); u1 = len(rows()); run(ud, DAY + 3700)
+out.append("unrdue:%d:%s" % (u1, [x["state"] for x in rows()]))
+# an open banner row from before the ladder: an explicit github-issue rung opens the issue the owner asked for
+case("bannerup", {"stall": [{"via": "github-issue"}]})
+bk, bw = msg("bu", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": bk, "key": bw["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "banner", "issue": None, "state": "open", "title": "q bu"})
+run({bk: bw}, DAY + 610); run({bk: bw}, DAY + 910)
+out.append("bannerup:%d" % len(opened()))
+# an after past a year does not read (dropped, named); a far due on a dry pass prints, never a raise
+case("far", {"stall": [{"via": "github-issue", "after": "8760h"}]})
+fd = run(dict([msg("fd", ladder="stall", kind="stall", cls="S7", src="runs")]), DAY + 700, dry=True)
+out.append("far:%s:%s:%s:%s" % (surfaces.duration("99999999h"), surfaces.duration(1e12), any("(due " in l for l in fd), st.hm_due(1e18)))
+# a seam other than notify that is no object reads as its defaults (main's rule since hail's S2) and holds no
+# rung; a notify seam that is no object is named, holds every phone rung and is carded
+case("seam", {"question": [{"via": "github-issue"}]})
+surfaces.FILE.write_text(json.dumps({"ask": ["file"], "notify": {"question": [{"via": "github-issue"}]}}))
+sl = surfaces.load()["ask"] == surfaces.DEFAULTS["ask"] and surfaces.notify_unreadable() is None
+run(dict([msg("se", ready=True)]), DAY + 700)
+n_ask = len(opened())
+surfaces.FILE.write_text(json.dumps({"notify": ["github-issue"]}))
+ls_ = run(dict([msg("se2", ready=True)]), DAY + 1400)
+out.append("seam:%s:%d:%s:%d:%s" % (sl, n_ask, any("notify is no object" in l and "every rung held" in l for l in ls_),
+                                    len(opened()), [r["state"] for r in st.road_faults()]))
+# a file that will not read is named so, never "no JSON"
+dd = S8 / "ladder-dir.json"; dd.mkdir(exist_ok=True)
+out.append("unread:%s" % surfaces.notify_unreadable(dd, text=surfaces.snapshot(dd)))
+# an empty seam (null, []) reads as the defaults, as before; an empty file is named, and holds
+ef = S8 / "ladder-empty.json"; ef.write_text(json.dumps({"notify": None, "plan": []}))
+e1 = surfaces.load(ef)["helm"]["render"] == surfaces.DEFAULTS["helm"]["render"] and surfaces.notify_unreadable(ef) is None
+ef.write_text("")
+out.append("emptyseam:%s:%s" % (e1, surfaces.notify_unreadable(ef).split(" (")[0]))
+# a banner row from before the ladder that follows an issue: the explicit rung's new issue carries it and closes it
+case("carry", {"stall": [{"via": "github-issue"}]})
+ck, cw = msg("cy", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": ck, "key": cw["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "banner", "issue": None, "state": "class-changed", "was": 5, "was_open": True, "title": "q cy"})
+run({ck: cw}, DAY + 610)
+out.append("carry:%d:%s:%s" % (len(opened()), any(c["method"] == "PATCH" and c["path"].rstrip("/").endswith("/5") for c in gh()),
+                               rows()[-1].get("was_open"), ))
+# a rungs entry whose fired is null in the file: an empty map, never a pass that raises
+case("nullf", {"stall": [{"via": "banner"}]})
+nk, nw = msg("nf", ladder="stall", kind="stall", cls="S7", src="runs")
+sd = S8 / "ladder-st-nullf"; sd.mkdir(exist_ok=True)
+(sd / "escalations-rungs.json").write_text(json.dumps({nk: {"first": DAY, "fired": None, "tries": None}}))
+nl = run({nk: nw}, DAY + 10)
+out.append("nullf:%d:%s" % (osa(), any("the pass failed" in l for l in nl)))
+# a close held by quiet hours keeps the message's rungs: back before the issue closes, its banner never rings twice
+case("heldr", {"stall": [{"via": "banner"}, {"via": "github-issue"}], "quiet": {"hours": "22:00-07:00"}})
+hk, hw = msg("hr", ladder="stall", kind="stall", cls="S7", src="runs", since=DAY + 12 * 3600)
+run({hk: hw}, DAY + 12 * 3600)
+for t_ in (23 * 3600, 23 * 3600 + 900, 23 * 3600 + 1800):
+    run({}, DAY + t_)
+run({hk: hw}, DAY + 86400 + 3600)
+out.append("heldr:%d:%d:%s" % (osa(), len(opened()), [c["method"] for c in gh()]))
+# a rung row with no via beside one with a via: road_faults sorts them, never a TypeError
+case("novia", {"stall": []})
+sd = S8 / "ladder-st-novia"; sd.mkdir(exist_ok=True)
+(sd / "escalations-rungs.json").write_text(json.dumps({"x": {"first": DAY}}))
+out.append("novia:%d" % len(st.road_faults([
+    {"ekey": "x", "state": "rung", "road": "none", "retried": True, "t": DAY + 1},
+    {"ekey": "x", "state": "rung", "via": "banner", "road": "none", "retried": True, "t": DAY + 2}])))
+# an answered question whose close quiet hours hold keeps its rungs: raised again before it closes, no second banner
+case("ansheld", {"question": [{"via": "banner"}, {"via": "github-issue"}], "quiet": {"hours": "22:00-07:00"}})
+ak, aw = msg("ah", since=DAY + 12 * 3600)
+run({ak: aw}, DAY + 12 * 3600)
+run({}, DAY + 23 * 3600, answered=[ak]); run({}, DAY + 23 * 3600 + 300, answered=[ak]); run({ak: aw}, DAY + 23 * 3600 + 600)
+out.append("ansheld:%d:%s" % (osa(), [c["method"] for c in gh()]))
+# back after it cleared on a host row with no github-issue: the old issue's reopen is held by quiet hours as well
+case("backq", {me: ["banner"], "quiet": {"hours": "22:00-07:00"}})
+bk2, bw2 = msg("bq", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": bk2, "key": bw2["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "github-issue", "issue": 7, "state": "closed", "title": "q bq"})
+bl = run({bk2: bw2}, DAY + 23 * 3600, dry=True); run({bk2: bw2}, DAY + 23 * 3600)
+out.append("backq:%s:%s" % (any("held: quiet hours" in l for l in bl), [c["method"] for c in gh()]))
+# an old banner row that follows an issue, an explicit issue rung with no road yet: the row kept, nothing dropped
+case("carrynr", {"stall": [{"via": "github-issue"}]})
+cn_k, cn_w = msg("cn", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)
+st.append_escalation({"t": DAY, "yard": me, "ekey": cn_k, "key": cn_w["key"], "kind": "stall", "src": "runs", "class": "S7",
+                      "road": "banner", "issue": None, "state": "class-changed", "was": 5, "was_open": True, "title": "q cn"})
+am.logbook = lambda: (None, "no helm/logbook-repo value in the config dir")
+run({cn_k: cn_w}, DAY + 610)
+am.logbook = real_lb
+out.append("carrynr:%s" % [(r["state"], r.get("was")) for r in rows()])
+# a message whose plan is no string: its rungs entry still reads, its banner rings once
+case("intplan", {"stall": [{"via": "banner"}]})
+ip = dict([msg("ip", ladder="stall", kind="stall", cls="S7", src="runs")]); list(ip.values())[0]["plan"] = 7
+for t_ in (0, 300, 600):
+    run(ip, DAY + t_)
+out.append("intplan:%d" % osa())
+# a presence-only ladder whose rungs have a road (an issue, a banner): unrouted and said, never held mute
+case("presonly", {"question": [{"via": "github-issue", "when": "present"}], "stall": [{"via": "banner", "when": "present"}]})
+po = dict([msg("pq", ready=True), msg("ps", ladder="stall", kind="stall", cls="S7", src="runs", ready=True)])
+run(po, DAY + 700); run(po, DAY + 1000)
+out.append("presonly:%d:%d:%s:%s" % (len(opened()), osa(), [r["state"] for r in rows()],
+                                     all("held until the owner is at the Mac" in r["why"] for r in rows())))
+# a rung that does not read is carded on the board, as a held seam is
+case("typocard", {"stall": [{"via": "github-issue", "after": "10 min"}]})
+run(dict([msg("tc", ladder="stall", kind="stall", cls="S7", src="runs")]), DAY + 10)
+out.append("typocard:%s" % [(r["state"], r["why"].split(":")[0]) for r in st.road_faults()])
+# --set over an empty file writes it, as over no file
+pe = S8 / "ladder-setempty.json"; pe.write_text("")
+surfaces.set_row("ask.relay=file", pe)
+out.append("setempty:%s" % json.loads(pe.read_text()))
+print(" ".join(out))
+PY
+check "$(env -u CLAUDE_CODE_SESSION_ID HOME="$S8/home" REGATTA_CONFIG="$S8/cfg" ASK_GH_API="$S8/gh" ASK_OSASCRIPT="$S8/osa-l" \
+         PLANS_DIR="$S8/empty" python3 "$S8/ladder.py" "$B" "$S8")" \
+  "after:0:1:('open', 0, 'github-issue', 'question', True) floor:0:1 legacy:['host-row']:[('charterer', 0.0), ('host-row', 600.0)] charterer:0:0:1 rows:1:[('rung', 0, 'banner'), ('open', 1, 'github-issue')]:1 quiet:True:['q s2']:['q n'] cap:['q new']:1:['q old'] present:True:0 roads:['orca-app', 'spacesheep-app']:0:1 answer:True:True:1:False:['POST', 'PATCH']:closed flap:['POST']:1 empty:[('unrouted', 'no rung with a road in notify.stall')] nowhere:[('unrouted', 'no rung with a road in notify.question')] both:1:0 flip:2 fail:2:True:[False, True]:['banner'] gap:1 gap2:1 fallback:1:1:[] late:['unrouted', 'open']:1 glitch:1:0 miss:1:3 notlist:['unrouted']:0 torn:0:True:0 ended:['ask:docs/x.md#D1', 'block:b'] same:True bad:0:True later:1:False:['unrouted', 'open'] mixed:1:[('open', 'github-issue')] through:['open'] marks:[('orca-app', 2, False, False)] refused:1 noosa:2:['open'] upg:0:1:0:0 badt:1:1 typo:0:[True] setrow:True:{'notify': ['banner']} setkey:False:True strrow:['github-issue']:['github-issue'] oldreader:['open']:2 qclose:['POST']:['POST', 'PATCH']:closed typo2:1:True unrdue:0:['unrouted'] bannerup:1 far:None:None:True:never seam:True:1:True:1:['held'] unread:ladder-dir.json does not read (IsADirectoryError) emptyseam:True:ladder-empty.json is empty carry:1:True:None nullf:1:False heldr:1:1:['POST'] novia:2 ansheld:1:['POST'] backq:True:[] carrynr:[('class-changed', 5)] intplan:1 presonly:0:0:['unrouted', 'unrouted']:True typocard:[('held', 'notify.stall[0]')] setempty:{'ask': {'relay': ['file']}}" \
+  "a rung's after replaces the fixed 10 minutes; a skipper's question still waits 15; the old row is the stall ladder, a question's the charterer then it; that implicit charterer silent, no row; one row per rung, none twice; quiet hours hold the question and not the excepted stall, which fire when they end; the cap opens the newest first, the older the next hour; presence holds; orca-app and spacesheep-app say why once; an answer read on two passes in a row closes its issue and forgets its rungs, one misread closes nothing; an empty ladder is unrouted (its reason never names the host row it overrides), and so is one whose only rungs have no road; an old row of banner, github-issue takes the first with a road alone; a class flipping back never rings twice; a failed push is tried once more, then not; a source gap, and one read miss after it, keep what fired; a banner rung that fails twice is carded, and an old row's banner that fails falls to its issue in the same call, as notice() did, no card; an old row with no road is re-checked until one is written; its open issue holds through a glitch; a plain miss then an answer closes on the next answered pass; a ladder that is no list narrows to no rung; a torn file holds every phone rung and writes no unrouted row; an ended task settles its block and its questions; the host row's wait is the road's own; a malformed ladder costs no pass and an unreadable quiet holds every phone rung; an old banner row with no osascript yet is unrouted, then rings once it has one; a delivered banner never hides an issue rung that failed to open, nor does a banner hide any failed rung; an explicit rung with a key it does not know is dropped; refused passes never forget a gone message's rungs; with no osascript, an old row's issue that failed twice is carded, and no pass raises; an open row from before the ladder, of its banner or of the issue notice() fell to, is never rung again, a new message is; a rungs entry whose times, tries or lists will not read is forgotten, no raise; a rung that does not read is named in the unrouted reason; --set refuses a seam that is no object or not there, and writes a bool row as a bool; a string host row is its one backend, to host_row and to bin/ask's notify_row alike; a reader from before the ladder never takes a rung row as its key's state; quiet hours hold a close's comment until they end; a rung that does not read is named every pass beside a roaded one; a ladder with no road is unrouted once its first rung is due; a banner row from before the ladder never stands in for the issue rung the owner wrote; an after past a year does not read and a far due prints; a seam that is no object reads as its defaults, a notify one holds every rung and is carded; a file that will not read is named so; an empty seam reads as the defaults and an empty file is named; an explicit issue rung carries and closes what an old banner row followed; a null rungs field is an empty map; a close held by quiet hours keeps the message's rungs, an answered one's too; a rung row with no via sorts; a reopen of a host row's old issue is held by quiet hours; a banner row an issue rung with no road meets is kept whole; a plan that is no string never re-rings; --set writes over an empty file; a presence-only ladder, of an issue or a banner, is unrouted, said; a rung that does not read is carded"
 
 echo "  a ship the yard could not read keeps its keys"
 "$HM" $SHIP r9 --id r9 > /dev/null; "$HM" task r9 g2 > /dev/null; ll yard r9 dock > /dev/null
@@ -4308,6 +4974,720 @@ check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import helmlib
 print([helmlib._tokened(b, t) for b in ("waits on tax return", "waits on tax return to land", "waits on tax", "waits on taxes")])' "$B")" \
   "['waits on guarded-1', 'waits on guarded-1 to land', 'waits on guarded-2', 'waits on taxes']" \
   "public: a guarded id is swapped whole, a space in it included, in both blocker forms (the S9 review: a first-word match leaked it)"
+
+echo "helm yard-on: name a host a scope's yard once its tick drives and no blueprint ship of the scope is in flight here (TODO.md [arm-yard] (b))"
+YO="$T/yo"; mkdir -p "$YO/bin" "$YO/plans" "$REGATTA_CONFIG/lighthouse"
+printf 'laptop\nyardbox\n' > "$REGATTA_CONFIG/lighthouse/hosts"
+echo '{"repos": {"demo": {}, "other": {}}, "scopes": {"s1": {"repos": ["demo"]}, "s2": {"repos": ["other"]}}}' > "$YO/repos.json"
+# ssh answers `helm tick --status` as YO_TICK says; the rest is the real helm store and wharf's real scopes
+printf '#!/bin/sh\n[ "$YO_TICK" = down ] && { echo "ssh: connect refused" >&2; exit 255; }\necho "helm tick: $YO_TICK — stub"\n' > "$YO/bin/ssh"
+chmod +x "$YO/bin/ssh"
+cat > "$YO/age.py" <<'PY'
+import json, sys, time
+from pathlib import Path
+d = Path(sys.argv[1]); p = json.loads((d / "plan.json").read_text()); p["repo"] = sys.argv[2]
+if sys.argv[3] == "1":
+    p["tasks"]["a"]["provider"] = "claude-code"
+at = time.time() - 60 * int(sys.argv[4])
+p["updated"] = at   # the ship's updated is the newest of its events and the plan's own save
+(d / "plan.json").write_text(json.dumps(p))
+ev = d / "events.jsonl"
+ev.write_text("".join(json.dumps(dict(json.loads(l), t=at)) + "\n" for l in ev.read_text().splitlines() if l.strip()))
+PY
+yo() { env -u CLAUDE_UNATTENDED -u REGATTA_UNATTENDED PLANS_DIR="$YO/plans" CLAUDE_REPOS_JSON="$YO/repos.json" \
+         HARNESS_SSH="$YO/bin/ssh" HARNESS_HOST=laptop HARNESS_PEER_YARDBOX=yard-stub "$@" > "$YO/out" 2>&1; echo $?; }
+# yship <id> <repo> <blueprint 0|1> <status> <minutes ago>: one task, laid by wharf (a blueprint field) or not
+yship() {
+  PLANS_DIR="$YO/plans" "$HM" ship "t-$1" --id "$1" > /dev/null; PLANS_DIR="$YO/plans" "$HM" task "$1" a > /dev/null
+  PLANS_DIR="$YO/plans" PLAN_NO_RENDER=1 "$HM" report "$1" --task a --status "$4" > /dev/null
+  python3 "$YO/age.py" "$YO/plans/$1" "$2" "$3" "$5"
+}
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run) $(grep -c 'scopes set s1 --yard yardbox' "$YO/out")" "0 1" "--dry-run: the command printed, both checks pass, nothing written"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["scopes"]["s1"].get("yard"))' "$YO/repos.json")" "None" "  the registry untouched"
+check "$(yo env YO_TICK=disarmed "$HM" yard-on yardbox s1)" "1" "a disarmed yard tick: refused"
+has "$(cat "$YO/out")" "yardbox's tick is not armed" "  and says why"
+check "$(yo env YO_TICK=down "$HM" yard-on yardbox s1)" "1" "an unreachable yard: refused, never read as armed"
+yship skip1 demo 0 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "0" "a typed session's ship running here (no blueprint task): not in flight for the fence (the laptop's refusals, 2026-11-01)"
+yship bp1 other 1 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "0" "  a blueprint ship of another scope: not this arming's"
+yship bp2 demo 1 running 3000
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "1" "a blueprint ship of the scope with a task running, however old: in flight, refused"
+has "$(cat "$YO/out")" "blueprint ships of these scopes in flight here: t-bp2 (bp2" "  naming the ship"
+rm -rf "$YO/plans/bp2"; yship bp3 demo 1 planned 30
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "1" "  one updated 30 minutes ago with a task to do: refused"
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run --within 0.1)" "0" "  --within with fewer hours clears a parked one"
+rm -rf "$YO/plans/bp3"
+# a task's repo is the path wharf writes, looked up by its registry key as the fence does: a nested key
+# (`org/sub`) of another scope is not this arming's, one of this scope is (the landing review, 2026-11-02)
+P="$(hl "helmlib._common().PROJECTS")"
+echo '{"repos": {"demo": {}, "other": {}, "org/sub": {}, "org/mine": {}, "loose": {}}, "scopes": {"s1": {"repos": ["demo", "org/mine"]}, "s2": {"repos": ["other", "org/sub"]}}}' > "$YO/repos.json"
+yship nest1 "$P/org/sub" 1 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "0" "a blueprint ship of a nested key in another scope: not this arming's"
+yship nest2 "$P/org/mine" 1 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "1" "  one of a nested key in this scope: in flight, refused"
+rm -rf "$YO/plans/nest1" "$YO/plans/nest2"; yship loose1 "$P/loose" 1 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "0" "a blueprint ship of a repo in no scope: the fence refuses nothing there, not in flight"
+rm -rf "$YO/plans/loose1"; yship out1 /nowhere/else 1 running 5
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "1" "  one outside the projects folder: its scope cannot be told, counts"
+rm -rf "$YO/plans/out1"
+echo '{"repos": {"demo": {}, "other": {}}, "scopes": {"s1": {"repos": ["demo"]}, "s2": {"repos": ["other"]}}}' > "$YO/repos.json"
+check "$(yo env YO_TICK=armed CLAUDE_UNATTENDED=dispatch "$HM" yard-on yardbox s1)" "2" "an unattended caller: refused before anything is written"
+check "$(yo env YO_TICK=armed CLAUDE_UNATTENDED=dispatch "$HM" yard-on yardbox s1 --dry-run)" "0" "  a dry run is open to it"
+check "$(yo env YO_TICK=armed HARNESS_HOST=yardbox "$HM" yard-on yardbox s1)" "1" "run on the yard itself: refused"
+check "$(yo env YO_TICK=dry "$HM" yard-on yardbox s1) $(python3 -c 'import json, sys; d = json.load(open(sys.argv[1]))["scopes"]; print(d["s1"].get("yard"), d["s2"].get("yard"))' "$YO/repos.json")" \
+  "0 yardbox None" "the tick in its dry hours, nothing in flight: written through scopes, read back, the other scope untouched"
+has "$(cat "$YO/out")" "1 scope(s) read back as yard yardbox" "  and it says so"
+check "$(yo env YO_TICK=armed "$HM" yard-on yardbox nope)" "3" "a scope the registry lacks: scopes refuses, exit 3"
+
+echo "charterer S1: the charter events in the store, state()'s charterers with the Talk road's lapse, the yard's helm charter"
+# docs/charterer-2026-11-01.md S1. The verb runs on the yard over ssh, where the shell carries no session id:
+# every case passes --by, as S5's charterer side will, with CLAUDE_CODE_SESSION_ID cleared
+CH="$LX/helm"
+"$CH" ship chartered-demo --id ch1 >/dev/null; "$CH" task ch1 build >/dev/null; "$CH" task ch1 docs >/dev/null
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-a --from laptop --road talk); check "$?" "0" "charter --join: exit 0"
+check "$out" "ship ch1: chartered-demo chartered by sess-a@laptop (talk)" "  it names the ship, the charterer, its Mac and its road"
+check "$(python3 -c 'import json, sys; e = [json.loads(x) for x in open(sys.argv[1])][-1]; print(e.get("charter"), e.get("charterer"), e.get("charterer_host"), e.get("road"), "task" in e)' "$PLANS_DIR/ch1/events.jsonl")" \
+  "chartered sess-a laptop talk False" "  one ship-level event in the store: charter, charterer, its host, its road, no task"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-b --from yard-1 >/dev/null
+CLAUDE_CODE_SESSION_ID=sess-c "$CH" charter --join ch1 >/dev/null
+chst() { "$CH" state ch1 | python3 -c "import json, sys; d = json.load(sys.stdin); print($1)"; }
+check "$(chst '[(r["session"], r["host"], r["road"]) for r in d["charterers"]]')" \
+  "[('sess-a', 'laptop', 'talk'), ('sess-b', 'yard-1', None), ('sess-c', 'testhost', None)]" \
+  "state(): charterers in join order; --by and --from default to this session and this Mac"
+check "$(chst '[t["updated"] for t in d["tasks"]]')" "[None, None]" "  a charter is no task's news (no task's updated moves)"
+has "$("$CH" show ch1)" "charterers: sess-a@laptop by talk, renewed" "helm show names the charterers"
+check "$("$CH" state ch1 --public | python3 -c 'import json, sys; d = json.load(sys.stdin); print(sorted({k for r in d["charterers"] for k in r}))')" \
+  "['renewed', 'road', 'since']" "public(): a charterer's session id and host never leave the Mac"
+hasnt "$("$CH" state ch1 --public)" "sess-a" "  no charterer's session id anywhere in the public copy"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-b --from yard-1); check "$out" "ship ch1: chartered-demo renewed by sess-b@yard-1" "a second --join of a live charterer renews it"
+check "$(chst 'len(d["charterers"])')" "3" "  still one row per session"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-a --road socket >/dev/null; check "$?" "0" "charter --renew of a charterer: exit 0"
+check "$(chst '[(r["road"], r["host"]) for r in d["charterers"] if r["session"] == "sess-a"]')" "[('socket', 'laptop')]" \
+  "  a renewal may name a new road; one with no --from keeps the Mac it joined from (never the yard's own name)"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-a --from laptop-2 >/dev/null
+check "$(chst '[r["host"] for r in d["charterers"] if r["session"] == "sess-a"]')" "['laptop-2']" "  one with --from moves it"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-z 2>&1); check "$?" "7" "charter --renew of a session not chartering: exit 7"
+has "$out" "sess-z is not chartering ship ch1 — join it again (--join)" "  it says to join again"
+check "$(chst '[r["session"] for r in d["charterers"]]')" "['sess-a', 'sess-b', 'sess-c']" "  and adds no charterer"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-b); check "$?/$out" "0/ship ch1: sess-b left" "charter --leave: exit 0"
+check "$(chst '[(r["session"], r["why"]) for r in d["charterers_gone"]]')" "[('sess-b', 'left')]" "  the session moves to charterers_gone, why left"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-b); check "$?/$out" "0/ship ch1: sess-b was not chartering it (left)" "  a second leave: exit 0, said with why it is none, nothing written"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-b 2>&1); check "$?" "7" "  a renewal after the leave: exit 7"
+has "$out" "(left)" "  naming why it is no charter"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-b --from yard-1 >/dev/null
+check "$(chst '[r["session"] for r in d["charterers"]]')" "['sess-a', 'sess-c', 'sess-b']" "a join after the leave is a new charter, last in join order"
+# every unattended marker refuses a join and a renewal, and writes nothing; a leave stays any caller's
+n0=$(wc -l < "$PLANS_DIR/ch1/events.jsonl")
+for m in REGATTA_UNATTENDED CLAUDE_UNATTENDED AUTOFINISH_CALLER_UNATTENDED DISPATCH_LABEL CLAUDE_CODE_DISABLE_BACKGROUND_TASKS \
+         DISPATCH_DEPTH DISPATCH_SHIP DISPATCH_PLAN; do
+  out=$(env "$m=dispatch" CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-u 2>&1); check "$?" "6" "charter --join under $m: refused, exit 6"
+  has "$out" "refused in an unattended caller ($m=dispatch)" "  naming the marker"
+  out=$(env "$m=dispatch" CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-a 2>&1); check "$?" "6" "  --renew under $m: refused too"
+done
+check "$(wc -l < "$PLANS_DIR/ch1/events.jsonl")" "$n0" "  no refused call wrote an event"
+out=$(DISPATCH_DEPTH=0 CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-d --from laptop); check "$?" "0" "  a DISPATCH_DEPTH of 0 is a typed session's: chartered"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-d >/dev/null
+out=$(CLAUDE_UNATTENDED=tick CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-c --why "hail: the session has ended"); check "$?" "0" "a leave under an unattended marker goes (the charter pass's, S4)"
+check "$(chst '[r["why"] for r in d["charterers_gone"] if r["session"] == "sess-c"]')" "['hail: the session has ended']" "  its why is kept"
+check "$(python3 -c 'import json, sys; e = [json.loads(x) for x in open(sys.argv[1])][-1]; print(e["charter"], "charterer_host" in e)' "$PLANS_DIR/ch1/events.jsonl")" \
+  "charter left False" "  a leave writes no host"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-c --json 2>/dev/null); check "$?" "7" "  a renewal after it: exit 7"
+check "$(printf '%s' "$out" | python3 -c 'import json, sys; r = json.load(sys.stdin)[0]; print(r["cause"])')" "left" \
+  "  its cause is left, never the leave's free text (which stays in why)"
+check "$(HARNESS_HOST='bad:host name' CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-c)" "ship ch1: sess-c was not chartering it (left)" \
+  "  a leave reads no host of this Mac's: one that is no host name never refuses it"
+check "$("$CH" state ch1 --public | python3 -c 'import json, sys; print(sorted({r.get("why") for r in json.load(sys.stdin)["charterers_gone"]}))')" "['left']" \
+  "  public(): a free-text why leaves as left (only left, lapsed, ended leave as they are)"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by 'bad id' 2>&1); check "$?" "2" "a --by that is no session id: a usage error, exit 2"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by "$(printf 'sess-a\nx')" 2>&1); check "$?" "2" "  one with a newline in it too"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by $'sess-a\n' 2>&1); check "$?" "2" "  one ending in a newline (fullmatch, never \$)"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-a --from "laptop
+" 2>&1); check "$?" "2" "  a --from with a trailing newline too (fullmatch, never \$)"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 2>&1); check "$?" "2" "no --by and no session: refused"
+has "$out" "pass --by <session id>" "  it says what to pass"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-a --why x 2>&1); check "$?" "2" "--why on a join: refused (a leave's)"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join nosuch --by sess-a 2>&1); check "$?" "6" "no such ship: refused, exit 6"
+# a Talk REPORT is a task's news: charter keys in one are dropped, so no REPORT charters past the verb's refusals
+cat > "$T/report.py" <<'PY'
+import importlib.machinery, importlib.util, json, sys
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_loader("askcli", importlib.machinery.SourceFileLoader("askcli", sys.argv[1] + "/ask"))
+ask = importlib.util.module_from_spec(spec); spec.loader.exec_module(ask)
+import helmlib
+ok, _ = ask.append_report(json.dumps({"plan": "ch1", "progress": "p", "charter": "chartered", "charterer": "sess-r", "charterer_host": "x"}))
+e = helmlib.events("ch1")[-1]
+again, _ = ask.append_report(json.dumps({"plan": "ch1", "progress": "p"}))
+print(ok, "charter" in e, "charterer" in e, e.get("progress"), [r["session"] for r in helmlib.state("ch1")["charterers"] if r["session"] == "sess-r"], again)
+PY
+check "$(python3 "$T/report.py" "$B" 2>&1)" "True False False p [] False" \
+  "ask's REPORT intake drops a charter's keys from a ship-level REPORT: no charterer; the same body without them is its replay"
+# several ships in one call (one ssh call per yard, S5): each answered, the first refusal's code returned
+"$CH" ship other-demo --id ch2 >/dev/null; "$CH" task ch2 work >/dev/null
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch2 nosuch ch1 --by sess-m --from laptop 2>&1); check "$?" "6" "--join of several ships: the refusal's exit"
+has "$out" "ship ch2: other-demo chartered by sess-m@laptop" "  the open ship before it chartered"
+has "$out" "ship ch1: chartered-demo chartered by sess-m@laptop" "  and the one after it too"
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 nosuch ch2 --by sess-m --json 2>/dev/null | python3 -c 'import json, sys; print([(r["plan"], r["verdict"], r["cause"]) for r in json.load(sys.stdin)])')" \
+  "[('ch1', 'renewed', None), ('nosuch', 'refused', 'no-ship'), ('ch2', 'renewed', None)]" "--json: one verdict per ship, with its cause, for a caller with several"
+# one ship's torn read (an event whose time is no number) costs the others nothing: its row says error, exit 1
+"$CH" ship torn-demo --id ch6 >/dev/null; "$CH" task ch6 work >/dev/null
+echo '{"t": "noon", "task": "work", "status": "running"}' >> "$PLANS_DIR/ch6/events.jsonl"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch6 ch1 --by sess-m --json 2>/dev/null); check "$?" "1" "a ship whose state() raises: exit 1, could not tell"
+check "$(printf '%s' "$out" | python3 -c 'import json, sys; print([(r["plan"], r["verdict"]) for r in json.load(sys.stdin)])')" \
+  "[('ch6', 'error'), ('ch1', 'renewed')]" "  the ship after it renewed, and every ship has its row"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch6 ch1 --by sess-zz >/dev/null 2>&1; check "$?" "1" "  a crash (1) and a not-chartering (7): 1, the graver"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 ch6 --by sess-zz >/dev/null 2>&1; check "$?" "1" "  in either order"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 nosuch --by sess-zz >/dev/null 2>&1; check "$?" "6" "  a not-chartering (7) and a refusal (6) in one call: 6"
+CLAUDE_CODE_SESSION_ID= "$CH" charter --renew nosuch ch1 --by sess-zz >/dev/null 2>&1; check "$?" "6" "  in either order"
+# a failed block may be started again, a built one with a branch is not landed yet: neither ends the ship
+"$CH" report ch2 --task work --status failed --progress "the build broke" >/dev/null
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch2 --by sess-f --from laptop)" "ship ch2: other-demo chartered by sess-f@laptop" "a ship whose block failed has not ended (a retry may come): chartered"
+"$CH" task ch2 work --branch claude/x/2026-11-01-work >/dev/null
+"$CH" report ch2 --task work --status done >/dev/null
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch2 --by sess-g --from laptop)" "ship ch2: other-demo chartered by sess-g@laptop" "  nor one whose block with a branch is done, not landed"
+# an ended ship refuses a join and a renewal, naming its end; a leave still goes
+"$CH" report ch2 --task work --status launched >/dev/null
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch2 --by sess-n 2>&1); check "$?" "6" "charter --join of an ended ship: refused, exit 6"
+has "$out" "ship ch2 has ended (every block ended: work launched)" "  naming its end"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch2 --by sess-m 2>&1); check "$?" "6" "  a renewal of an ended ship: refused, so the charterer stops"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch2 --by sess-m); check "$?/$out" "0/ship ch2: sess-m left" "  a leave of an ended ship goes"
+"$CH" ship landed-demo --id ch3 >/dev/null; "$CH" task ch3 work >/dev/null
+"$CH" report ch3 --task work --status launched >/dev/null
+python3 - "$PLANS_DIR/ch3/plan.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p["tasks"]["work"]["pr"] = "https://example.invalid/pull/12"; json.dump(p, open(sys.argv[1], "w"))
+PY
+has "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch3 --by sess-n 2>&1)" "every block ended: work launched https://example.invalid/pull/12" "  a launched block's end names its PR"
+# wharf closes a ship's record once every block is done (its ENDED), before a branch lands: its close is the
+# end only where the blocks have ended too
+"$CH" ship closed-demo --id ch4 >/dev/null; "$CH" task ch4 work --branch claude/x/2026-11-01-closed >/dev/null
+"$CH" report ch4 --task work --status done >/dev/null
+python3 - "$PLANS_DIR/ch4/plan.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p["blueprints"] = {"bp": {"ended": 1, "orca_run": "r1"}}; json.dump(p, open(sys.argv[1], "w"))
+PY
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch4 --by sess-n --from laptop 2>&1)" "ship ch4: closed-demo chartered by sess-n@laptop" \
+  "  a ship wharf closed at done, its branch not landed: not ended, chartered (the charterer waits to hear the landing)"
+"$CH" report ch4 --task work --status launched >/dev/null
+has "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch4 --by sess-o 2>&1)" "ship ch4 has ended (wharf closed its blueprint record)" "  once launched too, wharf's close is named as the end"
+# block_ended's roads, one block each (landed.py's verdict stood in for: the suite has no clone to prove from)
+cat > "$T/ended.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_loader("helmcli", importlib.machinery.SourceFileLoader("helmcli", sys.argv[2]))
+h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+import helmlib
+said = {}
+helmlib.dep_landed = lambda t, plan: (said.get(t["branch"], "unknown"), "")
+B = lambda status, **k: dict({"status": status, "kind": "session", "branch": None, "superseded": False, "blueprint": None}, **k)
+said["claude/x/landed"] = "landed"
+rows = [("launched", B("launched")), ("failed", B("failed")), ("planned superseded", B("planned", superseded=True)),
+        ("done human", B("done", kind="human")), ("done shell", B("done", blueprint={"provider": "shell"})),
+        ("done no branch", B("done")), ("done branch held", B("done", branch="claude/x/held")),
+        ("done branch landed", B("done", branch="claude/x/landed")), ("running", B("running", branch="claude/x/landed"))]
+print("; ".join("%s %s" % (n, h.block_ended(t, {})) for n, t in rows))
+PY
+check "$(python3 "$T/ended.py" "$B" "$LX/helm" 2>&1)" \
+  "launched True; failed False; planned superseded True; done human True; done shell True; done no branch False; done branch held False; done branch landed True; running False" \
+  "block_ended: launched, superseded, or done where done is its end or its branch landed; never failed, nor a session block done with no branch or one not landed"
+"$CH" ship bare-demo --id ch7 >/dev/null
+python3 - "$PLANS_DIR/ch7/plan.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p["blueprints"] = {"bp": {"ended": 1}}; json.dump(p, open(sys.argv[1], "w"))
+PY
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch7 --by sess-n --from laptop 2>&1)" "ship ch7: bare-demo chartered by sess-n@laptop" \
+  "a ship wharf closed with no block: not ended, as ship_end reads it"
+# the end is read again under the lock: a last block launched (and wharf's close) between the first read and the
+# lock refuses the join, and writes nothing
+"$CH" ship racing-demo --id ch8 >/dev/null; "$CH" task ch8 work >/dev/null; "$CH" report ch8 --task work --status running >/dev/null
+cat > "$T/inlock.py" <<'PY'
+import contextlib, importlib.machinery, importlib.util, json, sys
+sys.path.insert(0, sys.argv[1])
+spec = importlib.util.spec_from_loader("helmcli", importlib.machinery.SourceFileLoader("helmcli", sys.argv[2]))
+h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+import helmlib
+real = helmlib.locked
+
+
+@contextlib.contextmanager
+def racing(pid):
+    helmlib.append_event(pid, {"task": "work", "status": "launched"})
+    with real(pid):
+        yield
+
+
+helmlib.locked = racing
+code, verdict, cause, _ = h.charter_one("--join", "ch8", "sess-l", "laptop", None, None, "laptop")
+print(code, verdict, cause, [e for e in helmlib.events("ch8") if e.get("charter")])
+PY
+check "$(python3 "$T/inlock.py" "$B" "$LX/helm" 2>&1)" "6 refused ended []" "  a block launched between the first read and the lock: refused under the lock, nothing written"
+"$CH" ship fresh-demo --id ch5 >/dev/null
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch5 --by sess-n --from laptop)" "ship ch5: fresh-demo chartered by sess-n@laptop" "a ship with no block yet has not ended: chartered"
+printf '[]\nnull\n"x"\n' >> "$PLANS_DIR/ch5/events.jsonl"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch5 --by sess-n); check "$?/$out" "0/ship ch5: sess-n left" \
+  "  valid JSON that is no object breaks no charter read: the leave still goes (the landing review)"
+# the lapse, from events at fixed times (CHARTER_LAPSE, 900 s): every road but socket and mailbox lapses
+cat > "$T/lapse.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+E = lambda t, kind, sid, **k: dict({"t": t, "charter": kind, "charterer": sid}, **k)
+evs = [E(1000, "chartered", "talk-1", road="talk"), E(1000, "chartered", "sock-1", road="socket"),
+       E(1000, "chartered", "mail-1", road="mailbox"), E(1600, "charter renewed", "talk-1")]
+# today no road reads an end back (hail's verdicts carry no `ended`): every charter lapses, socket and mailbox too
+print(helmlib.CHARTER_SEES_END, [(r["session"], r["gone"]) for r in helmlib.charterers(evs, 99999)[1]])
+# the roads a later step names (S2's mailbox, S4's socket read) stop lapsing: the rest below runs as if both were
+helmlib.CHARTER_SEES_END = ("socket", "mailbox")
+for at in (1600 + 899, 1600 + 901, 99999):
+    live, gone = helmlib.charterers(evs, at)
+    print(at - 1600, [r["session"] for r in live], [(r["session"], r["why"], r["gone"]) for r in gone])
+# a renewal that comes after the lapse is no charter: the session joins again
+live, gone = helmlib.charterers(evs + [E(1600 + 1000, "charter renewed", "talk-1")], 1600 + 1001)
+print([r["session"] for r in live], [(r["session"], r["why"]) for r in gone])
+live, _ = helmlib.charterers(evs + [E(1600 + 1000, "chartered", "talk-1", road="talk")], 1600 + 1001)
+print([(r["session"], r["since"]) for r in live if r["session"] == "talk-1"])
+# a road that changes to talk lapses from then on; one that changes away stops lapsing
+live, gone = helmlib.charterers([E(0, "chartered", "x", road="talk"), E(100, "charter renewed", "x", road="socket")], 5000)
+print([r["session"] for r in live], len(gone))
+live, gone = helmlib.charterers([E(0, "chartered", "x", road="socket"), E(100, "charter renewed", "x", road="talk")], 1001)
+print([r["session"] for r in live], [(r["why"], r["gone"]) for r in gone])
+# no road named, and a road hail reads no end on (codex), lapse as talk does; a road hail has not is ignored
+live, gone = helmlib.charterers([E(0, "chartered", "n"), E(0, "chartered", "c", road="codex"), E(0, "chartered", "s", road="socket"),
+                                 E(0, "chartered", "b", road="bogus", charterer_host=7)], 10 ** 7)
+print([(r["session"], r["road"], r["host"]) for r in live], [(r["session"], r["why"]) for r in gone])
+# a stray renewal or leave (no join before it), an unknown kind, a charterer that is no string, a task's line, a
+# line a wire intake wrote (via, wire): nothing; a task line whose time is no number breaks nothing
+print(helmlib.charterers([E(0, "charter renewed", "y"), E(0, "charter left", "z"), E(0, "charter joined", "w"),
+                          {"t": 0, "charter": "chartered", "charterer": 7}, E(0, "chartered", "v", task="build"),
+                          E(0, "chartered", "u", via="talk"), E(0, "chartered", "q", wire="k1"),
+                          {"t": "noon", "task": "x", "status": "running"}], 10))
+print([r["session"] for r in helmlib.charterers([{"t": "noon", "task": "x"}, E(5, "chartered", "ok")], 10)[0]])
+# the file's order, never the stamps (the closing review): a rejoin written after a leave stamped ahead of it is live;
+# a renewal stamped behind its join counts from its own stamp; a leave whose time is no number still leaves
+live, gone = helmlib.charterers([E(0, "chartered", "k"), E(5000, "charter left", "k"), E(100, "chartered", "k")], 200)
+print([(r["session"], r["since"]) for r in live], gone)
+live, gone = helmlib.charterers([E(1000, "chartered", "x"), E(500, "charter renewed", "x")], 1450)
+print([r["session"] for r in live], [(r["session"], r["why"], r["gone"]) for r in gone])
+live, gone = helmlib.charterers([E(1000, "chartered", "k"), {"t": "noon", "charter": "charter left", "charterer": "k"}], 1200)
+print([r["session"] for r in live], [(r["session"], r["why"]) for r in gone])
+PY
+check "$(python3 "$T/lapse.py" "$B")" "() [('talk-1', 2500), ('sock-1', 1900), ('mail-1', 1900)]
+899 ['talk-1', 'sock-1', 'mail-1'] []
+901 ['sock-1', 'mail-1'] [('talk-1', 'lapsed', 2500)]
+98399 ['sock-1', 'mail-1'] [('talk-1', 'lapsed', 2500)]
+['sock-1', 'mail-1'] [('talk-1', 'lapsed')]
+[('talk-1', 2600)]
+['x'] 0
+[] [('lapsed', 1000)]
+[('s', 'socket', None)] [('n', 'lapsed'), ('c', 'lapsed'), ('b', 'lapsed')]
+([], [])
+['ok']
+[('k', 100)] []
+[] [('x', 'lapsed', 1400)]
+[] [('k', 'left')]" "charterers(): every charter lapses 15 min after its last renewal, at that time, today; a road CHARTER_SEES_END names never does; a late renewal is no charter, a join a new one; only the verb's own lines count"
+python3 - "$PLANS_DIR/ch1/events.jsonl" <<'PY'
+import json, sys, time
+open(sys.argv[1], "a").write(json.dumps({"t": time.time() - 3600, "charter": "chartered", "charterer": "sess-old", "charterer_host": "laptop", "road": "talk"}) + "\n")
+PY
+check "$(chst '[r["session"] for r in d["charterers"] if r["session"] == "sess-old"], [r["why"] for r in d["charterers_gone"] if r["session"] == "sess-old"]')" \
+  "[] ['lapsed']" "state(): a Talk charterer an hour unrenewed reads lapsed"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-old 2>&1); check "$?" "7" "  its renewal: exit 7"
+has "$out" "(lapsed)" "  naming the lapse"
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-old --json 2>/dev/null | python3 -c 'import json, sys; r = json.load(sys.stdin)[0]; print(r["verdict"], r["cause"])')" \
+  "not-chartering lapsed" "  its leave: not chartering, cause lapsed (as the renewal reads it)"
+check "$(CLAUDE_CODE_SESSION_ID= "$CH" charter --leave ch1 --by sess-never --json 2>/dev/null | python3 -c 'import json, sys; r = json.load(sys.stdin)[0]; print(r["verdict"], r["cause"])')" \
+  "not-chartering never" "  a leave of a session that never joined: cause never"
+# a usage error under --json still gives a row per ship; this Mac's name, when it is no host name, is said as such
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 ch5 --json 2>/dev/null); check "$?" "2" "--json with no --by: a usage error, exit 2"
+check "$(printf '%s' "$out" | python3 -c 'import json, sys; print([(r["plan"], r["verdict"], r["cause"]) for r in json.load(sys.stdin)])')" \
+  "[('ch1', 'error', 'usage'), ('ch5', 'error', 'usage')]" "  and a row per ship on stdout, for a caller that reads the rows"
+out=$(HARNESS_HOST='bad host' CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch1 --by sess-h 2>&1); check "$?" "2" "a join with no --from where this Mac's name is no host name: exit 2"
+has "$out" "this Mac's name 'bad host'" "  naming this Mac's name, never a --from it was not given"
+out=$(HARNESS_HOST='bad host' CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch1 --by sess-a 2>&1); check "$?" "0" "  a bare renewal there goes: it writes no host (the closing review)"
+check "$(chst '[r["host"] for r in d["charterers"] if r["session"] == "sess-a"]')" "['laptop-2']" "  and keeps the Mac it had"
+# a clock that stepped back (a Linux yard's can): a rejoin after a leave stamped later still reads as after it
+"$CH" ship clock-demo --id ch9 >/dev/null; "$CH" task ch9 work >/dev/null
+CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch9 --by sess-k --from laptop >/dev/null
+CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch9 --by sess-x --from laptop >/dev/null
+python3 -c 'import json, sys, time; open(sys.argv[1], "a").write(json.dumps({"t": time.time() + 2000, "charter": "charter left", "charterer": "sess-k", "why": "left"}) + "\n")' "$PLANS_DIR/ch9/events.jsonl"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --join ch9 --by sess-k --from laptop); check "$?/$out" "0/ship ch9: clock-demo chartered by sess-k@laptop" \
+  "a join after a leave stamped ahead of this clock: chartered (the closing review)"
+check "$("$CH" state ch9 | python3 -c 'import json, sys; d = json.load(sys.stdin); print([r["session"] for r in d["charterers"]], [r["session"] for r in d["charterers_gone"]])')" \
+  "['sess-x', 'sess-k'] []" "  and state() reads it live: the file's order, never the stamps', orders a session's lines"
+out=$(CLAUDE_CODE_SESSION_ID= "$CH" charter --renew ch9 --by sess-x); check "$?/$out" "0/ship ch9: clock-demo renewed by sess-x@laptop" \
+  "  another charterer's renewal goes: one session's line ahead of the clock lapses nobody else"
+check "$("$CH" state ch9 | python3 -c 'import json, sys; d = json.load(sys.stdin); print([r["session"] for r in d["charterers"]])')" \
+  "['sess-x', 'sess-k']" "  and state() still reads both live"
+
+echo "helm-board S2: the Decide feed's state — the fields, the queue, Later, the guard, the deploy check"
+S2B="$T/s2board"; mkdir -p "$S2B/ask" "$S2B/plan"
+cat > "$S2B/s2.py" <<'PY'
+import sys, os, json, time
+sys.path.insert(0, sys.argv[1])
+import helm_render as r, helmlib
+r._KEEL[:] = [None]   # no keel pins here: no course link, no frame
+own = helmlib.columns()[0]
+sec = lambda w: {"crumb": "The road", "above": w, "table": None, "item": "- **D1 — x**"}
+rows = [{"repo": "alpha", "branch": "claude/a", "rel": "docs/a.md", "item": "D1", "title": "waits", "t": 300, "hash": "h-a1",
+         "section": sec("why a"), "options": [["A", "fast"]], "line": 12, "step_waits": ["S2"], "worktree": "projects/alpha",
+         "summary": "the doc a", "doc_title": "Doc A", "recommended": "A", "reversible": "yes", "sha": "abc"},
+        {"repo": "alpha", "branch": "claude/a", "rel": "docs/a.md", "item": "D2", "title": "second", "t": 300, "hash": "h-a2",
+         "section": sec("why a2"), "line": 30, "summary": "the doc a", "doc_title": "Doc A"},
+        {"repo": "beta", "branch": "claude/b", "rel": "docs/b.md", "item": "D1", "title": "one way", "t": 200, "hash": "h-b1",
+         "section": sec("why b"), "line": 5, "reversible": "no", "doc_title": "Doc B"},
+        {"repo": "gamma", "branch": "claude/g", "rel": "docs/g.md", "item": "D4", "title": "old", "t": 100, "hash": "h-g4",
+         "section": sec("why g"), "line": 9, "doc_title": "Doc G"},
+        {"repo": "gamma", "branch": "claude/g", "rel": "docs/s.md", "item": "D1", "title": "snoozed", "t": 50, "hash": "h-s1", "line": 3},
+        {"repo": "gamma", "branch": "claude/g", "rel": "docs/c.md", "item": "D1", "title": "changed since", "t": 60, "hash": "h-new", "line": 3},
+        {"repo": "gamma", "branch": "claude/g", "rel": "docs/w.md", "item": "D1", "title": "woke", "t": 70, "hash": "h-w1", "line": 3}]
+open(os.path.join(os.environ["ASK_CACHE_DIR"], "asks.json"), "w").write(json.dumps({"asks": rows}))
+cards = r.poll_cards({})
+a = cards[0]
+print(a["key"], a["rel"], a["item"], a["hash"], a["line"], a["step_waits"], a["worktree"], a["summary"], a["doc_title"], a["sha"], "frame" in a, a["updated"])
+cards += [r._card("pr", "#7 ready", own, repo="alpha", url="https://github.com/o/alpha/pull/7"),
+          r._card("stall", "S6 deaf 3h", own, repo="beta", session="s-1"),
+          r._card("human", "call the bank", own, repo="alpha", by="sam"),
+          r._card("task", "Pick the look", own, plan_id="p1", repo="alpha"),
+          r._card("lookout", "docs/x.md D9", own, repo="alpha", doc="alpha@claude/x:docs/x.md"),
+          r._card("lookout", "docs/x.md D10", own, repo="alpha", doc="alpha@claude/x:docs/x.md"),
+          r._card("ask", "secret", own, repo="vault", ref="docs/v.md#D1", branch="claude/v", guarded=True, key="vault@claude/v:docs/v.md#D1",
+                  section=sec("private words"), summary="private", hash="h-v", worktree="projects/vault", rel="docs/v.md")]
+r.key_cards([c for c in cards if c["column"] == own])
+r.strip_guarded(cards)
+g = cards[-1]
+print(sorted(g), g["key"].startswith("guarded:"), "private" in json.dumps(g) or "docs/v.md" in json.dumps(g))
+print([c["key"] for c in cards if c["kind"] == "lookout"])
+now = time.time()
+later = [{"key": "gamma@claude/g:docs/s.md#D1", "hash": "h-s1", "kind": "snooze", "until": None, "at": "t"},
+         {"key": "gamma@claude/g:docs/c.md#D1", "hash": "h-old", "kind": "snooze", "until": None, "at": "t"},
+         {"key": "gamma@claude/g:docs/w.md#D1", "hash": "h-w1", "kind": "snooze", "until": helmlib.iso(now - 60), "at": "t"},
+         {"key": "pr:https://github.com/o/alpha/pull/7", "hash": r.card_hash(cards[7]), "kind": "done", "at": "t"},
+         {"key": "stall:beta/s-1", "hash": r.card_hash(dict(cards[8], title="S2 quiet 1h")), "kind": "done", "at": "t"},
+         {"kind": "snooze"}, "junk"]
+open(r.board_state_file(), "w").write(json.dumps({"later": later}))
+q, lat = r.decide_queue(cards, r.read_later())
+print([(d["key"], d["open"], d["why"]) for d in q["docs"]])
+print(q["docs"][0]["items"], q["docs"][0]["summary"], q["docs"][0]["title"], q["docs"][0]["worktree"],
+      [(k, ["GUARDED" if x == g["key"] else x for x in v]) for k, v in q["groups"]])
+print([(x["key"], x["kind"]) for x in lat])
+st = lambda cs, lt=(): {"columns": [{"name": own, "cards": cs}], "header": {}, "later": list(lt)}
+base = [dict(a)]
+moved = [dict(a, hash="h-a1b")]
+pick = [dict(a, recommended="B")]
+lock = [dict(a, reversible="no")]
+print(r.board_sig(st(base)) == r.board_sig(st([dict(a, updated="later")])), r.board_sig(st(base)) != r.board_sig(st(moved)),
+      r.board_sig(st(base)) != r.board_sig(st(pick)), r.board_sig(st(base)) != r.board_sig(st(lock)),
+      r.board_sig(st(base)) != r.board_sig(st(base, [{"key": "k"}])))
+# a ship's ask (its task names a worktree's folder, or no repo) and the poll's card of the same item: one card
+ship = [r._card("ask", "D1", own, plan_id="p1", task="t1", ref="docs/a.md#D1", repo=r.repo_name("/x/alpha/.claude/worktrees/wt")),
+        r._card("ask", "D2", own, plan_id="p2", task="t2", ref="docs/g.md#D4"),
+        r._card("task", "Review", own, plan_id="p1", task="t3"), r._card("task", "Review", own, plan_id="p2", task="t3"),
+        r._card("task", "Review", own, plan_id="p2", title2="x")]
+merged = r.absorb_polled(ship, r.poll_cards({}))
+r.key_cards([c for c in merged if c["column"] == own])
+keys = [c["key"] for c in merged]
+print(len(merged), len(keys) == len(set(keys)), merged[0]["key"], merged[0]["repo"], merged[0].get("section", {}).get("above"),
+      merged[1]["key"], merged[1]["repo"], keys[2:5])
+PY
+check "$(ASK_CACHE_DIR="$S2B/ask" PLAN_CACHE_DIR="$S2B/plan" python3 "$S2B/s2.py" "$B" 2>&1)" \
+  "alpha@claude/a:docs/a.md#D1 docs/a.md D1 h-a1 12 ['S2'] projects/alpha the doc a Doc A abc False 300
+['column', 'guarded', 'hash', 'key', 'kind', 'repo', 'title'] True False
+['lookout:alpha@claude/x:docs/x.md|docs/x.md D9', 'lookout:alpha@claude/x:docs/x.md|docs/x.md D10']
+[('alpha@claude/a:docs/a.md', 2, '↑ first: S2 waits on D1'), ('beta@claude/b:docs/b.md', 1, 'holds 1 irreversible'), ('gamma@claude/g:docs/c.md', 1, 'oldest first'), ('gamma@claude/g:docs/w.md', 1, 'oldest first'), ('gamma@claude/g:docs/g.md', 1, 'oldest first')]
+['alpha@claude/a:docs/a.md#D1', 'alpha@claude/a:docs/a.md#D2'] the doc a Doc A projects/alpha [('unstick', ['stall:beta/s-1', 'lookout:alpha@claude/x:docs/x.md|docs/x.md D9', 'lookout:alpha@claude/x:docs/x.md|docs/x.md D10']), ('people', ['human:alpha/call the bank']), ('tasks', ['task:p1/Pick the look']), ('other', ['GUARDED'])]
+[('gamma@claude/g:docs/s.md#D1', 'snooze'), ('pr:https://github.com/o/alpha/pull/7', 'done')]
+True True True True True
+10 True alpha@claude/a:docs/a.md#D1 alpha why a gamma@claude/g:docs/g.md#D4 gamma ['task:p1/t3', 'task:p2/t3', 'task:p2/Review']" \
+  "an ask card carries the poll's fields and its key; a guarded card keeps its column and repo, a digest key, and none of its doc's words; two lookout cards of one doc keep two keys; the queue's docs in order (an S-step waits, one way, then oldest) with their reason, the doc's items by line under its title and Summary, the other cards by what they need; Later holds a snooze while its hash stands and a done, never a changed item or a woken one; the deploy check moves with the hash, the pick, the lock and Later, never an age; a done stall that changed comes back; a ship's ask and the poll's card of its item are one card with the poll's key and repo (a worktree's folder, no repo at all), and every key in the column is its own"
+
+echo "helm-board S2: the ship ladder's data — due, the projected ETA and its slip, the hill, where the money comes from"
+LAD="$T/s2ladder"; mkdir -p "$LAD"
+# the doc a ship compiled from: two D-items, one answered (the hill's uphill)
+printf '# Doc\n\n## Decisions\n\n- **D1 — one?**\n  - A — a\n  - B — b\n\n  Reversible: yes\n\n  ➤ Recommended: A\n\n  ➤ Answer:\n  A\n\n- **D2 — two?**\n  - A — a\n  - B — b\n\n  Reversible: yes\n\n  ➤ Recommended: A\n\n  ➤ Answer:\n\n' > "$LAD/d.md"
+cat > "$LAD/lad.py" <<'PY'
+import sys, json
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+H = 3600.0
+at = 1_800_000_000.0
+def task(i, status="planned", **kw):
+    return dict({"id": i, "title": i, "status": status, "deps": [], "eta": None, "started": None, "updated": None,
+                 "cost": None, "est_to_go": None, "est_kind": None, "asks": [], "blockers": []}, **kw)
+# a built (4 h), b built (2 h): the step length is their median, 3 h
+built = [task("a", "done", started=at - 10 * H, updated=at - 6 * H, cost=1.0),
+         task("b", "landed", started=at - 6 * H, updated=at - 4 * H, cost=0.5)]
+st = {"id": "s", "due": at + 24 * H, "started": at - 10 * H, "cost": None, "totals": {"cost": 2.0, "est_to_go": 3.0},
+      "tasks": built + [
+          task("c", "running", deps=["b"], eta=at + 2 * H, started=at - H, cost=0.5, est_to_go=1.0, est_kind="manager"),
+          task("d", deps=["c"]),                                   # no ETA: one step after c
+          task("e", deps=["d"], eta=at + 3 * H,                    # its ETA is before d ends: pushed
+               asks=[{"ref": "docs/d.md#D2", "open": True}]),
+          task("f", eta=at - H, status="running", started=at - 5 * H),   # past its ETA: now
+          task("g", "failed", started=at - 3 * H, updated=at - 2 * H),   # a fix round owed: projected from now
+          task("x", superseded=True)]}
+ends, step, src = helmlib.task_ends(st, at)
+print(int(step / H), src, {k: (round((v[0] - at) / H, 1), v[1]) for k, v in sorted(ends.items()) if k not in ("a", "b")})
+lad = helmlib.ladder(st, at, (1, 2))
+print(round((lad["eta"] - at) / H, 1), lad["slip_days"], lad["late"], lad["shipped"], lad["eta_from"], lad["assumes_answered"])
+print(lad["hill"], lad["spent"], lad["est_to_go"], lad["est"], lad["est_from"], lad["to_go_from"], lad["cost_from"])
+# late: due an hour from now; the ship's own cost to deliver stands for the estimate
+late = helmlib.ladder(dict(st, due=at + H, cost=9.0), at)
+print(late["slip_days"], late["late"], late["est"], late["est_from"], late["hill"]["decisions"])
+# shipped: every step built — no ETA, the slip is the last step's against due
+done = helmlib.ladder({"id": "s", "due": at - 24 * H, "totals": {}, "tasks": built}, at)
+print(done["eta"], round((done["shipped"] - at) / H, 1), done["slip_days"], done["late"], done["hill"]["steps"])
+# no due, no steps, no ETA anywhere: nothing guessed but the default step length
+none = helmlib.ladder({"id": "s", "totals": {}, "tasks": []}, at)
+print(none["due"], none["eta"], none["slip_days"], none["shipped"], none["step_len_from"], none["hill"])
+lone = helmlib.ladder({"id": "s", "totals": {}, "tasks": [task("only")]}, at)
+print(round((lone["eta"] - at) / H, 1), lone["step_len_from"], lone["eta_from"])
+# a cycle is cut where it closes; a dependency the ship does not hold adds nothing
+cyc = helmlib.task_ends({"tasks": [task("p", deps=["q"]), task("q", deps=["p", "zz"])]}, at)[0]
+print(sorted((k, round((v[0] - at) / H, 1)) for k, v in cyc.items()))
+# the docs' decision counts: keel's parse of the ship's docs; one that does not read counts nothing
+print(r.doc_decision_counts([sys.argv[2], sys.argv[2] + ".gone"]), r.doc_decision_counts([sys.argv[2] + ".gone"]), r.doc_decision_counts([]))
+# timeline() carries the ladder and each bar's projected end
+row = r.timeline([dict(st, ladder=lad, milestones=[])], at)[0]
+bars = {b["id"]: (round((b["end"] - at) / H, 1), b["projected"]) for b in row["bars"]}
+print(row["ladder"]["slip_days"], bars["a"], bars["c"], bars["d"], bars["e"], bars["f"], bars["g"])
+PY
+check "$(python3 "$LAD/lad.py" "$B" "$LAD/d.md" 2>&1)" \
+"3 the median of 2 built steps {'c': (2.0, 'eta'), 'd': (5.0, 'projected'), 'e': (8.0, 'pushed'), 'f': (0.0, 'overrun'), 'g': (3.0, 'projected')}
+8.0 -0.7 False None {'eta': 1, 'overrun': 1, 'projected': 2, 'pushed': 1} ['D2']
+{'decisions': [1, 2], 'steps': [2, 7]} 2.0 3.0 5.0 its steps {'none': 4, 'skipper': 1} {'reported': 3, 'unreported': 2}
+0.3 True 9.0 the ship (helm ship --cost) None
+None -4.0 0.8 True [2, 2]
+None None None None the default {'decisions': None, 'steps': [0, 0]}
+3.0 the default {'projected': 1}
+[('p', 6.0), ('q', 3.0)]
+(1, 2) None None
+-0.7 (-6.0, None) (2.0, None) (5.0, 'projected') (8.0, 'pushed') (0.0, 'overrun') (3.0, 'projected')" \
+  "the step length is the built steps' median; each open step ends along the dependency order — its ETA, now when that passed, one step after a dependency that ends past it, one step after it may start with none (a failed step's fix round too); the ship's ETA is the last, its slip in days against due, the open decisions it takes as answered; the hill: answered of all decisions from the docs, built of all steps, a superseded one in neither; the money: spent, to go and the estimate, each with its source, and the steps begun with no cost reported; late, shipped and empty ships; a cycle is cut where it closes; the timeline's row carries the ladder and each bar its projected end"
+echo "  helm show and the ship's page carry the ladder"
+"$HM" $SHIP ladder --id lad-1 --due 2099-01-01 > /dev/null
+"$HM" task lad-1 one --title One > /dev/null
+python3 -c "
+import json, sys; p = sys.argv[1]; d = json.load(open(p)); d['tasks']['one']['doc'] = sys.argv[2]; json.dump(d, open(p, 'w'))" "$PLANS_DIR/lad-1/plan.json" "$LAD/d.md"
+out=$("$HM" show lad-1)
+has "$out" "(1 projected) " "  the ETA and how it was reached"
+has "$out" "hill 1/2 decided, 0/1 built" "  the hill, its decisions read from the ship's doc"
+has "$out" "from its steps; 0 steps report cost" "  where the money comes from"
+"$HM" render lad-1 > /dev/null 2>&1
+check "$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['ladder']['hill'], d['ladder']['due'] is not None, 'docs' in d)" "$T/cache/lad-1/state.json")" \
+  "{'decisions': [1, 2], 'steps': [0, 1]} True False" "  the ship's page carries the ladder, the hill read from its doc, never the doc's path"
+hasnt "$(cat "$T/cache/lad-1/state.json")" "$LAD" "  no path of the doc in the page's state"
+
+echo "helm-board S2, review round 1: the projection's floors, the built time, the stream's copy, the guard, the keys"
+cat > "$LAD/r1.py" <<'PY'
+import sys, json, os
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+H = 3600.0
+at = 1_800_000_000.0
+def task(i, status="planned", **kw):
+    return dict({"id": i, "title": i, "status": status, "deps": [], "eta": None, "started": None, "updated": None,
+                 "cost": None, "est_to_go": None, "est_kind": None, "asks": [], "blockers": []}, **kw)
+# built 3 h each (built_at); a's landing 20 h later never lengthens the step nor moves its end
+a = task("a", "landed", started=at - 30 * H, built_at=at - 27 * H, updated=at - 7 * H)
+b = task("b", "done", started=at - 12 * H, built_at=at - 9 * H, updated=at - 9 * H)
+ends, step, _ = helmlib.task_ends({"tasks": [a, b,
+    task("late", deps=["b"], eta=at - 10 * H),                  # its dependency ended past its ETA, but in the past: now
+    task("run", "running", deps=["a"], started=at - 2.5 * H)]}, at)  # under way 2.5 h, its dependency built: 0.5 h to go
+print(int(step / H), round((ends["a"][0] - at) / H, 1), ends["late"][1], round((ends["late"][0] - at) / H, 1),
+      ends["run"][1], round((ends["run"][0] - at) / H, 1))
+# state() keeps the first DONE time; a reopened step is built again later
+helmlib.load_plan = lambda pid: {"id": pid, "tasks": {"s": {}}}
+helmlib.events = lambda pid: [{"task": "s", "status": "running", "t": 100}, {"task": "s", "status": "done", "t": 200},
+                              {"task": "s", "status": "landed", "t": 900}, {"task": "s", "cost": 1.0, "t": 950}]
+print(helmlib.state("p")["tasks"][0]["built_at"])
+helmlib.events = lambda pid: [{"task": "s", "status": "done", "t": 200}, {"task": "s", "status": "running", "t": 300},
+                              {"task": "s", "status": "done", "t": 400}]
+print(helmlib.state("p")["tasks"][0]["built_at"])
+# stalls' minute ages leave the key and the hash
+print(r.AGE_RE.sub("", "gone 37m").strip(), r.card_hash({"kind": "stall", "title": "gone 37m"}) == r.card_hash({"kind": "stall", "title": "gone 52m"}))
+PY
+check "$(PLAN_CACHE_DIR="$LAD/c" python3 "$LAD/r1.py" "$B" 2>&1)" "3 -27.0 overrun 0.0 projected 0.5
+200
+400
+gone True" \
+  "a built step's time is its first done (never its landing); a dependency that ended in the past pushes nothing; a running step counts from its own start with its dependency built; a reopened step is built again; a minute age moves no hash"
+cat > "$LAD/r2.py" <<'PY'
+import sys, json, os
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+r._KEEL[:] = [None]
+own = helmlib.columns()[0]
+rows = [{"repo": "alpha", "branch": "claude/a", "rel": "docs/a.md", "item": "D1", "title": "pick one", "t": 300, "hash": "h1",
+         "section": {"crumb": "c", "above": "the doc's words", "table": None, "item": "- **D1**"}, "summary": "the summary",
+         "doc_title": "Doc A", "options": [["A", "x"]], "line": 4}]
+open(os.path.join(os.environ["ASK_CACHE_DIR"], "asks.json"), "w").write(json.dumps({"asks": rows}))
+# a guard list that does not read: the card as main showed it, its title kept, the doc's words home
+helmlib.guard_unread = lambda fresh=False: True
+c = r.poll_cards({})[0]
+print(c["title"], c.get("guarded"), [f for f in ("section", "summary", "doc_title", "options") if f in c], c["hash"], c["line"])
+# a guarded card: its repo reads "guarded", its key a digest salted per host, stable across renders
+g = lambda: r.strip_guarded([r._card("ask", "x", own, repo="vault", key="vault@claude/v:docs/v.md#D1", item="D1", guarded=True)])[0]
+k1, k2 = g(), g()
+import hashlib
+print(k1["repo"], "item" in k1, k1["key"] == k2["key"], k1["key"] != "guarded:" + hashlib.sha256(b"vault@claude/v:docs/v.md#D1").hexdigest()[:12],
+      os.path.exists(os.path.join(os.environ["PLAN_CACHE_DIR"], "guard-salt")))
+# a ship's ask on an older branch of the doc still meets the poll's card of its item: one card
+helmlib.guard_unread = lambda fresh=False: False
+ship = [r._card("ask", "D1", own, plan_id="p1", task="t1", ref="docs/a.md#D1", repo="alpha", branch="claude/old")]
+merged = r.absorb_polled(ship, r.poll_cards({}))
+print(len(merged), merged[0]["key"])
+PY
+check "$(ASK_CACHE_DIR="$LAD" PLAN_CACHE_DIR="$LAD/c2" python3 "$LAD/r2.py" "$B" 2>&1)" "pick one None [] h1 4
+guarded False True True True
+1 alpha@claude/a:docs/a.md#D1" \
+  "a guard list that does not read keeps the doc's words home and the card as main showed it; a guarded card's repo reads guarded and its key is a per-host salted digest; a ship's ask on an older branch is the poll's card"
+ov=$("$HM" $BOARD --json)
+check "$(echo "$ov" | python3 -c "
+import json, sys; d = json.load(sys.stdin); own = d['columns'][0]['cards']
+print(all(c.get('hash') for c in own), all('ladder' in r for r in d['timeline']), len({c['key'] for c in own}) == len(own))")" "True True True" \
+  "  the board: every owner card carries the hash a snooze names and its own key, every ship row its ladder"
+check "$(ls "$PLANS_DIR" | grep -c '^ch6$')/$("$HM" $BOARD --json 2>&1 >/dev/null | grep -c 'ship ch6 skipped (TypeError')" "1/1" \
+  "  a torn ship (ch6, an event time that is no number) is skipped with one line; the board renders the rest"
+check "$("$HM" render lad-1 --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['kind'], d['ladder']['hill']['decisions'], 'docs' in d)")" \
+  "plan [1, 2] False" "  render --json, the live stream's value, carries the ladder and no doc path"
+
+echo "helm-board S2, review round 2: a D-list run's shared section, the guarded hash, the relayed ask, the exact branch first, the long-running step"
+printf '# Doc\n\n## Q\n\nThe trade-off, shared.\n\n| Option | Cost |\n| --- | --- |\n| A | 1 |\n\n- **D1 — one?**\n  - A — a\n\n  ➤ Answer:\n  A\n\n- **D2 — two?**\n  - A — a\n\n  ➤ Answer:\n\n- **D3 — three?**\n  - A — a\n\n  ➤ Answer:\n\n## R\n\n- **D4 — four?**\n  - A — a\n\n  ➤ Answer:\n\n' > "$LAD/run.md"
+cat > "$LAD/r3.py" <<'PY'
+import sys, json, os
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+k = r._keel()
+text = open(sys.argv[2]).read()
+_, d = helmlib.doc_decisions(k, text)
+print(sorted(d), d["D2"]["section"]["above"], d["D3"]["section"]["table"]["rows"], d["D4"]["section"]["above"] == "" and d["D4"]["section"]["table"] is None)
+_, e = helmlib.doc_decisions(k, text.replace("| A | 1 |", "| A | 2 |"))
+print(d["D2"]["hash"] != e["D2"]["hash"], d["D3"]["hash"] != e["D3"]["hash"], d["D4"]["hash"] == e["D4"]["hash"])
+own = helmlib.columns()[0]
+# a guarded card's hash moves when its item does, and is neither the item's hash nor constant
+g = lambda h: r.strip_guarded([r._card("ask", "x", own, repo="vault", key="vault@claude/v:docs/v.md#D1", hash=h, guarded=True)])[0]["hash"]
+print(g("h-1") != g("h-2"), g("h-1") == g("h-1"), g("h-1") != "h-1")
+# a relayed ship ask leaves the owner's poll card in Decide; the exact branch takes the card before an older one
+polled = lambda: [r._card("ask", "t", own, repo="alpha", branch="claude/new", rel="docs/a.md", item="D1", hash="h",
+                          key="alpha@claude/new:docs/a.md#D1", updated=500)]
+relayed = [r._card("ask", "D1", "Parked / Relayed", plan_id="p", task="t", ref="docs/a.md#D1", repo="alpha", branch="claude/new")]
+m = r.absorb_polled(relayed, polled())
+print(len(m), [c["column"] for c in m])
+ships = [r._card("ask", "D1", own, plan_id="p1", task="t", ref="docs/a.md#D1", repo="alpha", branch="claude/old", updated=100),
+         r._card("ask", "D1", own, plan_id="p2", task="t", ref="docs/a.md#D1", repo="alpha", branch="claude/new", updated=200)]
+m = r.absorb_polled(ships, polled())
+print(len(m), m[0].get("key"), m[1]["key"], m[1]["updated"])
+# a running step past a step's length reads overrun, ending now
+H = 3600.0; at = 1_800_000_000.0
+t = lambda i, s, **kw: dict({"id": i, "title": i, "status": s, "deps": [], "eta": None, "asks": []}, **kw)
+e = helmlib.task_ends({"tasks": [t("long", "running", started=at - 9 * H)]}, at)[0]
+print(e["long"][1], e["long"][0] == at)
+# the hill counts no guarded step's doc
+helmlib.load_plan = lambda pid: {"id": pid, "tasks": {"open": {"doc": "/o.md"}, "hid": {"doc": "/h.md", "repo": "/x/vault"}}}
+helmlib.events = lambda pid: []
+helmlib._guarded_repo = lambda repo: str(repo or "").endswith("vault")
+print(helmlib.state("p")["docs"])
+PY
+check "$(PLAN_CACHE_DIR="$LAD/c3" python3 "$LAD/r3.py" "$B" "$LAD/run.md" 2>&1)" "['D2', 'D3', 'D4'] The trade-off, shared. [['A', '1']] True
+True True True
+True True True
+2 ['Parked / Relayed', 'Needs Sam']
+2 None alpha@claude/new:docs/a.md#D1 200
+overrun True
+['/o.md']" \
+  "a D-list run carries its shared prose and table to each item, an answered first one included, and an edit of the table moves each hash, never another heading's; a guarded card's hash is salted and moves with its item; a relayed ship ask leaves the poll card in Decide; the exact branch takes the poll card first and keeps its opening time; a step running past a step's length reads overrun; the hill counts no guarded step's doc"
+
+echo "helm-board S2, review round 3: a retry's own start, a torn salt healed, a bad due, the waits reason, a thematic break"
+cat > "$LAD/r4.py" <<'PY'
+import sys, json, os
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+H = 3600.0
+now = helmlib.now()
+# a retry a minute old after a stall counts from itself; a fix round after done measures its own round
+helmlib.load_plan = lambda pid: {"id": pid, "tasks": {"s": {}, "f": {}}}
+helmlib.events = lambda pid: [{"task": "s", "status": "running", "t": now - 6 * H}, {"task": "s", "status": "blocked", "t": now - 5 * H},
+                              {"task": "s", "status": "running", "t": now - 60},
+                              {"task": "f", "status": "running", "t": now - 50 * H}, {"task": "f", "status": "done", "t": now - 48 * H},
+                              {"task": "f", "status": "running", "t": now - 2 * H}, {"task": "f", "status": "done", "t": now - H}]
+st = helmlib.state("p", now)
+ends, step, src = helmlib.task_ends(st, now)
+print(ends["s"][1], round((ends["s"][0] - now) / H, 1), round(step / H, 1), src)
+# a torn (short) salt is replaced once and then stands
+p = os.path.join(os.environ["PLAN_CACHE_DIR"], "guard-salt")
+os.makedirs(os.environ["PLAN_CACHE_DIR"], exist_ok=True)
+open(p, "w").write("")
+a, b = r.guard_salt(), r.guard_salt()
+print(a == b, len(a) >= 16, open(p).read().strip() == a, [f for f in os.listdir(os.environ["PLAN_CACHE_DIR"]) if f.endswith(".tmp")])
+# a due that will not read: the ship keeps its page, without a ladder
+v = r.plan_view(dict(st, due="soon", docs=[], guard_salt="x"), now)
+print(v["ladder"], len(v["tasks"]))
+# the waits reason names the item, whatever suffix the key took
+own = helmlib.columns()[0]
+c = r._card("ask", "t", own, repo="a", branch="b", rel="docs/x.md", item="D3", step_waits=["S1"], key="ask:p/t#D3|Which road")
+print(r.decide_queue([c])[0]["docs"][0]["why"])
+# a thematic break above a run is no one's trade-off
+text = "# D\n\n## Q\n\n---\n\n- **D1 — one?**\n  - A — a\n\n  ➤ Answer:\n\n- **D2 — two?**\n  - A — a\n\n  ➤ Answer:\n\n"
+_, d = helmlib.doc_decisions(r._keel(), text)
+print(repr(d["D1"]["section"]["above"]), repr(d["D2"]["section"]["above"]))
+PY
+check "$(PLAN_CACHE_DIR="$LAD/c4" python3 "$LAD/r4.py" "$B" 2>/dev/null)" "projected 1.0 1.0 the median of 1 built step
+True True True []
+None 2
+↑ first: S1 waits on D3
+'' ''" \
+  "a retry counts from its own round and a fix round measures itself; a torn salt is replaced once and stands, no tmp left; a due that will not read leaves the ship without a ladder; the waits reason names the item; a thematic break is no prose"
+
+echo "helm-board S2, the finish review: a resume is one round, a failed step's bad ETA, a later item's own prose, guarded asks apart, held cards' fields, the doc's order, the salt's mode"
+cat > "$LAD/r5.py" <<'PY'
+import sys, json, os
+sys.path.insert(0, sys.argv[1])
+import helmlib, helm_render as r
+H = 3600.0
+now = helmlib.now()
+# a run resuming after an ask is the same round: its start stands, and 10 h in it reads overrun
+helmlib.load_plan = lambda pid: {"id": pid, "tasks": {"w": {}}}
+helmlib.events = lambda pid: [{"task": "w", "status": "running", "t": now - 10 * H}, {"task": "w", "status": "waiting", "t": now - 9 * H},
+                              {"task": "w", "status": "running", "t": now - H}]
+st = helmlib.state("p", now)
+print(st["tasks"][0]["run_started"] == now - 10 * H, helmlib.task_ends(st, now)[0]["w"][1])
+# a failed step whose ETA will not read: task_ends and the timeline go on
+bad = {"id": "b", "tasks": [{"id": "f", "title": "f", "status": "failed", "deps": [], "eta": "soon", "asks": [], "blockers": []}],
+       "milestones": [], "totals": {}, "ladder": None}
+print(helmlib.task_ends(bad, now)[0]["f"][1], len(r.timeline([bad], now)[0]["bars"]))
+# a later item's own prose stays its own; the run's prose rides only the items with none
+text = ("# D\n\n## H\n\nSection prose P0.\n\n- **D1 — one?**\n  - A — a\n\n  ➤ Answer:\n\nOnly about D2: P2.\n\n"
+        "- **D2 — two?**\n  - A — a\n\n  ➤ Answer:\n\n- **D3 — three?**\n  - A — a\n\n  ➤ Answer:\n\n")
+_, d = helmlib.doc_decisions(r._keel(), text)
+print([d[k]["section"]["above"] for k in ("D1", "D2", "D3")])
+# two asks of one guarded task are told apart, by key and by hash
+own = helmlib.columns()[0]
+ga = lambda opened: r._card("ask", "an ask in a guarded session", own, plan_id="p", task="guarded-1", ref="guarded",
+                            repo="guarded", guarded=True, updated=opened)
+cs = [ga(100), ga(200)]
+r.key_cards(cs)
+r.strip_guarded(cs)
+print(cs[0]["key"] != cs[1]["key"], cs[0]["hash"] != cs[1]["hash"])
+# a held memo comes back when its open count moves; a stall's class is read
+m = lambda n: r._card("memo", "m", own, doc="/d.md", open=n)
+s = lambda c: r._card("stall", "s", own, session="x", stall=c)
+print(r.card_hash(m(3)) != r.card_hash(m(5)), r.card_hash(s("S2")) != r.card_hash(s("S6")))
+# the doc's order: by line, a card with none after them, D2 before D10
+cards = [r._card("ask", "a", own, repo="a", branch="b", rel="docs/x.md", item=i, key="k#" + i, line=l)
+         for i, l in (("D10", None), ("D2", None), ("D1", 5))]
+print(r.decide_queue(cards)[0]["docs"][0]["items"])
+# the salt is the owner's alone
+r.guard_salt()
+print(oct(os.stat(os.path.join(os.environ["PLAN_CACHE_DIR"], "guard-salt")).st_mode & 0o777))
+PY
+check "$(PLAN_CACHE_DIR="$LAD/c5" python3 "$LAD/r5.py" "$B" 2>/dev/null)" "True overrun
+projected 1
+['Section prose P0.', 'Only about D2: P2.', 'Section prose P0.']
+True True
+True True
+['k#D1', 'k#D2', 'k#D10']
+0o600" \
+  "a resume after an ask is the same round; a failed step's unreadable ETA spares the timeline; a later item's own prose is never the next one's; two asks of a guarded task differ in key and hash; a memo's open count and a stall's class move the hash; the doc's order puts lineless cards last, by number; the salt file is 0600"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

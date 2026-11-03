@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """build-review — the record of a build's own review loop, which dispatch's build prompt asks each run to keep.
 
-    build-review round <worktree> --found N --fixed N [--left N] [--check green|red] [--reviewers a,b] [--note TEXT]
+    build-review round <worktree> (--verdicts FILE | --found 0) --fixed N [--left N] [--check green|red] [--reviewers a,b] [--note TEXT]
     build-review end   <worktree> --outcome clean|cap|held [--why TEXT]
     build-review show  <worktree>
     build-review gate  <worktree> --session ID
+    build-review compare [--json]
+    build-review covers <worktree> [--base REF]
+    build-review cap
 
 Why (build-review, the owner, 2026-10-30): a build ended when its brief was done, and `/finish --unattended`
 then reviewed, fixed and stopped on what it may not do; each stop cost the skipper a fix-round dispatch, a
 queue wait and a new finish, 1-3 h each on the build Mac and 4-5 rounds on some branches. Since this step
 the build loops review -> fix -> check -> fix in its own session until a round finds nothing to fix and the
-check is green, at most MAX_ROUNDS rounds (the prompt's words: dispatch's build prompt, the build-review
+check is green, at most the round cap's rounds (the prompt's words: dispatch's build prompt, the build-review
 paragraph after its Steps: line). `/finish` keeps its
 own review (the owner: "for now I'm ok with double review"); this record is the data a later decision on
 that second review reads (docs/task-shape-2026-10-29.md, phase 2).
@@ -18,14 +21,26 @@ that second review reads (docs/task-shape-2026-10-29.md, phase 2).
 Where: `<git dir>/claude/build-review.json`, per worktree, beside autofinish.json (the git dir read back
 from git, never built). One object: branch, session ($CLAUDE_CODE_SESSION_ID),
 repo (the main checkout), project (its folder name, review-gate.jsonl's `project`), worktree (review-gate's
-`repo`), rounds [{round, tip, at, reviewers, found, fixed, left, check, note}], and once `end` ran: ended,
-outcome, why, tip. `found` counts the real S1, S2 and WRONG findings (the prompt's words), S3s and those
-judged not real go in `note`. A round's `tip` is HEAD when it is recorded: the round's fixes included.
+`repo`), rounds [{round, tip, at, reviewers, raised, found, open_s1, fixed, left, check, note}], and once `end` ran:
+ended, outcome, why, tip. `found` counts the real S1, S2 and WRONG findings, S3s and those judged not real go
+in `note`. A round's `tip` is HEAD when it is recorded: the round's fixes included.
 
-`round` refuses a round past MAX_ROUNDS with exit 3 and the cap's words, and `end` then takes
+Real is the verifier's word, never the builder's (verified-rounds, the owner, 2026-11-02: "make sure we're not
+chasing a wild goose"; docs/verified-rounds-2026-11-02.md). The log until then: one loop that capped on 13, 9, 14, 6 and 15 "real" findings a round,
+S3 fixes counted as found, and one loop that ran five rounds on S2s its own notes called not real. So a count
+above 0 comes only from `--verdicts FILE`, the report of a fresh reviewer that raised none of them, given only
+the round's S1, S2 and WRONG items: `found` is its blocks with `verdict: WRONG` and evidence (wrapped lines read,
+one that says there is none not), a head tagged `[S3]` left out; `raised` is every verdict block it wrote; `open_s1`
+its `UNVERIFIABLE` blocks with an `[S1]` head, which `covers` will not vouch past. `--found` takes 0 alone (nothing to verify, or
+a prose-only round). And a round past the first is granted only when the round before confirmed a real finding
+or its check was red: a round that confirmed nothing, with the check green or not recorded, is the loop's end
+(exit 4, asked before the cap's exit 3). A held loop reopened by the answer, or a round that left items, is granted. The
+builder still writes the file it hands over; this stops a loop that grades itself, not one that lies.
+
+`round` refuses a round past the cap with exit 3 and the cap's words, and `end` then takes
 `--outcome cap`. A record already ended, or kept by another session (a run that died before `end`), is
 replaced by a fresh one at the next `round` or `end`, so a fix round after a stopped landing gets its own
-five, and another session's unended record is logged with outcome `died` first, so no rounds are lost. Once a
+rounds up to the cap, and another session's unended record is logged with outcome `died` first, so no rounds are lost. Once a
 session ended its record clean or cap, its next `round` or `end` is refused (exit 2): one loop and one log line per
 session. A record ended `held` (a D-item relayed) is reopened by that session's next `round`, rounds kept against
 the cap, and its next end is a second line for the same (session, started): a reader keeps the last. A clean end
@@ -44,19 +59,53 @@ absent, or another session's (a run that opted out, or a loop an earlier run kep
 A call needs $CLAUDE_CODE_SESSION_ID: without one every caller would read as the same session, and one
 run's end would refuse every later run on the worktree (exit 2; the same review).
 
+`compare` is the read docs/finish-second-review-2026-11-02.md decides from (is /finish's second review worth it on a build-reviewed tip?): per
+project and branch with a record in the log, the build's rounds, found and fixed, its outcomes; the finish's
+review-gate lines (`phase` finish, or, on a line written before review-gate's --phase, one after the last
+`ended`), their raw S1, S2 and WRONG; and the review agents' spend from usage-report's call rows beside the logs
+(`<data>/<host>/calls/*.csv`), split at the last `ended` into the build's and the finish's. Raw counts are the
+reviewers' own, before anyone judged them: whether a finish finding was real is read from what the landing
+did with it (its PR), never from here.
+
+`covers` is /finish step 1's read (docs/finish-second-review-2026-11-02.md's D1-B, the owner, 2026-11-02: the finish's second review found no S1
+on four build-reviewed landings): exit 0 when the finish may skip its review because the build's own loop already
+reviewed this code. All of: the tree is clean (a fix the finish has not committed yet is unreviewed); the worktree's
+record (else, a record lost on this host, the log's newest ended line for this project and branch — the log is
+per host, so a build that ran on another host is never covered here) ended `clean`, never cap, held or died, and was
+kept by another session than the one asking (a finish never vouches for itself); review-gate.jsonl holds a
+`phase` build line for this project and branch by the loop's end, and the newest one's `head`, the commit the loop's last
+review read, carries the same code change against --base (default origin/main) as HEAD: a hash of `git diff
+<merge-base> <commit>`, whitespace kept, blob ids and hunk line numbers dropped, PROSE_RE's paths (docs/, TODO.md,
+a CHANGELOG) left out on both sides; and `review-gate plan` names no principal build. So a check fix committed after
+the last review, a fix the finish made, a main merged in again, or a rebase that conflicted all change it, and the
+review runs; /finish asks again after its step 11.1 rebase. Never in a repo whose .claude/workflow.json has
+`in_place` (the vault), read at --base and in the main checkout, never the branch's copy. Exit 1 says why not.
+
+`cap` prints the round cap: `wharf-runs/build-review-rounds` in the config dir, a whole number from 1 to 20, else
+DEFAULT_ROUNDS, read at each call so a changed key holds from the next round (docs/finish-second-review-2026-11-02.md's D2-B; the owner,
+2026-11-01: a limit changes without a build). It is the trial read `regatta limit` is to run once live-limits lands.
+
 Exit: 0 written or shown; 1 `gate` refuses; 2 a usage error, no session id, a worktree that is no git
 checkout, an `end` already made, or an end whose log line could not be written (the record stays open, so
-the end can be made again); 3 the round cap.
+the end can be made again), a count above 0 without a verdict file, or a verdict file with no block; 3 the
+round cap; 4 a round not granted (the one before confirmed nothing with the check green).
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-MAX_ROUNDS = 5
+DEFAULT_ROUNDS = 3   # docs/finish-second-review-2026-11-02.md's D2-B (the owner, 2026-11-02): 5 until then; three of eight loops capped still finding
+ROUNDS_KEY = "wharf-runs/build-review-rounds"
+# what `covers` leaves out of the code change: only what a loop and a finish write by design (docs, TODO.md, a
+# CHANGELOG). Never review-gate's DOC_RE, which calls every .md and .txt prose: a skill, an agent, the publish gate's
+# allowlist and exemptions are behaviour (the landing review, 2026-11-02)
+PROSE_RE = re.compile(r"(^docs/|^TODO\.md$|(^|/)CHANGELOG\.md$)")
 RECORD = "build-review.json"
 OUTCOMES = ("clean", "cap", "held")
 HERE = Path(__file__).resolve().parent
@@ -116,6 +165,161 @@ def log_path():
     return Path(common.LOG_DIR) / "build-review.jsonl"
 
 
+def rounds_cap():
+    """The round cap (the header's `cap`); a value that does not read says so on stderr and is the default."""
+    try:
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import core_path  # noqa: PLC0415
+        core_path.add()
+        import common  # noqa: PLC0415
+        rows, why = common.config_read(ROUNDS_KEY)
+    except Exception:  # noqa: BLE001 — no core: the default
+        return DEFAULT_ROUNDS
+    if not rows and not why:
+        return DEFAULT_ROUNDS
+    # a value split one word per line reads as one, a note after # or ( as nothing (AGENTS.md Traps)
+    w = re.split("[#(]", " ".join(rows or []), maxsplit=1)[0].split()
+    if not why and len(w) == 1 and w[0].isascii() and w[0].isdecimal() and 1 <= int(w[0]) <= 20:
+        return int(w[0])
+    print("build-review: %s %s — the default, %d" % (ROUNDS_KEY, why or "is no whole number from 1 to 20", DEFAULT_ROUNDS),
+          file=sys.stderr)
+    return DEFAULT_ROUNDS
+
+
+def code_patch(wt, base, tip):
+    """A hash of the branch's code change at tip against base (PROSE_RE's paths left out); "" for none, None when
+    git cannot tell. The diff text itself, never `git patch-id --stable`, which ignores whitespace and so passed a
+    Python re-indent or a space inside a string as the same change (the landing review, 2026-11-02): only the
+    `index` lines (blob ids) and the hunk headers' line numbers are dropped, so a clean rebase onto a moved main
+    keeps the hash. Names are read NUL-separated and given back literally: a quoted non-ASCII name matched nothing."""
+    mb = git(wt, "merge-base", base, tip)
+    if not mb:
+        return None
+    r = subprocess.run(["git", "-C", str(wt), "diff", "-z", "--name-only", "--no-renames", mb, tip], capture_output=True)
+    if r.returncode:
+        return None
+    code = [n for n in r.stdout.decode("utf-8", "surrogateescape").split("\0") if n and not PROSE_RE.search(n)]
+    if not code:
+        return ""
+    diff = subprocess.run(["git", "--literal-pathspecs", "-C", str(wt), "diff", "--no-color", "--no-ext-diff",
+                           "--no-renames", mb, tip, "--", *code], capture_output=True)
+    if diff.returncode:
+        return None
+    h = hashlib.sha256()
+    for line in diff.stdout.split(b"\n"):
+        if line.startswith(b"index "):
+            continue
+        if line.startswith(b"@@ "):
+            line = b"@@"
+        h.update(line + b"\n")
+    return h.hexdigest()
+
+
+def in_place(wt, repo, base):
+    """True when the repo is the vault: .claude/workflow.json's `in_place` at base, or in the main checkout (sync.py
+    writes it there untracked for some repos) — never the branch's own copy, which the branch could edit (review-gate
+    reads it at the base too). A file that is there and does not read counts as in_place."""
+    texts = [git(wt, "show", "%s:.claude/workflow.json" % base)]
+    try:
+        texts.append((Path(repo) / ".claude" / "workflow.json").read_text())
+    except OSError:
+        texts.append(None)
+    for t in texts:
+        if t is None:
+            continue
+        try:
+            wf = json.loads(t)
+        except ValueError:
+            return True
+        if not isinstance(wf, dict) or wf.get("in_place"):
+            return True
+    return False
+
+
+def build_reviewed_head(project, branch, until):
+    """The head of the newest build-phase review-gate line for project and branch logged by `until` (epoch, the
+    loop's end), or None: the commit the loop's last review actually read. No lower bound: a round's review is logged
+    before its `round` call, the first one before the record exists, and an older review whose head carries the
+    same code reviewed that code too."""
+    gate = Path(os.environ["REVIEW_GATE_LOG"]) if os.environ.get("REVIEW_GATE_LOG") else log_path().parent / "review-gate.jsonl"
+    best = None
+    for g in jsonl(gate):
+        t = epoch(g.get("ts"))
+        if (g.get("phase") == "build" and g.get("project") == project and g.get("branch") == branch and g.get("head")
+                and t is not None and t <= until and (best is None or t >= best[0])):
+            best = (t, g["head"])
+    return best[1] if best else None
+
+
+def covers(wt, base):
+    """(True, why) when the finish may skip its review (the header's `covers`), else (False, why)."""
+    path, branch, repo = where(wt)
+    project = os.path.basename(repo)
+    if in_place(wt, repo, base):
+        return False, "a repo with in_place: every landing is reviewed, prose included"
+    if git(wt, "status", "--porcelain") != "":
+        return False, "the worktree has uncommitted changes: commit them, then ask again"
+    d, src = load(path), "this worktree's record"
+    if d and d.get("branch") != branch:
+        d = None
+    if not d:
+        ended = [x for x in jsonl(log_path()) if x.get("project") == project and x.get("branch") == branch
+                 and x.get("ended")]
+        d, src = (max(ended, key=lambda x: x["ended"]), "the log's newest line") if ended else (None, "")
+    if not d:
+        return False, "no build-review record for %s" % branch
+    if not d.get("ended"):
+        return False, "%s never ended (%d round(s))" % (src, len(d.get("rounds") or []))
+    if d.get("outcome") != "clean":
+        return False, "%s ended %s" % (src, d.get("outcome"))
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if me and d.get("session") == me:
+        return False, "%s was kept by this session: a finish never vouches for itself" % src
+    rounds = d.get("rounds") or []
+    if not rounds:
+        return False, "%s ended clean with no round" % src
+    if rounds[-1].get("open_s1"):
+        # an S1 its verifier could neither confirm nor refute is no finding the loop fixes, and no code a review cleared
+        return False, "%s's last round left %d S1 its verifier called UNVERIFIABLE" % (src, rounds[-1]["open_s1"])
+    head = build_reviewed_head(project, branch, (d.get("ended") or 0) + 60)
+    if not head:
+        return False, "no build-phase review-gate line with a head for %s: nothing shows which code a review read" % branch
+    if git(wt, "cat-file", "-e", head + "^{commit}") is None:
+        return False, "the last reviewed head %s is not in this checkout" % head[:9]
+    then, now = code_patch(wt, base, head), code_patch(wt, base, "HEAD")
+    if then is None or now is None:
+        return False, "git could not diff against %s" % base
+    if then != now:
+        return False, "the code changed since the build's last review read it at %s" % head[:9]
+    try:
+        plan = json.loads(subprocess.run([str(review_gate()), "plan", "--json", "--base", base],
+                                         cwd=str(wt), capture_output=True, text=True).stdout)
+    except (OSError, ValueError, TypeError):
+        return False, "review-gate plan did not read, so whether the build is principal is unknown"
+    if not isinstance(plan, dict) or plan.get("principal"):
+        return False, "a principal build: its top-tier review runs at any size"
+    return True, "the build's loop ended clean after %d round(s), its last review read %s, and the code against %s is the same" % (
+        len(rounds), head[:9], base)
+
+
+def review_gate():
+    """wharf's review-gate ($BUILD_REVIEW_GATE, the tests' stand-in), through the core's tool() where there is one,
+    else beside this module in the repo."""
+    if os.environ.get("BUILD_REVIEW_GATE"):
+        return Path(os.environ["BUILD_REVIEW_GATE"])
+    try:
+        sys.path.insert(0, str(HERE.parent / "lib"))
+        import core_path  # noqa: PLC0415
+        core_path.add()
+        import common  # noqa: PLC0415
+        t = common.tool("review-gate")
+        if t:
+            return Path(t)
+    except Exception:  # noqa: BLE001
+        pass
+    return HERE.parent.parent / "wharf" / "bin" / "review-gate"
+
+
 def log(d, path=None):
     """One JSON line of the record in the durable log; True once written. A failure says so."""
     lp = log_path()
@@ -130,6 +334,150 @@ def log(d, path=None):
         return False
 
 
+REVIEWERS = ("reviewer", "reviewer-high", "code-reviewer")
+
+
+def jsonl(path):
+    out = []
+    try:
+        lines = open(path, errors="replace").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out
+
+
+def epoch(ts):
+    """review-gate's `ts` (%Y-%m-%dT%H:%M:%S%z) or a call row's ISO time, as seconds; None when it will not read."""
+    from datetime import datetime  # noqa: PLC0415
+    for f in ("%Y-%m-%dT%H:%M:%S%z",):
+        try:
+            return datetime.strptime(ts, f).timestamp()
+        except (TypeError, ValueError):
+            pass
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def compare(folder):
+    """One row per (project, branch) the build-review log names, oldest first; see the header."""
+    import csv  # noqa: PLC0415
+    import glob  # noqa: PLC0415
+    builds, last = {}, {}
+    for d in jsonl(folder / "build-review.jsonl"):   # a held loop reopened logs again: keep its last line
+        if d.get("project") and d.get("branch") and d.get("ended"):
+            # a line with no start (none before build-review kept one) is its own loop
+            last[(d["project"], d["branch"], d.get("session"), d.get("started") or ("ended", d["ended"]))] = d
+    for d in last.values():
+        k = (d.get("project"), d.get("branch"))
+        b = builds.setdefault(k, {"project": k[0], "branch": k[1], "rounds": 0, "found": 0, "fixed": 0, "outcomes": [],
+                                  "ended": 0})
+        b["rounds"] += len(d.get("rounds") or [])
+        b["found"] += sum(r.get("found") or 0 for r in d.get("rounds") or [])
+        b["fixed"] += sum(r.get("fixed") or 0 for r in d.get("rounds") or [])
+        b["outcomes"].append(d.get("outcome"))
+        b["ended"] = max(b["ended"], d["ended"])
+    gate = Path(os.environ["REVIEW_GATE_LOG"]) if os.environ.get("REVIEW_GATE_LOG") else folder / "review-gate.jsonl"
+    for b in builds.values():
+        b.update(finish=[], spend={"build": 0.0, "finish": 0.0})
+    for g in jsonl(gate):
+        b = builds.get((g.get("project"), g.get("branch")))
+        t = epoch(g.get("ts"))
+        if not b or g.get("phase") == "build" or (g.get("phase") != "finish" and (t is None or t <= b["ended"])):
+            continue
+        f, w = g.get("findings") or {}, g.get("wrong") or {}
+        b["finish"].append({"ts": g.get("ts"), "at": t, "S1": f.get("S1", 0), "S2": f.get("S2", 0), "S3": f.get("S3", 0),
+                            "S?": f.get("S?", 0),   # what a merge that did not run left unsorted
+                            "wrong": sum(v or 0 for v in w.values()), "skipped": g.get("skipped")})
+    for p in sorted(glob.glob(str(folder / "*" / "calls" / "*.csv"))):
+        try:
+            rows = list(csv.DictReader(open(p, errors="replace")))
+        except OSError:
+            continue
+        for r in rows:
+            b = builds.get((r.get("project"), r.get("branch")))
+            if not b or r.get("agent") not in REVIEWERS:
+                continue
+            t = epoch(r.get("first"))
+            try:
+                usd = float(r.get("cost") or 0)
+            except ValueError:
+                continue
+            b["spend"]["finish" if t is not None and t > b["ended"] else "build"] += usd
+    out = sorted(builds.values(), key=lambda b: b["ended"])
+    for b in out:
+        b["spend"] = {k: round(v, 2) for k, v in b["spend"].items()}
+        b["finish"].sort(key=lambda f: f["at"] or 0)   # the last is the newest pass, whatever the log's order
+    return out
+
+
+VERDICT_RE = re.compile(r"(?i)^\W*verdict\W*:\W*([A-Z][A-Z-]*)")   # review-gate's: a block is anchored on it
+EVIDENCE_RE = re.compile(r"(?i)^\W*evidence\W*:\W*(.*)")
+FIELD_RE = re.compile(r"(?i)^\W*(verdict|evidence|fix|why|severity|claim)\W*:")   # a field label ends the one before
+# the severity tag in the head, after its dash (`file:line — [S3] claim`), never a tag the claim merely mentions
+HEAD_SEV_RE = re.compile(r"(?:—|--|\s-)\s*\[\s*(S[123?])\s*\]")
+# an evidence line that only says there is none: a theory, never a real finding (the reviewer's own words)
+NO_EVIDENCE_RE = re.compile(r"(?i)^\W*(none|n/?a|nothing|no evidence|a theory|theory|not (probed|shown|run|reproduced|traced))\b")
+
+
+def _head(lines, i):
+    """Index of the head line of the block whose verdict sits at line i: back past blank lines and fences, then
+    up the paragraph to its first line (a head that wraps keeps its tag on that first line)."""
+    j = i - 1
+    while j >= 0 and (not lines[j].strip() or lines[j].strip().startswith("```")):
+        j -= 1
+    while j > 0 and lines[j - 1].strip() and not lines[j - 1].strip().startswith("```") \
+            and not FIELD_RE.match(lines[j - 1]) and not FIELD_RE.match(lines[j]):
+        j -= 1
+    return j
+
+
+def verdicts(text):
+    """(raised, confirmed, open_s1) from a verifier's report in the reviewer agents' format (`file:line — [S2] claim`,
+    then `verdict:` and `evidence:` lines): every verdict block is raised; a WRONG with evidence and no [S3] head is
+    confirmed; an UNVERIFIABLE with an [S1] head is open_s1, which `covers` will not vouch past. A WRONG whose
+    evidence is empty or says there is none is a theory (the reviewer's own words), never a real finding. Evidence
+    may wrap onto the lines after its label; a block ends at the next block's head, so it never borrows another's."""
+    lines = text.splitlines()
+    at = [i for i, line in enumerate(lines) if VERDICT_RE.match(line)]
+    heads = [_head(lines, i) for i in at]
+    raised = confirmed = open_s1 = 0
+    for n, i in enumerate(at):
+        raised += 1
+        word = VERDICT_RE.match(lines[i]).group(1).upper()
+        h = heads[n]
+        sev = HEAD_SEV_RE.search(lines[h]) if h >= 0 else None
+        sev = sev.group(1).upper() if sev else ""
+        if word == "UNVERIFIABLE" and sev == "S1":
+            open_s1 += 1
+        if word != "WRONG" or sev == "S3":
+            continue
+        # this block: its head to the next block's head (evidence may sit before the verdict line too)
+        end = heads[n + 1] if n + 1 < len(at) and heads[n + 1] > i else (at[n + 1] if n + 1 < len(at) else len(lines))
+        start = h + 1 if h >= 0 else 0
+        for k in range(start, end):
+            e = EVIDENCE_RE.match(lines[k])
+            if not e:
+                continue
+            body = [e.group(1).strip()]
+            for m in range(k + 1, end):
+                if not lines[m].strip() or FIELD_RE.match(lines[m]) or lines[m].strip().startswith("```"):
+                    break
+                body.append(lines[m].strip())
+            ev = " ".join(x for x in body if x)
+            confirmed += bool(ev) and not NO_EVIDENCE_RE.match(ev)
+            break
+    return raised, confirmed, open_s1
+
+
 def count(v):
     if v < 0:
         raise argparse.ArgumentTypeError("a count is 0 or more")
@@ -141,7 +489,8 @@ def main(argv):
     sub = ap.add_subparsers(dest="verb", required=True)
     r = sub.add_parser("round")
     r.add_argument("worktree")
-    r.add_argument("--found", type=lambda s: count(int(s)), required=True)
+    r.add_argument("--found", type=lambda s: count(int(s)), default=None)   # 0 alone: a count above comes from --verdicts
+    r.add_argument("--verdicts", default=None)
     r.add_argument("--fixed", type=lambda s: count(int(s)), required=True)
     r.add_argument("--left", type=lambda s: count(int(s)), default=None)   # unset: found - fixed
     r.add_argument("--check", choices=("green", "red"))
@@ -156,8 +505,70 @@ def main(argv):
     g = sub.add_parser("gate")
     g.add_argument("worktree")
     g.add_argument("--session", required=True)
+    c = sub.add_parser("compare")
+    c.add_argument("--json", action="store_true")
+    v = sub.add_parser("covers")
+    v.add_argument("worktree")
+    v.add_argument("--base", default="origin/main")
+    sub.add_parser("cap")
     a = ap.parse_args(argv)
+    if a.verb == "cap":
+        print(rounds_cap())
+        return 0
+    if a.verb == "covers":
+        ok, why = covers(a.worktree, a.base)
+        print(("covered: " if ok else "not covered: ") + why)
+        return 0 if ok else 1
+    if a.verb == "compare":
+        rows = compare(log_path().parent)
+        if a.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        if not rows:
+            print("no ended build-review record in %s" % log_path())
+            return 0
+        print("%-46s %-14s %6s %9s  %-26s %9s %9s" % ("branch", "outcomes", "rounds", "found/fix", "finish S1/S2/S3 wrong",
+                                                     "build $", "finish $"))
+        for b in rows:
+            fin = "; ".join("skipped" if f.get("skipped") else "%d/%d/%d %d" % (f["S1"], f["S2"], f["S3"], f["wrong"])
+                            for f in b["finish"]) or "none yet"
+            print("%-46s %-14s %6d %9s  %-26s %9.2f %9.2f" % (
+                ("%s:%s" % (b["project"], b["branch"].rsplit("/", 1)[-1]))[:46], ",".join(b["outcomes"])[:14], b["rounds"],
+                "%d/%d" % (b["found"], b["fixed"]), fin[:26], b["spend"]["build"], b["spend"]["finish"]))
+        fin = [b for b in rows if b["finish"]]
+        last = [b["finish"][-1] for b in fin]
+        skip = sum(1 for f in last if f.get("skipped"))
+        print("%d build(s), %d with a finish review%s: its last pass raised S1 %d, S2 %d, WRONG %d (raw, unjudged); "
+              "review spend $%.2f in the builds, $%.2f in the finishes (list)" % (
+                  len(rows), len(fin), " (%d skipped)" % skip if skip else "", sum(f["S1"] for f in last), sum(f["S2"] for f in last), sum(f["wrong"] for f in last),
+                  sum(b["spend"]["build"] for b in rows), sum(b["spend"]["finish"] for b in fin)))
+        return 0
 
+    raised = open_s1 = 0
+    if a.verb == "round":
+        # before the record is touched: a refused round writes nothing (the header's "Real is the verifier's word")
+        if a.verdicts is not None and a.found is not None:
+            print("build-review: --found or --verdicts, never both: the verifier's file is the count", file=sys.stderr)
+            return 2
+        if a.verdicts is None and a.found is None:
+            print("build-review: a round needs --verdicts <the verifier's report>, or --found 0 when the review raised no "
+                  "S1, S2 or WRONG item", file=sys.stderr)
+            return 2
+        if a.found:
+            print("build-review: --found %d: a real finding is the verifier's word, never the builder's; spawn a fresh "
+                  "reviewer on the round's S1, S2 and WRONG items and pass its report as --verdicts <file>" % a.found,
+                  file=sys.stderr)
+            return 2
+        if a.verdicts is not None:
+            try:
+                raised, a.found, open_s1 = verdicts(Path(a.verdicts).read_text(encoding="utf-8", errors="replace"))
+            except OSError as err:
+                print("build-review: the verdict file does not read (%s)" % err, file=sys.stderr)
+                return 2
+            if not raised:
+                print("build-review: no `verdict:` line in %s: the verifier's report, verbatim, one block per item"
+                      % a.verdicts, file=sys.stderr)
+                return 2
     path, branch, repo = where(a.worktree)
     d = load(path)
     if a.verb == "gate":
@@ -183,6 +594,7 @@ def main(argv):
     same = bool(d) and d.get("branch") == branch and d.get("session", "") == session
     # one loop per session: after its end, neither a second end nor a new round (a capped run must not
     # restart its own cap, nor log its build twice; the round-3 review)
+    reopened = False
     if a.verb in ("round", "end") and same and d.get("ended") and d.get("outcome") != "held":
         print("build-review: this session ended the record already (%s): one loop, one end, per session" % d.get("outcome"),
               file=sys.stderr)
@@ -194,6 +606,7 @@ def main(argv):
         for k in ("ended", "outcome", "why", "tip"):
             d.pop(k, None)
         d["reopened"] = d.get("reopened", 0) + 1
+        reopened = True
     mine = same and not d.get("ended")
     if a.verb != "show" and not mine:
         if d and not d.get("ended") and d.get("rounds"):
@@ -209,22 +622,35 @@ def main(argv):
         print(json.dumps(d, indent=2) if d else "none")
         return 0
     if a.verb == "round":
-        n = len(d["rounds"]) + 1
-        if n > MAX_ROUNDS:
+        n, cap = len(d["rounds"]) + 1, rounds_cap()
+        prev = d["rounds"][-1] if d["rounds"] else None
+        # granted only on a confirmed finding or a red check; a round with no --check recorded grants nothing either.
+        # A held loop reopened by the answer's session (or a round that left items) is the D-item road: its next round
+        # reviews the answer's code, whatever the round before found (the verified-rounds landing review). Asked
+        # before the cap, so a clean loop at the cap is told to end clean, not cap.
+        if prev and not reopened and not prev.get("left") and not prev.get("found") and prev.get("check") != "red":
+            print("build-review: round %d confirmed no real finding and its check was %s: no further round is "
+                  "granted; end the record (build-review end %s --outcome clean%s)" % (
+                      prev.get("round", n - 1), prev.get("check") or "not recorded", a.worktree,
+                      "" if prev.get("check") == "green" else ", after a round with --check green"),
+                  file=sys.stderr)
+            return 4
+        if n > cap:
             print("build-review: %d rounds already, the cap: fix nothing more in this run; end the record "
-                  "(build-review end %s --outcome cap) and end naming what is left" % (MAX_ROUNDS, a.worktree),
+                  "(build-review end %s --outcome cap) and end naming what is left" % (cap, a.worktree),
                   file=sys.stderr)
             return 3
         d["rounds"].append({"round": n, "tip": git(a.worktree, "rev-parse", "HEAD") or "", "at": int(time.time()),
-                            "reviewers": [x.strip() for x in a.reviewers.split(",") if x.strip()], "found": a.found,
+                            "reviewers": [x.strip() for x in a.reviewers.split(",") if x.strip()], "raised": raised, "found": a.found,
+                            "open_s1": open_s1,
                             "fixed": a.fixed, "left": max(a.found - a.fixed, 0) if a.left is None else a.left, "check": a.check, "note": a.note})
         save(path, d)
         # clean only when the round found nothing: a round whose findings were all fixed needs one more
         # review of the fixes (the brief: "until a pass finds nothing to fix and the check is green")
         clean = a.found == 0 and a.check == "green"
-        print("build-review: round %d of %d recorded%s" % (n, MAX_ROUNDS,
+        print("build-review: round %d of %d recorded%s" % (n, cap,
               " — nothing found and the check green: end it (--outcome clean)" if clean
-              else "" if n < MAX_ROUNDS else " — the cap: end it (--outcome cap) and name what is left"))
+              else "" if n < cap else " — the cap: end it (--outcome cap) and name what is left"))
         return 0
     # end
     last = d["rounds"][-1] if d.get("rounds") else None

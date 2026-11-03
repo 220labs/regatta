@@ -149,9 +149,20 @@ EOF
 chmod +x "$T/bin/"*
 echo '{}' > "$T/sessions.json"
 # the rooms: events-<space>.json and comments-<space>.txt per page
+# A comment from next_stamp is stamped after every stamp on its page, or two tie in a second (AGENTS.md, Traps: a
+# stand-in's whole-second stamps); the floor of now keeps a mark on an old fixture page recent enough for a claim's lease.
+cat > "$T/srv/page_clock.py" <<'EOF'
+import calendar, time
+FORM = "%Y-%m-%dT%H:%M:%SZ"
+def next_stamp(page):
+    said = [x for c in page.get("comments", []) for x in [c] + (c.get("replies") or [])]
+    newest = max([calendar.timegm(time.strptime(x["created_at"][:19], FORM[:-1])) for x in said if x.get("created_at")] or [0])
+    return time.strftime(FORM, time.gmtime(max(int(time.time()), newest + 1)))
+EOF
 cat > "$T/srv/mcp.py" <<'EOF'
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from page_clock import next_stamp
 T = sys.argv[1]
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -183,10 +194,8 @@ class H(BaseHTTPRequestHandler):
             except (OSError, ValueError):
                 d = None
             if isinstance(d, dict):
-                import time
                 n = sum(len(c.get("replies") or []) for c in d.get("comments", [])) + 1
-                new = {"id": "r%d" % n, "body": args.get("body"), "via": "claude",
-                       "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                new = {"id": "r%d" % n, "body": args.get("body"), "via": "claude", "created_at": next_stamp(d)}
                 for c in d.get("comments", []):
                     if c["id"] == args["parent_id"]:
                         c.setdefault("replies", []).append(new)
@@ -1760,21 +1769,38 @@ d["comments"] = [c for c in d["comments"] if c["id"] != tid] + [{"id": tid, "bod
 json.dump(d, open(f, "w"))
 EOF
 }
-reply() {  # reply SPACE THREAD ID BODY [VIA] — one reply under a thread, now
+reply() {  # reply SPACE THREAD ID BODY [VIA] — one reply under a thread, stamped by page_clock
   python3 - "$T/srv/comments-$1.txt" "$2" "$3" "$4" "${5:-}" <<'EOF'
-import json, sys, time
+import json, os, sys
 f, tid, rid, body, via = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(f))
+from page_clock import next_stamp
 d = json.load(open(f))
 for c in d["comments"]:
     if c["id"] == tid:
-        c.setdefault("replies", []).append({"id": rid, "body": body, "via": via or None,
-                                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1))})
+        c.setdefault("replies", []).append({"id": rid, "body": body, "via": via or None, "created_at": next_stamp(d)})
 json.dump(d, open(f, "w"))
 EOF
 }
 marks() {  # marks SPACE THREAD — the thread's replies of ours, one a line
   python3 -c 'import json,sys; t=[c for c in json.load(open(sys.argv[1]))["comments"] if c["id"]==sys.argv[2]][0]; print("\n".join(r["body"] for r in t.get("replies") or [] if r.get("via")=="claude"))' "$T/srv/comments-$1.txt" "$2"
 }
+# the stand-in page's clock: a stamp from next_stamp never ties or precedes the page's newest, on both roads
+# that use it: reply, and the server's add_comment, which stamps keel's marks
+echo '{"comments": [{"id": "pc", "body": "x", "created_at": "2099-01-01T00:00:00.5Z"}]}' > "$T/srv/comments-sp-clock.txt"
+reply sp-clock pc pc-1 "one"; reply sp-clock pc pc-2 "two"
+python3 -c 'import json,sys,urllib.request as u; u.urlopen(u.Request(sys.argv[1], json.dumps({"id": 1, "method": "tools/call", "params": {"name": "add_comment", "arguments": {"uuid": "sp-clock", "parent_id": "pc", "body": "a mark"}}}).encode())).read()' "$MEMO_SHEEP_MCP"
+check "$(python3 -c 'import json,sys; print(" ".join(r["created_at"] for r in json.load(open(sys.argv[1]))["comments"][0]["replies"]))' "$T/srv/comments-sp-clock.txt")" "2099-01-01T00:00:01Z 2099-01-01T00:00:02Z 2099-01-01T00:00:03Z" "the stand-in page orders its stamps itself, whatever the wall clock says, a fraction on the page read too"
+check "$(python3 - "$B/keel" <<'EOF'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("k", sys.argv[1]).load_module()
+m.now_ts = lambda: 1000.0
+print("%d %d %d %d" % (m.mins_ago(1000.2), m.mins_ago("1000"), m.mins_ago(880), m.mins_ago(None)))
+print(m.held_by("/w", {"session": "abcdefgh12", "age": -0.2}, at=True))
+EOF
+)" "0 0 2 16
+held by session abcdefgh at /w, seen 0m ago" "an age never reads -1 when the clock stepped back (mins_ago, held_by); a missing stamp counts from epoch 0, as the claimed card did"
 # T1 under rule 3: an owner's plain ask on an unshared page of a physical: none repo, no run in sight
 BT=claude/laptop/2026-10-21-ask
 doc "$BT"
@@ -2003,7 +2029,7 @@ PY
 check "$(python3 "$T/s5-old.py" "$B/keel" "$P")" "an answer on main: a run starts from one only on a doc routed within 14 days
 an ask on main: a run starts from one only on a doc routed within 14 days" "an answer or a T1 ask on main to a doc with no Routed: line (an --on-main memo): a card, no run (S5's finish review)"
 # T1 on the landed doc (a state of its own: the answer's run holds the doc for 2 h); an offer still open
-# on the page goes with the seed's --routing, never its blocker (TODO 29 (b))
+# on the page goes with the seed's --routing, never its blocker (TODO.md [routed-s4] (b))
 fresh state-landed-ask
 echo act-plain > "$T/claude-label"
 rthread sp-l l1 "write the intro section, two paragraphs"
@@ -2047,7 +2073,7 @@ has "$T/out" "comment demo@main:docs/d.md comments:" "no standing skipper here: 
 has "$T/out" "new comments, no answer; no run starts for them" "…carded as before"
 check "$(hails)" "$NH" "…nobody hailed"
 unset ASK_MANAGER_DIR ASK_SESSIONS_DIR PLAN_HOST
-# the stop road on a rule-3 seed's branch: its run here is stopped, the one that replied starting: (TODO 29 (a))
+# the stop road on a rule-3 seed's branch: its run here is stopped, the one that replied starting: (TODO.md [routed-s4] (a))
 fresh state-seedstop
 echo '{"comments": []}' > "$T/srv/comments-sp-l.txt"   # the landed page's threads are done with: no noise in this state
 BSS=claude/laptop/2026-10-21-landed-rabc123
@@ -2134,7 +2160,7 @@ PY
 check "$(python3 "$T/s5-gone.py" "$B/keel" "$T/unit-gone")" "gated True False
 no checkout of demo on this Mac
 card a Save on a landed doc's page waits there; no run starts from it" "a checkout gone since the pass: its card names the repo, never this Mac's path; a Save on a landed doc: carded"
-# the offer in a repo that is not physical: none says whose it is, and a dry pass spends no call (TODO 29 (c), (d))
+# the offer in a repo that is not physical: none says whose it is, and a dry pass spends no call (TODO.md [routed-s4] (c), (d))
 cat > "$T/s5-units.py" <<'PY'
 import json, sys
 from importlib.machinery import SourceFileLoader as L

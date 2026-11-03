@@ -97,7 +97,7 @@ elif case == "stale-retry":
     # S2a's landing review, item 5: the lease lost thrice, and before the retry's flush another host's branch
     # of the same key lands; the flush drops the put as stale, and enqueue must not say "queued"
     repo, branch = sys.argv[6], sys.argv[7]
-    n, sleeps = [3], []
+    n, fired = [3], []
     real = q.Fleet.push
     def push(self, commit, base):
         if n[0] > 0:
@@ -105,17 +105,31 @@ elif case == "stale-retry":
             return "lost", "! [rejected] refs/regatta/queue (stale info)"
         return real(self, commit, base)
     q.Fleet.push = push
-    def sleep(s):
-        # three between the lost rounds, then enqueue's pause before its retry: the other host writes then,
-        # once the put waits in the outbox (earlier, this process's cache clone would show it the clash)
-        sleeps.append(s)
-        if len(sleeps) == 4:
+    real_add = q.outbox_add
+    def outbox_add(op):
+        # the other host writes once the put waits in the outbox, before enqueue's retry (earlier, this
+        # process's cache clone would show it the clash). Keyed on the outbox, never on a count of sleeps:
+        # the clone lock's 0.2 s waits are sleeps too, and a detached kicker or sampler an earlier case left
+        # holding it moved the count (regatta#388's attempt 1 on a loaded runner; docs/runner-interference-2026-11-02.md)
+        p = real_add(op)
+        if not fired:
+            fired.append(1)
             other = "claude/studio/" + branch.rsplit("/", 1)[1]
             k = q.key_of(str(q.Path(repo).resolve()), branch)
             e = {"id": "other", "key": k, "repo": q.repo_word(str(q.Path(repo).resolve())), "branch": other,
                  "topic": q.topic_of(other), "state": "queued", "queued_at": q.now(), "priority": "normal", "host": ""}
             q.Fleet(url).do([{"op": "put", "key": k, "entry": e}], "another host")
-    q.time.sleep = sleep
+        return p
+    q.outbox_add = outbox_add
+    asked = os.environ.get("STALE_ASKED")
+    if asked:  # the lock-held case's holder lets go only once enqueue has waited on the lock (never a clock race)
+        real_locked = q.Fleet.locked
+        def locked(self, *a, **k):
+            open(asked, "a").close()
+            return real_locked(self, *a, **k)
+        q.Fleet.locked = locked
+    real_sleep = q.time.sleep
+    q.time.sleep = lambda s: real_sleep(min(s, 0.01))  # short, never a busy spin while a lock is held
     sys.argv = ["dispatch-queue", "enqueue", "--repo", repo, "--branch", branch, "--cap", "3",
                 "--launchctl", launchctl, "--prefix", "org.example.claude", "--jobbin", jobbin]
     sys.exit(q.main(sys.argv[1:]))
@@ -538,6 +552,25 @@ has "$T/err" "is another branch's" "  said why"
 check "$(qget repo--c7 branch) $(ls "$HL/Caches/run-seed/queue/outbox" 2>/dev/null | wc -l | tr -d ' ')" "claude/studio/2026-10-27-c7 0" "  the other host's entry stands, and nothing waits"
 check "$(grep -c 'waits in this Mac.s outbox (\$q_off)' "$B/dispatch")" "1" "  dispatch says why it waits there, not 'did not answer' alone"
 qreset
+# the same with the clone's lock held a second by another process, as a detached kicker or sampler an earlier
+# case left running holds it on a loaded runner: the stand-in keyed on a count of sleeps read the lock's waits
+# as the rounds' and failed this case alone (regatta#388; docs/runner-interference-2026-11-02.md)
+mkdir -p "$HL/Caches/run-seed/queue"; rm -f "$T/held"
+rm -f "$T/asked"
+# held until enqueue has asked for the lock and waited a little, not for a fixed second: python's start on a
+# loaded runner took longer than that, and the case then met a free lock (the landing review)
+python3 -c 'import fcntl, os, sys, time
+f = open(sys.argv[1], "w"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close()
+end = time.monotonic() + 60
+while not os.path.exists(sys.argv[3]) and time.monotonic() < end: time.sleep(0.02)
+time.sleep(0.5)' "$HL/Caches/run-seed/queue/clone.lock" "$T/held" "$T/asked" &
+holder=$!
+n=0; while [ ! -f "$T/held" ] && kill -0 "$holder" 2>/dev/null && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done
+STALE_ASKED="$T/asked" qpy stale-retry "$T/queue.git" "$T/repo" claude/laptop/2026-10-27-c7 > "$T/out" 2> "$T/err"
+check "$?:$(grep -c '"result": "queued"' "$T/out")" "1:0" "  the clone's lock held a second meanwhile: still exit 1, never 'queued'"
+check "$(qget repo--c7 branch) $(ls "$HL/Caches/run-seed/queue/outbox" 2>/dev/null | wc -l | tr -d ' ')" "claude/studio/2026-10-27-c7 0" "    the other host's entry stands, and nothing waits"
+wait "$holder"
+qreset
 check "$(qpy spent)" "fleet:w fleet:y fleet:z" "first review's item 10: a reservation whose job exited (its plist gone) is spent; its plist kept, young or its claimer alive, held"
 rm_own "$HL/Caches/run-seed/queue/claims"; mkdir -p "$HL/Caches/run-seed/queue/claims"
 printf '{"qid": "fleet:u", "at": %s, "label": "L1"}' "$(date +%s)" > "$HL/Caches/run-seed/queue/claims/fleet_u.a.json"
@@ -738,6 +771,402 @@ check "$?" "0" "a carried --needs in another order than the entry's sorted needs
 check "$?:$(grep -c "needs differ" "$T/out")" "1:1" "  a carried --needs naming other features is still refused"
 echo "  claimable stays one function: the claim, the listing and the poll ask it, and it asks eligibility"
 check "$(sed -n '/^def claimable(/,/^def bad_args(/p' "$B/dispatch-queue" | grep -c 'eligibility(e, h)')" "1" "claimable calls eligibility once"
+echo "S12: pins only where required — --prefer is the preferred host's first, any eligible host's after the grace or once it finds no room"
+qreset
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+GR=$(python3 -c 'import importlib.machinery, sys; print(importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module().PREFER_GRACE)' "$QB")
+check "$GR" "600" "the grace is one sweep (PREFER_GRACE = SWEEP)"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p1 --prefer laptop > /dev/null 2>&1
+check "$(qget repo--p1 state host prefer)" "queued  laptop" "an entry that prefers a host is unpinned: host empty, prefer named"
+claim_as buildbox
+check "$(qget repo--p1 state claimed_by)" "queued None" "  another host with room leaves it to the preferred one within the grace"
+DISPATCH_HOST=buildbox python3 "$QB" list --all "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "not here: prefers laptop: left to it 10 min more, or until it finds no room" "  …and says why in the listing"
+has "$T/out" "prefers laptop" "  the listing names the preference beside where a pin would be"
+claim_as laptop
+check "$(qget repo--p1 state claimed_by)" "claimed laptop" "the preferred host with room claims it first"
+qreset
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p2 --prefer laptop > /dev/null 2>&1
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$(( $(date +%s) + GR - 30 )) python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--p2 state claimed_by)" "queued None" "  just inside the grace: still the preferred host's"
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$(( $(date +%s) + GR + 5 )) python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--p2 state claimed_by)" "claimed buildbox" "past the grace (the preferred host asleep or silent): another eligible host claims it"
+qreset
+echo "  the preferred host full: it lets go at once (prefer_off), and another host claims it with no grace"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p3 --prefer laptop > /dev/null 2>&1
+DISPATCH_HOST=laptop python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget repo--p3 state claimed_by)" "queued None" "the preferred host at its cap claims nothing…"
+check "$([ "$(qget repo--p3 prefer_off)" != None ] && echo set)" "set" "  …and marks the entry prefer_off"
+has "$QL" '"event": "prefer-released"' "  said in queue.jsonl"
+DISPATCH_HOST=laptop python3 "$QB" list --all "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "prefers laptop (released: the run cap (0 of 0 busy on laptop))" "  the listing says it is anyone's now, and why"
+P3OFF=$(qget repo--p3 prefer_off)
+DISPATCH_HOST=laptop python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget repo--p3 prefer_off) $(grep -c '"event": "prefer-released"' "$QL")" "$P3OFF 1" "  once: the full host's next pass writes nothing again"
+claim_as buildbox
+check "$(qget repo--p3 state claimed_by)" "claimed buildbox" "another host claims it at once, well inside the grace"
+qreset
+echo "  memory as full as the cap: released too"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p4 --prefer laptop > /dev/null 2>&1
+HEADROOM_SAMPLE="3 15 200" DISPATCH_HOST=laptop python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--p4 state claimed_by)" "queued None" "the preferred host past its memory line claims nothing…"
+claim_as buildbox
+check "$(qget repo--p4 state claimed_by)" "claimed buildbox" "  …and another host claims it at once"
+qreset
+echo "  the enqueue's own claim on a full preferred host releases it as it puts it (what dispatch --on here does)"
+python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-31-p5 --prefer laptop --claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > "$T/out" 2>&1
+has "$T/out" '"claimed": []' "enqueue --prefer here --claim with no room: queued"
+check "$([ "$(qget repo--p5 prefer_off)" != None ] && echo set)" "set" "  and released in the same call"
+claim_as buildbox
+check "$(qget repo--p5 state claimed_by)" "claimed buildbox" "  the peer's claim (its kick, its sweep) takes it at once"
+qreset
+echo "  a fire-time refusal by the preferred host releases it (prefer_off), and that host retries at its next claim"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p6 --prefer laptop --refused "the run cap (a test)" > /dev/null 2>&1
+check "$(qget repo--p6 refused_by)" "None" "a refused put from the preferred host: no hour's skip there (the S12 finish review)…"
+check "$([ "$(qget repo--p6 prefer_off)" != None ] && echo set)" "set" "  …released instead"
+claim_as buildbox
+check "$(qget repo--p6 state claimed_by)" "claimed buildbox" "  and another host claims it at once"
+qreset
+echo "  the refused verb (a claimed run's fire-time no) on the preferred host: released, no hour's skip"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p6b --prefer laptop > /dev/null 2>&1
+claim_as laptop
+check "$(qget repo--p6b state claimed_by)" "claimed laptop" "the preferred host claims its entry…"
+DISPATCH_HOST=laptop python3 "$QB" refused fleet:repo--p6b --why "the run cap (a test)" "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--p6b state refused_by)" "queued " "  …refuses it at fire time: queued, no hour's skip there (the S12 finish review)…"
+check "$([ "$(qget repo--p6b prefer_off)" != None ] && echo set)" "set" "  …released instead"
+claim_as buildbox
+check "$(qget repo--p6b state claimed_by)" "claimed buildbox" "  and another host claims it at once"
+qreset
+echo "  a preferred host the config would never let take it holds nothing"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p7 --prefer laptop --needs feat-b > /dev/null 2>&1
+claim_as buildbox
+check "$(qget repo--p7 state claimed_by)" "claimed buildbox" "a need the preferred host lacks: the host that meets it claims at once"
+qreset
+echo "  --pin keeps today's hard pin; a pin outranks a preference"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p8 --pin laptop > /dev/null 2>&1
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--p8 state claimed_by)" "queued None" "a pinned entry: never claimed off its pin, two hours on"
+DISPATCH_HOST=laptop python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget repo--p8 prefer_off)" "None" "  its full host releases nothing: a pin is no preference"
+qreset
+"${Q5[@]}" --branch claude/laptop/2026-10-31-p9 --pin laptop --prefer buildbox > /dev/null 2>&1
+check "$(qget repo--p9 host prefer)" "laptop " "--pin with --prefer: the pin, and no preference"
+qreset
+"${Q5[@]}" --branch claude/laptop/2026-10-31-pa --prefer buildbox --arg=--account --arg=acct-x > /dev/null 2>&1
+check "$(qget repo--pa host prefer)" "laptop " "a named login (--account LABEL) stays pinned to the host that holds it, a preference or not"
+qreset
+echo "  an entry pinned before S12 (a host field, no prefer) is honoured as a pin"
+python3 - "$QB" "$T/queue.git" "$T/repo" <<'PY' > /dev/null
+import importlib.machinery, sys
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+repo = str(q.Path(sys.argv[3]).resolve()); b = "claude/laptop/2026-10-31-old"
+k = q.key_of(repo, b)
+e = {"id": "old1", "key": k, "repo": q.repo_word(repo), "branch": b, "topic": q.topic_of(b), "priority": "normal", "needs": [],
+     "host": "laptop", "state": "queued", "queued_at": q.now() - 7200, "put_at": q.now() - 7200, "by": "", "from": "laptop",
+     "attempts": 0, "session": "", "args": [], "env": {}, "mode": ""}
+print(q.Fleet(sys.argv[2]).do([{"op": "put", "key": k, "entry": e}], "an old entry"))
+PY
+claim_as buildbox
+check "$(qget repo--old state claimed_by)" "queued None" "an old pinned entry: another host never claims it"
+claim_as laptop
+check "$(qget repo--old state claimed_by)" "claimed laptop" "  its host does"
+qreset
+echo "  the review's fixes: a put beside a live run here, the run's end, a pinned chain, a host that will not take it"
+RECS="$HL/Logs/claude-weekly/run-seed-runs"; mkdir -p "$RECS"
+printf '{"session": "s-f1", "branch": "claude/laptop/2026-10-31-f1", "repo": "%s", "topic": "f1", "pid": %s}' "$(cd "$T/repo" && pwd -P)" "$$" > "$RECS/f1.json"
+python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-31-f1 --prefer laptop --by s-f1 --claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget repo--f1 state host prefer running_on)" "queued  laptop laptop" "a --next of a run with no entry, live here: held here while it lives (running_on), unpinned"
+DISPATCH_HOST=buildbox DISPATCH_QUEUE_NOW=$(( $(date +%s) + 7200 )) python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--f1 state):$(qget repo--f1 prefer_off)" "queued:None" "  the full host does not release it while its run lives, and no other host takes it"
+echo "buildbox:none" > "$REGATTA_CONFIG/wharf-runs/kick-roads"
+python3 "$QB" kick fleet:repo--f1 "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "waits for its run on laptop; nothing to kick for" "  a kick for it kicks nobody: no peer may take it yet"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-roads" "$RECS/f1.json"
+qreset
+echo "  the run's end restarts the grace (freed_at): a step queued behind a long run is still its host's first"
+DISPATCH_QUEUE_NOW=$(( $(date +%s) - 3600 )) "${Q5[@]}" --branch claude/laptop/2026-10-31-fr --prefer laptop > /dev/null 2>&1
+python3 "$QB" started --repo "$T/repo" --branch claude/laptop/2026-10-31-fr --session s-fr "${QC[@]}" > /dev/null 2>&1
+python3 "$QB" ended --repo "$T/repo" --branch claude/laptop/2026-10-31-fr --session s-other "${QC[@]}" > /dev/null 2>&1
+check "$(qget repo--fr running_on host)" "None " "the run behind which it waited ends: the branch free, no pin (no worktree of it here)"
+claim_as buildbox
+check "$(qget repo--fr state)" "queued" "  put an hour ago, freed now: another host waits the grace from the run's end"
+qreset
+echo "  a pinned run's --next keeps the pin (its session cannot pass --pin on)"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c1 --pin laptop > /dev/null 2>&1
+claim_as laptop
+python3 "$QB" started fleet:repo--c1 --session s-c1 "${QC[@]}" > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c1 --prefer laptop --by s-c1 > /dev/null 2>&1
+check "$(qget repo--c1 state host prefer)" "queued laptop laptop" "a --pin run's --next replaces its entry and keeps its pin"
+qreset
+echo "  the preferred host that will not take it for its own state lets go at once"
+cat > "$T/s12ref.py" <<'PY2'
+import argparse, importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+real = q.claimable
+q.claimable = lambda e, h, t=None, fleet=False: "no clone of the repo here (a test)" if h == "laptop" else real(e, h, t, fleet)
+ctx = argparse.Namespace(host=None, cap=3, launchctl=os.environ["LCTL"], prefix="org.example.claude", jobbin=os.environ["JB"], rch="", event_at=None)
+print(q.claim(ctx))
+PY2
+"${Q5[@]}" --branch claude/laptop/2026-10-31-rf --prefer laptop > /dev/null 2>&1
+QB="$QB" LCTL="$T/launchctl" JB="$B/dispatch" DISPATCH_HOST=laptop python3 "$T/s12ref.py" > /dev/null 2>&1
+check "$([ "$(qget repo--rf prefer_off)" != None ] && echo released):$(qget repo--rf prefer_why)" "released:not taken on laptop: no clone of the repo here (a test)" \
+  "the preferred host refusing it (no clone, autofinish disarmed, the fence): released, saying why"
+claim_as buildbox
+check "$(qget repo--rf state claimed_by)" "claimed buildbox" "  another host claims it at once"
+qreset
+echo "  held_here: a step whose worktree here holds what origin lacks is pinned here — at its put, or at the run's end"
+git init -q --bare "$T/horigin.git"; git init -q -b main "$T/hrepo"
+(cd "$T/hrepo" && echo x > f && git add f && git commit -qm init && git remote add origin "$T/horigin.git" && git push -q origin main)
+HB2=claude/laptop/2026-10-31-held
+HW="$T/hrepo-held"   # any folder: held_here finds the worktree through git, not by its path
+git -C "$T/hrepo" worktree add -q -b $HB2 "$HW" main
+git -C "$HW" push -q origin $HB2
+QH=(python3 "$QB" enqueue --repo "$T/hrepo" "${QC[@]}")
+HPEND="$(git -C "$HW" rev-parse --absolute-git-dir)/claude/pending-answers.jsonl"
+hcase() {   # the step queued (clean) behind a live run here; then "$@" (what that run leaves); then the run's end
+  "${QH[@]}" --branch $HB2 --prefer laptop > /dev/null 2>&1
+  python3 "$QB" started --repo "$T/hrepo" --branch $HB2 --session s-h "${QC[@]}" > /dev/null 2>&1
+  "$@"
+  python3 "$QB" ended --repo "$T/hrepo" --branch $HB2 --session s-other "${QC[@]}" > /dev/null 2>&1
+}
+hcase true
+check "$(qget hrepo--held running_on host prefer pinned_why)" "None  laptop None" "every commit on origin, nothing waiting: put and end leave it unpinned, preferring this host"
+qreset
+hunpushed() { (cd "$HW" && echo "$1" > "$1" && git add "$1" && git commit -qm "unpushed $1"); }
+hcase hunpushed g
+check "$(qget hrepo--held host prefer)" "laptop " "a commit the run left unpushed: its end pins the step here…"
+has "$QL" '"event": "pinned-at-end"' "  …said in queue.jsonl"
+check "$(qget hrepo--held pinned_why | cut -c1-31)" "commits origin lacks in its wor" "  …naming why"
+qreset
+"${QH[@]}" --branch $HB2 --prefer laptop > /dev/null 2>&1
+check "$(qget hrepo--held host prefer pinned_why | cut -c1-40)" "laptop  commits origin lacks in its work" "a put preferring this host while its worktree holds that commit: pinned at the put (helm's stall retry keeps --on)"
+has "$QL" '"event": "pinned-at-put"' "  …said in queue.jsonl"
+qreset
+"${QH[@]}" --branch $HB2 --prefer buildbox > /dev/null 2>&1
+check "$(qget hrepo--held host prefer)" " buildbox" "  a put preferring another host is not judged here: that host's put would be"
+qreset
+git -C "$HW" push -q origin $HB2
+hcase sh -c "mkdir -p '$(dirname "$HPEND")' && echo '{\"item\": \"D1\"}' > '$HPEND'"
+check "$(qget hrepo--held host pinned_why)" "laptop answers wait in its worktree here (pending-answers)" "answers waiting for the run's next start in the worktree: pinned at its end"
+qreset
+rm -f "$HPEND"
+hcase sh -c "echo dirt >> '$HW/f'"
+check "$(qget hrepo--held host pinned_why)" "laptop uncommitted work in its worktree here" "uncommitted work in the worktree: pinned at its end"
+qreset
+git -C "$HW" checkout -q -- f
+hcase git -C "$T/hrepo" remote set-url origin "$T/no-such-origin.git"
+check "$(qget hrepo--held host pinned_why)" " None" "origin silent, the tip already on the remote-tracking ref: not pinned, no network asked (the final review)"
+qreset
+hsilent() { hunpushed o; }
+hcase hsilent
+check "$(qget hrepo--held host pinned_why)" "laptop origin did not answer, so this host's commits are not proved there" "origin silent, a commit past the last fetch: unproved is held, pinned here"
+DISPATCH_HOST=laptop python3 "$QB" list --all "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" "pinned laptop (origin did not answer" "  the listing names why it was pinned"
+git -C "$T/hrepo" remote set-url origin "$T/horigin.git"
+python3 "$QB" sweep --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget hrepo--held host pinned_why | cut -c1-38)" "laptop commits origin lacks in its wor" "  its host's sweep judges it again: the commit still unpushed, kept, its reason brought up to date"
+git -C "$HW" push -q origin $HB2
+python3 "$QB" sweep --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget hrepo--held state host prefer)" "queued  laptop" "  pushed since: the next sweep releases the held pin to a preference…"
+has "$QL" '"event": "held-released"' "  …said in queue.jsonl"
+qreset
+"${QH[@]}" --branch $HB2 --prefer laptop > /dev/null 2>&1
+hunpushed q
+python3 "$QB" ended --repo "$T/hrepo" --branch $HB2 --session s-x "${QC[@]}" > /dev/null 2>&1
+python3 "$QB" started --repo "$T/hrepo" --branch $HB2 --session s-q "${QC[@]}" > /dev/null 2>&1
+python3 "$QB" ended --repo "$T/hrepo" --branch $HB2 --session s-other "${QC[@]}" > /dev/null 2>&1
+check "$(qget hrepo--held host)" "laptop" "a step held at a run's end…"
+DISPATCH_HOST=buildbox python3 "$QB" enqueue --repo "$T/hrepo" --branch $HB2 --prefer laptop "${QC[@]}" > /dev/null 2>&1
+check "$(qget hrepo--held host prefer)" "laptop " "  …re-dispatched from another host: still held where its work is (the final review)"
+qreset
+git -C "$HW" push -q origin $HB2
+echo "  …and the pin is that step's only: its run's --next is unpinned again (the second landing review)"
+claim_as laptop
+python3 "$QB" started fleet:hrepo--held --session s-h2 "${QC[@]}" > /dev/null 2>&1
+"${QH[@]}" --branch $HB2 --prefer laptop --by s-h2 > /dev/null 2>&1
+check "$(qget hrepo--held state host prefer)" "queued  laptop" "a held_here pin is never inherited by the chain"
+qreset
+echo "  no put-time judge beside a live run of the branch here: that run's end judges, fresher"
+hunpushed live
+mkdir -p "$RECS"   # qreset took the records' folder
+printf '{"session": "s-live", "branch": "%s", "repo": "%s", "topic": "held", "pid": %s}' "$HB2" "$(cd "$T/hrepo" && pwd -P)" "$$" > "$RECS/hlive.json"
+"${QH[@]}" --branch $HB2 --prefer laptop > /dev/null 2>&1
+check "$(qget hrepo--held host prefer running_on):$(cat "$QL" 2>/dev/null | grep -c '"event": "pinned-at-put"')" " laptop laptop:0" \
+  "a put beside the live run, its worktree holding unpushed work: unpinned, held by running_on, no pinned-at-put"
+rm -f "$RECS/hlive.json"
+qreset
+git -C "$HW" push -q origin $HB2
+echo "  the sweep's free of a branch whose run died with no end word judges it the same"
+"${QH[@]}" --branch $HB2 --prefer laptop > /dev/null 2>&1
+python3 "$QB" started --repo "$T/hrepo" --branch $HB2 --session s-dead "${QC[@]}" > /dev/null 2>&1
+check "$(qget hrepo--held running_on host)" "laptop " "a step queued, unpinned, behind a run here (running_on)…"
+hunpushed h
+python3 "$QB" sweep "${QC[@]}" > /dev/null 2>&1
+check "$(qget hrepo--held host pinned_why | cut -c1-38)" "laptop commits origin lacks in its wor" "  …that run gone with no end word, its commit unpushed: the sweep frees it pinned here"
+qreset
+git -C "$HW" push -q origin $HB2
+echo "  a release: one kick per new set of peers, none for the enqueue's own entry; once by its condition; never on a torn read"
+printf 'laptop:feat-a\nbuildbox:feat-b\nvm1:feat-v\n' > "$FEAT"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-ka --prefer laptop > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-kb --prefer laptop --needs feat-b > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-kc --prefer laptop --needs feat-v > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-kd --prefer laptop --needs feat-b > /dev/null 2>&1
+cat > "$T/s12kick.py" <<'PY2'
+import argparse, importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+kicks = []
+q.kick_soon = lambda qid, cwd, ctx, full=(): kicks.append(qid)
+f = q.Fleet(q.home())
+ks = ["repo--ka", "repo--kb", "repo--kc", "repo--kd"]
+f.do([{"op": "set", "key": "repo--kb", "fields": {"refused_by": {"buildbox": q.now()}}, "cond": {}}], "buildbox refused kb")
+es = f.view()[0]
+q.prefer_release(f, [(k, es[k]) for k in ks], "laptop", "a test", argparse.Namespace(own="fleet:repo--ka"))
+es = f.view()[0]
+print(kicks, [bool(es[k].get("prefer_off")) for k in ks],
+      q.apply_op(es, {"op": "set", "key": "repo--ka", "fields": {"prefer_off": 1}, "cond": {"id": es["repo--ka"]["id"], "state": "queued", "prefer_off": None}})[1])
+real = q.claimable
+q.claimable = lambda e, h, t=None, fleet=False: q.UNREAD_WHY if h == "laptop" else real(e, h, t, fleet)
+q.Fleet(q.home()).do([{"op": "set", "key": "repo--kc", "fields": {"prefer_off": None}, "cond": {}}], "unrelease kc")
+q.claim(argparse.Namespace(host=None, cap=3, launchctl=os.environ["LCTL"], prefix="org.example.claude", jobbin=os.environ["JB"], rch="", event_at=None))
+print(q.Fleet(q.home()).view()[0]["repo--kc"].get("prefer_off"))
+PY2
+check "$(QB="$QB" LCTL="$T/launchctl" JB="$B/dispatch" DISPATCH_HOST=laptop python3 "$T/s12kick.py" 2>/dev/null)" "['fleet:repo--kc', 'fleet:repo--kd'] [True, True, True, True] moved
+None" "four released: a kick for each new set of peers (vm1, then buildbox: kb's refused it within the hour), none for the enqueue's own; a second write is a no-op; a torn read releases nothing"
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$FEAT"
+qreset
+echo "  an --after entry the room filter keeps on a host at its cap, its predecessor unjudged: not released (queue-rank's claim)"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-af --prefer laptop --after claude/laptop/2026-10-31-never > /dev/null 2>&1
+DISPATCH_HOST=laptop python3 "$QB" claim --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null 2>&1
+check "$(qget repo--af prefer_off)" "None" \
+  "the preferred host at its cap: an --after entry still waiting on its predecessor keeps its preference (the S12 finish review)"
+qreset
+echo "  two entries refused here for different reasons: each released under its own"
+cat > "$T/s12two.py" <<'PY2'
+import argparse, importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+real = q.claimable
+def fake(e, h, t=None, fleet=False):
+    if h == "laptop" and e.get("branch", "").endswith("-r1"):
+        return "no clone of the repo here (a test)"
+    if h == "laptop" and e.get("branch", "").endswith("-r2"):
+        return "a yolo run's launch cannot run here (autofinish disarmed here)"
+    return real(e, h, t, fleet)
+q.claimable = fake
+q.claim(argparse.Namespace(host=None, cap=3, launchctl=os.environ["LCTL"], prefix="org.example.claude", jobbin=os.environ["JB"], rch="", event_at=None))
+PY2
+"${Q5[@]}" --branch claude/laptop/2026-10-31-r1 --prefer laptop > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-r2 --prefer laptop > /dev/null 2>&1
+QB="$QB" LCTL="$T/launchctl" JB="$B/dispatch" DISPATCH_HOST=laptop python3 "$T/s12two.py" > /dev/null 2>&1
+check "$(qget repo--r1 prefer_why) | $(qget repo--r2 prefer_why)" "not taken on laptop: no clone of the repo here (a test) | not taken on laptop: a yolo run's launch cannot run here (autofinish disarmed here)" \
+  "each entry's release names its own reason"
+qreset
+echo "  a --pin run's re-issued --next (the queued road, same session) keeps the pin its first --next took"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c2 --pin laptop > /dev/null 2>&1
+claim_as laptop
+python3 "$QB" started fleet:repo--c2 --session s-c2 "${QC[@]}" > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c2 --prefer laptop --by s-c2 > /dev/null 2>&1
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c2 --prefer laptop --by s-c2 > /dev/null 2>&1
+check "$(qget repo--c2 state host pin_kind)" "queued laptop typed" "the second --next of the run: still pinned, typed"
+"${Q5[@]}" --branch claude/laptop/2026-10-31-c2 --prefer laptop --by s-someone > /dev/null 2>&1
+check "$(qget repo--c2 host)" "" "  another session's put is its own word: unpinned"
+qreset
+echo "  a held pin of the put's own never stands against its run's typed pin (the fourth review)"
+cat > "$T/s12held.py" <<'PY2'
+import importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+out = []
+for state in ("running", "queued"):   # the mine road (a --next beside the run) and the queued road (a re-issued one)
+    cur = {"id": "c", "branch": "claude/x/2026-10-31-t", "repo": "r", "state": state, "host": "laptop", "pin_kind": "typed",
+           "running_on": "laptop", "session": "s-t" if state == "running" else "", "by": "s-t", "from": "laptop", "queued_at": 1}
+    new = {"id": "n", "branch": "claude/x/2026-10-31-t", "repo": "r", "state": "queued", "host": "laptop", "pin_kind": "",
+           "pinned_why": "answers wait in its worktree here (pending-answers)", "by": "s-t", "from": "laptop", "queued_at": 2}
+    es = {"k": cur}
+    q.apply_op(es, {"op": "put", "key": "k", "entry": new, "guard": "s-t"})
+    out.append("%s/%s/%s" % (es["k"].get("host"), es["k"].get("pin_kind"), es["k"].get("pinned_why")))
+e = {"id": "x", "host": "laptop", "pin_kind": "", "pinned_why": "commits origin lacks", "branch": "claude/x/2026-10-31-t"}
+q.held_here = lambda repo, branch: None
+f = q.free_fields(e, "/nonexistent", "laptop", 5, "fleet:k")
+out.append("%s/%s/%s" % (f.get("host") or "-", f.get("prefer") or "-", "pinned_why" in f and f["pinned_why"] is None))
+q.held_here = lambda repo, branch: "uncommitted work in its worktree here"
+f = q.free_fields(e, "/nonexistent", "laptop", 5, "fleet:k")
+out.append("%s/%s" % (f.get("host"), f.get("pinned_why")))
+f = q.free_fields(e, "/nonexistent", "buildbox", 5, "fleet:k")
+out.append("%s" % ("host" in f))
+def broke(repo, branch):
+    raise ValueError("a test")
+q.held_here = broke
+f = q.free_fields(dict(e, prefer="laptop"), "/nonexistent", "laptop", 5, "fleet:k")
+out.append("%s/%s/%s" % ("host" in f, f.get("prefer_off", "x"), f.get("prefer_why", "x")))
+f = q.free_fields({"id": "y", "prefer": "laptop", "prefer_off": 3, "branch": "claude/x/2026-10-31-t"}, "/nonexistent", "buildbox", 5, "fleet:k")
+out.append("%s" % ("prefer_off" in f))
+q.prefer_wait({"prefer": "laptop", "refused_by": {"laptop": "abc"}, "put_at": "x", "freed_at": "1.5"}, "buildbox", 5); print("no-raise")
+rows = []
+base = {"id": "c", "branch": "claude/x/2026-10-31-t", "repo": "r", "host": "laptop", "pin_kind": "typed", "by": "s-t", "from": "laptop", "queued_at": 1}
+for label, cur, new in (
+        ("next-elsewhere", dict(base, state="running", running_on="laptop", session="s-t"), {"prefer": "buildbox", "host": ""}),
+        ("requeue-elsewhere", dict(base, state="queued", running_on="laptop", session=""), {"prefer": "buildbox", "host": ""}),
+        ("replace-same", dict(base, state="running", running_on="laptop", session="s-t"), {"prefer": "laptop", "host": "", "by": "s-r"}),
+        ("replace-elsewhere", dict(base, state="running", running_on="laptop", session="s-t"), {"prefer": "buildbox", "host": "", "by": "s-r"})):
+    n = dict({"id": "n", "branch": base["branch"], "repo": "r", "state": "queued", "by": "s-t", "from": "laptop", "queued_at": 2}, **new)
+    es = {"k": cur}
+    q.apply_op(es, {"op": "put", "key": "k", "entry": n, "guard": n["by"], "replace": label.startswith("replace")})
+    rows.append("%s=%s" % (label, es["k"].get("host") or "-"))
+es = {"k": dict(base, state="claimed", running_on="laptop", session="")}
+q.apply_op(es, {"op": "put", "key": "k", "replace": True, "entry": dict(base, id="n", state="queued", by="s-r", prefer="", queued_at=2,
+                                                                    pin_kind="", pinned_why="uncommitted work")})
+rows.append("replace-held=%s/%s/%s" % (es["k"].get("host"), es["k"].get("pin_kind"), es["k"].get("pinned_why")))
+es = {"k": dict(base, host="buildbox", state="running", running_on="buildbox", session="s-b")}
+q.apply_op(es, {"op": "put", "key": "k", "replace": True, "entry": dict(base, id="n", state="queued", by="s-r", prefer="", queued_at=2,
+                                                                    host="laptop", pin_kind="", pinned_why="uncommitted work")})
+rows.append("replace-held-elsewhere=%s/%s/%s" % (es["k"].get("host"), es["k"].get("pin_kind") or "-", es["k"].get("pinned_why")))
+import tempfile
+d = tempfile.mkdtemp(dir=os.environ.get("TMPDIR_T"))
+os.mkdir(os.path.join(d, ".git"))
+def git_in(wt, *a, timeout=60):
+    if a[:2] == ("worktree", "list"):
+        return 0, "worktree %s\nbranch refs/heads/claude/x/2026-10-31-t" % d
+    if a[0] == "rev-parse" and a[1] == "--absolute-git-dir":
+        return 0, os.path.join(d, ".git")
+    if "status" in a:
+        return 124, ""
+    if a[0] == "rev-parse":
+        return 0, "abc123"
+    if a[0] == "merge-base":
+        return 0, ""   # the tip is on the cached remote ref: no reason found, but status never answered
+    return 0, ""
+q2 = importlib.machinery.SourceFileLoader("dq2", os.environ["QB"]).load_module()   # the real held_here (q's is stubbed)
+q2.git_in = git_in
+try:
+    q2.held_here(d, "claude/x/2026-10-31-t")
+    rows.append("git-timeout=verdict")
+except RuntimeError:
+    rows.append("git-timeout=raised")
+rows.append("no-clone=%s" % q2.held_here(os.path.join(d, "absent"), "claude/x/2026-10-31-t"))
+q.prefer_wait({"prefer": "laptop", "put_at": float("nan"), "freed_at": float("inf")}, "buildbox", 5)
+rows.append("nan=no-raise")
+print(" ".join(rows))
+print(" ".join(out))
+PY2
+check "$(QB="$QB" TMPDIR_T="$T" python3 "$T/s12held.py" 2>/dev/null | tr '\n' ' ')" "no-raise next-elsewhere=- requeue-elsewhere=- replace-same=laptop replace-elsewhere=- replace-held=laptop/typed/None replace-held-elsewhere=laptop/-/uncommitted work git-timeout=raised no-clone=None nan=no-raise laptop/typed/None laptop/typed/None -/laptop/True laptop/uncommitted work in its worktree here False False/None/None False " \
+  "a malformed refused_by time stops no claim; a --next held at its put beside a --pin run: still typed, its held why dropped; a held pin at the end: no longer needed, a preference; still needed, kept; another host's, untouched; a broken judge keeps it; freed on its preferred host a release clears, freed elsewhere it stands"
+qreset
+echo "  the requeue (S10) keeps the pin and the preference; the preferred host handing it back releases it"
+cat > "$T/s12rq.py" <<'PY2'
+import importlib.machinery, os
+q = importlib.machinery.SourceFileLoader("dq", os.environ["QB"]).load_module()
+out = []
+for e in ({"prefer": "laptop", "host": ""}, {"prefer": "buildbox", "host": ""}, {"prefer": "", "host": "laptop"}):
+    es = {"k": dict(e, id="1", state="running", running_on="laptop", claimed_at=1, session="s")}
+    q.apply_op(es, {"op": "requeue", "key": "k", "host": "laptop", "at": 5, "cond": {"id": "1"}})
+    x = es["k"]
+    out.append("%s/%s/%s" % (x.get("host") or "-", x.get("prefer") or "-", x.get("prefer_off") or "-"))
+print(" ".join(out))
+PY2
+check "$(QB="$QB" python3 "$T/s12rq.py")" "-/laptop/5 -/buildbox/- laptop/-/-" \
+  "requeued by its preferred host: released; preferring another: kept; pinned: still pinned"
+qreset
+rm -f "$FEAT"
+
 echo "S5: dispatch — --needs, the berth pick retired, no home"
 check "$(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'needs:+--needs')" "1" "queue_dispatch passes --needs to the enqueue"
 check "$(grep -c 'needs:+--needs' "$B/dispatch")" "3" "  as do the fire-time enqueues (a one-shot's, a refusal's)"
@@ -762,7 +1191,7 @@ qreset
 mkdir -p "$T/pw"; rm -f "$T/pw"/*
 cat > "$T/rqstub" <<EOF
 #!/bin/sh
-echo "\$* locked=\${DISPATCH_REQUEUE_LOCKED:-} unattended=\${CLAUDE_UNATTENDED:-none}" >> "$T/pw/calls"
+echo "\$* locked=\${DISPATCH_REQUEUE_LOCKED:-} unattended=\${REGATTA_UNATTENDED:-\${CLAUDE_UNATTENDED:-none}}" >> "$T/pw/calls"
 sleep 2
 echo done >> "$T/pw/done"
 EOF
@@ -783,7 +1212,7 @@ rc.watch_loop = loop
 rc.watch("x")
 print("returned done=%s" % os.path.exists(os.path.join(d, "done")))
 PYPW
-pw() { DISPATCH_POWER_FAKE="$T/pw" DISPATCH_REQUEUE_BIN="$T/rqstub" DISPATCH_REQUEUE_ACK_S=0.5 CLAUDE_UNATTENDED=dispatch \
+pw() { DISPATCH_POWER_FAKE="$T/pw" DISPATCH_REQUEUE_BIN="$T/rqstub" DISPATCH_REQUEUE_ACK_S=0.5 CLAUDE_UNATTENDED=dispatch REGATTA_UNATTENDED=dispatch \
        python3 "$T/pw.py" "$B/dispatch-rc" "$T/pw" > "$T/pw/out.$1" 2>&1; }
 echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 pw a & pa=$!; pw b & pb=$!
@@ -824,6 +1253,183 @@ chmod +x "$T/pmset-dark" "$T/pmset-awake"
 check "$(grep -c '"claim-skipped".*DarkWake' "$QL")" "1" "  no host claims in a DarkWake (pmset's capabilities lack Graphics)"
 : > "$QL"; DISPATCH_PMSET="$T/pmset-awake" python3 "$QB" claim "${QC[@]}" > /dev/null 2>&1
 check "$(grep -c '"claim-skipped"' "$QL")" "0" "  …and claims as before once fully awake"
+echo "confidential-reach S6: the claim judges a spawn again, on the claiming host"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# the projects folder as the core reads it under this suite's HOME (common.PROJECTS): scope node's checkout
+PJ=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.PROJECTS)' "$B/../lib")
+git init -q "$PJ/k"
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}}}\n' > "$T/reg-node.json"
+printf '{"repos": ' > "$T/reg-torn.json"
+NM="confidential:$(printf node | shasum -a 256 | cut -c1-8)"
+spawnbr() {   # TOPIC JUDGE: a seed branch in $T/repo whose .review, origin node's marker, says JUDGE of its brief
+  local b="claude/laptop/2026-10-28-$1" f="docs/handoff/2026-10-28-$1"
+  git -C "$T/repo" checkout -q -b "$b" main
+  mkdir -p "$T/repo/docs/handoff"; echo "# $1 brief" > "$T/repo/$f.md"
+  printf '{"origin": "%s", "sha256": "%s", "scan": "clean", "judge": "%s"}\n' "$NM" "$(shasum -a 256 "$T/repo/$f.md" | cut -d' ' -f1)" "$2" > "$T/repo/$f.review"
+  git -C "$T/repo" add docs; git -C "$T/repo" commit -qm "seed: $1"; git -C "$T/repo" checkout -q main
+}
+spawnbr s6ok clean; spawnbr s6leak leak
+git -C "$T/repo" branch -q claude/laptop/2026-10-28-s6cwd main
+git -C "$T/repo" branch -q claude/laptop/2026-10-28-s6open main
+lget() { local f="$HL/Caches/run-seed/queue-local/$1/$(basename "$T/repo")--$2.json"; [ -f "$f" ] && python3 "$T/qget.py" "${@:3}" < "$f" 2>/dev/null; }
+s6enq() { CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" enqueue --repo "$T/repo" --branch "claude/laptop/2026-10-28-$1" "${QC[@]}" "${@:2}" > /dev/null; }
+s6enq s6ok; s6enq s6leak; s6enq s6cwd --cwd "$PJ/k"
+check "$(lget _spawn s6ok confined) $(lget _spawn s6leak confined) $(lget node s6cwd confined)" "True True True" "spawns queue node-local, confined: two with a .review, one asked from inside the node"
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget _spawn s6ok state)" "claimed" "a spawn whose review vouches for its brief: claimed and started"
+check "$(qplists | grep -c '\.s6ok\.')" "1" "  its job loaded"
+check "$(lget _spawn s6leak state)" "" "a review that judged a leak: dropped, never left claimed nor handed back for an hourly retry (the landing review)"
+check "$(qplists | grep -c '\.s6leak\.')" "0" "  no job"
+check "$(grep -c '"card": "queue-failed".*s6leak' "$QL")" "1" "  a card says so, once"
+check "$(lget node s6cwd state)" "" "an entry from inside the node whose branch carries no review: dropped too (no wait fixes it)"
+has "$QL" "confidential-reach S6: " "  the queue's log says why (start-failed)"
+check "$(grep 'confidential-reach S6' "$QL" | grep -ciE 'the next step waits for|nothing to do')" "0" "  never in the cap's waiting words"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# a torn registry at the claim: nothing is claimed — dispatch-queue S5's eligibility reads the berths from it
+# (main since 2026-10-29) — so a spawn is never started, and waits as queued
+s6enq s6open; s6enq s6ok
+CLAUDE_REPOS_JSON="$T/reg-torn.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(qget repo--s6open state)" "queued" "a torn registry at claim: an open entry waits too (S5's eligibility fails closed)"
+check "$(lget _spawn s6ok state claimed_by)" "queued None" "  a spawn is never claimed nor started (fails closed)"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# the claiming host's own registry decides: one where the marker names no confidential scope refuses. The
+# `_spawn` queue is this host's alone, so no other host's registry will read it back: dropped with a card,
+# once, never handed back for an hourly retry for ever (S6's fourth landing review)
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k"]}}}\n' > "$T/reg-open.json"
+s6enq s6ok
+CLAUDE_REPOS_JSON="$T/reg-open.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget _spawn s6ok state)" "" "a claimer whose registry cannot read the origin back, in a host-local queue: dropped, never the enqueuer's word"
+check "$(grep -c '"card": "queue-failed".*s6ok' "$QL")" "1" "  a card says so, once"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# a confidential scope whose `repos` is no list: route() refuses it as torn, before any entry is written, and a
+# claim of an entry queued before it never crashes after its CAS (S6's fourth landing review)
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": 5, "confidential": true}}}\n' > "$T/reg-bad.json"
+CLAUDE_REPOS_JSON="$T/reg-bad.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-28-s6ok "${QC[@]}" > "$T/out" 2>&1; check "$?" "2" "a bad repos type at enqueue: refused, exit 2"
+has "$T/out" "the scope registry (repos.json) is unreadable" "  as a torn registry"
+check "$(ls "$HL/Caches/run-seed/queue-local" 2>/dev/null | tr '\n' ' '):$(qget repo--s6ok state)" ":" "  nothing queued"
+s6enq s6ok
+CLAUDE_REPOS_JSON="$T/reg-bad.json" python3 "$QB" claim "${QC[@]}" > "$T/out" 2>&1; check "$?" "0" "  a claim under it: no crash"
+check "$(grep -c Traceback "$T/out")" "0" "  no traceback"
+check "$(lget _spawn s6ok state claimed_by)" "queued None" "  the entry never claimed: the berths read the registry as unreadable first, before any claim is written"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# S6's fifth landing review, item 2: a caller in two scopes asking for a repo of only one sends a run out of the
+# other — route() refuses it, as main's confined_refusal did, where `cs & rs` had queued it as the repo's own
+git init -q "$PJ/sh"; git init -q "$PJ/k2"
+printf '{"repos": {"k": {}, "k2": {}, "sh": {}}, "scopes": {"node": {"repos": ["k", "sh"], "confidential": true}, "node2": {"repos": ["k2", "sh"], "confidential": true}}}\n' > "$T/reg-two.json"
+CLAUDE_REPOS_JSON="$T/reg-two.json" python3 "$QB" enqueue --repo "$PJ/k" --branch claude/laptop/2026-10-30-two --cwd "$PJ/sh" "${QC[@]}" > "$T/out" 2>&1
+check "$?" "2" "item 2: a caller in a repo node and node2 share, for a repo of node alone: refused, exit 2"
+has "$T/out" "a run asked from inside one confidential scope for a repo of another" "  saying why"
+check "$(ls "$HL/Caches/run-seed/queue-local" 2>/dev/null | tr '\n' ' ')" "" "  nothing queued"
+CLAUDE_REPOS_JSON="$T/reg-two.json" python3 "$QB" enqueue --repo "$PJ/sh" --branch claude/laptop/2026-10-30-shown --cwd "$PJ/sh" "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(ls "$HL/Caches/run-seed/queue-local/node" 2>/dev/null | grep -c '^sh--shown')" "0:1" "  the shared repo's own run from inside it: its node's queue, as before"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# the sixth review's first pass: the same caller for an OPEN repo — queued in node alone, its claim judged it as node's
+# and never saw node2. Refused at enqueue, as dispatch's gate refuses it
+CLAUDE_REPOS_JSON="$T/reg-two.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-30-twoopen --cwd "$PJ/sh" "${QC[@]}" > "$T/out" 2>&1
+check "$?" "2" "sixth review: a caller in two scopes, for an open repo: refused, exit 2"
+has "$T/out" "from inside more than one confidential scope" "  saying why"
+check "$(ls "$HL/Caches/run-seed/queue-local" 2>/dev/null | tr '\n' ' ')" "" "  nothing queued"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# the small list: a typed `dispatch-queue enqueue` reads the caller's session folder too, as dispatch does — a node
+# session's `cd <open repo> && dispatch-queue enqueue` is still inside the node
+QSD=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.Path.home() / ".claude" / "sessions")' "$B/../lib")
+mkdir -p "$QSD"; printf '{"pid": 99995, "sessionId": "q-node-sess", "cwd": "%s", "updatedAt": 9}\n' "$PJ/k" > "$QSD/99995.json"
+CLAUDE_CODE_SESSION_ID=q-node-sess CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-28-s6open --cwd "$T/repo" "${QC[@]}" > /dev/null 2>&1
+check "$(lget node s6open confined)" "True" "a node session's typed enqueue from an open repo: queued in the node, confined (its session's folder read)"
+rm -f "$QSD/99995.json"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+
+echo "confidential-reach S6's landing review: the claim judges what an entry says, not what it was stored as"
+lset() {   # SCOPE TOPIC FIELD VALUE: an entry as one queued before S6 stored it
+  python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d[sys.argv[2]] = json.loads(sys.argv[3]); json.dump(d, open(p, "w"))' \
+    "$HL/Caches/run-seed/queue-local/$1/$(basename "$T/repo")--$2.json" "$3" "$4"
+}
+# an entry from inside the node for an open repo, queued before S6 (confined false): judged all the same
+s6enq s6cwd --cwd "$PJ/k"; lset node s6cwd confined false
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget node s6cwd state)" "" "S2: a node's entry for an open repo stored confined false (before S6), no review: judged and dropped"
+check "$(qplists | grep -c '\.s6cwd\.')" "0" "  no job"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# a spawn's entry stored confined false whose branch carries a review that judged a leak: judged by its review
+s6enq s6leak; lset _spawn s6leak confined false
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget _spawn s6leak state)" "" "S2: an entry whose branch carries a .review is judged whatever its stored confined value"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# a --note from inside the node rides with the run unreviewed
+s6enq s6ok --cwd "$PJ/k" --arg=--note --arg=from-the-node
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget node s6ok state)" "" "S2: a node's entry to a reviewed spawn with a --note: dropped (the note was never reviewed)"
+grep 'confidential-reach S6' "$QL" | tail -1 > "$T/last"; has "$T/last" "a --note from inside a confidential scope" "  saying why"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# the same reviewed spawn from inside the node, no note: its newest brief is the reviewed one — and, since S6's
+# fifth landing review (item 5), the claim judges what a push would carry beyond the seed's files, which needs
+# origin's refs: with none the claim cannot tell and hands the entry back; with them (as a clone has) it claims
+s6enq s6ok --cwd "$PJ/k"
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget node s6ok state)" "queued" "  without one, from inside the node, no origin refs to judge a push by: handed back, never claimed (item 5)"
+git -C "$T/repo" update-ref refs/remotes/origin/main main
+qreset; rm_own "$HL/Caches/run-seed/queue-local"   # a handed-back entry waits its hour: queued afresh
+s6enq s6ok --cwd "$PJ/k"
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" claim "${QC[@]}" > /dev/null
+check "$(lget node s6ok state)" "claimed" "  with origin's refs: nothing beyond its seed's brief and review unpushed, claimed"
+git -C "$T/repo" update-ref -d refs/remotes/origin/main
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+# S1: route() and the gate share the core's resolver: a caller in an unregistered repo a confidential glob takes
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["k", "gl*"], "confidential": true}}}\n' > "$T/reg-glob.json"
+git init -q "$PJ/glq"
+CLAUDE_REPOS_JSON="$T/reg-glob.json" python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-10-28-s6open --cwd "$PJ/glq" "${QC[@]}" > "$T/out"
+has "$T/out" '"store": "local=node"' "S1: an enqueue from an unregistered repo a confidential glob takes queues in that node"
+has "$T/out" '"confined": true' "  confined: a spawn, judged at claim"
+check "$(qget repo--s6open state)" "" "  never the fleet ref"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+
+echo "confidential-reach S6's third landing review: route() reads the caller first and the repo by its checkout; the drop is checked"
+git init -q "$PJ/k2"
+printf '{"repos": {"k": {}, "k2": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "node2": {"repos": ["k2"], "confidential": true}}}\n' > "$T/reg-two.json"
+CLAUDE_REPOS_JSON="$T/reg-two.json" python3 "$QB" enqueue --repo "$PJ/k" --branch claude/laptop/2026-10-28-own --cwd "$PJ/k2" "${QC[@]}" > "$T/out" 2>&1; check "$?" "2" "from inside node2 for node's repo: refused, exit 2"
+has "$T/out" "a run asked from inside one confidential scope for a repo of another" "  saying why"
+check "$(ls "$HL/Caches/run-seed/queue-local" 2>/dev/null | tr '\n' ' ')" "" "  never queued in node's queue as if it were node's own run"
+printf '{"repos": {"k": {}, "k2": {}}, "scopes": {"node": {"repos": ["k"], "confidential": true}, "node2": {"repos": ["k2", "k"], "confidential": true}}}\n' > "$T/reg-both.json"
+CLAUDE_REPOS_JSON="$T/reg-both.json" python3 "$QB" enqueue --repo "$PJ/k" --branch claude/laptop/2026-10-28-own --cwd "$PJ/k2" "${QC[@]}" > "$T/out" 2>&1
+has "$T/out" '"store": "local=node2"' "a repo in two scopes, asked from its second: that scope's own run, in its queue"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+git clone -q "$T/repo" "$PJ/k/sub"
+CLAUDE_REPOS_JSON="$T/reg-node.json" python3 "$QB" enqueue --repo "$PJ/k/sub" --branch claude/laptop/2026-10-28-s6open --cwd "$PJ/k" "${QC[@]}" > "$T/out" 2>&1; check "$?" "2" "a clone of an open repo nested in the node's folder: refused, never queued as the node's own"
+has "$T/out" "its folder and its git checkout are not in the same confidential scopes" "  naming the split"
+check "$(ls "$HL/Caches/run-seed/queue-local" 2>/dev/null | tr '\n' ' ')" "" "  nothing queued"
+rm_own "$PJ/k/sub"
+# item 6: a final refusal's drop checks its remove, catches a store that does not answer, and cards the
+# entry as this claim holds it
+cat > "$T/drop.py" <<'PY'
+import argparse, importlib.machinery, sys
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+ctx = argparse.Namespace(host=None, cap=3, launchctl=sys.argv[2], prefix="org.example.claude", jobbin=sys.argv[3], rch="", event_at=None)
+mode = sys.argv[4]
+q.claim_refusal = lambda e, store=None: ("a stand-in refusal no wait fixes", True)
+real = q.Local.do
+def do(self, ops, why, defer=True):
+    if why.startswith("drop ") and mode == "raise":
+        raise q.Unreachable("the store did not answer")
+    if why.startswith("drop ") and mode == "moved":
+        return ["moved"]
+    return real(self, ops, why, defer)
+q.Local.do = do
+print(len(q.claim(ctx)))
+PY
+for m in raise moved; do
+  s6enq s6ok
+  python3 "$T/drop.py" "$QB" "$T/launchctl" "$B/dispatch" "$m" > "$T/out" 2>&1; check "$?:$(cat "$T/out")" "0:0" "a drop whose remove is $m: the claim goes on, nothing started"
+  check "$(lget _spawn s6ok state claimed_by)" "claimed laptop" "  the claim stands, for the claimer's sweep to return past its lease"
+  check "$(grep -c '"drop-failed"' "$QL"):$(grep -c '"card": "queue-failed"' "$QL")" "1:0" "  said in the log, no card of a drop that never happened"
+  qreset; rm_own "$HL/Caches/run-seed/queue-local"
+done
+s6enq s6ok
+python3 "$T/drop.py" "$QB" "$T/launchctl" "$B/dispatch" ok > /dev/null 2>&1
+check "$(lget _spawn s6ok state)" "" "a drop whose remove lands: the entry is gone"
+check "$(python3 -c 'import json, re, sys; d = json.load(open(sys.argv[1])); print(any(k.endswith("#queue-failed") and re.fullmatch(r"queue-failed [0-9]+ .*", v) for k, v in d.items()))' "$HL/Caches/run-seed/queue/cards.json")" "True" \
+  "  carded once, its mark this claim's (claimed_at), never the entry's before the claim"
+qreset; rm_own "$HL/Caches/run-seed/queue-local"
+
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 # ---- S8: the kick roads (docs/dispatch-queue-kick-2026-10-25.md) -------------------------------------------------
 # Every road is a stand-in: ssh, orca and the spacesheep press record their words and touch no host. The kick runs
@@ -896,6 +1502,21 @@ check "$(wc -l < "$T/ssh.calls" | tr -d ' ')" "1" "  ssh, where wharf-runs/ssh h
 check "$(qpy reached-of buildbox)" "True" "  …and reached() reads the same: an alias for it, the kick on"
 check "$(qpy reached-of nohost)" "False" "  a host nothing reaches is not"
 
+# wharf-runs/kick-ssh: the kick's own alias, for a host wharf-runs/ssh must not name (a scope's node)
+# …which a kick reaches through the scope's berths, the only way such a host is a peer: berth's no-berths road reads
+# wharf-runs/ssh alone
+mv "$REGATTA_CONFIG/wharf-runs/ssh" "$T/ssh.kept"; echo "other:other-alias" > "$REGATTA_CONFIG/wharf-runs/ssh"
+printf '{"repos": {}, "scopes": {"k": {"repos": ["*"], "berths": ["buildbox", "laptop"]}}}\n' > "$T/reg-ks.json"
+echo "buildbox:ssh" > "$KR"; kreset
+CLAUDE_REPOS_JSON="$T/reg-ks.json" python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+has "$KJ" 'no ssh alias for buildbox (wharf-runs/ssh, wharf-runs/kick-ssh)' "kick-ssh: no alias in either key says both"
+echo "buildbox:buildbox-kick" > "$REGATTA_CONFIG/wharf-runs/kick-ssh"; kreset
+CLAUDE_REPOS_JSON="$T/reg-ks.json" python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2>&1
+has "$T/ssh.calls" "buildbox-kick" "  the ssh road reaches a host kick-ssh alone names"
+: > "$KR"
+check "$(qpy reached-of buildbox)" "True" "  …and with no line it counts as what exists, for reached()"
+rm -f "$REGATTA_CONFIG/wharf-runs/kick-ssh"; mv "$T/ssh.kept" "$REGATTA_CONFIG/wharf-runs/ssh"
+
 kl_line() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import kicklib; print(kicklib.line_of(sys.argv[2]))' "$B" "$1"; }
 printf 'buildbox:\nsheep,\nssh\n' > "$KR"
 check "$(kl_line buildbox)" "['sheep', 'ssh']" "the S8 review: a value the overlay wrote one word per line reads as one line"
@@ -943,6 +1564,22 @@ CLAUDE_REPOS_JSON="$T/reg-um.json" python3 "$QB" kick fleet:repo--k1 --cwd "$T/v
 echo '{"repos": ' > "$T/reg-torn.json"
 CLAUDE_REPOS_JSON="$T/reg-torn.json" python3 "$QB" kick fleet:repo--k1 "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" "  a registry that will not read: refused (fails closed)"
 (cd "$T/vaultrepo" && CLAUDE_REPOS_JSON="$T/reg-k.json" "$B/dispatch" --kick fleet:repo--k1 > /dev/null 2> "$T/err"); check "$?" "2" "  dispatch --kick from that checkout: the same refusal"
+# S6's sixth review, first pass: the caller as the spawn gate judges it — a node session whose shell `cd`s to an open
+# folder is still inside (its record; the transcript's start folder too), for --kick and for --requeue --why, whose
+# text is committed into an open run's brief and pushed
+mkdir -p "$QSD" "$T/openk"
+printf '{"sessionId": "kick-node", "cwd": "%s", "updatedAt": 1}\n' "$(cd "$T/vaultrepo" && pwd -P)" > "$QSD/kick-node.json"
+RQENV=(env -u CLAUDE_CONFIG_DIR -u CLAUDE_UNATTENDED -u REGATTA_UNATTENDED)
+(cd "$T/openk" && "${RQENV[@]}" CLAUDE_CODE_SESSION_ID=kick-node CLAUDE_REPOS_JSON="$T/reg-k.json" python3 "$QB" kick fleet:repo--k1 --cwd "$T/openk" "${QC[@]}" > /dev/null 2> "$T/err")
+check "$?" "2" "sixth review: --kick from an open folder by a session whose record is in the node: refused"
+check "$([ -f "$T/ssh.calls" ] && echo kicked || echo none)" "none" "  and kicks nobody"
+(cd "$T/vaultrepo" && "${RQENV[@]}" CLAUDE_REPOS_JSON="$T/reg-k.json" python3 "$QB" requeue --all --why "a reason from the node" "${QC[@]}" > /dev/null 2> "$T/err")
+check "$?" "2" "  --requeue --why from inside the node: refused before anything ends"
+has "$T/err" "requeue without --why" "  saying so"
+(cd "$T/openk" && "${RQENV[@]}" CLAUDE_CODE_SESSION_ID=kick-node CLAUDE_REPOS_JSON="$T/reg-k.json" python3 "$QB" requeue --all --why "a reason" "${QC[@]}" > /dev/null 2> "$T/err")
+check "$?" "2" "  and from an open folder by that node session"
+has "$T/err" "requeue without --why" "  by the same refusal (never a missing queue home)"
+rm -f "$QSD/kick-node.json"
 
 echo "  the receiver: noted, the sweep kickstarted, nothing claimed in the caller's process"
 rm -f "$T/calls"; rm_own "$KD"

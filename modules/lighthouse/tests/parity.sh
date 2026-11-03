@@ -57,6 +57,7 @@ VH="$LH/hooks/vendor_hook.py"
 check "$(printf 'not json' | python3 "$VH" antigravity "$LH/hooks/secrets_guard.py")" "{}" "Antigravity, stdin that is no JSON: one {} (it reads anything else as a deny)"
 check "$(printf 'not json' | python3 "$VH" codex "$LH/hooks/secrets_guard.py")" "" "Codex, the same: nothing, an allow"
 check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}' | python3 "$VH" antigravity "$T/no-such-guard.py")" "{}" "a guard that is not there: allowed (fails open, as the guards do)"
+has "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}' | python3 "$VH" antigravity "$T/no-such-guard.py" 2>&1 >/dev/null)" "no guard ran" "  said on stderr"
 check "$(printf '{"tool_name":"mcp__fs__read","tool_input":{"path":"%s/_secrets/app.env"},"cwd":"%s"}' "$SGV" "$WT" | python3 "$VH" codex "$LH/hooks/secrets_guard.py")" "" \
   "an MCP tool: not translated, so not judged (docstring; the table has no MCP row)"
 P='*** Begin Patch\n*** Update File: ok.txt\n*** Move to: '"$SGV"'/_secrets/moved.env\n*** End Patch\n'
@@ -152,22 +153,24 @@ printf '{"acct-tenant":{"repos":["x"],"logins":["acct-codex","acct-seat"]}}\n' >
 printf '{"acct-orca":{"provider":"codex","home":"%s"}}\n' "$T/orca/codex-accounts/9/home" > "$ACCOUNT_ORCA_FILE"
 out=$(python3 "$VHK" check); rc=$?
 check "$rc" 1 "check before apply: exit 1"
-has "$out" "no current entry for secrets_guard, checkpoint, trailer" "  it names each missing entry"
+has "$out" "no regatta guards entry" "  it says the entry is missing"
 check "$(python3 "$VHK" homes | cut -f1 | sort | uniq -c | tr -s ' ' | tr '\n' ';')" " 1 antigravity; 3 codex;" \
   "homes: ~/.codex, the registry's ~/.codex-work and Orca's read-back Codex home; one Antigravity"
 out=$(python3 "$VHK" apply --dry-run)
-has "$out" "would change: added secrets_guard, added checkpoint, added trailer" "apply --dry-run says what it would add"
+has "$out" "would change: added the guards entry" "apply --dry-run says what it would add"
 check "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]))' "$HOME/.codex/hooks.json")" 1 "  and writes nothing"
 out=$(python3 "$VHK" apply); rc=$?
 check "$rc" 0 "apply: exit 0"
-has "$out" "3 entries of ours not yet reviewed" "  it says Codex runs none until they are reviewed"
+has "$out" "1 entry of ours not yet reviewed" "  it says Codex runs none until it is reviewed"
 cx() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join((h["command"].split()[-1].strip("\"").rsplit("/",1)[-1] if "vendor_hook" in h["command"] else h["command"]) + ":" + str(g.get("matcher")) for g in d["hooks"]["PreToolUse"] for h in g["hooks"]))' "$1"; }
-check "$(cx "$HOME/.codex/hooks.json")" "orca-hook:None secrets_guard.py: checkpoint.py: trailer:" "Codex: Orca's entry first, ours appended after it, matcher \"\""
+check "$(cx "$HOME/.codex/hooks.json")" "orca-hook:None guards:" "Codex: Orca's entry first, our one entry appended after it, matcher \"\""
+check "$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][1]["hooks"][0]; print(h["statusMessage"], "|", h["command"].split()[-2:])' "$HOME/.codex/hooks.json")" \
+  "regatta guards: secrets, checkpoint, trailer | ['codex', 'guards']" "  named by its statusMessage (what /hooks lists), one call: \`vendor_hook.py codex guards\`"
 check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["Stop"][0]["hooks"][0]["command"])' "$HOME/.codex/hooks.json")" "orca-hook" "  another event's entries untouched"
-check "$(cx "$HOME/.codex-work/hooks.json")" "secrets_guard.py: checkpoint.py: trailer:" "the registry's Codex home: its file made, the entries in it"
-check "$(cx "$T/orca/codex-accounts/9/home/hooks.json")" "secrets_guard.py: checkpoint.py: trailer:" "Orca's read-back Codex home: the same"
-check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sorted(d), d["regatta"]["enabled"], len(d["regatta"]["PreToolUse"][0]["hooks"]), d["regatta"]["PreToolUse"][0]["matcher"])' "$HOME/.gemini/config/hooks.json")" \
-  "['orca', 'regatta'] True 3 *" "Antigravity: our key beside Orca's, three handlers, matcher *"
+check "$(cx "$HOME/.codex-work/hooks.json")" "guards:" "the registry's Codex home: its file made, the entry in it"
+check "$(cx "$T/orca/codex-accounts/9/home/hooks.json")" "guards:" "Orca's read-back Codex home: the same"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); h=d["regatta"]["PreToolUse"][0]["hooks"]; print(sorted(d), d["regatta"]["enabled"], len(h), d["regatta"]["PreToolUse"][0]["matcher"], sorted(h[0]), h[0]["command"].split()[-1])' "$HOME/.gemini/config/hooks.json")" \
+  "['orca', 'regatta'] True 1 * ['command', 'timeout', 'type'] guards" "Antigravity: our key beside Orca's, one handler (no statusMessage: agy has none; the key names it), matcher *"
 has "$(cat "$HOME/.codex/AGENTS.md")" "- $HOME/me/core.md" "the Codex pointer names the CLAUDE.md's @ file"
 has "$(cat "$HOME/.codex/AGENTS.md")" "- $HOME/.claude/rules/sub/b.md" "  every .md under rules/, a subfolder's included"
 case "$(cat "$HOME/.codex/AGENTS.md")" in *gone.md*) check gone absent "  an @ file that is not there is not named";; *) check absent absent "  an @ file that is not there is not named";; esac
@@ -177,26 +180,48 @@ case "$(cat "$HOME/.codex/AGENTS.md")" in *private.md*|*CLAUDE.md*) check named 
 has "$(cat "$HOME/.codex-work/AGENTS.md")" "- $HOME/.claude-acct-seat/rules/seat.md" "the tenant's Codex home: its Claude seat's rules"
 has "$(cat "$HOME/.codex-work/AGENTS.md")" "- $HOME/me/core.md" "  and the seat's shared @ file"
 case "$(cat "$HOME/.codex-work/AGENTS.md")" in *"$HOME/.claude/rules"*) check default seat "  not the default dir's rules";; *) check seat seat "  not the default dir's rules";; esac
+# a confined routing login is its tenant's too, named in "confined", never in "logins" (agy-confine-fail-closed)
+printf '{"acct-tenant":{"repos":["x"],"logins":["acct-seat"],"confined":{"acct-codex":["x"]}}}\n' > "$ACCOUNTS_FILE.tenants"
+rm -f "$HOME/.codex-work/AGENTS.md"; python3 "$VHK" apply > /dev/null
+has "$(cat "$HOME/.codex-work/AGENTS.md")" "- $HOME/.claude-acct-seat/rules/seat.md" "a confined Codex login's home: its tenant's Claude seat's rules"
+case "$(cat "$HOME/.codex-work/AGENTS.md")" in *"$HOME/.claude/rules"*) check default seat "  not the default dir's rules";; *) check seat seat "  not the default dir's rules";; esac
+printf '{"acct-tenant":{"repos":["x"],"logins":"acct-seat","confined":{"acct-codex":["x"]}}}\n' > "$ACCOUNTS_FILE.tenants"
+python3 "$VHK" apply > /dev/null; check "$?" 0 "a tenant whose logins is one string (account reads it as one label): apply runs"
+printf '{"acct-tenant":{"repos":["x"],"logins":["acct-codex","acct-seat"]}}\n' > "$ACCOUNTS_FILE.tenants"
 mkdir -p "$REGATTA_CONFIG/lighthouse"; echo "$HOME/me/private.md" > "$REGATTA_CONFIG/lighthouse/vendor-layer"
 has "$(VENDOR_HOOKS_ROOT="$VENDOR_HOOKS_ROOT" python3 "$VHK" apply --dry-run)" "AGENTS.md: would change" "the config key lighthouse/vendor-layer replaces the shared set"
+mkdir -p "$T/oldroot/modules/lighthouse/hooks"
+grep -v '^ENTRIES = (' "$LH/hooks/vendor_hook.py" > "$T/oldroot/modules/lighthouse/hooks/vendor_hook.py"
+out=$(VENDOR_HOOKS_ROOT="$T/oldroot" python3 "$VHK" apply); rc=$?
+check "$rc" 1 "an adapter from before the one entry (no ENTRIES line): apply refuses"
+has "$out" "predates the \`guards\` entry" "  and says why: that adapter allows every \`guards\` call"
+has "$(VENDOR_HOOKS_ROOT="$T/oldroot" python3 "$VHK" check)" "every entry of ours allows every call" "  check reports it too"
 rm -f "$REGATTA_CONFIG/lighthouse/vendor-layer"
 case "$(cat "$HOME/.codex/AGENTS.md")" in *core*r1*) check copied pointer "  no file's text copied in";; *) check pointer pointer "  no file's text copied in";; esac
 out=$(python3 "$VHK" apply)
 check "$(printf '%s\n' "$out" | grep -c 'up to date')" 8 "a second apply: every file up to date"
 # a reviewed entry keeps its review: the table Codex keys by position still names ours after a re-apply
+printf '[hooks.state."%s:pre_tool_use:0:0"]\ntrusted_hash = "sha256:x"\n' "$HOME/.codex/hooks.json" >> "$HOME/.codex/config.toml"
+has "$(python3 "$VHK" check)" "$HOME/.codex/hooks.json: 1 not yet reviewed (guards)" "check counts the entry Codex has no review of (Orca's reviewed one is not ours)"
 printf '[hooks.state."%s:pre_tool_use:1:0"]\ntrusted_hash = "sha256:x"\n' "$HOME/.codex/hooks.json" >> "$HOME/.codex/config.toml"
-has "$(python3 "$VHK" check)" "2 not yet reviewed (checkpoint, trailer)" "check counts the entries Codex has no review of"
+case "$(python3 "$VHK" check)" in *"$HOME/.codex/hooks.json: 1 not yet reviewed"*) check counted reviewed "  once its position is trusted, not counted";; *) check reviewed reviewed "  once its position is trusted, not counted";; esac
 out=$(python3 "$VHK" check); rc=$?
 check "$rc" 0 "check after apply: exit 0 (a review is a note, not a gap)"
-has "$out" "ok  $HOME/.gemini/config/hooks.json: 3 entries" "  Antigravity's entries ok"
+has "$out" "ok  $HOME/.gemini/config/hooks.json: one entry, under \`regatta\` (secrets_guard, checkpoint, trailer)" "  Antigravity's entry ok"
+has "$out" "ok  $HOME/.codex/hooks.json: one entry, named 'regatta guards: secrets, checkpoint, trailer'" "  Codex's, by its name"
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["regatta"]["enabled"]=False; json.dump(d,open(p,"w"))' "$HOME/.gemini/config/hooks.json"
 python3 "$VHK" apply > /dev/null
 check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["regatta"]["enabled"])' "$HOME/.gemini/config/hooks.json")" False "an owner's enabled: false survives a re-apply"
 has "$(python3 "$VHK" check)" "disabled by its owner" "  and check says so"
-python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["PreToolUse"][2]["hooks"][0]["command"]="python3 \"/old/hooks/vendor_hook.py\" codex \"/old/checkpoint.py\""; json.dump(d,open(p,"w"))' "$HOME/.codex/hooks.json"
-has "$(python3 "$VHK" check)" "no current entry for checkpoint" "an entry that names another checkout: not current"
-has "$(python3 "$VHK" apply)" "changed: rewrote checkpoint" "apply rewrites it in place"
-check "$(cx "$HOME/.codex/hooks.json")" "orca-hook:None secrets_guard.py: checkpoint.py: trailer:" "  at the same position (Codex's review keys)"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["PreToolUse"][1]["hooks"][0]["command"]="python3 \"/old/hooks/vendor_hook.py\" codex guards"; json.dump(d,open(p,"w"))' "$HOME/.codex/hooks.json"
+has "$(python3 "$VHK" check)" "the guards entry is not current" "an entry that names another checkout: not current"
+out=$(python3 "$VHK" apply)
+has "$out" "changed: rewrote the guards entry" "apply rewrites it in place"
+has "$out" "a rewritten one is asked again" "  and says Codex asks for its review again"
+check "$(cx "$HOME/.codex/hooks.json")" "orca-hook:None guards:" "  at the same position (Codex's review keys)"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["PreToolUse"][1]["hooks"][0].pop("statusMessage"); json.dump(d,open(p,"w"))' "$HOME/.codex/hooks.json"
+has "$(python3 "$VHK" check)" "the guards entry is not current (another checkout, or unnamed)" "an entry that lost its name: not current"
+python3 "$VHK" apply > /dev/null
 echo "mine" > "$HOME/.codex-work/AGENTS.md"
 out=$(python3 "$VHK" apply); rc=$?
 check "$rc" 1 "a pointer file that is not ours: apply exits 1"
@@ -208,10 +233,19 @@ echo "theirs" > "$HOME/.codex/AGENTS.md"
 out=$(python3 "$VHK" apply); rc=$?
 check "$(cat "$HOME/.codex/AGENTS.md")" "theirs" "a foreign AGENTS.md beside an override: apply never writes it"
 has "$out" "$HOME/.codex/AGENTS.md: not ours" "  and names it"
-python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); g=d["hooks"]["PreToolUse"]; g.insert(0, {"matcher":"", "hooks":[{"type":"command","command":"python3 \"/old/hooks/vendor_hook.py\" codex \"/old/gone_guard.py\""}]}); json.dump(d,open(p,"w"))' "$HOME/.codex-work/hooks.json"
-python3 "$VHK" apply > /dev/null
-check "$(python3 -c 'import json,sys; g=json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]; print(len(g), g[0]["hooks"])' "$HOME/.codex-work/hooks.json")" "4 []" \
-  "an entry of ours no longer wired: dropped, its group kept empty (no later index shifts)"
+# the older shape with another tool's group between ours: the first of ours takes the entry, an emptied group
+# before a foreign one stays (its index is the foreign one's review key), the emptied ones at the end go
+python3 -c 'import json,sys
+old = lambda last: {"matcher": "", "hooks": [{"type": "command", "command": "python3 \"/old/hooks/vendor_hook.py\" codex " + last}]}
+orca = {"hooks": [json.loads(sys.argv[2])]}
+json.dump({"hooks": {"PreToolUse": [old("\"/old/gone_guard.py\""), old("\"/old/checkpoint.py\""), orca, old("trailer"), old("guards")]}}, open(sys.argv[1], "w"))' \
+  "$HOME/.codex-work/hooks.json" "$ORCA"
+has "$(python3 "$VHK" check)" "stale, the older shape: 4 entries of ours (gone_guard, checkpoint, trailer, guards)" "check: the older shape, named entry by entry"
+has "$(python3 "$VHK" apply)" "merged gone_guard, checkpoint, trailer, guards into one entry" "apply merges every entry of ours, a gone guard's and a second copy's included"
+gs() { python3 -c 'import json,sys; print(" ".join(",".join(h["command"].split()[-1].strip("\"") for h in g["hooks"]) or "-" for g in json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]))' "$1"; }
+check "$(gs "$HOME/.codex-work/hooks.json")" "guards - orca-hook" \
+  "  at the first one's place; the emptied group before Orca's kept (no index shifts), the two at the end dropped"
+check "$(python3 "$VHK" apply | grep -c "codex-work/hooks.json: up to date")" 1 "  and a re-apply leaves it as it is"
 cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["regatta"]["PreToolUse"][0]["hooks"][0]["command"])' "$HOME/.gemini/config/hooks.json")
 moved=${cmd//vendor_hook.py/vendor_hook_moved.py}
 check "$(echo '{}' | sh -c "$moved" 2>"$T/moved.err"; echo " rc=$?")" "{} rc=0" "an entry whose adapter moved: agy gets its carry-on, exit 0 (not python's exit 2, a deny)"
@@ -220,6 +254,107 @@ check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"cat %s
 echo '{not json' > "$HOME/.gemini/config/hooks.json"
 has "$(python3 "$VHK" apply)" "does not read" "a hooks file that does not parse: not touched"
 check "$(cat "$HOME/.gemini/config/hooks.json")" "{not json" "  byte for byte"
+
+echo "== the one entry: every guard at once, the first deny in their order the answer, one deadline for all"
+cat > "$T/chain.py" <<'PY'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("vh", sys.argv[1])
+vh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vh)
+case, command = sys.argv[2], sys.argv[3]
+ev = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": sys.argv[4], "model": "m"}
+ran = []
+def stub(answers):
+    def run_guard(guard, payload, timeout=None):
+        name = guard.rsplit("/", 1)[-1]
+        ran.append(name)
+        return answers.get(name)
+    return run_guard
+if case == "budget":
+    vh.GUARDS = (sys.argv[5], sys.argv[5])
+    vh.BUDGET = 1.5
+    t = time.monotonic()
+    v = vh.decide("codex", "guards", ev)
+    print(v[0], time.monotonic() - t < 3)
+    sys.exit(0)
+if case == "starve":   # secrets_guard spends the whole budget; checkpoint, at once beside it, still denies
+    vh.BUDGET = 1.5
+    def run_guard(guard, payload, timeout=None):
+        if guard.endswith("secrets_guard.py"):
+            time.sleep(timeout)
+            return vh.UNKNOWN
+        return "no"
+    vh.run_guard = run_guard
+    t = time.monotonic()
+    v = vh.decide("codex", "guards", ev)
+    print(v[0], time.monotonic() - t < 3)
+    sys.exit(0)
+if case in ("raise", "order"):   # checkpoint crashes, or both deny with secrets_guard the slower
+    def run_guard(guard, payload, timeout=None):
+        if guard.endswith("checkpoint.py"):
+            if case == "raise":
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "stub")
+            return "no-checkpoint"
+        time.sleep(0.3 if case == "order" else 0)
+        return "no-secrets"
+    vh.run_guard = run_guard
+    print(*vh.decide("codex", "guards", ev))
+    sys.exit(0)
+vh.run_guard = stub({"first": {"secrets_guard.py": "no"}, "second": {"checkpoint.py": "no"}, "clean": {},
+                     "unknown": {"secrets_guard.py": vh.UNKNOWN}}[case])
+v = vh.decide("codex", "guards", ev)
+print(v[0], " ".join(sorted(ran)))
+PY
+ch() { python3 "$T/chain.py" "$VH" "$@" "$WT"; }
+check "$(ch first 'cat x')" "deny checkpoint.py secrets_guard.py" "secrets_guard denies: the answer (both ran, at once)"
+check "$(ch order 'ls')" "deny no-secrets" "both deny, secrets_guard the slower: its reason, the first in their order"
+check "$(ch raise 'ls')" "deny no-secrets" "checkpoint crashes: secrets_guard's deny still stands (a crash is that guard's no answer)"
+check "$(ch second 'ls')" "deny checkpoint.py secrets_guard.py" "checkpoint denies, secrets_guard passed: the deny"
+check "$(ch clean 'ls')" "allow checkpoint.py secrets_guard.py" "both pass, no commit: each guard ran once, an allow"
+check "$(ch clean 'git commit -m x')" "rewrite checkpoint.py checkpoint.py secrets_guard.py secrets_guard.py" \
+  "a simple commit: each guard once on the call, once on the rewritten command, then the trailer's rewrite"
+check "$(ch unknown 'git commit -m x')" "allow checkpoint.py secrets_guard.py" \
+  "a guard with no answer: the rest still judged, the trailer allows nothing"
+check "$(python3 "$T/chain.py" "$VH" budget 'ls' "$WT" "$T/slow_guard.py" 2>"$T/chain-budget.err")" "allow True" \
+  "two slow guards under a 1.5 s budget: one deadline for the whole entry, both run at once, so allowed (fails open) within it"
+check "$(python3 "$T/chain.py" "$VH" starve 'ls' "$WT")" "deny True" \
+  "a slow secrets_guard spends the budget: checkpoint, run beside it, still denies (one after another, it was never judged)"
+
+echo "== today's three entries, migrated: the older shape as a Mac held it on 2026-10-31"
+H2="$T/home2"; mkdir -p "$H2/.codex" "$H2/.gemini/config"
+sed -e "s|@ROOT@|$VENDOR_HOOKS_ROOT|g" -e "s|@HOME@|$H2|g" "$LH/tests/fixtures/codex-hooks-2026-10-31.json" > "$H2/.codex/hooks.json"
+cp "$H2/.codex/hooks.json" "$T/before.json"
+python3 -c 'import json,sys; g=json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]; json.dump({"orca-status":{"Stop":[{"type":"command","command":"orca-hook"}]},"regatta":{"enabled":True,"PreToolUse":[{"matcher":"*","hooks":[dict(h,command=h["command"].replace(" codex "," antigravity ")) for x in g[2:] for h in x["hooks"]]}]}}, open(sys.argv[2],"w"))' \
+  "$H2/.codex/hooks.json" "$H2/.gemini/config/hooks.json"
+vh2() { HOME="$H2" ACCOUNTS_FILE="$T/none.json" ACCOUNT_ORCA_FILE="$T/none-orca.json" python3 "$VHK" "$@"; }
+check "$(vh2 homes | wc -l | tr -d ' ')" 2 "the copy's stand-in HOME: one Codex home, one Antigravity"
+out=$(vh2 check); rc=$?
+check "$rc" 1 "check on the older shape: exit 1"
+has "$out" "$H2/.codex/hooks.json: stale, the older shape: 3 entries of ours (secrets_guard, checkpoint, trailer)" "  Codex's three: stale"
+has "$out" "$H2/.gemini/config/hooks.json: stale, the older shape: 3 entries of ours" "  agy's three: stale"
+out=$(vh2 apply); rc=$?
+check "$rc" 0 "apply on it: exit 0"
+has "$out" "$H2/.codex/hooks.json: changed: merged secrets_guard, checkpoint, trailer into one entry" "  Codex: the three merged into one"
+has "$out" "a rewritten one is asked again" "  and Codex asks for its review again (once)"
+has "$out" "$H2/.gemini/config/hooks.json: changed: rewrote its entry" "  agy: its entry rewritten"
+check "$(python3 -c 'import json,sys
+b, a = (json.load(open(f)) for f in sys.argv[1:3])
+pb, pa = b["hooks"]["PreToolUse"], a["hooks"]["PreToolUse"]
+rest = {k: v for k, v in a["hooks"].items() if k != "PreToolUse"} == {k: v for k, v in b["hooks"].items() if k != "PreToolUse"}
+h = pa[2]["hooks"]
+print(len(pb), len(pa), rest, pa[:2] == pb[:2], repr(pa[2]["matcher"]), len(h), h[0]["statusMessage"], h[0]["command"].split()[-2:])' "$T/before.json" "$H2/.codex/hooks.json")" \
+  "5 3 True True '' 1 regatta guards: secrets, checkpoint, trailer ['codex', 'guards']" \
+  "  the diff: every other event and Orca's and sheep_gate's groups as they were; ours one group, at the first one's place"
+python3 -m json.tool --sort-keys "$T/before.json" > "$T/before.sorted"; python3 -m json.tool --sort-keys "$H2/.codex/hooks.json" > "$T/after.sorted"
+diff "$T/before.sorted" "$T/after.sorted" > "$T/migrate.diff"
+check "$(grep -c '^[<>]' "$T/migrate.diff" | tr -d ' ')" "$(grep '^[<>]' "$T/migrate.diff" | grep -c -v -e orca -e sheep_gate | tr -d ' ')" \
+  "  and no changed line of the diff names Orca's hook or sheep_gate"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["orca-status"], len(d["regatta"]["PreToolUse"][0]["hooks"]), d["regatta"]["PreToolUse"][0]["hooks"][0]["command"].split()[-2:])' "$H2/.gemini/config/hooks.json")" \
+  "{'Stop': [{'type': 'command', 'command': 'orca-hook'}]} 1 ['antigravity', 'guards']" "  agy: Orca's key as it was, ours one handler"
+out=$(vh2 check); rc=$?
+check "$rc" 0 "check after the migration: exit 0"
+has "$out" "ok  $H2/.codex/hooks.json: one entry, named 'regatta guards: secrets, checkpoint, trailer'" "  Codex's one entry, by its name"
+check "$(vh2 apply | grep -c 'up to date')" 4 "a second apply: both hooks files and both pointers up to date"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "parity: all passed"; else echo "parity: $fails failed"; fi

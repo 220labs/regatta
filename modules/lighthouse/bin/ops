@@ -5,7 +5,9 @@ the sampler: sample, status, is-host; S4 the intake: ingest, intake; S5 the sens
     ops sample [--print]             one row of the desk's metrics appended to the log dir's ops.jsonl
                                      (docs/lighthouse-ops-metrics-2026-10-26.md): the queue, the run slots,
                                      machine load, check slots, CI budgets, the token's standing, token
-                                     weeks and cost; ci-usage.json rewritten on the way. Only in the
+                                     weeks and cost; ci-usage.json rewritten on the way. Then the budget
+                                     alarms, the pick over ops.json's `pick_repos` (below), and a refresh of
+                                     any login read over 30 min before (refresh_weeks). Only in the
                                      desk's own job on `lighthouse/ops-host` (exit 2 elsewhere); --print
                                      prints the row and writes nothing, anywhere, with no token read
     ops status [--json]              the last row, readable; --json: {row, age_s, stale, line, sig} for
@@ -39,18 +41,22 @@ the sampler: sample, status, is-host; S4 the intake: ingest, intake; S5 the sens
                                      a repo the pick refuses or does not handle is counted, exit 3
                                      when one sits on a lane its pick refused, 1 on anything else
 
-The owner's token (D5-A, answered 2026-10-26): a fine-grained token with `Plan: read`, no repository
-access, made in GitHub's UI and written by the owner over ssh into one file on the yard node — the
+The owner's token (D5-A, answered 2026-10-26): a fine-grained token with `Plan: read`, and since
+fork-read-token `Administration: read` on the picked repos only, made in GitHub's UI and written by the owner over ssh into one file on the yard node — the
 config dir's `lighthouse/secrets/ops.env`, its dir 0700 and the file 0600, both this user's and
 neither a link: on the Macs `regatta/secrets` is a link into Drive, so it is not reused. Lines are
 `KEY=value`; `GITHUB_TOKEN` (the billing read) and `CIRCLECI_TOKEN` (the insights read) unless a
-budget row names its own `token_key`. It is read here and nowhere else, only in the desk's own job:
+budget row names its own `token_key`. Since fork-read-token (2026-11-02) `ops pick` hands
+`GITHUB_TOKEN` to ci-provider as `WHARF_READ_TOKEN` for the reads the machine login cannot make (the
+fork-PR setting and the runner list, admins only); ci-provider pops it at its start and uses it for
+those reads alone. It is read here and nowhere else, only in the desk's own job:
 `LIGHTHOUSE_DESK=1` set and no `CLAUDE_CODE_SESSION_ID` or `CLAUDE_UNATTENDED` (a session, attended
 or dispatched, is refused it, and so is a shell that never said it is the desk). That marker is an
 accident guard, not a wall: any process of the node's agent user can read the file by intent, and
 the wall would be an OS user of the desk's own (not built). `secrets_guard` refuses a session's tool
 call that names the dir when `lighthouse/guarded-dirs` lists it; `ops usage` says so when it does not.
-The token goes into one request header and nowhere else: never an argv, a log, a row or the output.
+The token goes into one request header, and ci-provider's environment for its admin-only reads
+(`WHARF_READ_TOKEN`), and nowhere else: never an argv, a log, a row or the output.
 Without it (absent, refused, unreadable) every account reads `absent` or `refused`, and the pick
 treats every hosted lane of a private repo as over budget.
 
@@ -78,11 +84,27 @@ as null and the reason under `why`, and never aborts the row (`partial` says the
   token    `plan` the billing read's standing (S1's usage), `project` a GraphQL `viewer { projectsV2 }`
            read, never a write: `ok`, `refused` or `absent` each, for S1's and S7's cases; null when the
            endpoint did not answer. The token goes into the request header only, as above.
-  weeks    `account limits --all --cached --json`, per login label: weekly, five_hour, fable, locked
+  weeks    `account limits --all --orca --cached --json`, per login label: weekly, five_hour, fable, locked, eligible,
+           sampled (when the reading was taken), here; an agent Orca reads (Antigravity, Cursor) with `report` true,
+           never walked, as fresh as the last uncached `limits --orca` on this host (plumb's widget). After the row the
+           job reads again each login here read over 30 minutes before, at most once a half hour (refresh_weeks:
+           account's probe, no model call); week_cap leaves out report rows and readings over 6 hours old
   cost     plumb's `usage-report numbers --json`: the week's list price, and its effective figure by the
            core's cost ratio (null when the ratio is unread)
   registry `ok` or `unreadable` (the core's registry_unreadable(): a torn file reads as no repos)
 CI queues (`ci.lanes.<lane>.queued_s_p50`, which `ci-provider --pick` reads) are not sampled yet.
+
+Budget alarms (ci-budgets, 2026-10-31). After each row the job judges every budgeted account it read: `reserve`
+when the month's use, the margin added, reaches the cap less its reserve (or GitHub's netAmount is above zero),
+`week` when the week's reaches the cap's week share, else `ok`. These are the terms ci-provider's budget_left
+spends by, so the alarm fires as the pick stops spending. A step up that list is a crossing. It files one issue
+through helm's ask (`issue_open`: the logbook, `helm/logbook-repo`, led by `helm/mention`, label `budget`, which
+the intake reads as an alarm kind). The level and the issue are kept in the log dir's ci-budget-alarms.json, so a
+sample at the same level files nothing. Back at `ok`, the issue is commented and closed. A filing that fails keeps
+the old level, so the next sample tries again. An account read unread or absent changes nothing: the sample's
+`budget` line and the token's word say that.
+The pick in the job: ops.json's `pick_repos` (registry keys, cloned here) are picked after the alarms, with
+`--apply` only when `pick_apply` is true; an empty list (the default) picks nothing.
 
 The jobs: every 15 minutes on `lighthouse/ops-host` alone, with LIGHTHOUSE_DESK=1 and no Claude Code
 variable, running `ops sample`; every 10 minutes, the same way, `ops ingest` (S4). On a Mac it is lighthouse's install.sh --schedule (a LaunchAgent);
@@ -141,6 +163,10 @@ DESK_FILE = DESK_DIR / "ops.env"
 DEFAULT_KEY = {"github": "GITHUB_TOKEN", "circleci": "CIRCLECI_TOKEN"}
 WEIGHT = (("macos", 10.0), ("windows", 2.0))   # included minutes spent per minute, by sku
 TIMEOUT = 10                                    # s a read; the metrics doc's bound
+WEEKS_FRESH = 30 * 60   # s: a login's reading older than this is refreshed after the row (refresh_weeks)
+REFRESH_TIMEOUT = 180   # s a refresh pass may take, one login after another: ~4 s a live login, 60 s a dead one
+PROBE_BOUND = 70        # s one login's `account limits LABEL`: account's two tries of 30 s, and its start
+WEEK_READ_OLD = 6 * 3600   # s: week_cap leaves out a login whose reading is older (a refresh failing for hours)
 
 
 class Refused(Exception):
@@ -315,7 +341,12 @@ def budgets_file():
     except (OSError, ValueError, UnicodeDecodeError) as e:
         return {}, "%s unreadable (%s)" % (path, type(e).__name__)
     acc = d.get("accounts") if isinstance(d, dict) else None
-    return (acc if isinstance(acc, dict) else {}), None
+    acc = acc if isinstance(acc, dict) else {}
+    top = d.get("reserve")
+    if isinstance(top, (int, float)) and not isinstance(top, bool):
+        # the file's own default, as ci-provider's load_budgets reads it: an account's `reserve` wins
+        acc = {k: (dict({"reserve": top}, **v) if isinstance(v, dict) else v) for k, v in acc.items()}
+    return acc, None
 
 
 def tokens():
@@ -404,26 +435,40 @@ def cmd_pick(a):
         print("ops pick: wharf's ci-provider is not installed", file=sys.stderr)
         return 2
     repos = a.repo or [str(r) for r in common.cloned_repos()]
-    # the desk's marker never reaches a child (the sense component's "The marker")
-    env = {k: v for k, v in os.environ.items() if k != "LIGHTHOUSE_DESK"}
+    rc, line = run_picks(repos, a.apply, path, cp)
+    print(line)
+    return rc
+
+
+def run_picks(repos, apply, path, cp):
+    """(exit, summary line): `ci-provider REPO --pick --usage PATH [--apply]` for each repo, its own output
+    passed through."""
+    # the desk token reads what the pick's gh login cannot, a repo admin's alone (wharf's ci-provider,
+    # READ_VAR: the fork-PR setting, the runner list); absent, the pick refuses that lane as before. A
+    # value the job inherited is dropped, never forwarded in the desk token's place.
+    env = child_env()
+    env.pop("WHARF_READ_TOKEN", None)
+    tok = tokens()[0].get("GITHUB_TOKEN")
+    if tok:
+        env["WHARF_READ_TOKEN"] = tok
     # 2 is a repo the pick does not handle or refused (no check.yml, CircleCI, not migrated, off the
     # ops host): reported, never the job's failure, or the normal fleet would fail every pass; 3 is a
     # repo whose current lane this pick refused (trust, money), the one the desk must card
     seen = {}
     for r in repos:
-        cmd = [str(cp), r, "--pick", "--usage", str(path)] + (["--apply"] if a.apply else [])
+        cmd = [str(cp), r, "--pick", "--usage", str(path)] + (["--apply"] if apply else [])
         try:
             rc = subprocess.run(cmd, env=env, timeout=PICK_TIMEOUT).returncode
         except subprocess.TimeoutExpired:
             print("ops pick: %s took over %d s, stopped" % (r, PICK_TIMEOUT), file=sys.stderr)
             rc = 124
         seen.setdefault(rc, []).append(r)
-    print("ops pick: %d repos — %d picked or unchanged, %d refused or not handled, %d on a failing lane%s"
-          % (len(repos), len(seen.get(0, [])), len(seen.get(2, [])), len(seen.get(3, [])),
-             "".join("; exit %d: %s" % (k, ", ".join(v)) for k, v in sorted(seen.items()) if k not in (0, 2))))
+    line = ("ops pick: %d repos — %d picked or unchanged, %d refused or not handled, %d on a failing lane%s"
+            % (len(repos), len(seen.get(0, [])), len(seen.get(2, [])), len(seen.get(3, [])),
+               "".join("; exit %d: %s" % (k, ", ".join(v)) for k, v in sorted(seen.items()) if k not in (0, 2))))
     if any(k not in (0, 2, 3) for k in seen):
-        return 1
-    return 3 if seen.get(3) else 0
+        return 1, line
+    return (3 if seen.get(3) else 0), line
 
 
 # ---- the sampler (S2; the header's "The sampler's row") ----------------------------------------
@@ -455,12 +500,13 @@ def ops_host():
 
 def child_env():
     # the desk's marker never reaches a child (the sense component's "The marker"); no token is in it
+    # (run_picks adds the desk token to its copy for ci-provider alone)
     return {k: v for k, v in os.environ.items() if k != "LIGHTHOUSE_DESK"}
 
 
-def peer_out(name, args, ok=(0,)):
-    """(stdout, None) from a peer's tool (the core's tool()), or (None, why)."""
-    timeout = TIMEOUT
+def peer_out(name, args, ok=(0,), timeout=None):
+    """(stdout, None) from a peer's tool (the core's tool()), or (None, why); timeout None is TIMEOUT, read at the call."""
+    timeout = TIMEOUT if timeout is None else timeout
     p = common.tool(name)
     if not p:
         return None, "%s is not installed" % name
@@ -480,8 +526,8 @@ def peer_out(name, args, ok=(0,)):
     return cp.stdout, None
 
 
-def peer_json(name, args, ok=(0,)):
-    out, why = peer_out(name, args, ok)
+def peer_json(name, args, ok=(0,), timeout=None):
+    out, why = peer_out(name, args, ok, timeout)
     if why:
         return None, why
     try:
@@ -574,7 +620,12 @@ def read_check():
 
 
 def read_weeks():
-    d, why = peer_json("account", ["limits", "--all", "--cached", "--json"])
+    """Per label: each login's cached reading (no probe: the sample stays inside its bound), when it was taken
+    (`sampled`, so the board can tell a stale week) and whether the login is set up on this host (`here`); and
+    every agent Orca last read (`--orca --cached`: account's last Orca reading, nothing started), `report` true,
+    never walked. refresh_weeks keeps the logins fresh; the report rows change only where something runs
+    `account limits --orca` uncached (plumb's widget, on a Mac), so on a host without one their age just grows."""
+    d, why = peer_json("account", ["limits", "--all", "--orca", "--cached", "--json"])
     if why:
         return None, why
     if not isinstance(d, list):
@@ -585,8 +636,56 @@ def read_weeks():
             lim = r.get("limits") if isinstance(r.get("limits"), dict) else {}
             out[str(r.get("label") or "default")] = {
                 "weekly": lim.get("seven_day"), "five_hour": lim.get("five_hour"), "fable": lim.get("fable_week"),
-                "locked": lim.get("locked") or [], "eligible": r.get("eligible")}
+                "locked": lim.get("locked") or [], "eligible": r.get("eligible"),
+                "sampled": r.get("sampled") if num(r.get("sampled")) else None, "here": r.get("here") is not False}
+            if r.get("report"):
+                out[str(r.get("label") or "default")]["report"] = True
     return out, None
+
+
+def refresh_path():
+    return common.LOG_DIR / "weeks-refresh.json"
+
+
+def refresh_weeks(weeks, now):
+    """After the row, in the desk's job: each login set up here whose reading is older than WEEKS_FRESH, or that has
+    none, read again with `account limits LABEL --json`, uncached, so the next sample's cached read is fresh
+    (2026-11-01: the desk read whatever its host's last pick left). Each probe is account's own (get_usage for a
+    Claude login, Codex's rateLimits/read): no model call, no token spent, no new login. At most once per
+    WEEKS_FRESH (the log dir's weeks-refresh.json), so a login whose probe always fails costs one try a half hour,
+    never one a sample; one login at a time, each bounded, and the pass stops at REFRESH_TIMEOUT. Nothing when the
+    cached read itself failed: a probe would fail the same way, and the row's `why` says so. A reading counts as
+    refreshed only when it comes back newer than the call (a failed probe hands back the old one). → the job's lines."""
+    stale = sorted(l for l, x in (weeks or {}).items() if isinstance(x, dict) and not x.get("report")
+                   and x.get("here", True) and (x.get("sampled") is None or now - x["sampled"] > WEEKS_FRESH))
+    if not stale:
+        return []
+    try:
+        last = json.loads(refresh_path().read_text()).get("at")
+    except (OSError, ValueError, AttributeError):
+        last = None
+    if num(last) and 0 <= now - last < WEEKS_FRESH:
+        return []
+    try:
+        refresh_path().parent.mkdir(parents=True, exist_ok=True)
+        refresh_path().write_text(json.dumps({"at": now, "labels": stale}) + "\n")
+    except OSError:
+        pass   # unthrottled until the dir is writable: the job's own row fails the same way, and says so
+    fresh, old, cut, start = [], [], [], time.time()
+    for label in stale:
+        left = REFRESH_TIMEOUT - (time.time() - start)
+        if left < 5:
+            cut.append(label)
+            continue
+        t0 = time.time()
+        d, why = peer_json("account", ["limits", label, "--json"], timeout=min(PROBE_BOUND, left))
+        r = d[0] if isinstance(d, list) and d and isinstance(d[0], dict) else {}
+        (fresh if not why and num(r.get("sampled")) and r["sampled"] >= t0 - 1 else old).append(
+            label if not why else "%s (%s)" % (label, why))
+    return ["weeks: " + "; ".join(x for x in (
+        "read again for the next sample: " + ", ".join(fresh) if fresh else "",
+        "still old: " + ", ".join(old) if old else "",
+        "not reached in %d s: %s" % (REFRESH_TIMEOUT, ", ".join(cut)) if cut else "") if x)]
 
 
 def read_cost():
@@ -622,6 +721,150 @@ def read_budget(now, toks, keep):
             e["why"] = r.get("why")
         out[key] = e
     return out, None
+
+
+ALARM_HOLD = 24 * 3600   # an alarm steps down only once it is this old: no issue a day per hovering account
+BUDGET_LEVELS = ("ok", "week", "reserve")   # a crossing is a step up this list; each files one logbook issue
+LEVEL_WORDS = {"week": "past its week share", "reserve": "into its month reserve"}
+
+
+def budget_level(e, b):
+    """(level, why) for one account's sampled entry E (read_budget's) against its budget B, or None when E
+    is no complete ok read: the terms of ci-provider's budget_left, the margin counted on both reads."""
+    if not isinstance(e, dict) or e.get("state") != "ok" or not isinstance(b, dict):
+        return None
+    try:
+        cap = float(e["cap"])
+        unit = e["unit"]
+        m = float(b.get("margin", 0.1 if unit == "credits" else 0))
+        r = float(b.get("reserve", 0.2))
+        used, week = float(e["used"]) * (1 + m), float(e["week_used"]) * (1 + m)
+        net = float(e.get("net_amount") or 0)
+        ws = b.get("week_share")
+        ws = float(ws) if ws else None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if net > 0:
+        return "reserve", "pays beyond its plan this month (netAmount %.2f)" % net
+    if used >= cap * (1 - r):
+        return "reserve", "used %.0f of %.0f %s this month, the margin counted: the %.0f%% reserve reached" % (
+            used, cap, unit, r * 100)
+    if ws and week >= cap * ws:
+        return "week", "used %.0f %s this week, the margin counted: its week share is %.0f" % (week, unit, cap * ws)
+    return "ok", "%.0f of %.0f %s used this month" % (used, cap, unit)
+
+
+def alarms_file():
+    return common.LOG_DIR / "ci-budget-alarms.json"
+
+
+_ASK = []
+
+
+def helm_ask():
+    """(helm's bin/ask as a module, None), or (None, why): the logbook road is its (issue_open, issue_state),
+    never a second copy of its config keys here (AGENTS.md: a key copied into a peer goes stale)."""
+    if _ASK:
+        return _ASK[0], None
+    path = common.tool("ask")
+    if not path:
+        return None, "helm's ask is not installed: no logbook road"
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    try:
+        loader = SourceFileLoader("ask_for_ops", str(path))
+        mod = module_from_spec(spec_from_loader(loader.name, loader))
+        loader.exec_module(mod)
+    except Exception as e:   # noqa: BLE001 — a broken peer is no road, said, never the job's end
+        return None, "helm's ask did not load (%s)" % type(e).__name__
+    _ASK.append(mod)
+    return mod, None
+
+
+def budget_alarms(budget, now):
+    """Lines for the job's log: one logbook issue per account per crossing (the header's "Budget alarms")."""
+    if not isinstance(budget, dict) or not budget:
+        return []
+    budgets, _ = budgets_file()
+    path = alarms_file()
+    try:
+        st = json.loads(path.read_text(encoding="utf-8"))
+        st = st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        st = {}
+    lines, changed = [], False
+    for key in sorted(budget):
+        lv = budget_level(budget[key], budgets.get(key))
+        if lv is None:
+            continue
+        level, why = lv
+        prev = st.get(key) if isinstance(st.get(key), dict) else {}
+        was = prev.get("level") if prev.get("level") in BUDGET_LEVELS else "ok"
+        issue = prev.get("issue") if isinstance(prev.get("issue"), int) else None
+        since = prev.get("since") if isinstance(prev.get("since"), (int, float)) else 0
+        up = BUDGET_LEVELS.index(level) > BUDGET_LEVELS.index(was)
+        if level == was and not (level == "ok" and issue):
+            continue
+        if not up and level != was and now - since < ALARM_HOLD:
+            # a step down waits ALARM_HOLD: rolling windows hover at a line, and each new issue is a phone push
+            continue
+        if up:
+            ask, awhy = helm_ask()
+            title = "CI budget: %s %s" % (key, LEVEL_WORDS[level])
+            body = ("%s %s.\n\nWhat follows by itself: `ci-provider --pick` counts every lane on %s as over budget "
+                    "until it is back under (on a CircleCI lane the Linux share moves to another org that names a "
+                    "project for the repo and has month left; with none, it goes off and the runner Macs take the "
+                    "whole line), and this issue closes itself "
+                    "then.\n\nFiled by lighthouse's `ops sample` on %s; "
+                    "`ops status` there shows the budget line." % (key, why, key, common.host_name()))
+            n, err = ask.issue_open(title, body, labels=("budget",)) if ask else (None, awhy)
+            if not n:
+                lines.append("budget %s: %s, not filed (%s); the next sample tries again" % (key, LEVEL_WORDS[level], err))
+                continue
+            st[key] = {"level": level, "issue": n, "since": int(now)}
+            lines.append("budget %s: %s — logbook issue #%d" % (key, LEVEL_WORDS[level], n))
+            if issue:
+                # the step up supersedes the open issue: closed, or it would stay open for good
+                ok, err = ask.issue_state(issue, "closed", "Superseded by #%d: %s %s." % (n, key, LEVEL_WORDS[level]))
+                lines.append("budget %s: issue #%d %s" % (key, issue, "closed, superseded" if ok else "left open (%s)" % err))
+        else:
+            keep = issue if level != "ok" else None
+            if level == "ok" and issue:
+                ask, awhy = helm_ask()
+                ok, err = ask.issue_state(issue, "closed", "Cleared: %s %s." % (key, why)) if ask else (False, awhy)
+                lines.append("budget %s: back under, issue #%d %s" % (
+                    key, issue, "closed" if ok else "left open (%s); the next sample tries again" % err))
+                keep = None if ok else issue
+            st[key] = {"level": level, "issue": keep, "since": int(now) if level != was else since}
+        changed = True
+    if changed:
+        os.makedirs(path.parent, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(st, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    return lines
+
+
+def job_picks(urow_path):
+    """Lines for the job's log: the pick over ops.json's `pick_repos`, --apply by `pick_apply`."""
+    cfg, why = ops_config()
+    if why:
+        return ["ops pick: not run, %s" % why]
+    if not cfg or not cfg["pick_repos"]:
+        return []
+    cp = common.tool("ci-provider")
+    if not cp:
+        return ["ops pick: not run, wharf's ci-provider is not installed"]
+    repos, lines = [], []
+    for k in cfg["pick_repos"]:
+        r = common.PROJECTS / k
+        if (r / ".git").exists():
+            repos.append(str(r))
+        else:
+            lines.append("ops pick: %s is not cloned at %s, skipped" % (k, r))
+    if repos:
+        lines.append(run_picks(repos, cfg["pick_apply"], urow_path, cp)[1])
+    return lines
 
 
 def no_github_token(toks):
@@ -850,8 +1093,11 @@ def say_status(row, now):
     if row.get("weeks") is None:
         line("weeks", "")
     for label, x in sorted((row.get("weeks") or {}).items()):
-        print("  %-9s %s: week %s%%, 5-hour %s%%, Fable %s%%%s" % ("weeks", label, x.get("weekly"), x.get("five_hour"), x.get("fable"),
-                                                                ", locked " + ", ".join(map(str, x["locked"])) if x.get("locked") else ""))
+        figs = ", ".join("%s %s%%" % (n, x[k]) for n, k in (("week", "weekly"), ("5-hour", "five_hour"), ("Fable", "fable"))
+                         if x.get(k) is not None) or "no window figure"
+        print("  %-9s %s: %s%s%s" % ("weeks", label, figs, ", locked " + ", ".join(map(str, x["locked"])) if x.get("locked") else "",
+                                     ", read %s before the sample%s" % (ago(row["as_of"] - x["sampled"]), " by Orca" if x.get("report") else "")
+                                     if num(x.get("sampled")) else ""))
     k = row.get("cost") or {}
     line("cost", "%s list%s, %s" % (common.usd(k["week_list"]) if num(k.get("week_list")) else "?",
                                     " (%s effective)" % common.usd(k["week_effective"]) if num(k.get("week_effective")) else " (effective unknown: no ratio)",
@@ -870,10 +1116,11 @@ def cmd_sample(a):
         print("ops sample: %s" % why, file=sys.stderr)
         return 2
     row, urow = sample()
-    if urow is not None:
-        write_usage(urow)
+    upath = write_usage(urow) if urow is not None else common.LOG_DIR / "ci-usage.json"
     path = append_row(row)
     print("ops sample: %s — %s" % (path, status_line(row, time.time())))
+    for line in budget_alarms(row.get("budget"), row["as_of"]) + job_picks(upath) + refresh_weeks(row.get("weeks"), time.time()):
+        print(line)
     return 0
 
 
@@ -920,7 +1167,7 @@ NO_READ = 5              # ingest's exit when the pass read no repo at all (neve
 GH_TIMEOUT = 60          # s one `gh api --paginate` read
 GH_WORKERS = 6           # repos read side by side: 39 repos x 2 reads well inside 10 minutes
 PROJECT_PAGES = 10       # 100 items a page: a Project's read is bounded
-KINDS = ("deadman", "stall", "contact", "bug")   # a label naming one is the kind; first wins, else `other`
+KINDS = ("deadman", "stall", "budget", "contact", "bug")   # a label naming one is the kind; first wins, else `other`
 MEMBER = {"OWNER", "MEMBER", "COLLABORATOR"}     # GitHub's author_association a member holds
 
 
@@ -1507,7 +1754,8 @@ def cmd_intake(a):
 # the pass goes on; the item is tried again next pass, CLASSIFY_TRIES times in all.
 
 OPS_DEFAULTS = {"dry": True, "max_auto_runs_day": 3, "max_auto_runs_repo_day": 1, "max_open_auto_prs": 3,
-                "week_share": 0.1, "importance_auto_max": 3, "cost_auto": ["xs", "s"], "labels": ["bug"], "repos": []}
+                "week_share": 0.1, "importance_auto_max": 3, "cost_auto": ["xs", "s"], "labels": ["bug"], "repos": [],
+                "pick_repos": [], "pick_apply": False}
 SITES = {
     "importance": ("lighthouse.importance", "How much does this issue matter to the project's users and its owner?",
                    {"1": "trivial: cosmetic, nobody is blocked", "2": "minor: an annoyance with a workaround",
@@ -1525,7 +1773,7 @@ SITES = {
 }
 GATE_CONTEXT = ("Each item is one issue filed on a software project's GitHub repository: its repo, labels, title and "
                 "body. Judge the issue as written; a body may be partial.")
-ALARM_KINDS = ("contact", "stall", "deadman")
+ALARM_KINDS = ("contact", "stall", "deadman", "budget")
 CLASSIFY_MAX = 20        # issues a pass sends to the gate: the rest wait for the next 10-minute pass
 CLASSIFY_TRIES = 3       # a gate or fetch failure retries the issue next pass, this many times in all
 BODY_MAX = 4000          # characters of a body the gate sees
@@ -1566,14 +1814,15 @@ def ops_config():
     if bad:
         return None, "%s: unknown key %s (%s)" % (p, ", ".join(bad), ", ".join(OPS_DEFAULTS))
     cfg = dict(OPS_DEFAULTS, **{k: v for k, v in d.items() if k != "_"})
-    if not isinstance(cfg["dry"], bool):
-        return None, "%s: dry is true or false" % p
+    for k in ("dry", "pick_apply"):
+        if not isinstance(cfg[k], bool):
+            return None, "%s: %s is true or false" % (p, k)
     for k in COUNT_CAPS + ("importance_auto_max",):
         if isinstance(cfg[k], bool) or not isinstance(cfg[k], int) or cfg[k] < 0:
             return None, "%s: %s is a whole number" % (p, k)
     if isinstance(cfg["week_share"], bool) or not isinstance(cfg["week_share"], (int, float)) or not 0 <= cfg["week_share"] <= 1:
         return None, "%s: week_share is a fraction from 0 to 1" % p
-    for k in ("cost_auto", "labels", "repos"):
+    for k in ("cost_auto", "labels", "repos", "pick_repos"):
         if not isinstance(cfg[k], list) or not all(isinstance(x, str) and x for x in cfg[k]):
             return None, "%s: %s is a list of names" % (p, k)
     if not set(cfg["cost_auto"]) <= set(SITES["cost"][2]):
@@ -1837,6 +2086,14 @@ def week_cap(cfg, spent, now):
     weeks = row.get("weeks") if isinstance(row.get("weeks"), dict) else None
     if not weeks:
         return "the week is unread (%s)" % ((row.get("why") or {}).get("weeks") or "no weeks in the sample")
+    # Orca's agents are report rows (read_weeks): no login of the walk, so never what decides the week; nor is a
+    # login whose reading is hours old (a refresh failing since), judged by it as if it were the week now
+    logins = {k: w for k, w in weeks.items() if isinstance(w, dict) and not w.get("report")}
+    if not logins:
+        return "the week is unread (no login in the sample, only Orca's report rows)"
+    weeks = {k: w for k, w in logins.items() if not (num(w.get("sampled")) and row["as_of"] - w["sampled"] > WEEK_READ_OLD)}
+    if not weeks:
+        return "the week is unread (every login's reading is over %d h old)" % (WEEK_READ_OLD // 3600)
     if not any(isinstance(w, dict) and w.get("eligible") for w in weeks.values()):
         return "the week is over: no login is eligible"
     lst = (row.get("cost") or {}).get("week_list") if isinstance(row.get("cost"), dict) else None

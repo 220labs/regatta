@@ -17,9 +17,10 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(ORCA_HOST[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 unset CLAUDE_REPOS_JSON
 export HOME="$T/home" REGATTA_CONFIG="$T/config" CLAUDE_CONFIG_DIR="$T/claude"; mkdir -p "$HOME" "$REGATTA_CONFIG"
+export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside the module's tools from this suite's loads, nor a child's
 
 python3 - "$M" "$T" <<'EOF'
-import base64, fnmatch, importlib.machinery, importlib.util, json, os, socket, sys, threading
+import base64, fnmatch, importlib.machinery, importlib.util, json, os, shutil, socket, sys, tempfile, threading
 from pathlib import Path
 M, T = Path(sys.argv[1]), Path(sys.argv[2])
 
@@ -332,19 +333,49 @@ check(not any("acme" in l for l in oh.common.config_lines("wharf-runs/ssh") or [
       "  the node's pairing writes nothing to wharf-runs/ssh, which every ssh reader reads")
 check(oh.ssh_alias("acme-agent") is None and oh.reach("acme-agent")[0] == "acme-vps",
       "  ssh_alias stays PEERS-only, so clock (which reads each peer's alias through it) never dials the node")
-readers = sorted(p.relative_to(M.parent).as_posix() for d in ("bin", "lib", "libexec", "hooks")
-                 for p in M.parent.glob(f"*/{d}/**/*") if p.is_file()
-                 and "wharf-runs/nodes" in p.read_text(encoding="utf-8", errors="replace"))
-check(sorted(set(readers) - {"wharf-runs/bin/yard-node"}) == ["wharf-runs/bin/orca-host"],   # yard-node: not on the twin
-      f"  only orca-host and yard-node read a node folder: no dispatch, berth, pickup, helm or landing (got {readers})")
-os.environ.pop("AUTOFINISH_ON", None)
-os.environ["AUTOFINISH_HOST"] = "laptop"
+def node_text_reader(p):
+    """Whether p holds the node folder's path. A file another lane removes mid-scan is no reader; any
+    other error raises, so a file the scan cannot read ends the suite red rather than passing it."""
+    try:
+        return "wharf-runs/nodes" in p.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return False
+def node_readers(root):
+    # the source files only: any import of a tool by SourceFileLoader that writes bytecode (another
+    # suite's, or this one's before it set PYTHONDONTWRITEBYTECODE) leaves a __pycache__/*.pyc beside it
+    # holding the same text (check-linux's first run, CircleCI job 32, 2026-10-31)
+    out = []
+    for d in ("bin", "lib", "libexec", "hooks"):
+        for p in root.glob(f"*/{d}/**/*"):
+            r = p.relative_to(root)
+            if "__pycache__" not in r.parts and p.suffix != ".pyc" and p.is_file() and node_text_reader(p):
+                out.append(r.as_posix())
+    return sorted(out)
+readers = node_readers(M.parent)
+# helm send's yard_alias reads one through orca-host's node_peers, for the send's own yard (node-road,
+# 2026-11-02: a confidential scope's yard by its node folder's ssh, never wharf-runs/ssh); helm's suite holds its cases
+check(sorted(set(readers) - {"wharf-runs/bin/yard-node"}) == ["helm/bin/sendlib.py", "wharf-runs/bin/orca-host"],   # yard-node: not on the twin
+      f"  only orca-host, yard-node and helm send read a node folder: no dispatch, berth, pickup, the rest of helm or landing (got {readers})")
+stale = T / "readers" / "wharf-runs" / "bin"
+(stale / "__pycache__").mkdir(parents=True)
+(stale / "orca-host").write_text("NODES = 'wharf-runs/nodes'\n")
+(stale / "__pycache__" / "orca-hostcpython-314.pyc").write_bytes(b"\xa7\r\r\n\x00wharf-runs/nodes\x00")
+(stale / "__pycache__" / "orca-hostcpython-314.pyc.140234567").write_bytes(b"\x00wharf-runs/nodes\x00")  # in flight
+(stale / "pickup.pyc").write_bytes(b"\x00wharf-runs/nodes\x00")
+got = node_readers(T / "readers")
+check(got == ["wharf-runs/bin/orca-host"],
+      f"  a stale __pycache__/*.pyc, one in flight (.pyc.<id>) or a bare .pyc holding the text is no reader; its source is (got {got})")
+check(node_text_reader(stale / "gone-mid-scan") is False, "  a file removed mid-scan is no reader, not a traceback")
+try:
+    node_text_reader(stale / "__pycache__")
+    check(False, "  a path the scan cannot read raises")
+except OSError as e:
+    check(not isinstance(e, FileNotFoundError), f"  a path the scan cannot read raises ({type(e).__name__}), never passes as no reader")
+# autofinish-run sends no landing to a peer since finish-as-task (a finish is a fleet queue entry): no peer_of to ask
 afr = load("afr", M / "bin" / "autofinish-run")
-check(afr.peer_of() == ("studio", "Studio-Agent", None), f"  autofinish-run lands on PAIRS' first row, never the node (got {afr.peer_of()})")
+check(not hasattr(afr, "peer_of"), "  autofinish-run has no landing peer: a finish goes through the queue")
 (cfg / "wharf-runs" / "orca-pairs").write_text("")
-check(afr.peer_of() == (None, None, None) and oh.peers_of("laptop") == ["acme-agent"],
-      "  and with the laptop's PAIRS row gone the node still pairs, yet no landing goes to it")
-del os.environ["AUTOFINISH_HOST"]
+check(oh.peers_of("laptop") == ["acme-agent"], "  and with the laptop's PAIRS row gone the node still pairs")
 (cfg / "wharf-runs" / "ssh").write_text("studio:Studio-Agent\nacme-agent:elsewhere\n")
 rc, out = run(["check"])
 check(rc == 1 and "✗ node acme-agent is also named in wharf-runs/ssh" in out, "a node peer PEERS also names is a fault")
@@ -437,6 +468,30 @@ check(oh.node_peers() == [], "no nodes folder: no node, no error")
 os.environ["ORCA_HOST_PLATFORM"] = "linux"
 lx = load("orca_host_linux", M / "bin" / "orca-host")
 del os.environ["ORCA_HOST_PLATFORM"]
+# a Linux host with Orca installed (the yard node's guest: the .deb's orca-ide) must not lend it to
+# the cases that say "not installed": each PATH dir holding the CLI, by the lookup orca_bin() makes, is
+# replaced by a scratch mirror of links to the rest of it (sh and the like stay), from here to the
+# suite's end: the Linux block is its last, and a case added after it inherits this PATH
+def without_cli(path):
+    out = []
+    for d in path.split(os.pathsep):
+        if d and shutil.which(lx.LINUX_CLI, path=d):
+            mirror = Path(tempfile.mkdtemp(dir=T))
+            for e in Path(d).iterdir():
+                if e.name != lx.LINUX_CLI:
+                    (mirror / e.name).symlink_to(e.absolute())   # a relative PATH entry's links still resolve
+            d = str(mirror)
+        out.append(d)
+    return os.pathsep.join(out)
+cli_dir = T / "cli-on-path"; cli_dir.mkdir()
+for name in (lx.LINUX_CLI, "sh"):
+    (cli_dir / name).write_text("#!/bin/sh\n"); (cli_dir / name).chmod(0o755)
+cwd = os.getcwd(); os.chdir(cli_dir.parent)   # a one-word entry: a path that climbs to / would resolve from anywhere
+mirrored = without_cli(cli_dir.name)
+os.chdir(cwd)
+check(shutil.which(lx.LINUX_CLI, path=mirrored) is None and shutil.which("sh", path=mirrored) is not None,
+      "without_cli: a relative PATH dir loses the CLI and keeps the rest, resolving (got {!r})".format(mirrored))
+os.environ["PATH"] = without_cli(os.environ["PATH"])
 check(lx.LINUX is True, "ORCA_HOST_PLATFORM=linux: the copy takes the Linux branch")
 os.environ.pop("XDG_CONFIG_HOME", None)
 check(lx.default_data(True) == Path(os.environ["HOME"]) / ".config" / "orca"
@@ -454,7 +509,8 @@ check(lx.orca_bin() == str(lbin / "orca-ide"), "Linux: orca-ide, never the bare 
 (lbin / "orca-ide").unlink()
 check(lx.orca_bin() is None, "  and no orca-ide: no CLI, though an orca is on PATH")
 os.environ["PATH"] = saved_path
-check(not lx.orca_env()["PATH"].startswith("/opt/homebrew/bin:"), "Linux: no Homebrew put first on the CLI's PATH")
+check(lx.orca_env()["PATH"] == os.environ["PATH"],   # a host's own PATH may list /opt/homebrew/bin early
+      "Linux: no Homebrew put first on the CLI's PATH: the PATH passes as it is")
 check(lx.clipboard() is None, "Linux: no clipboard to read")
 
 units = Path(os.environ["HOME"]) / ".config" / "systemd" / "user"; units.mkdir(parents=True)

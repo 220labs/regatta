@@ -25,9 +25,11 @@ git config --global user.name t; git config --global user.email t@example.invali
 # The embark step ends every sextant job: a scratch checkout, `keel embark` and `keel line` stood in,
 # so no rehearsal adds a worktree to this repo or deploys a page (the embark block sets its own)
 export WEEKLY_EMBARK_REPO="$T/no-embark-repo" WEEKLY_KEEL_EMBARK="$T/no-keel-embark.json" WEEKLY_KEEL_LINE=echo
+# the nightly probes (Evolve S2) stood in: their own suite is evolve.sh; one case below runs the real one
+export WEEKLY_PROBES=true
 unset REGATTA_HOME REGATTA_LEGACY ATLAS_LAYER ATLAS_VAULT CLAUDE_CONFIG_DIR WEEKLY_ANY_HOST AURORA_SECTIONS \
       WEEKLY_TEND WEEKLY_CLASSIFY WEEKLY_COMMIT WEEKLY_PR WEEKLY_CLAUDE AURORA_TODAY AURORA_HOUR CLAUDE_BULLETIN \
-      WEEKLY_TRIM TRIM_NOW CLAUDE_REPOS_JSON WEEKLY_CLOCK WEEKLY_SLEEP STUB_TRIM_COLLECT STUB_TRIM_VERDICT STUB_TRIM_SLEEP STUB_TRIM_TORN LANDS WEEKLY_CAP WEEKLY_CAP_GRACE
+      WEEKLY_TRIM WEEKLY_ASKS TRIM_NOW CLAUDE_REPOS_JSON WEEKLY_CLOCK WEEKLY_SLEEP STUB_TRIM_COLLECT STUB_TRIM_VERDICT STUB_TRIM_SLEEP STUB_TRIM_TORN LANDS WEEKLY_CAP WEEKLY_CAP_GRACE
 fails=0
 check() {
   if [ "$1" = "$2" ]; then echo "  ok  $3"; else echo "  FAIL $3"; echo "       got:  $1"; echo "       want: $2"; fails=$((fails + 1)); fi
@@ -159,7 +161,7 @@ check "$(REGATTA_HOME="$R" "$T/lone/bin/weekly-run" where | sed -n 's/^regatta /
 echo "tonight's plan (--dry-run)"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$W" aurora "$V" --dry-run)
 echo "$out" | head -1 | grep -q "^aurora 2026-10-18 21h — the night's order"; check $? 0 "a Sunday night: the header"
-check "$(echo "$out" | grep -cE '^  [0-9] ')" 6 "  six steps, in order"
+check "$(echo "$out" | grep -cE '^  [0-9] ')" 7 "  seven steps, in order"
 echo "$out" | grep -qE '^  2 classify +due '; check $? 0 "  classify due"
 echo "$out" | grep -qE '^  5 dream +due .* must be on vlt main'; check $? 0 "  dream due, its proof named by the vault's name"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=12 "$W" aurora "$V" --dry-run)
@@ -189,6 +191,13 @@ else
 fi
 grep -q "^LAUNCHED [0-9a-f]* dreams/$day.md" "$lg"; check $? 0 "  the dream LAUNCHED on the vault's main"
 check "$(cat "$T/logs/aurora-dream-tried")" "$day" "  its attempt recorded"
+grep -q '^== probes at ' "$lg"; check $? 0 "  the answer surface's probes ran with the tend (Evolve S2)"
+printf '#!/bin/sh\necho "  FAIL render   1 shown as text"\nexit 1\n' > "$T/probes-fail"; chmod +x "$T/probes-fail"
+rm -f "$lg"; AURORA_SECTIONS=dream WEEKLY_CLAUDE=true WEEKLY_PROBES="$T/probes-fail" "$W" aurora "$V" >/dev/null 2>&1
+grep -q "^FAILED probes $day: bin/evolve probes exit 1 — render   1 shown as text$" "$lg"; check $? 0 "  a broken stage: one FAILED probes line, naming it"
+grep -q '^LAUNCHED' "$lg"; check $? 0 "    and the night goes on"
+rm -f "$lg"; AURORA_SECTIONS=dream WEEKLY_CLAUDE=true WEEKLY_PROBES= "$W" aurora "$V" >/dev/null 2>&1
+grep -q '^probes: every stage holds$' "$lg"; check $? 0 "  the real probes, on evolve's fixture: every stage holds"
 rm -f "$lg"
 AURORA_SECTIONS=dream WEEKLY_CLAUDE=true "$W" aurora "$V"
 check "$(grep -c '^LAUNCHED' "$lg")" 1 "  a second run that day finds the first one's dream on main"
@@ -220,26 +229,57 @@ chmod +x "$T/stub-trim"
 # the plan's trim line is due only where trim is installed: the stand-in counts as installed
 sun() { AURORA_TODAY=2026-10-18 AURORA_HOUR=21 WEEKLY_TRIM="$T/stub-trim" "$W" aurora "$V" --dry-run; }
 out=$(sun)
-echo "$out" | grep -qE '^  6 trim +due .*in 1 repo\(s\), no session'; check $? 0 "a Sunday night: trim due, last (sixth), in the one tuned repo"
+echo "$out" | grep -qE '^  7 trim +due .*in 1 repo\(s\), no session'; check $? 0 "a Sunday night: trim due, last (seventh), in the one tuned repo"
 echo "$T/elsewhere" > "$REGATTA_CONFIG/aurora/trim-repos"
 out=$(sun)
-echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  no repo with a vertical file: not due"
+echo "$out" | grep -qE '^  7 trim +not due '; check $? 0 "  no repo with a vertical file: not due"
 printf '\357\273\277%s\r\n' "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
 out=$(sun)
-echo "$out" | grep -qE '^  6 trim +due .*in 1 repo\(s\)'; check $? 0 "  the key read as the core reads it: a BOM and CRLF still name the repo"
+echo "$out" | grep -qE '^  7 trim +due .*in 1 repo\(s\)'; check $? 0 "  the key read as the core reads it: a BOM and CRLF still name the repo"
 : > "$REGATTA_CONFIG/aurora/trim-repos"
 out=$(sun)
-echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  the key written empty: no repo, never the default"
+echo "$out" | grep -qE '^  7 trim +not due '; check $? 0 "  the key written empty: no repo, never the default"
 echo "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
 echo "$day" > "$T/logs/aurora-trim-tried"
 out=$(AURORA_TODAY="$day" AURORA_HOUR=21 WEEKLY_TRIM="$T/stub-trim" "$W" aurora "$V" --dry-run)
-echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  tried this week: not due again"
+echo "$out" | grep -qE '^  7 trim +not due '; check $? 0 "  tried this week: not due again"
 rm -f "$T/logs/aurora-trim-tried"
 # without plumb (a copy of the core and aurora alone, as on a stranger's install): never due, the plan says why
 NP="$T/notrim"; mkdir -p "$NP/modules"; cp -R "$R/modules/regatta" "$R/modules/aurora" "$NP/modules/"
 out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$NP/modules/aurora/bin/weekly-run" aurora "$V" --dry-run)
-echo "$out" | grep -qE "^  6 trim +not due +plumb's trim is not installed"; check $? 0 "  plumb's trim not installed: not due, though a repo is tuned"
+echo "$out" | grep -qE "^  7 trim +not due +plumb's trim is not installed"; check $? 0 "  plumb's trim not installed: not due, though a repo is tuned"
 rm_own "$NP"
+
+# asks (evolve S1): plumb's asks run, the sixth step, last but trim; due once a week, after the dream, no session
+cat > "$T/stub-asks" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$STUB_ASKS_CALLS"
+[ -n "${STUB_ASKS_RC:-}" ] && { echo "asks: boom"; exit "$STUB_ASKS_RC"; }
+echo "asks: 9 new owner prompts (1 machine, 0 confidential sessions not opened), 2 improvement asks in 2 session-themes, labelled by model; gate \$0.10"
+STUB
+chmod +x "$T/stub-asks"
+export STUB_ASKS_CALLS="$T/asks-calls"
+rm -f "$T/logs/aurora-asks-tried"
+out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 WEEKLY_ASKS="$T/stub-asks" "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  6 asks +due .*no session'; check $? 0 "asks: a Sunday night, due, sixth (after the dream, before trim)"
+echo "$day" > "$T/logs/aurora-asks-tried"
+out=$(AURORA_TODAY="$day" AURORA_HOUR=21 WEEKLY_ASKS="$T/stub-asks" "$W" aurora "$V" --dry-run)
+echo "$out" | grep -qE '^  6 asks +not due '; check $? 0 "  tried this week: not due again"
+rm -f "$T/logs/aurora-asks-tried"
+NA="$T/noasks"; mkdir -p "$NA/modules"; cp -R "$R/modules/regatta" "$R/modules/aurora" "$NA/modules/"
+out=$(AURORA_TODAY=2026-10-18 AURORA_HOUR=21 "$NA/modules/aurora/bin/weekly-run" aurora "$V" --dry-run)
+echo "$out" | grep -qE "^  6 asks +not due +plumb's asks is not installed"; check $? 0 "  plumb's asks not installed: not due, the plan says why"
+rm_own "$NA"
+asksnight() { rm -f "$lg" "$T/asks-calls"; AURORA_SECTIONS="asks dream" WEEKLY_ASKS="$T/stub-asks" WEEKLY_CLAUDE=true "$W" aurora "$V"; }
+a0=$(posts "asks step failed")
+asksnight; check $? 0 "a night with asks: exit 0"
+check "$(cat "$T/asks-calls")" "run" "  asks run, nothing else"
+grep -q "^ASKS $day: asks: 9 new owner prompts" "$lg"; check $? 0 "  its summary line in the log"
+check "$(cat "$T/logs/aurora-asks-tried")" "$day" "  its attempt recorded"
+awk '/^== dream in /{d=NR} /^== asks at /{a=NR} END{exit !(d && a && d < a)}' "$lg" < /dev/null; check $? 0 "  after the dream's session"
+STUB_ASKS_RC=3 asksnight; check $? 0 "a crash (exit 3): the night still exits 0"
+grep -q "^FAILED asks $day: asks run exit 3: asks: boom$" "$lg"; check $? 0 "  one FAILED line naming the exit and the last line"
+check "$(posts "asks step failed")" "$((a0 + 1))" "  one bulletin post"
 
 trimnight() { rm -f "$lg" "$T/trim-calls"; AURORA_SECTIONS="trim dream" WEEKLY_TRIM="$T/stub-trim" WEEKLY_CLAUDE=true "$W" aurora "$V"; }
 p0=$(posts "trim step failed")
@@ -314,7 +354,7 @@ rm_own "$NV/gone" "$NV/harbor"
 DR="$T/dotrepo"; mkdir -p "$DR/trim"; echo '{}' > "$DR/trim/._web.json"
 printf '%s\n' "$DR" > "$REGATTA_CONFIG/aurora/trim-repos"
 out=$(sun)
-echo "$out" | grep -qE '^  6 trim +not due '; check $? 0 "  a repo whose only vertical file is a dotfile: not due"
+echo "$out" | grep -qE '^  7 trim +not due '; check $? 0 "  a repo whose only vertical file is a dotfile: not due"
 printf '%s\n' "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"; rm_own "$DR"
 # Another Mac's push: each Mac collects a day after it ends (about 00:10). A Sunday night waits until 00:30
 # for every host's collect after Sunday; a host whose files were all written before then is not in.
@@ -620,6 +660,7 @@ printf '== tend\nFAILED tend 2026-10-18: bin/tend exit 1 — not tended: demo\nD
 echo '[{"reason": "Reversible: no", "doc": "/d/a.md", "age_h": 100}]' > "$T/ke.json"
 mkdir -p "$EG"; git -C "$EG" init -q -b main; git -C "$EG" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
 git init -q --bare "$T/eg-origin.git"; git -C "$EG" remote add origin "$T/eg-origin.git"
+printf '#!/bin/sh\necho "vlt-e $*" >> "%s/ekc.log"\n' "$T" > "$T/ekc"; chmod +x "$T/ekc"   # knowledge-commit's stand-in: logs its call
 em() { WEEKLY_ANY_HOST=1 ATLAS_VAULT="$EV" ATLAS_LAYER="$EL" WEEKLY_LOG_DIR="$ED" WEEKLY_KEEL_EMBARK="$T/ke.json" WEEKLY_EMBARK_REPO="$EG" "$W" embark "$EV" "$@"; }
 em --dry-run > "$T/memo.md"; check $? 0 "--dry-run: exit 0"
 KP="$R/modules/keel/bin/keel"
@@ -630,7 +671,8 @@ check "$(python3 "$KP" parse "$T/memo.md" | python3 -c 'import json,sys; print([
   "[2, 2, 3, 3, 3, 2]" "  every item keeps its options: a copied section (a fence, a D9 line) ends none early"
 grep -q '^  \*\*From the dream.s section "D1.s diff", as written:\*\*$' "$T/memo.md"; check $? 0 "  the section D1 quotes is copied under it"
 grep -q '^  > +- D9 — a new line' "$T/memo.md"; check $? 0 "    as a blockquote, which keel reads as prose"
-grep -q "^- The dream's D2 (P2): The venture file catches up — answered in the vault: \[dreams/2026-10-18.md#L" "$T/memo.md"; check $? 0 "  the venture item: one pointer line, no D-item"
+grep -q "^- The dream's D2 (P2) — answered in the vault: \[dreams/2026-10-18.md#L" "$T/memo.md"; check $? 0 "  the venture item: one pointer line, no D-item"
+check "$(grep -c 'venture file catches up' "$T/memo.md")" 0 "    and no title: a title can name the venture (TODO.md [embark-on-helm] (2))"
 grep -qF "]($EV/rules/x.md)" "$T/memo.md"; check $? 0 "  a relative link made absolute"
 check "$(grep -c '^| commits on main | 128 (208) | ↓ |$' "$T/memo.md")" 1 "  the numbers carry an arrow against last week"
 check "$(grep -cE '^  \*\*C3 carried — 1\*\*$|^  \*\*C6 abandoned — 1\*\*$' "$T/memo.md")" 2 "  the branches item: a table per class"
@@ -641,9 +683,89 @@ grep -qF -- '- **D6 — The charts dry run: [layer#7](https://github.com/o/layer
 grep -q '^1 Reversible: no\|1 item in 1 doc' "$T/memo.md"; check $? 0 "  keel embark's count"
 grep -q '^## Open feedback$' "$T/memo.md"; check $? 0 "  Open feedback last"
 check "$(git -C "$EG" worktree list | wc -l | tr -d ' ')" 1 "  a dry run makes no worktree"
+echo "  audience views (Evolve S2, TODO.md [embark-on-helm] (2) and (12))"
+printf '# Lantern Works\n' > "$EV/ventures/lantern-works.md"
+cp "$EV/dreams/2026-10-18.md" "$T/dream.bak"
+python3 - "$EV/dreams/2026-10-18.md" <<'PYV'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("## Do this now\n\nNothing.\n", "## Do this now\n\n```bash\nopen ../ventures/x.md\n```\n\nRun the check once.\nAsk lantern-works about the logo.\n")
+s = s.replace("- **D3 — Q1. Where does the lab live?**", "- **D3 — Q1. Where does the lab live?** See \"Lab notes\".")
+s = s.replace("## Q — questions", "### Lab notes\n\nThe lab is Lantern-Works' studio.\n\n## Q — questions")
+s = s.replace("## Feedback from the owner", "- **D4 — Q2. Lantern-Works' logo**\n  - A — keep\n  - B — redo\n\n  Reversible: yes\n\n  ➤ Recommended: A\n\n  ➤ Answer:\n\n## Feedback from the owner")
+open(p, "w").write(s)
+PYV
+python3 "$D/bin/embark-memo" --vault "$EV" --logs "$ED" --keel-embark "$T/ke.json" --out "$T/pub.md" --vault-out "$T/whole.md" --date 2026-10-19 2>&1
+check "$(grep -ic lantern "$T/pub.md")" 0 "  regatta's view: a venture's name nowhere (a D-item, a copied section, a Do-this-now line)"
+grep -q "^- The dream's D4 (Q2) — answered in the vault" "$T/pub.md"; check $? 0 "    the item naming it: a pointer"
+grep -q '^  1 section this item quotes is about a venture or the vault' "$T/pub.md"; check $? 0 "    the section naming it: counted under its item, not copied"
+grep -qF "2 lines about a venture or the vault are left out here: [the vault's copy]($T/whole.md#L1) has them." "$T/pub.md"; check $? 0 "    the Do-this-now lines: counted, pointing at the vault's copy, never dropped silently"
+check "$(grep -c '^```' "$T/pub.md")" 0 "    a fence the filter emptied goes with it"
+grep -q '^Run the check once\.$' "$T/pub.md"; check $? 0 "    the rest of Do this now kept"
+check "$(grep -c '^- \*\*D[24] — ' "$T/whole.md") $(grep -ic lantern "$T/whole.md" | tr -d ' ')" "2 3" "  the vault's view: every item a D-item, every line kept (the line, the section, the title)"
+check "$(python3 "$KP" parse "$T/whole.md" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["items"]))')" 7 "    and it parses: the four dream items, the branches, the charts PR, the FAILED line"
+cp "$T/dream.bak" "$EV/dreams/2026-10-18.md"; rm -f "$EV/ventures/lantern-works.md"
+echo "  the regatta view's filter: main's floor, and every spelling of a personal path (S2's landing review, findings 1, 2)"
+VO() { python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("em", sys.argv[1]).load_module(); print(m.vault_only(sys.argv[3], sys.argv[2]))' "$D/bin/embark-memo" "$EV" "$1"; }
+t='~'
+# the reviewer's five (a tilde path, a link to one, the household, another Mac's home, a vault worktree) and
+# /code-review's four (a tilde path, another home's ventures, a bare `<vault>/ventures/`, a Vault-only bullet)
+for s in "$t/projects/vlt/ventures/README.md" "[the plan]($t/projects/vlt/ventures/README.md)" "$t/projects/vlt/me/household.md" \
+         "$T/b/projects/vlt/me/household.md" "$EV/.claude/worktrees/w/me/pointers.md" \
+         "see $t/projects/vlt/me/household.md" "open $T/b/projects/vlt/ventures/README.md" '`vlt/ventures/`' '- Vault only: yes'; do
+  check "$(VO "$s")" True "    left out of regatta: $s"
+done
+for s in "Run the check once." "see rules/engineering.md" "the home/household.md of a demo"; do
+  check "$(VO "$s")" False "    kept: $s"
+done
+cp "$EL/sextant/2026-10-19.md" "$T/entry.bak"; cp "$ED/2026-10-18-aurora.log" "$T/alog.bak"
+printf '\n**Do this now**\n\nRead [the plan](ventures/x.md) first.\nRun the sextant check.\n' >> "$EL/sextant/2026-10-19.md"
+printf 'FAILED dream 2026-10-18: ventures/x.md could not be read\n' >> "$ED/2026-10-18-aurora.log"
+python3 "$D/bin/embark-memo" --vault "$EV" --layer "$EL" --logs "$ED" --keel-embark "$T/ke.json" --out "$T/pub2.md" --vault-out "$T/whole2.md" --date 2026-10-19 2>&1
+check "$(grep -c 'ventures/' "$T/pub2.md")" 0 "  the sextant entry's Do-this-now and a FAILED item naming ventures/: nowhere in regatta's view"
+grep -q '^Run the sextant check\.$' "$T/pub2.md"; check $? 0 "    the entry's other line kept"
+grep -qE '^- D[0-9]+ \(a FAILED line\) — about a venture or the vault: in \[the vault.s copy\]' "$T/pub2.md"; check $? 0 "    the FAILED item a pointer, its number kept"
+grep -qF "Read [the plan]($EL/sextant/ventures/x.md) first." "$T/whole2.md"; check $? 0 "  the vault's view resolves the entry's link against the entry's own folder"
+echo "typed in the vault" >> "$T/whole2.md"
+python3 "$D/bin/embark-memo" --vault "$EV" --layer "$EL" --logs "$ED" --keel-embark "$T/ke.json" --out "$T/pub2.md" --vault-out "$T/whole2.md" --date 2026-10-19 2> "$T/em.err"
+check "$(tail -1 "$T/whole2.md") $(grep -c 'kept as it is, never written over' "$T/em.err")" "typed in the vault 1" "  a vault copy already there is never written over (finding 4)"
+grep -qE '^- D[0-9]+ \(a FAILED line\) — about' "$T/pub2.md"; check $? 0 "  typing below a fresh build's text: the pointers keep their numbers"
+python3 - "$T/whole2.md" <<'PYW'
+import sys; p = sys.argv[1]; s = open(p).read().split("\n"); s[2] = "an answer typed inline. " + s[2]; open(p, "w").write("\n".join(s))
+PYW
+python3 "$D/bin/embark-memo" --vault "$EV" --layer "$EL" --logs "$ED" --keel-embark "$T/ke.json" --out "$T/pub2.md" --vault-out "$T/whole2.md" --date 2026-10-19 2> /dev/null
+grep -qE '^- A FAILED line — about a venture or the vault: in \[the vault.s copy\]' "$T/pub2.md"; check $? 0 \
+  "  the kept copy differs from a fresh build: its pointers name the item, never a D-number the copy may give another (TODO.md [embark-on-helm] (15))"
+echo "  a paste kept whole, a branches row, a Numbers row (the S2 landing's third review)"
+cp "$EV/dreams/2026-10-18.md" "$T/dream.bak"; cp "$EV/dreams/2026-10-18-branches.md" "$T/branches.bak"
+python3 - "$EV/dreams/2026-10-18.md" "$EV/dreams/2026-10-18-branches.md" <<'PYV'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace("## Do this now\n\nNothing.\n", "## Do this now\n\n```bash\ncd ../ventures/acme && \\\n  rm -rf build && make deploy\n```\n\nRun the check once.\n")
+s = s.replace("| open branches | 151 (110) |", "| open branches | 151 (110) |\n| [signups](../ventures/acme.md) | 3 (1) |")
+open(p, "w").write(s)
+b = sys.argv[2]; t = open(b).read()
+t = t.replace("## B would have archived", "P3. demo · `claude/h/2026-10-03-v` — C3 carried: see ventures/README.md.\n    ➤ Answer: drop\n\n## B would have archived")
+open(b, "w").write(t)
+PYV
+rm -f "$T/whole3.md"
+python3 "$D/bin/embark-memo" --vault "$EV" --logs "$ED" --keel-embark "$T/ke.json" --out "$T/pub3.md" --vault-out "$T/whole3.md" --date 2026-10-19 > /dev/null 2>&1
+check "$(grep -c 'rm -rf build' "$T/pub3.md") $(grep -c 'rm -rf build' "$T/whole3.md")" "0 1" "  a fence with one vault line goes whole: the rest never runs without its cd"
+grep -q '^Run the check once\.$' "$T/pub3.md"; check $? 0 "    the line after it kept"
+check "$(grep -c 'claude/h/2026-10-03-v' "$T/pub3.md") $(grep -c 'claude/h/2026-10-01-a' "$T/pub3.md")" "0 1" "  the branches item keeps its other rows; the venture's row is left out"
+grep -q "^  1 row about a venture or the vault (P3) is left out here" "$T/pub3.md"; check $? 0 "    and counted"
+check "$(grep -c 'signups' "$T/pub3.md") $(grep -c '^| open branches' "$T/pub3.md")" "0 1" "  a Numbers row about a venture left out, the others kept"
+grep -q "^1 row about a venture or the vault is left out here" "$T/pub3.md"; check $? 0 "    and counted"
+grep -q "Answer on regatta's page" "$T/whole3.md"; check $? 0 "  the vault's copy says where answers go, never \"Answer here\""
+cp "$T/dream.bak" "$EV/dreams/2026-10-18.md"; cp "$T/branches.bak" "$EV/dreams/2026-10-18-branches.md"
+cp "$T/entry.bak" "$EL/sextant/2026-10-19.md"; cp "$T/alog.bak" "$ED/2026-10-18-aurora.log"
 host=$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$R/modules/regatta/hooks")
 day=$(date +%F); br="claude/$host/$day-embark"; edoc="$EG/.claude/worktrees/embark-$day/docs/embark/embark-$day.md"
-out=$(em); check "$? $out" "0 EMBARK $edoc" "a real run: the memo committed and handed to keel line (echo here)"
+out=$(WEEKLY_COMMIT="$T/ekc" em); check "$? $out" "0 EMBARK $edoc" "a real run: the memo committed and handed to keel line (echo here)"
+check "$(head -1 "$EV/dreams/$day-embark.md")" "# Embark $day — decision memo: the week's sitting (the vault's whole copy)" "  the vault's whole copy written first (Evolve S2)"
+check "$(cat "$T/ekc.log")" "vlt-e vlt -m Embark: $day — the vault's whole memo dreams/$day-embark.md" "    committed through knowledge-commit <vault-name>, from the vault"
+grep -q '^- \*\*D2 — P2\. The venture file catches up' "$EV/dreams/$day-embark.md"; check $? 0 "    the venture item a D-item there"
+grep -qF "is the vault's: [$day-embark.md]($EV/dreams/$day-embark.md#L1)" "$edoc"; check $? 0 "    regatta's view points at it"
 check "$(git -C "$T/eg-origin.git" log -1 --format=%s "$br" 2>&1)" "Embark: $day — the sitting's memo, written by weekly-run" "  pushed on $br"
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["dream"], d["branch"], d["line"])' "$ED/embark-latest.json")" \
   "2026-10-18 $br $edoc" "  embark-latest.json names the dream, the branch and the line (atlas's bulletin reads it)"

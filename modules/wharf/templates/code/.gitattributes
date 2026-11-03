@@ -1,0 +1,5 @@
+# Two branches that each append a TODO.md item, or a CHANGELOG.md line under `## Unreleased`, merge
+# without a conflict (wharf's /todo skill). In a clone whose `merge.union.driver` is wharf's list-merge
+# they merge by item; elsewhere, as union.
+TODO.md merge=union
+CHANGELOG.md merge=union

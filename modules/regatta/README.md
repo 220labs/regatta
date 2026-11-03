@@ -73,6 +73,22 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
   installed. The core's import never refuses on them: the module refuses when it uses one.
 - `gate set` writes the real file behind a config symlink, and refuses one on a `main` checkout.
 
+## Limits: changed live, on one host or the fleet
+
+`regatta limit set run-cap buildbox:5`, `regatta limit set check-slots 3 --all`, `regatta limit get run-cap --all`,
+`regatta limit list`, `regatta limit unset run-cap buildbox`: a fleet limit changed on its next read, with no build,
+no landing and no overlay run (live-limits, 2026-11-01). The verb writes each host's own **live layer**,
+`<config>/live/<key>`, which `config_read` merges in front of `<config>/<key>`: a layer line `<word>:<value>` (a
+host, a login, `*`) replaces the config's entry for that word, on whatever line, and stands first; a layer line with no word replaces
+the config's plain lines. Nothing but the verb writes `live/`, so an overlay that rewrites the config keeps the
+value; `regatta check` prints one note per live key. Which keys are limits, their shape and how a value is tried
+before it is written are in each module's `limits` file and `libexec/limit`'s header; a value the key's own reader
+would read as anything else is refused, and a host the verb cannot reach is named, its value unchanged.
+
+  | File | What it holds | Without it |
+  | --- | --- | --- |
+  | `regatta/fleet-ssh` | the peers `regatta limit` writes over ssh, `<host>:<alias>` a line; read by the verb alone (a node's alias here reaches no other reader) | the peers `wharf-runs/ssh` names |
+
 ## Shims
 
 A file that moved keeps a shim at its old path, made by `regatta shim <path>` and never edited:
@@ -131,6 +147,27 @@ later session in that folder.
 A reader asks `common.attribution(session, cwd, root=None)`: the project, or `None`. It reads the
 file once per process; a line that is no row is skipped with one warning on stderr. `crew-report`'s
 weekly report uses it; a new reader of per-project time or cost goes through it, never its own copy.
+
+## Session names
+
+A session a launcher starts is named `<verb>-<topic>`, so a list of runs reads as a list of jobs:
+`build-queue-rank`, `design-evolve`, `finish-vendor-hooks-names`, `steer-regatta`. The verb says
+which agent runs it or what it is for; `regatta session-name --verbs` lists them (build, design,
+finish, steer, work, probe, see, sound, evolve). The name fits a soft cap, 27 characters by default
+(`Regatta: arm yard remaining`): whole words go from the end first, and the verb and the topic's first
+word always stay whole. A session the owner works in keeps `<repo>: <topic>`, whole: dispatch-rc ties a
+pickup window to its session by that name, so it must stay unique in its repo.
+
+```bash
+regatta session-name build principal-council-fences      # build-principal-council
+regatta session-name --lead work "finish · vendor-hooks"  # finish-vendor-hooks: a name that leads with a verb keeps it
+```
+
+`regatta/session-name-max` in the config dir sets the cap; a value under 12, or not a number, is one
+stderr line and the default. A launcher names a session through `common.session_name(verb, topic)`,
+never its own format; an agent that names one (`/rename`, `--name`) follows the same shape and cap.
+A dispatched run's Remote Control name is the session name plus ` · <machine>`; its window keeps the
+whole topic, `run · <topic> · <repo>`. The skipper's stays `skipper · <scope>`, which asks are addressed to.
 
 ## Check
 

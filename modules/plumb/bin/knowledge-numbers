@@ -8,6 +8,9 @@
 What each number is a proxy for:
   shipped / open branches   work that landed vs work still in flight (the owner-time per outcome)
   decisions waiting         things blocked on the owner, and how old the oldest is
+  asks                      the owner's improvement asks last week, per 100 prompts, the share a record could
+                            have shown, the share repeating a theme, recall and lead time once findings exist,
+                            and the loop's cost (bin/asks, the Evolve loop's miss ledger; machine-wide)
   interruptions             everything that took the owner's attention this week — questions, hand-offs,
                             replies a Stop hook sent round again, permission dialogs, notices,
                             trust dialogs waiting — and the share of
@@ -663,6 +666,19 @@ def fold_fenced(rows, fenced):
     return rows + [one]
 
 
+def asks_numbers(scope, tool=None):
+    """bin/asks' numbers (the Evolve loop's miss ledger), or {"measured": False, "why": …}. Not under --scope:
+    the ledger reads open scopes only and is machine-wide."""
+    if scope:
+        return {"measured": False, "why": "not run under --scope"}
+    try:
+        r = subprocess.run([str(tool or Path(__file__).with_name("asks")), "numbers", "--json"],
+                           capture_output=True, text=True, timeout=60)
+        return json.loads(r.stdout) if r.stdout.strip() else {"measured": False, "why": "asks printed nothing"}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {"measured": False, "why": "bin/asks is not installed or did not answer"}
+
+
 def main():
     scope = sys.argv[sys.argv.index("--scope") + 1] if "--scope" in sys.argv[:-1] else None
     if "--scope" in sys.argv and (not scope or scope.startswith("--")):
@@ -802,6 +818,8 @@ def main():
     except (OSError, ValueError, subprocess.TimeoutExpired):
         interruptions = {}
 
+    asks = asks_numbers(scope)  # evolve S1: the owner's asks as the loop's miss signal
+
     goals = course_goals(now)  # entry S10: the Course's G1–G6, a few seconds of keel list
     wharf = wharf_goals(now)  # wharf S8: G1–G5 of docs/wharf-on-orca-2026-10-17.md; an ssh to the dispatch Mac, a land-word grep
 
@@ -820,6 +838,7 @@ def main():
         "memory_unlinked_projects": unlinked,
         "synced_skills": synced,
         "interruptions_7d": {k: v for k, v in interruptions.items() if k != "rows"},
+        "asks_7d": asks,
         "user_settings": {k: (len(v) if isinstance(v, list) else v) for k, v in settings.items()},
         "course_goals": goals,
         "wharf_goals": wharf,
@@ -864,6 +883,15 @@ def main():
               f"trust dialogs waiting {sum(len(v) for v in (interruptions.get('trust_waiting') or {}).values())} |")
     else:
         print("| interruptions, last 7 days (`bin/interruptions`) | ⚠ no output |")
+    if asks.get("measured"):
+        pc = lambda v: "–" if v is None else f"{v}%"   # a sieve-only week leaves a share unknown
+        print(f"| the owner's asks, last {asks['window_days']} days (`bin/asks`) | {asks['asks']} in {asks['themes']} themes, "
+              f"{asks['asks_per_100']} per 100 owner prompts ({asks['owner_prompts']}); a record could have shown {pc(asks['detectable_share'])}, "
+              f"the owner's judgement {pc(asks['judgement_share'])}; repeating a theme (60 days) {pc(asks['repeat_share'])}; "
+              f"recall {asks['recall']}{'%' if isinstance(asks['recall'], int) else ''}; "
+              f"loop cost {common.cost_text(asks['cost_week_usd'])} this week, {common.cost_text(asks['cost_4w_usd'])} in 4 weeks |")
+    else:
+        print(f"| the owner's asks (`bin/asks`) | not measured — {asks.get('why')} |")
     print(f"| budget: `me/` · `rules/` | {totals['budget_me']} · {totals['budget_rules']} |")
     print(f"| sessions this week / transcripts archived this week | {sessions_week} / {archived_week} |")
     print(f"| bulletin entries live | {live} |")

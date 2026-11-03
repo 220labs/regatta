@@ -28,6 +28,9 @@ fixture_config() {
   echo buildbox:buildbox-ssh > "$1/wharf-runs/ssh"
   echo buildbox > "$1/wharf-runs/dispatch-host"
   echo org.example.claude > "$1/wharf-runs/label-prefix"
+  # no detached `hosts sample` from a case's claim or sweep (dispatch-queue's sample_soon): it would push a
+  # hosts row to the case's queue home and outlive the suite; lighthouse's tests/hosts.sh runs the sampler
+  echo off > "$1/wharf-runs/hosts-sample"
   unset REGATTA_LAPTOP REGATTA_HOME REGATTA_LEGACY GIT_CONFIG_GLOBAL
   # This Mac's real memory never decides a case: every dispatch start asks bin/headroom, so each suite
   # gets a calm reading, and a case about memory sets its own (headroom, 2026-10-22)

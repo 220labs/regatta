@@ -10,7 +10,7 @@
 set -u
 URL=${1:?usage: queue_live.sh <queue repo url> [scratch ref]}
 REF=${2:-refs/regatta/probe}
-case "$REF" in refs/regatta/queue) echo "refuse: that is the queue itself" >&2; exit 2;; refs/regatta/*) ;; *) echo "refuse: a scratch ref under refs/regatta/" >&2; exit 2;; esac
+case "$REF" in refs/regatta/queue|refs/regatta/hosts) echo "refuse: that is a live ref (the queue, or the hosts' rows)" >&2; exit 2;; refs/regatta/*) ;; *) echo "refuse: a scratch ref under refs/regatta/" >&2; exit 2;; esac
 W=$(mktemp -d "${TMPDIR:-/tmp}/queue-live.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY

@@ -102,18 +102,32 @@ class Holds:
             return "%s: a queued step counts as there" % why
         if bad and self._store_holds(repo, branch, bad):
             return "%s: a queued step counts as there" % why
+        for e in self._of(repo, branch):
+            if e.get("state") == "ended":
+                continue   # a finish's tombstone is no next step (ended() reads it)
+            if here and e.get("state") == "running" and (e.get("running_on") or "").lower() == here.lower():
+                continue
+            kind = "its finish" if e.get("kind") == "finish" else "its next step"
+            return "%s waits in dispatch's queue (%s %s)" % (kind, e.get("qid") or "an entry", e.get("state") or "?")
+        return None
+
+    def ended(self, repo, branch):
+        """The branch's finish tombstone (dispatch-queue's finish-as-task: state ended, its tip, the host it ran on,
+        its outcome once recorded), or None: one run per tip, read by the sweep of every host. An unreadable queue
+        answers None here: why() holds the branch then."""
+        entries = self.read()[0]
+        return next((e for e in self._of(repo, branch) if e.get("state") == "ended"), None) if entries else None
+
+    def _of(self, repo, branch):
         words = self._words(repo)
         name = None if "/" in str(repo) else str(repo)
-        for e in entries:
+        for e in self.read()[0] or []:
             if e.get("branch") != branch:
                 continue
             er = str(e.get("repo") or "")
             if er not in words and not (name and os.path.basename(er) == name):
                 continue
-            if here and e.get("state") == "running" and (e.get("running_on") or "").lower() == here.lower():
-                continue
-            return "its next step waits in dispatch's queue (%s %s)" % (e.get("qid") or "an entry", e.get("state") or "?")
-        return None
+            yield e
 
     @staticmethod
     def _words(repo):

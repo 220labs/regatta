@@ -65,7 +65,7 @@ import sys, argparse; sys.argv = ['ask']; sys.path.insert(0, '$SB')
 from importlib.machinery import SourceFileLoader as L
 m = L('ask', '$SB/ask').load_module()
 import time; f, r = m.poll_jobs(argparse.Namespace(dry_run=False, repos=None)); m.run_jobs(f + r, time.time() + 600)" 2>&1)
-check "$out" "ask poll: hail not installed — the subscriptions' fulfil skipped
+check "$out" "ask poll: hail not installed — the subscriptions' fulfil, the mailbox's pull skipped
 ask poll: keel not installed — the lookout skipped" "ask poll without keel or hail (crosstalk S6): one line each, no traceback"
 out=$(printf '{"session_id": "abcd1234", "hook_event_name": "SessionStart", "cwd": "%s"}' "$T" | CLAUDE_TALK_HOSTS=testhost python3 "$S/modules/helm/hooks/talk_nudge.py" 2>&1; echo "rc=$?")
 check "$out" "rc=0" "talk_nudge without keel's gate: silent, exit 0"
@@ -122,13 +122,23 @@ import surfaces
 sc = json.load(open(surfaces.SCHEMA))["properties"]
 def enum(seam, key):
     v = sc[seam]["properties"][key] if key != "*" else sc[seam]["additionalProperties"]
+    if "oneOf" in v:   # a host row: a list of backends, or one as a string (charterer S3), the same words
+        lst, one = v["oneOf"]
+        assert set(lst["items"]["enum"]) == set(one["enum"]), "the list's and the string's backends"
+        v = lst
     v = v.get("items", v)
     return set(v["enum"])
 print(all(enum(n.split(".")[0], n.split(".")[1]) == ok for n, ok in surfaces.KNOWN.items()))
 print(sorted(set(sc) - {"_", "plan"}) == sorted(surfaces.DEFAULTS))
+lad = json.load(open(surfaces.SCHEMA))["$defs"]["ladder"]["items"]["properties"]
+n = sc["notify"]["properties"]
+print(set(lad["via"]["enum"]) == surfaces.CHANNELS, set(lad["when"]["enum"]) - {None} == surfaces.WHEN,
+      set(n["quiet"]["properties"]["except"]["items"]["enum"]) == set(surfaces.LADDER_KINDS),
+      sorted(n) == sorted(surfaces.LADDER_KEYS))
 PY
 )" "True
-True" "every enum is surfaces.KNOWN's, every seam a DEFAULTS row"
+True
+True True True True" "every enum is surfaces.KNOWN's, every seam a DEFAULTS row; the ladder's channels, when, kinds and keys surfaces' (charterer S3)"
 check "$(python3 -c "import sys, json; sys.path.insert(0, '$H/bin'); import surfaces; print(surfaces.validate(json.load(open('$H/tests/surfaces.json'))))")" "[]" "the fixture is valid"
 check "$(REGATTA_CONFIG=/cfg python3 -c "import sys; sys.path.insert(0, '$H/bin'); import surfaces; print(surfaces.FILE)")" "/cfg/helm/surfaces.json" "the default is the config dir's helm/surfaces.json (C3)"
 

@@ -4,7 +4,13 @@ docs/orchestration-orca-2026-10-15.md, its section 4 Q2 table; the owner's D1-A:
 
     wharf check <blueprint.md> [--plan ID] [--accept] [--json]
         Validate the blueprint (bin/blueprintlib.py) and print its graph; with a plan, say whether
-        its digest is the one accepted; --accept records it there.
+        its digest is the one accepted; --accept records it there. Warns, never refuses (the block
+        rule, trim S4): a block whose `lines:` is past the window's top (blueprintlib's BLOCK_LINES,
+        1,000 today), and two or more work blocks none of which waits on another.
+    wharf check <doc.md> [--json]
+        A Course doc (no front matter, an Action plan heading): each step with its `· lines: <n>`, the
+        expected code lines the architects size it by, and a warning for one past the window's top
+        (BLOCK_LINES). A step with no size is listed, never an error. Reads only.
     wharf apply <blueprint.md> [--plan ID] [--dry-run | --once] [--json]
         The live compile: one Orca Run per ship, a Task per block, a gate per decision block, then
         every row the diff names acted on — ready blocks started, answered gates resolved, ended
@@ -111,7 +117,7 @@ DISPATCH_SHIP beside DISPATCH_PLAN, and the ship's `started` is set by its first
 keeps its names (plans/<id>/plan.json). An Orca block on another host (`host:` one of
 the repo's hosts in repos.json) starts there: its house worktree made over ssh in the host's clone,
 then `worker-start --on <host> --worktree path:<it>` (wharf-on-orca S3); refused while no Orca
-environment is paired under the host's name. A claude-code block there starts by `dispatch --on`. Python 3.9, PyYAML (blueprintlib's), nothing of Claude's imported; no model call.
+environment is paired under the host's name. A claude-code block there starts by `dispatch --pin`. Python 3.9, PyYAML (blueprintlib's), nothing of Claude's imported; no model call.
 """
 import argparse
 import fcntl
@@ -155,10 +161,42 @@ ENDED = ("done", "landed", "launched")   # `launched` is rename S2's word for `l
 PASSES = 10          # an apply's passes at most; a pass that acts on nothing ends it sooner
 SHELL_TIMEOUT = 300  # a shell block's own timeout_seconds wins; over ~500 s it starts only from an attended apply (the tick has 600 s)
 SESSION_START = 400  # what a session start may take: worker-start's 300 s and its 90 s wait, or pickup seed
+SENT_GIT = 30        # sent_branch's fetch, and its ls-remote, per candidate branch (two at most)
+SENT_START = SESSION_START - 4 * SENT_GIT   # a sent block's plain dispatch: the lookup and the call inside SESSION_START,
+                     # never on top of it — the yard's tick has at most about 545 s when wharf begins (ask poll's 600,
+                     # less the ping reserve, wharf_once's margin and the stalls pass before it), and start() wants
+                     # need_s + 30 of it. The local git calls of the lookup are not counted: milliseconds in practice
 TICK_STARTS = 2      # session starts per tick, every ship together: the run cap counts only a non-Claude worker (start_refusal)
 HAIL_TEXT_MAX = 400  # bin/hail's TEXT_MAX: a hail's text is a pointer, and hail refuses a longer one
 HAIL_TIMEOUT = 120   # one hail: its socket readback (HAIL_READBACK_S) and a Talk post, well inside the tick
 HAIL_TAKEN = ("delivered", "queued", "held")   # what hail exits 0 for: a road took it (held: posted, unread yet)
+# dispatch's words for a step its queue holds, as pickup reads them (pickup's QUEUED_AS, QUEUE_HOLDS): "queued as
+# <entry>", or an exit 2 naming the branch's entry. pickup's third form, "the queue does not read", is no hold
+# here: wharf opens no tab beside it, and its next pass asks dispatch again (a wait, spending no start), which
+# then judges the queue itself — the queue keeps one entry per branch
+QUEUED_AS = re.compile(r"queued as (\S+?:\S+?)[ ,(]")
+QUEUE_HOLDS = re.compile(r"\(queue entry \S+\)|queued as \S+:\S+")
+
+
+def brief_needs(text):
+    """A brief's `needs:` line (its leading `---` block only) as dispatch's `--needs a,b`, or "": pickup's
+    seed_needs, which the seed road passes on, read the same way — a line that is not names goes on as it
+    stands, lower-cased, so dispatch refuses it rather than routing the run to any host."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    line = ""
+    for x in lines[1:]:
+        if x.strip() == "---":
+            break
+        k, _, v = x.partition(":")
+        if k.strip().lower() == "needs" and v.strip():
+            line = v.strip().lower()
+            break
+    names = [n for n in re.split(r"[,\s]+", line.strip("[]")) if n]
+    if not names:
+        return line
+    return ",".join(sorted(set(names))) if all(re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,39}", n) for n in names) else line
 
 
 def _mod(name, path):
@@ -549,7 +587,38 @@ def plan_status(pid):
 
 # ---------------------------------------------------------------------------- check (B6's `plan chain`)
 
+def check_doc(a):
+    """`wharf check <doc.md>` on a Course doc, not a blueprint (trim S4, the block rule): each Action plan
+    step with its expected code lines (`· lines: <n>`), a warning for one past the window. None when the
+    file is a blueprint or has no Action plan, so the blueprint's own read and its errors go on as before."""
+    try:
+        text = Path(a.file).read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if text.startswith("---\n"):
+        return None
+    got = blueprintlib.plan_steps(text)
+    if got is None:
+        return None
+    if a.accept or a.plan:
+        say("wharf check: %s is a Course doc, not a blueprint: --plan and --accept take a blueprint" % a.file)
+        return 2
+    steps, warnings = got
+    if a.json:
+        print(json.dumps({"doc": a.file, "window": list(blueprintlib.BLOCK_LINES),
+                          "steps": [{"id": s[0], "what": s[1], "lines": s[2], "line": s[3]} for s in steps],
+                          "warnings": warnings},
+                         indent=1, ensure_ascii=False, sort_keys=True))
+        return 0
+    for line in blueprintlib.plan_lines(a.file, steps, warnings):
+        say(line)
+    return 0
+
+
 def cmd_check(a):
+    rc = check_doc(a)
+    if rc is not None:
+        return rc
     bp = load_blueprint(a.file, a.plan)
     here = helmlib.host()
     d, sd = blueprintlib.digest(bp), blueprintlib.block_digests(bp)
@@ -640,7 +709,7 @@ def remote_refusal(s):
     h = s["host"]
     doc = "docs/wharf-on-orca-2026-10-17.md S3"
     if s.get("provider") == "claude-code":
-        return "host: %s — a claude-code block there starts by `dispatch --on %s`, not from apply yet (%s)" % (h, h, doc)
+        return "host: %s — a claude-code block there starts by `dispatch --pin %s`, not from apply yet (%s)" % (h, h, doc)
     ok = paired(h)
     if ok is None:
         return "host: %s — Orca could not list its environments (orca environment list)" % h
@@ -674,6 +743,32 @@ def start_refusal(bp, st, repo):
     if s.get("provider") == "orca" and s.get("agent") == "codex" and harness().public_repo(str(repo)):
         return "Codex does not run in %s: a public repo (contract E4)" % repo
     agent = s.get("agent") or "claude"
+    if s.get("provider") == "orca":
+        # an Orca block starts a worker around dispatch, as `harness run --runner orca` does: the same spawn gate
+        # (confidential-reach S6), so a `wharf apply` typed in a node session never starts an open repo's block
+        # with a prompt no review read (the fifth landing review, item 4). The tick's launchd caller (`/`) is open
+        # the branch the worker runs, when it exists here (a block's new branch forks from main, judged as the
+        # repo's HEAD): the gate judged the main checkout's HEAD for every block (the sixth review, second pass)
+        req = {"runner": "orca", "agent": agent}
+        try:
+            br = blueprintlib.branch_of(bp, st, helmlib.host())
+        except Exception:  # noqa: BLE001 — no branch to name: the repo's HEAD, as before
+            br = None
+        if br and any(_git(repo, "rev-parse", "--verify", "--quiet", r) for r in ("refs/heads/%s" % br, "refs/remotes/origin/%s" % br)):
+            req["branch"] = br
+        elif br:
+            # not here: a new block's branch (worktree() forks it from main: HEAD judged), or one on origin this host
+            # has not fetched, which the gate refuses for now — origin's own "no such branch" (exit 2) is the new one
+            try:
+                lr = subprocess.run(["git", "-C", str(repo), "ls-remote", "--exit-code", "origin", "refs/heads/%s" % br],
+                                    capture_output=True, timeout=30).returncode
+            except (OSError, subprocess.TimeoutExpired):
+                lr = 128
+            if lr != 2:
+                req["branch"] = br
+        why = harness().spawn_refusal(req, "orca", str(repo))
+        if why:
+            return why
     if s.get("provider") == "orca" and agent != "claude":
         # every vendor's start meets the same check (vendor-fence, F1): a confidential or guarded repo only
         # on a login its tenant owns; Orca's own bypass flags are orca.start()'s refusal, shared with harness
@@ -1056,9 +1151,23 @@ class Ship:
 
     def seed_branch_found(self, sid, e):
         """An `unknown` seed's branch, read back (`claude/<host>/<date>-<sid>`): recorded on the line
-        and the task when found, else the line is marked failed (nothing was made)."""
+        and the task when found, else the line is marked failed (nothing was made). A sent branch's line
+        (start_sent: the branch was there before the call, so it proves nothing) is judged by dispatch's
+        own mark (dispatched_since), which it writes where each road succeeds: started when it names the
+        branch from the line's time on. Its "claimed here already" answer writes none: such a line reads as
+        failed, one failed start, and the next pass's dispatch says it holds."""
         if e.get("id"):
             return True
+        if e.get("road") == "sent":
+            ok = bool(e.get("sent")) and self.dispatched_since(sid, e["sent"], e.get("at"))
+            if not self.dry:
+                if ok:
+                    e["id"] = e["sent"]
+                    self.sent_started(sid, e["sent"])
+                else:
+                    e["state"], e["error"] = "failed", "cut off before it said; dispatch marked no start of %s" % e.get("sent")
+                    self.save()
+            return ok
         refs = _git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/claude/") or ""
         # pickup seed's own name: claude/<this host>/<a date from the line's day on>-<sid>
         day = time.strftime("%Y-%m-%d", time.localtime(e.get("at") or 0))
@@ -1089,7 +1198,11 @@ class Ship:
         mine = [e for e in self.rec.get("ledger") or [] if e.get("block") == sid and e.get("op") == op
                 and (op == "seed" or e.get("task") in (None, cur))]
         ran = [e for e in mine if e.get("state") != "failed"]
-        failed = [e for e in mine if e.get("state") == "failed"]
+        # a sent branch's dispatch refused in the cap's waiting words (start_sent) waited, it did not fail
+        # nor do the old road's seeds of a sent block, which pickup refused for its open topic (before the send
+        # road, 2026-11-01): never a start that could have run, so a ship stalled by them starts on its branch now
+        failed = [e for e in mine if e.get("state") == "failed" and not e.get("waited")
+                  and not (e.get("road") is None and " is already open as claude/" in (e.get("error") or ""))]
         allowed = 1 + int(s.get("retries") or 0)
         if len(ran) < allowed and len(failed) < allowed + 2:
             return None
@@ -1255,13 +1368,243 @@ class Ship:
         report(self.pid, sid, "running", "Orca dispatch %s in %s%s" % (did, path, where), branch=br)
         return "started dispatch %s on %s%s (login %s)" % (did, br, where, login[0] or ("%s's Orca's own" % on if on else "Orca's own"))
 
+    def sent_candidates(self, st):
+        """The branches a block may have been sent on, read with no git call: the ship's pin branch and the
+        block's own `branch:`, each a claude/* name whose topic is the block's id (sent_branch)."""
+        pin = self.rec.get("pin") if isinstance(self.rec.get("pin"), dict) else {}
+        return [b for b in dict.fromkeys(x for x in (pin.get("branch"), st["raw"].get("branch")) if isinstance(x, str) and x)
+                if b.startswith("claude/") and re.sub(r"^\d{4}-\d{2}-\d{2}-", "", b.rsplit("/", 1)[-1]) == st["id"]]
+
+    def sent_branch(self, st):
+        """(branch, brief) when the block's branch is already on origin, holds its brief and is still a seed;
+        (None, None) when it has none, and the block is seeded; (None, why) when it cannot start either way.
+
+        A block's branch exists before its start when the ship was sent: `helm send --text` runs
+        `pickup seed <topic> --no-start` on the sender's Mac and pushes claude/<sender>/<date>-<topic>
+        with the brief and the one-block blueprint whose block id is the topic, and the ship is pinned
+        to that branch (rec["pin"]["branch"]); a blueprint block may also name its own `branch:`. Seeding
+        it again here could never work: pickup refuses a topic already open on any branch ("… is already
+        open as claude/<sender>/… — pick that up"), so a sent ship never started (the first sends after
+        the cutover, 2026-11-01). The branch is the block's when its topic is the block's id — the name
+        dispatch reads the brief by (docs/handoff/<date>-<topic>.md) — and it is still a seed: only briefs
+        and blueprints since its fork from main (wharf's branches.seed_paths_ok). A branch that holds work
+        (a design branch whose blueprint has a block of its topic, or a sent run that already built) is no
+        block's to start: it is said, never dispatched again, and the skipper decides."""
+        sid = st["id"]
+        env = batch_git_env(self.repo)
+        for br in self.sent_candidates(st):
+            ref = "refs/remotes/origin/%s" % br
+            try:
+                fetched = subprocess.run(["git", "-C", str(self.repo), "fetch", "-q", "origin", "+refs/heads/%s:%s" % (br, ref)],
+                                         capture_output=True, text=True, timeout=SENT_GIT, env=env).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                fetched = False
+            if not fetched:
+                try:
+                    lr = subprocess.run(["git", "-C", str(self.repo), "ls-remote", "--exit-code", "origin", "refs/heads/%s" % br],
+                                        capture_output=True, timeout=SENT_GIT, env=env).returncode
+                except (OSError, subprocess.TimeoutExpired):
+                    lr = 128
+                if lr == 2:
+                    continue   # origin's own "no such branch": nothing was sent on it, the block is seeded
+                return None, "the fetch of %s failed (ls-remote exit %d): whether it was sent cannot be told" % (br, lr)
+            tree = _git(self.repo, "ls-tree", "-r", "--name-only", ref, "--", "docs/handoff")
+            if tree is None:
+                return None, "%s's tree did not read: whether it holds its brief cannot be told" % br
+            names = tree.splitlines()
+            briefs = sorted(n for n in names if re.fullmatch(r"docs/handoff/\d{4}-\d{2}-\d{2}-%s\.md" % re.escape(sid), n))
+            if not briefs:
+                # a seed here would be refused (the topic is open on it), and dispatch would refuse it too
+                return None, "%s is on origin with no docs/handoff/<date>-%s.md, the brief dispatch starts it from" % (br, sid)
+            held = self.past_seed(ref)
+            if held is False:
+                return None, "%s's changes since main did not read: whether it is still a seed cannot be told" % br
+            if held and self.sent_before(sid, br):
+                # this ship dispatched it before, and a line that read as failed (cut off on dispatch's markless
+                # "claimed here already", or a queue that did not read while its entry landed) hid a run that
+                # has since committed: started, never raised as someone else's work
+                return br, ""
+            if held:
+                return None, "%s holds work past its brief (%s): not started on it — the skipper decides" % (br, held)
+            return br, briefs[-1]
+        return None, None
+
+    def past_seed(self, ref):
+        """The paths that make REF more than a seed since its fork from main (a few, joined), None when it is
+        still a seed, or False when its changes did not read (a git that failed or timed out: never read as
+        work). A path counts as work when it is outside docs/handoff/ and docs/blueprints/ and wharf's
+        branches.seed_paths_ok, where it is here, does not pass it (a Routed: line a seed writes into a doc);
+        a branch with no such path is a seed, whatever else seed_paths_ok minds (a brief already on main, a
+        tip main holds: on_main's to judge). No main to fork from reads as a seed: the brief and the topic
+        already name the block. Measured from main, not a `pickup seed --beside` source's tip: a seed off
+        another branch reads as holding that branch's work, and is said, never dispatched."""
+        main = self.main_ref() or next((r for r in ("refs/remotes/origin/main", "refs/heads/main")
+                                        if _git(self.repo, "rev-parse", "--verify", "-q", r + "^{commit}")), None)
+        if not main:
+            return None
+        base = _git(self.repo, "merge-base", main, ref)
+        if not base:
+            return False   # a merge-base that failed or timed out: unread, never a seed by default
+        diff = _git(self.repo, "diff", "--name-only", "--no-renames", base, ref)
+        if diff is None:
+            return False
+        paths = [p for p in diff.splitlines() if p]
+        other = [p for p in paths if not p.startswith(("docs/handoff/", "docs/blueprints/"))]
+        if not other:
+            return None
+        bm = self.branches_mod()
+        if bm and hasattr(bm, "seed_paths_ok"):
+            bodies = (_git(self.repo, "log", "--format=%B%x00", "%s..%s" % (base, ref)) or "").split("\x00")
+            try:
+                ok = bm.seed_paths_ok(self.repo, base, ref, paths, bodies)
+            except Exception as x:  # noqa: BLE001 — a reader that breaks: the plain rule
+                self.onmain_log("seed_paths_ok: %s" % x)
+                ok = None
+            if ok is not None:
+                return None if ok else ", ".join(other[:3])
+        return ", ".join(other[:3])
+
+    def start_sent(self, st, br, brief):
+        """A block whose branch is on origin with its brief (sent_branch), started by a plain `dispatch
+        <branch>`, never seeded. Plain, not --next: --next wants the step's brief to be the branch's last
+        commit, and helm send commits the blueprint as sent (skipper: scope) after the seed's brief, so
+        every sent branch would be refused "work was committed after" it; a plain dispatch reads the brief
+        from origin as a typed one does, to the fleet (AGENTS.md: no --on). The ship's environment is the
+        seed road's (DISPATCH_SHIP, no DISPATCH_TASK), and the ledger line is the seed road's `seed` op, so
+        started(), spent() and on_main() read it as one; its id, the branch, is set once dispatch answered,
+        and a line a crash cut off is judged by dispatch's own mark (seed_branch_found).
+
+        Plain dispatch's exits: 0 scheduled, queued or started; 1 and 2 its refusals (not on origin, launchd's
+        bootstrap, the queue's and the gates' refusals), each before its mark — a failed start, tried again
+        next pass, unless dispatch's mark names the branch since the line (dispatched_since: a script that
+        failed after scheduling, then it started). A refusal that only waits (the cap's words; a queue that
+        does not read, whose entry may have landed: one entry per branch, so asking again is safe) spends
+        none of the block's starts, and waits in a row keep one ledger line. Any other exit (a timeout, a
+        signal, bash's set -u abort) may have scheduled it: a start, raised, never sent twice. A 2 that names
+        the branch's queue entry: it holds. The call has SENT_START, the lookup before it inside SESSION_START."""
+        s, sid = st["raw"], st["id"]
+        argv = [os.environ.get("WHARF_DISPATCH") or str(HERE / "dispatch"), br, "--repo", str(self.repo)]   # WHARF_DISPATCH: tests
+        if s.get("account") and s["account"] != "auto":
+            argv += ["--account", s["account"]]
+        text = _git_text(self.repo, "show", "refs/remotes/origin/%s:%s" % (br, brief))
+        if text is None:
+            # an unread brief is no brief without needs: a run sent with none could reach a host that lacks them
+            return self.not_started(sid, "%s's brief did not read: its needs: cannot be told" % br)
+        needs = brief_needs(text)
+        if s.get("model"):
+            argv += ["--model", s["model"]]   # a block's own, as helm send --text writes it: dispatch's flag wins
+        if s.get("effort"):                   # over the brief's Tier: line, so a principal tier's stays its own
+            argv += ["--effort", s["effort"]]
+        if needs:
+            argv += ["--needs", needs]
+        e, crash = self.intent("seed", sid, road="sent", sent=br)
+        env = {k: v for k, v in os.environ.items() if k != "DISPATCH_TASK"}
+        env.update(helmlib.env_pairs("ship", self.pid))
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=SENT_START, env=env)
+            rc, said = r.returncode, "\n".join(x for x in ((r.stdout or "") + (r.stderr or "")).splitlines() if x.strip())
+        except subprocess.TimeoutExpired:
+            rc, said = 124, "dispatch timed out after %ds" % SENT_START
+        except OSError as x:
+            rc, said = None, "dispatch: %s" % x   # it never ran
+        last = (said.splitlines() or ["exit %s" % rc])[-1][:200]
+        held = rc == 2 and bool(QUEUE_HOLDS.search(said))
+        marked = rc in (1, 2) and not held and self.dispatched_since(sid, br, e.get("at"))
+        held = held or marked
+        if held or rc not in (None, 1, 2):
+            # the branch onto the task before settle's one save: a kill between two saves would leave a done
+            # line with no branch, and started() never repairs a done one (on_main would read branch_of's name)
+            self.task(sid)["seeded_branch"] = self.task(sid)["branch"] = br
+            self.settle(e, crash, {"id": br})
+            if rc == 0 or held:
+                q = QUEUED_AS.search(said)
+                how = ("queued as %s" % q.group(1)) if q else \
+                      ("scheduled: dispatch exited %d after its mark" % rc) if marked else \
+                      "the queue holds it already" if held else \
+                      "scheduled" if re.search(r"^scheduled ", said, re.M) else "started"
+                report(self.pid, sid, "running", "dispatched %s, the branch it was sent on (%s)" % (br, how))
+                return "started %s by dispatch, the branch it was sent on (%s)" % (br, how)
+            report(self.pid, sid, "waiting", "dispatched %s, not confirmed started: %s" % (br, last))
+            return "raised: dispatched %s, not confirmed started — %s" % (br, last[:160])
+        # the queue's waiting words; never "refused, never queued", which says no host may take the run at all
+        waited = rc == 2 and ("the next step waits for a run to end" in said or "the queue does not read" in said) \
+            and "refused, never queued" not in said
+        if waited:
+            e["waited"] = True   # before settle's save: a kill between two saves would leave a counted failure
+        self.settle(e, crash, None, "dispatch exit %s: %s" % (rc, last))
+        if waited:
+            led = self.rec.get("ledger") or []
+            prev = next((x for x in reversed(led[:-1]) if x.get("block") == sid and x.get("op") == "seed"), None)
+            if led and led[-1] is e and prev and prev.get("waited") and prev.get("state") == "failed" and prev.get("sent") == br:
+                # a wait right after a wait on the same branch: that line kept, its time and error moved on and
+                # counted — dispatch's words carry counts that change from pass to pass, so the kind is matched,
+                # not the text, and a wait of hours is one line, not one a pass
+                prev["at"], prev["error"], prev["waits"] = e["at"], e.get("error"), int(prev.get("waits") or 1) + 1
+                led.pop()
+                self.save()
+        return self.not_started(sid, "dispatch refused %s — %s" % (br, last))
+
+    def dispatched_since(self, sid, br, at):
+        """Whether dispatch's own mark, `<git common dir>/claude/dispatched/<topic>` ("<epoch> <host>
+        <branch>", written where each road succeeds), names BR from AT on: the block's topic is its id."""
+        common_dir = _git(self.repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        try:
+            mark = Path(common_dir, "claude", "dispatched", sid).read_text().split() if common_dir else []
+        except OSError:
+            return False
+        return len(mark) >= 3 and mark[2] == br and mark[0].isdigit() and int(mark[0]) >= int(at or 0)
+
+    def sent_before(self, sid, br):
+        """Whether this ship dispatched BR for SID before: a sent line of its ledger names it, or dispatch's own
+        mark does (whenever it was written)."""
+        if any(x.get("block") == sid and x.get("op") == "seed" and x.get("road") == "sent" and x.get("sent") == br
+               for x in self.rec.get("ledger") or []):
+            return True
+        return self.dispatched_since(sid, br, 0)
+
+    def sent_started(self, sid, br):
+        self.task(sid)["seeded_branch"] = self.task(sid)["branch"] = br
+        self.save()
+
+    def not_started(self, sid, why, raised=False):
+        """`not started: WHY`, said on the plan once (a standing refusal is not a new report each pass), and
+        the tick's session start handed back: no session started, though start() took one. Unlike start_orca's
+        hand-back, which is only for a start that never ran, this one follows a dispatch that ran and refused
+        too: each tick may then ask dispatch once for every waiting sent block, bounded by time_left."""
+        line = (("raised: not started — %s" if raised else "not started: %s") % why)[:300]
+        if _cache.get("tick"):
+            _cache["tick"] -= 1
+        # matched by kind, digits aside: dispatch's waiting words carry counts that change from pass to pass, and a
+        # wait of hours is one report, not one a pass (as the ledger keeps one line for it)
+        kind = lambda t: re.sub(r"\d+", "#", t or "")
+        if kind((plan_status(self.pid).get(sid) or {}).get("progress")) != kind(line):
+            report(self.pid, sid, "waiting", line)
+        return line
+
     def start_claude_code(self, st, task, run, coord):
         """The section as a seeded brief on the block's branch, started by dispatch (bin/pickup seed,
-        which commits docs/handoff/<date>-<topic>.md and starts it); Orca's Task mirrors it."""
+        which commits docs/handoff/<date>-<topic>.md and starts it); Orca's Task mirrors it. A block whose
+        branch is already on origin with its brief (a sent ship's) is started on it instead (sent_branch)."""
         s, sid = st["raw"], st["id"]
+        br, brief = self.sent_branch(st)
+        if br and not brief:
+            # sent_before: this ship's earlier dispatch of it ran, and its branch moved on since
+            e, crash = self.intent("seed", sid, road="sent", sent=br)
+            self.task(sid)["seeded_branch"] = self.task(sid)["branch"] = br
+            self.settle(e, crash, {"id": br})
+            if _cache.get("tick"):
+                _cache["tick"] -= 1   # nothing started this pass: the tick's session start handed back
+            report(self.pid, sid, "running", "dispatched %s before; it has moved on since (a run committed on it)" % br)
+            return "started %s (dispatched before by this ship; the branch has moved on since)" % br
+        if br:
+            return self.start_sent(st, br, brief)
+        if brief:
+            # no ledger line: nothing ran, so it spends no start. A branch there that no retry fixes (no brief,
+            # work past it) is raised, for the skipper; one that did not read is tried again next pass
+            return self.not_started(sid, brief, raised=not brief.endswith("cannot be told"))
         brief = Path(self.p.get("dir") or helmlib.plan_dir(self.pid)) / ("brief-%s.md" % sid)
         brief.write_text("# %s — block of ship %s\n%s\n" % (sid, self.bp["name"], blueprintlib.spec_of(self.bp, st)))
-        argv = [str(HERE / "pickup"), "seed", sid, "--file", str(brief), "--repo", str(self.repo), "--no-blueprint"]   # the block is this ship's: no one-block ship of its own (S5)
+        argv = [os.environ.get("WHARF_PICKUP") or str(HERE / "pickup"), "seed", sid, "--file", str(brief), "--repo", str(self.repo), "--no-blueprint"]   # the block is this ship's: no one-block ship of its own (S5); WHARF_PICKUP: tests
         if s.get("account"):
             argv += ["--account", s["account"]]
         e, crash = self.intent("seed", sid)
@@ -1399,10 +1742,7 @@ class Ship:
             main = bm.main_branch(self.repo)
             ok = True
             if not self.dry:
-                env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-                # never over the caller's own ssh command (the variable outranks core.sshCommand)
-                if not env.get("GIT_SSH_COMMAND") and not _git(self.repo, "config", "--get", "core.sshCommand"):
-                    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=15"
+                env = batch_git_env(self.repo)
                 try:
                     r = subprocess.run(["git", "-C", str(self.repo), "fetch", "-q", "origin", main], capture_output=True,
                                        text=True, timeout=60, env=env)
@@ -2380,6 +2720,15 @@ class Refused(Exception):
     def __init__(self, msg, code=2):
         Exception.__init__(self, msg)
         self.code = code
+
+
+def batch_git_env(repo):
+    """The environment a tick's git talks to origin in: never a prompt, never an ssh that waits for one —
+    and never over the caller's own ssh command (the variable outranks core.sshCommand)."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    if not env.get("GIT_SSH_COMMAND") and not _git(repo, "config", "--get", "core.sshCommand"):
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=15"
+    return env
 
 
 def _git(cwd, *argv):

@@ -131,3 +131,14 @@ Read `README.md` first. For an agent:
 - check: `bash modules/helm/tests/check.sh`. No overlay needed: each suite runs on its own config
   dir and finds its peers in `modules/*/`; it passes with `REGATTA_CONFIG=$(mktemp -d)` on a
   Mac (2026-10-22; `REGATTA_LEGACY` is read by nothing since B14b, 2026-10-23). A Linux runner is untried.
+- **`vscode/`, the VS Code extension `220labs.regatta`** (moved from Sheepfold 0.8.0, 2026-11-02). TypeScript,
+  no runtime dependencies: it shells out to the `regatta` CLI and uses only the VS Code API and Node's standard
+  library. Two cost rules: never `regatta helm board` on a timer (it reads every repo's pull requests: the view
+  reads the file helm's poll writes, and only the refresh button, or no board file while the view shows, at most
+  every 30 minutes, runs the CLI, without `--json`, so one run serves every window); and `navigate next` (a Google
+  token refresh and a calendar read) answers once per profile, through a file in global storage. A new `src/*.ts`
+  needs its `!out/<name>.js` line in `.vscodeignore`, or the package builds green and the installed extension
+  fails on activation (`src/test/manifest.test.ts` fails first). Sheepfold is found at run time, never a
+  dependency, and never awaited inside `activate()` (each extension looks for the other). Sheepfold's traps for
+  an installed `.vsix` hold here too: a window runs what its profile has installed (install once per profile with
+  `--profile`), and a new build shows only after a reload.

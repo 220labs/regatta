@@ -1,0 +1,832 @@
+#!/usr/bin/env python3
+"""The owner's asks as the loop's miss signal (Evolve S1, docs/self-improvement-loop-2026-10-30.md).
+
+    asks run [--days 7] [--digest FILE] [--no-model] [--no-overrules] [--dry-run]
+    asks numbers [--days 7] [--json]
+    asks baseline [--corpus DIR] [--model] [--refresh]
+    asks ship <theme> <ref>
+
+Every improvement the owner asks for by hand is evidence the loop missed something. `run` is the
+weekly pass (aurora's weekly-run runs it once a week, zero attended tokens):
+
+  1 intake    `week-digest --json`: the owner's typed prompts, whole, every login dir, by their own
+              time; a confidential scope's sessions are counted and never opened (its own pass reads them).
+  2 sieve     a zero-token pre-label (machine / status / answer / ask / correction / task); a machine
+              prompt (a launcher's, an IDE block, pasted content) is not the owner's and goes no further.
+  3 classify  every other prompt through the gate: one batched call per dimension on the row
+              `evolve.ask` — target (system | question | none), then kind, level and detectability for
+              what is not `none`. `unknown` is a label. With the row off or the gate failing, the sieve's
+              labels stand and the row says `by: sieve`.
+  4 theme     asks are counted per (session, theme). One call on the row `evolve.theme` names each ask's
+              theme as a kebab slug of the need (reusing the ledger's slugs), never the owner's words. Off
+              or failing, a bag of hashed words matched by overlap stands in (F1 0.16 against the hand
+              themes: the repeat share then reads low), so the ledger holds no prompt text: ids,
+              counts, model slugs and short unsalted word hashes (a word list can reverse those: the state dir is the owner's).
+  5 match     each detectable ask against the findings dated before it (the same need and a plausible
+              intervention, never topic overlap), on the row `evolve.match`: `anticipated`, or the cause of
+              the miss, M1–M7, or J (new information or a legitimate choice: kept, never in the
+              denominator). No findings yet (S3/S5 write them): the step reports that and spends nothing.
+  6 record    plumb's state dir (`asks/`): `asks.jsonl` one row per owner prompt (ids, labels, counts —
+              never a prompt's text), `themes.json`, `overrules.jsonl` (the owner's memo and chat answers that went
+              against the recommendation, from `interruptions`), `runs.jsonl` (what each pass cost).
+
+`numbers` prints the rows `knowledge-numbers` shows: asks per 100 owner prompts, the detectable and J
+shares, the repeat share over a 60-day lookback, recall and lead time once findings exist, and the
+loop's cost. `baseline` replays the 60-day model-labelled corpus (the owner's prompts, verbatim, on one
+Mac only: read, never copied) through the sieve, and with --model through the gate, and prints the
+agreement per dimension — counts only. `ship` records that a mechanism shipped for a theme.
+
+The prompts, the labels and the matcher's causes are Ring 0 (docs/self-improvement-loop-2026-10-30.md):
+they decide who counts as detectable, so only the owner changes them. Gate rows: the core's
+settings/models.json (`evolve.ask`, `evolve.match`). State: ASKS_STATE, else <log dir>/plumb/asks.
+"""
+import argparse
+import csv
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402  the regatta core's hooks/; none: one line, exit 2
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  LOG_DIR, tool, cost_text
+
+STATE = Path(os.environ.get("ASKS_STATE") or common.LOG_DIR / "plumb" / "asks")
+FINDINGS = Path(os.environ.get("ASKS_FINDINGS") or common.LOG_DIR / "evolve" / "findings")
+BASELINE_DIR = Path.home() / ".local" / "state" / "regatta" / "plumb" / "asks-baseline-2026-10-30"
+LOOKBACK_DAYS = 60
+CHUNK = 50          # items per gate call; a failed call ends the model labelling for the run (sieve week)
+TEXT_MAX = 1200     # characters of a prompt the gate sees
+
+# ---- Ring 0: the labels. The owner changes these; the loop never does. -------------------------------
+
+CONTEXT = (
+    "You label what the owner typed to a coding agent. The owner works through a system of agents, rules, "
+    "tools, a weekly loop and docs. An IMPROVEMENT ASK is a prompt that wants that system to work "
+    "differently: a missing feature, a defect in the system itself, an agent behaving against what the owner "
+    "said before, a design or rename, 'from now on', 'do this yourself'. A task inside a project as it stands "
+    "(fix this bug in that repo, run that command, write this copy) is not one. The bracketed word is the "
+    "project the owner was in: a defect or missing feature in the repo that holds the system's own tooling, "
+    "rules or loop is an improvement ask even when it reads as a bug report.")
+DIMS = {
+    "target": (
+        "What does this prompt target?",
+        {"system": "an improvement ask: the owner wants the agents, rules, tools, loop, workflow or docs to change",
+         "question": "a question or complaint that signals a gap in the system without yet asking for a change",
+         "none": "anything else: a task in a project as it stands, an operational step, a status check, an answer "
+                 "to a question, work not about the system",
+         "unknown": "the words do not say"}),
+    "kind": (
+        "What kind of improvement ask is it?",
+        {"bug": "a defect: the system did something wrong or broke",
+         "feature": "a missing capability",
+         "correction": "an agent did what the owner had said not to, or misread the owner",
+         "self": "'do this yourself': the owner did by hand what the system should",
+         "process": "a change to how work flows (sessions, review, landing, handoff)",
+         "strategy": "a question or change of direction, priorities or what to build",
+         "naming": "a name, voice or wording fix",
+         "unknown": "the words do not say"}),
+    "level": (
+        "Which level of the owner's work does the ask belong to?",
+        {"PS": "product strategy", "CM": "commercial, marketing, customers", "EN": "engineering and code quality",
+         "TH": "tools, hosts, accounts and the agent harness", "PW": "process and workflow",
+         "KL": "the knowledge layer: rules, memory, docs, records", "UX": "the owner's surfaces: pages, decks, links, "
+         "notifications, how output reads", "CB": "cost, budgets and limits",
+         "PE": "people, collaborators, meetings", "LP": "the weekly loop's own design",
+         "unknown": "the words do not say"}),
+    "detect": (
+        "Could the system's own records have shown this need before the owner asked?",
+        {"E": "existing data: a record the system already keeps would have shown it",
+         "N": "a new signal: a sensor or record that does not exist yet would have",
+         "J": "the owner's judgement: taste, strategy or information that arrived from outside the records",
+         "unknown": "the words do not say"}),
+}
+MATCH_ASK = ("The owner asked for the change in ASK. FINDINGS lists what the weekly loop had found or routed "
+             "before that day (id, date, the need, the intervention, its status; none may be listed). Say whether "
+             "a finding named the same need with a plausible intervention (never topic overlap), or why the loop "
+             "missed it.")
+MATCH_LABELS = {
+    "anticipated": "a listed finding named the same need and a plausible intervention before the ask",
+    "M1": "unread evidence: the evidence that would have shown it was not read (a probe was missing)",
+    "M2": "a lens missed it: the evidence was there and no lens looked",
+    "M3": "ranked out or parked: a finding named it and the portfolio dropped or parked it",
+    "M4": "cadence lag: the loop would have responded after the owner asked",
+    "M5": "selected but never landed",
+    "M6": "landed, and the need returned",
+    "M7": "done but invisible to the owner",
+    "J": "new information or a legitimate choice the loop could not have known",
+}
+KIND_OF_HAND = {"bug": "bug", "feat": "feature", "corr": "correction", "rep": "correction", "self": "self",
+                "proc": "process", "strat": "strategy", "name": "naming"}
+TARGET_OF_HAND = {"I": "system", "Q": "question"}
+
+# ---- the sieve: zero tokens, a pre-label (the first pen's asks.py, kept here as its home) -------------
+
+MACHINE = re.compile(r"^(<|kind: build|Task:|Read first:|Unattended run|You are (a|the) |/finish|/aurora|/sextant|"
+                     r"/embark|/pickup|/autofinish|pickup |dispatch |Resume |The brief|Brief:|This is a dispatched|"
+                     r"Continue (the|this) |Pick up )", re.I)
+PASTED = re.compile(r"<pasted_content|<system-reminder>|<ide_|<browser_instruction>|<command-name>", re.I)
+STATUS = re.compile(r"^(status\??|how('s| is) it going\??|(any )?update\??|done\??|progress\??|where are (we|you)\??|"
+                    r"what('s| is) the status\??|still (there|working)\??|are you (done|there)\??|ready\??|and\??|"
+                    r"ok\??|k|go on|continue|proceed|carry on|next\??|\?+)$", re.I)
+ANSWER = re.compile(r"^([A-F](\s*[—–-]\s*.{0,80})?|yes|no|ok(ay)?|go|yes please|sure|agreed|approved|do it|"
+                    r"go ahead|sounds good|looks good|lgtm|fine|yep|nope|correct|right|exactly|perfect|great|thanks|ty)[.!]?$", re.I)
+ASK = re.compile(r"\b(let'?s (add|make|build|design|change|fix|rename|move|create|have|do|try|use|start|stop|"
+                 r"switch|expand|improve|make sure|not|never|always|also|think|figure|automate|run|put|get)|"
+                 r"i (want|need|would like|'d like|expect|prefer|want you|wish)|we (should|need|want|must|could|ought|"
+                 r"have to|can'?t|shouldn'?t)|you should (always|never|also|not|be|have)|can we|could we|"
+                 r"should (we|be able|also|never|always|not)|make sure|from now on|in (the )?future|going forward|"
+                 r"every time|each time|whenever|design (a|an|the|it|this)|a design (for|of|doc)|proposal|propose|"
+                 r"redesign|improve|improvement|feature|mechanism|a rule|the rule|add (a|an|the|this|support)|"
+                 r"automatic(ally)?|unattended|generic|portable|refactor|rename|simplif|consolidat|evolve|"
+                 r"the system|regatta|aurora|sextant|embark|helm|keel|skipper|dispatch|autofinish|wharf|lighthouse|"
+                 r"plumb|atlas|the loop|the process|workflow|principle|north star|self-improv)\b", re.I)
+CORRECTION = re.compile(r"\b(don'?t|never|again|still|wrong|stop|i told you|remember|always|not what i|"
+                        r"you (should|must) not|why (did|do|are) you)\b", re.I)
+SIEVE_LEVELS = [
+    ("PS", r"\b(strateg|ventur|business|market|position|roadmap|vision|priorit|north star|portfolio|company|"
+           r"companies|commercializ|monetiz|pivot|kill|shelve)\w*"),
+    ("CM", r"\b(customer|client|sell|sales|pricing|revenue|income|buyer|lead|contact form|beacon|marketing|"
+           r"landing page|newsletter|audience|subscriber|wallet)\w*"),
+    ("UX", r"\b(user|ux|ui|page|board|form|site|website|dashboard|button|layout|theme|dark|light|font|mobile|"
+           r"phone|render|screenshot|prototype|card|column|feed|deck|logo|brand|copy|readme|notify|notification|"
+           r"too (long|verbose)|concise)\w*"),
+    ("EN", r"\b(test|suite|check|ci|bug|fix|error|fail|crash|lint|refactor|code|script|hook|hooks|python|bash|"
+           r"regex|parse|json|api|cache|perf|slow|timeout|race|flaky|coverage|release|version|build|deploy)\w*"),
+    ("TH", r"\b(dispatch|orca|host|hosts|laptop|mac|vm|linux|launchd|ssh|login|logins|account|"
+           r"accounts|profile|token|claude code|codex|gemini|harness|runner|machine|fleet|yard|node|terminal|"
+           r"vs ?code|tailscale|docker|container|disk|ram|restart)\w*"),
+    ("PW", r"\b(finish|land|landing|pr|pull request|merge|branch|worktree|review|reviewer|skipper|session|sessions|"
+           r"parallel|chain|step|steps|blueprint|ship|handoff|pickup|seed|queue|autofinish|unattended|workflow|"
+           r"checkpoint|commit|todo|rebase|stall|decision|memo|keel|answer|question)\w*"),
+    ("PE", r"\b(meeting|call|interview|partner|friend|collaborator|contact|contacts|text|message|imessage|telegram|"
+           r"email|mail|people|person|team|employer|hire)\w*"),
+    ("CB", r"\b(cost|costs|spend|spent|budget|dollar|price|prices|limit|limits|tokens?|effective|cheap|expensive|"
+           r"credits|billing|subscription|week'?s budget|reset|usage)\w*"),
+    ("KL", r"\b(rule|rules|memory|memories|lesson|lessons|promote|docs?|documentation|agents\.md|claude\.md|record|"
+           r"chart|vault|bulletin|inbox|knowledge|remember|forget|skill|skills|prompt|instruction)\w*"),
+    ("LP", r"\b(aurora|dream|sextant|embark|weekly|nightly|loop|trim|bench|retrospective|post-?mortem|self-?improv|"
+           r"self-?tun|evolve|feedback loop|principal|council|sounding)\w*"),
+]
+SIEVE_LEVEL_RE = [(n, re.compile(p, re.I)) for n, p in SIEVE_LEVELS]
+STOP = set("""about above after again also always and any are because been before being below between both but can
+could did does doing done down during each every for from further had has have having here how into its just keep
+like make more most much need never not now off once only other our out over own same should some such than that the
+their them then there these they this those through too under until upon very want was were what when where which
+while who whom will with would you your let get got one two use used using way""".split())
+
+
+def sieve(text):
+    """(kind, level): kind is machine | status | answer | correction | ask | task; level a code or None."""
+    t = text.strip()
+    if PASTED.search(t) or MACHINE.match(t):
+        return "machine", None
+    if len(t) <= 40 and STATUS.match(t):
+        return "status", None
+    if len(t) <= 100 and ANSWER.match(t):
+        return "answer", None
+    kind = "correction" if CORRECTION.search(t) else "ask" if ASK.search(t) else "task"
+    if kind == "task":
+        return kind, None
+    hits = sorted(((len(rx.findall(t)), n) for n, rx in SIEVE_LEVEL_RE if rx.search(t)), reverse=True)
+    return kind, hits[0][1] if hits else None
+
+
+def sieve_target(kind):
+    return "system" if kind in ("ask", "correction") else "none"
+
+
+# ---- themes: a bag of hashed words, so the ledger never holds the owner's text -------------------------
+
+def signature(text):
+    toks = {re.sub(r"s$", "", w) for w in re.findall(r"[a-z][a-z\-]{3,}", text.lower()) if w not in STOP}
+    return sorted(hashlib.sha1(w.encode()).hexdigest()[:6] for w in toks)
+
+
+def overlap(a, b):
+    sa, sb = set(a), set(b)
+    shared = len(sa & sb)
+    return shared, shared / max(1, min(len(sa), len(sb)))
+
+
+def pick_theme(themes, sig, level):
+    """The ledger's theme this signature belongs to (3+ shared words and half the smaller bag), else a new id."""
+    best, best_score = None, 0.0
+    for tid, th in themes.items():
+        shared, frac = overlap(sig, th["sig"])
+        if shared >= 3 and frac >= 0.5 and frac + 0.05 * (th.get("level") == level) > best_score:
+            best, best_score = tid, frac
+    return best or "t" + hashlib.sha1("".join(sig).encode()).hexdigest()[:6]
+
+
+# ---- the gate ------------------------------------------------------------------------------------------
+
+def gate_module():
+    return SourceFileLoader("gate", str(Path(find_core.hooks()).parent / "bin" / "gate")).load_module()
+
+
+class Gate:
+    """One batched classify call per dimension, chunked; the spend and the first failure are kept."""
+
+    def __init__(self, enabled=True):
+        self.cost, self.calls, self.error, self.off = 0.0, 0, None, not enabled
+        self.mod = None
+        if enabled:
+            try:
+                self.mod = gate_module()
+            except Exception as e:  # noqa: BLE001 the gate is a peer; its absence is a sieve-only week
+                self.off, self.error = True, "gate unavailable: %s" % str(e)[:120]
+
+    def label(self, site, ask, labels, items, context=CONTEXT, sources=None):
+        """{id: label}; {} when the row is off or the gate failed (self.error says why).
+
+        `sources` maps an id to the repo its prompt was typed in: the gate is called once per repo with
+        source=<that repo>, so the owner's guarded repos (jev's GUARDED) are refused there, as jev's header
+        asks of a caller that gathers across repos. A refused repo's ids get no label (the sieve's stand);
+        the other repos go on."""
+        if self.off or not items:
+            return {}
+        groups = defaultdict(list)
+        for k in items:
+            groups[(sources or {}).get(k) or "unknown"].append(k)
+        out = {}
+        for src in sorted(groups):
+            ids = groups[src]
+            for i in range(0, len(ids), CHUNK):
+                part = {k: items[k][:TEXT_MAX] for k in ids[i:i + CHUNK]}
+                try:
+                    r = self.mod.classify(site, part, ask, labels, context=context, source=src, caller="asks")
+                except Exception as e:  # noqa: BLE001 GateOff, GateError, a missing claude: all a sieve-only week
+                    msg = short_error(e)
+                    if "refused" in msg:   # a guarded repo: its prompts keep the sieve's labels
+                        self.error = "%s: %s" % (site, msg)
+                        break
+                    self.error = "%s: %s" % (site, msg)
+                    self.off = True
+                    return {}
+                if r is None:   # off + skip
+                    self.error = "%s is off" % site
+                    self.off = True
+                    return {}
+                self.calls += 1
+                self.cost += float(r.get("cost_usd") or 0)
+                out.update({k: v["label"] for k, v in r["items"].items()})
+        return out
+
+
+def short_error(e):
+    """The first line of an error, cut before any quoted reply, so no model or prompt text reaches a ledger."""
+    msg = str(e).split("\n")[0]
+    return re.split(r"""['"`]""", msg, 1)[0].rstrip(" :")[:160]
+
+
+THEME_PROMPT = (
+    "Each item below is something the owner typed asking a coding-agent system to change. Name each item's THEME: "
+    "a kebab-case slug of two to four words naming the NEED (for example `memory-home` or `session-inventory`), "
+    "never the owner's words quoted. Two items that want the same thing share a slug, across weeks. Reuse a "
+    "KNOWN slug when the item's need is the same; make a new one only when none fits. Reply with only a JSON "
+    "object mapping each id to its slug.")
+SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+){0,4}")
+
+
+def theme_slugs(gate, items, known, sources=None):
+    """{id: slug} from one `evolve.theme` call per chunk; {} when the row is off or the call failed.
+
+    This call goes to claude directly (the gate has no generate adapter yet), so the gate's guard is
+    applied here: an id from a guarded repo (jev's GUARDED) is never sent and keeps the hashed-word theme."""
+    if gate.off or not items or gate.mod is None:
+        return {}
+    try:
+        guarded = set(gate.mod._jev_module().GUARDED)
+    except Exception as e:  # noqa: BLE001 no guard list readable: send nothing
+        gate.error = "evolve.theme: guard unreadable: %s" % short_error(e)
+        return {}
+    items = {k: v for k, v in items.items() if ((sources or {}).get(k) or "unknown") not in guarded}
+    if not items:
+        return {}
+    try:
+        row = gate.mod.resolve("evolve.theme")
+    except Exception as e:  # noqa: BLE001
+        gate.error = "evolve.theme: %s" % str(e).split("\n")[0][:160]
+        return {}
+    if row is None:
+        gate.error = "evolve.theme is off"
+        return {}
+    ids, out, known = list(items), {}, list(known)
+    for i in range(0, len(ids), CHUNK):
+        part = {k: items[k][:TEXT_MAX] for k in ids[i:i + CHUNK]}
+        prompt = "\n".join([THEME_PROMPT, "", "KNOWN: " + (", ".join(known[-150:]) or "none"), "",
+                            "Items, one per line as `id: text`:"] + ["%s: %s" % (k, v.replace("\n", " ")) for k, v in part.items()])
+        schema = {"type": "object", "additionalProperties": False, "required": list(part),
+                  "properties": {k: {"type": "string"} for k in part}}
+        cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", *gate.mod.claude_flags(row), "--output-format", "json",
+               "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(schema)]
+        try:
+            p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600,
+                               env={k: v for k, v in os.environ.items() if k != "CLAUDECODE"})
+            res = json.loads(p.stdout)
+            got = res.get("structured_output")
+            if not isinstance(got, dict):
+                got = json.loads(res.get("result") or "")
+            gate.cost += float(res.get("total_cost_usd") or 0)
+            gate.calls += 1
+            if res.get("is_error") or not isinstance(got, dict):
+                raise ValueError("the reply is not a JSON object of slugs")
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            gate.error = "evolve.theme: %s" % short_error(e)
+            return out
+        for k, v in got.items():
+            if k in part and isinstance(v, str) and SLUG.fullmatch(v.strip().lower()):
+                out[k] = v.strip().lower()
+                if out[k] not in known:
+                    known.append(out[k])
+    return out
+
+
+def classify_rows(gate, texts, sources=None):
+    """{id: {target, kind, level, detect}} for the ids in `texts`; kind/level/detect for the not-none."""
+    out = {i: {} for i in texts}
+    t = gate.label("evolve.ask", *DIMS["target"], texts, sources=sources)
+    if not t:
+        return None
+    for i, lab in t.items():
+        out[i]["target"] = lab
+    flagged = {i: texts[i] for i in texts if out[i].get("target") in ("system", "question")}
+    for dim in ("kind", "level", "detect"):
+        got = gate.label("evolve.ask", *DIMS[dim], flagged, sources=sources)
+        if not got and flagged:
+            return None
+        for i, lab in got.items():
+            out[i][dim] = lab
+    return out
+
+
+# ---- the ledger ----------------------------------------------------------------------------------------
+
+def read_jsonl(path):
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return rows
+
+
+def write_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in rows), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def ask_id(session, ts, text):
+    return hashlib.sha1(f"{session}|{ts}|{text}".encode()).hexdigest()[:12]
+
+
+def iso_week(day):
+    y, w, _ = dt.date.fromisoformat(day).isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def load_findings():
+    """[{id, date, need, ...}] from the findings dir, oldest first. Empty until S3/S5 write them."""
+    out = []
+    for f in sorted(FINDINGS.glob("*.json")) if FINDINGS.is_dir() else []:
+        d = read_json(f, None)
+        for r in d if isinstance(d, list) else [d]:
+            if isinstance(r, dict) and r.get("id") and re.fullmatch(r"\d{4}-\d\d-\d\d", str(r.get("date", ""))[:10]):
+                r = dict(r, date=str(r["date"])[:10])
+                out.append(r)
+    return sorted(out, key=lambda r: r["date"])
+
+
+def match_rows(gate, rows, texts, findings):
+    """Set row['match'] for each detectable ask. -> (matched, why-not)."""
+    if not findings:
+        return 0, "no findings yet"
+    todo = [r for r in rows if r["target"] == "system" and r.get("detect") in ("E", "N") and r["id"] in texts]
+    if not todo:
+        return 0, "no detectable ask in this pass"
+    items, cands = {}, {}
+    for r in todo:
+        sig = set(signature(texts[r["id"]]))
+        before = [f for f in findings if f["date"] < r["date"]]
+        scored = sorted(((len(sig & set(signature(f"{f.get('need', '')} {f.get('title', '')}"))), f) for f in before),
+                        key=lambda x: -x[0])[:5]
+        cands[r["id"]] = [f for n, f in scored if n]
+        listed = "; ".join(f"{f['id']} ({f['date']}): {str(f.get('need', ''))[:200]} -> "
+                           f"{str(f.get('intervention', ''))[:160]} [{f.get('status', 'proposed')}]" for f in cands[r["id"]])
+        items[r["id"]] = f"ASK ({r['date']}): {texts[r['id']][:TEXT_MAX]}\nFINDINGS: {listed or 'none'}"
+    got = gate.label("evolve.match", MATCH_ASK, MATCH_LABELS, items, context="",
+                     sources={r["id"]: r.get("project") for r in todo})
+    if not got:
+        return 0, gate.error or "the matcher returned nothing"
+    for r in todo:
+        lab = got.get(r["id"])
+        if not lab:
+            continue
+        if lab == "anticipated" and not cands[r["id"]]:
+            continue   # nothing was listed, so nothing anticipated it: no verdict, never counted as recall
+        m = {"label": lab}
+        if lab == "anticipated":
+            f = cands[r["id"]][0]
+            m.update(finding=f["id"], lead_days=(dt.date.fromisoformat(r["date"]) - dt.date.fromisoformat(f["date"])).days)
+        r["match"] = m
+    return len(got), None
+
+
+# ---- run -----------------------------------------------------------------------------------------------
+
+def read_digest(days, path=None):
+    if path:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    tool = common.tool("week-digest")
+    if not tool:
+        raise SystemExit("asks: week-digest is not installed (regatta which week-digest)")
+    r = subprocess.run([sys.executable, tool, "--json", "--days", str(days)], capture_output=True, text=True, timeout=900)
+    if r.returncode:
+        raise SystemExit("asks: week-digest exit %d: %s" % (r.returncode, r.stderr.strip().splitlines()[-1:] or ""))
+    return json.loads(r.stdout)
+
+
+def overrule_rows(days):
+    """The owner's memo and chat answers that went against the recommendation, as ids and counts."""
+    tool = common.tool("interruptions")
+    if not tool:
+        return None, "interruptions is not installed"
+    try:
+        r = subprocess.run([sys.executable, tool, "--days", str(days), "--json", "--list", "all"],
+                           capture_output=True, text=True, timeout=900)
+        rows = json.loads(r.stdout)["rows"]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+        return None, "interruptions: %s" % str(e)[:100]
+    out = []
+    for x in rows:
+        if x.get("channel") not in ("ask", "memo") or x.get("kind") not in ("overruled", "other-option", "free-text"):
+            continue
+        if x.get("fenced") or x.get("project") == getattr(common, "CONFIDENTIAL", "(confidential)"):
+            continue
+        out.append({"id": ask_id(x.get("session", ""), x.get("ts", ""), x.get("question", "")),
+                    "date": x.get("date"), "week": iso_week(x["date"]), "channel": x["channel"],
+                    "kind": x["kind"], "project": x.get("project"), "session": x.get("session")})
+    return out, None
+
+
+def cmd_run(a):
+    digest = read_digest(a.days, a.digest)
+    prior = {r["id"]: r for r in read_jsonl(STATE / "asks.jsonl")}
+    themes = read_json(STATE / "themes.json", {})
+    texts, fresh, machine, fenced = {}, [], 0, int((digest.get("fenced") or {}).get("sessions", 0))
+    for s in digest.get("sessions", []):
+        for p in s["prompts"]:
+            kind, level = sieve(p["text"])
+            if kind == "machine":
+                machine += 1
+                continue
+            i = ask_id(s["session"], p["ts"], p["text"])
+            if i in prior or i in texts:
+                continue
+            texts[i] = p["text"]
+            fresh.append({"id": i, "date": p["ts"][:10], "ts": p["ts"], "week": iso_week(p["ts"][:10]),
+                          "project": s["project"], "session": s["session"][:8], "sieve": kind, "sieve_level": level})
+    gate = Gate(enabled=not a.no_model)
+    shown = {r["id"]: f"[{r['project']}] {texts[r['id']]}" for r in fresh}
+    src = {r["id"]: r["project"] for r in fresh}
+    got = classify_rows(gate, shown, src) if texts else {}
+    by = "model"
+    if got is None:
+        got, by = {}, "sieve"
+    for r in fresh:
+        lab = got.get(r["id"]) or {}
+        level = r.pop("sieve_level")
+        if lab.get("target"):
+            r.update(target=lab["target"], kind=lab.get("kind"), level=lab.get("level"), detect=lab.get("detect"), by="model")
+        else:   # the sieve's labels stand; nothing else is guessed
+            r.update(target=sieve_target(r["sieve"]), kind="correction" if r["sieve"] == "correction" else "unknown",
+                     level=level or "unknown", detect="unknown", by="sieve")
+    # themes, oldest prompt first, so a theme's first session is its first
+    asked = sorted((r for r in fresh if r["target"] in ("system", "question")), key=lambda r: r["ts"])
+    # KNOWN slugs, most recently asked last: theme_slugs shows the last 150, and themes.json is key-sorted
+    known = sorted((t for t in themes if not re.fullmatch(r"t[0-9a-f]{6}", t)),
+                   key=lambda t: ((themes[t].get("last") or {}).get("date", ""), t))
+    slugs = theme_slugs(gate, {r["id"]: texts[r["id"]] for r in asked}, known, src) if by == "model" else {}
+    for r in asked:
+        sig = signature(texts[r["id"]])
+        tid = slugs.get(r["id"])
+        if not tid:
+            if len(sig) < 3:
+                continue
+            tid = pick_theme(themes, sig, r.get("level"))
+        th = themes.setdefault(tid, {"sig": [], "level": r.get("level"), "kind": r.get("kind"), "sessions": {},
+                                     "first": {"session": r["session"], "date": r["date"]}, "shipped": None})
+        th["sig"] = sorted(set(th["sig"]) | set(sig))[:60]
+        th["sessions"].setdefault(r["session"], r["date"])
+        th["last"] = {"session": r["session"], "date": r["date"]}
+        th["count"] = len(th["sessions"])
+        r["theme"] = tid
+    matched, why = match_rows(gate, fresh, texts, load_findings())
+    over, over_why = (None, "skipped") if a.no_overrules else overrule_rows(a.days)
+    run = {"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": a.days,
+           "prompts": len(fresh), "machine": machine, "fenced_sessions": fenced, "labelled_by": by,
+           "gate_calls": gate.calls, "cost_usd": round(gate.cost, 4), "gate_error": gate.error,
+           "matched": matched, "match_note": why, "overrules": None if over is None else len(over)}
+    if a.dry_run:
+        print(json.dumps(run, indent=1))
+        return 0
+    write_jsonl(STATE / "asks.jsonl", sorted(list(prior.values()) + fresh, key=lambda r: r["ts"]))
+    write_json(STATE / "themes.json", themes)
+    if over is not None:
+        old = {r["id"]: r for r in read_jsonl(STATE / "overrules.jsonl")}
+        old.update({r["id"]: r for r in over})
+        write_jsonl(STATE / "overrules.jsonl", sorted(old.values(), key=lambda r: r["date"] or ""))
+    write_jsonl(STATE / "runs.jsonl", read_jsonl(STATE / "runs.jsonl") + [run])
+    asks = {(r["session"], r.get("theme")) for r in fresh if r["target"] == "system" and r.get("theme")}
+    print(f"asks: {len(fresh)} new owner prompts ({machine} machine, {fenced} confidential sessions not opened), "
+          f"{sum(r['target'] == 'system' for r in fresh)} improvement asks in {len(asks)} session-themes, "
+          f"labelled by {by}" + (f" ({gate.error})" if gate.error else "") + f"; match: {why or str(matched) + ' matched'}; "
+          f"gate {common.cost_text(gate.cost)}" + (f"; overrules: {len(over)}" if over is not None else f"; overrules: {over_why}"))
+    return 0
+
+
+# ---- numbers -------------------------------------------------------------------------------------------
+
+def repeated(rows, today):
+    """The (session, theme) asks, and which of them repeat a theme an earlier session raised (60-day lookback)."""
+    first = {}
+    for r in rows:
+        if r["target"] == "system" and r.get("theme"):
+            key = (r["session"], r["theme"])
+            first[key] = min(first.get(key, "9"), r["date"])
+    by_theme = defaultdict(list)
+    for (s, t), d in first.items():
+        by_theme[t].append((d, s))
+    rep = set()
+    for t, v in by_theme.items():
+        v.sort()
+        for d, s in v[1:]:
+            lo = (dt.date.fromisoformat(d) - dt.timedelta(days=LOOKBACK_DAYS)).isoformat()
+            if any(lo <= d0 < d for d0, _ in v):
+                rep.add((s, t))
+    return first, rep
+
+
+def numbers(days=7, today=None):
+    today = today or dt.date.today()
+    lo = (today - dt.timedelta(days=days)).isoformat()
+    rows = read_jsonl(STATE / "asks.jsonl")
+    runs = read_jsonl(STATE / "runs.jsonl")
+    if not rows:
+        return {"measured": False, "why": "no pass has run yet (asks run)"}
+    win = [r for r in rows if r["date"] > lo]
+    asks_all, rep = repeated(rows, today)
+    ask_keys = {(r["session"], r["theme"]) for r in win if r["target"] == "system" and r.get("theme")}
+    ask_rows = [r for r in win if r["target"] == "system"]
+    det = Counter(r.get("detect") for r in ask_rows)
+    known = det["E"] + det["N"] + det["J"]
+    matched = [r for r in ask_rows if r.get("match")]
+    antic = [r for r in matched if r["match"]["label"] == "anticipated"]
+    detectable = [r for r in matched if r.get("detect") in ("E", "N") and r["match"]["label"] != "J"]
+    leads = [r["match"]["lead_days"] for r in antic if r["match"].get("lead_days") is not None]
+    cut = (today - dt.timedelta(days=28)).isoformat()
+    week_runs = [x for x in runs if x["ts"][:10] > lo]
+    all_over = read_jsonl(STATE / "overrules.jsonl")
+    over = [r for r in all_over if r["date"] and r["date"] > lo]
+    findings = bool(load_findings())
+    return {
+        "measured": True, "window_days": days, "from": lo, "owner_prompts": len(win),
+        "asks": len(ask_keys), "ask_prompts": len(ask_rows), "question_prompts": sum(r["target"] == "question" for r in win),
+        "asks_per_100": round(100 * len(ask_keys) / len(win), 1) if win else None,
+        "detectable_share": round(100 * (det["E"] + det["N"]) / known) if known else None,
+        "judgement_share": round(100 * det["J"] / known) if known else None,
+        "repeat_share": round(100 * sum(k in rep for k in ask_keys) / len(ask_keys)) if ask_keys else None,
+        "themes": len({t for _, t in ask_keys}),
+        "recall": (round(100 * len(antic) / len(detectable)) if detectable else None) if findings else "no findings yet",
+        "lead_days": (round(sum(leads) / len(leads), 1) if leads else None) if findings else "no findings yet",
+        "labelled_by_sieve": sum(r.get("by") == "sieve" for r in win),
+        "cost_week_usd": round(sum(x["cost_usd"] for x in week_runs), 4),
+        "cost_4w_usd": round(sum(x["cost_usd"] for x in runs if x["ts"][:10] > cut), 4),
+        "overrules_week": len(over), "overrules_ledger": len(all_over),
+        "last_run": runs[-1]["ts"] if runs else None, "last_gate_error": runs[-1].get("gate_error") if runs else None,
+    }
+
+
+def cmd_numbers(a):
+    n = numbers(a.days)
+    if a.json:
+        print(json.dumps(n, indent=1))
+        return 0
+    if not n["measured"]:
+        print("asks: not measured — " + n["why"])
+        return 0
+    print(f"asks, last {n['window_days']} days: {n['asks']} in {n['themes']} themes, {n['asks_per_100']} per 100 owner prompts "
+          f"({n['owner_prompts']}); detectable {n['detectable_share']} %, owner's judgement {n['judgement_share']} %; "
+          f"repeating a theme (60 d) {n['repeat_share']} %; recall {n['recall']}; "
+          f"cost {common.cost_text(n['cost_week_usd'])} this week, {common.cost_text(n['cost_4w_usd'])} in 4 weeks")
+    return 0
+
+
+def cmd_ship(a):
+    themes = read_json(STATE / "themes.json", {})
+    if a.theme not in themes:
+        print(f"asks: no theme {a.theme}", file=sys.stderr)
+        return 1
+    themes[a.theme]["shipped"] = {"ref": a.ref, "on": dt.date.today().isoformat()}
+    write_json(STATE / "themes.json", themes)
+    return 0
+
+
+# ---- baseline replay -----------------------------------------------------------------------------------
+
+def load_corpus(d):
+    prompts = {}
+    with open(d / "core.tsv", encoding="utf-8") as fh:
+        for row in csv.reader(fh, delimiter="\t", quoting=csv.QUOTE_NONE):
+            if len(row) >= 5:
+                prompts[int(row[0])] = {"project": row[1], "session": row[3], "date": "2026-" + row[2], "text": row[4].lstrip("*"),
+                                        "marked": row[4].startswith("*"), "hand": {"class": "T"}}
+    with open(d / "labels_core.txt", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("#") or "|" not in line:
+                continue
+            f = line.rstrip("\n").split("|") + [""] * 7
+            if int(f[0]) in prompts:
+                prompts[int(f[0])]["hand"] = {"class": f[1], "level": f[2], "kind": f[3], "detect": f[4], "theme": f[5]}
+    return prompts
+
+
+def pct(n, d):
+    return "n/a" if not d else f"{100 * n / d:.0f} % ({n}/{d})"
+
+
+def cmd_baseline(a):
+    d = Path(a.corpus) if a.corpus else BASELINE_DIR
+    if not (d / "core.tsv").is_file():
+        print(f"asks: no corpus at {d} (it lives on one Mac only)", file=sys.stderr)
+        return 2
+    corpus = load_corpus(d)
+    hand_target = {i: TARGET_OF_HAND.get(p["hand"]["class"], "none") for i, p in corpus.items()}
+    print(f"baseline corpus: {len(corpus)} owner prompts, {sum(t == 'system' for t in hand_target.values())} hand-labelled "
+          f"improvement asks, {sum(t == 'question' for t in hand_target.values())} gap questions (counts only; the text is never printed)")
+    # the sieve alone
+    sv = {i: sieve(p["text"]) for i, p in corpus.items()}
+    tp = sum(1 for i in corpus if hand_target[i] == "system" and sv[i][0] in ("ask", "correction"))
+    pos = sum(1 for i in corpus if sv[i][0] in ("ask", "correction"))
+    print(f"\nsieve alone (target = system): precision {pct(tp, pos)}, recall {pct(tp, sum(t == 'system' for t in hand_target.values()))}")
+    if not a.model:
+        return 0
+    cache = d / "model-labels.json"   # per corpus: another corpus's ids would collide
+    labels = {} if a.refresh else read_json(cache, {})
+    gate = Gate()
+    need = {str(i): f"[{p['project']}] {p['text']}" for i, p in corpus.items() if str(i) not in labels and sv[i][0] != "machine"}
+    if need:
+        bsrc = {str(i): p["project"] for i, p in corpus.items()}
+        got = classify_rows(gate, need, bsrc)
+        if got is None:
+            print("asks: the model labelling failed — " + (gate.error or "no reply"), file=sys.stderr)
+            return 1
+        # dimensions for what the hand labelled an ask or question too, so each dimension's agreement is measured
+        extra = {str(i): f"[{p['project']}] {p['text']}" for i, p in corpus.items()
+                 if hand_target[i] != "none" and got.get(str(i), {}).get("target") not in ("system", "question")}
+        for dim in ("kind", "level", "detect"):
+            more = gate.label("evolve.ask", *DIMS[dim], extra, sources=bsrc)
+            for k, v in more.items():
+                got.setdefault(k, {})[dim] = v
+        labels.update(got)
+        write_json(cache, labels)
+        print(f"\nmodel labelling: {gate.calls} gate calls, {common.cost_text(gate.cost)}")
+    m = {int(k): v for k, v in labels.items()}
+    def dim_match(dim, hand_val_of, only):
+        ok = tot = 0
+        conf = Counter()
+        for i in only:
+            hv, mv = hand_val_of(corpus[i]["hand"]), m.get(i, {}).get(dim)
+            if not hv:
+                continue
+            tot += 1
+            ok += hv == mv
+            conf[(hv, mv or "—")] += 1
+        return ok, tot, conf
+    tgt = lambda i: m.get(i, {}).get("target", "none")
+    all_ids = list(corpus)
+    t_ok = sum(tgt(i) == hand_target[i] for i in all_ids)
+    s_tp = sum(1 for i in all_ids if hand_target[i] == "system" and tgt(i) == "system")
+    s_pos = sum(1 for i in all_ids if tgt(i) == "system")
+    s_hand = sum(1 for i in all_ids if hand_target[i] == "system")
+    flagged = sum(1 for i in all_ids if hand_target[i] != "none" and tgt(i) in ("system", "question"))
+    print("\nagreement with the hand labels, per dimension (the model: one batched call per dimension on evolve.ask)")
+    print(f"  target   3-way {pct(t_ok, len(all_ids))}; `system` precision {pct(s_tp, s_pos)}, recall {pct(s_tp, s_hand)}; "
+          f"an ask or question of the hand flagged as one {pct(flagged, sum(1 for i in all_ids if hand_target[i] != 'none'))}")
+    tconf = Counter((hand_target[i], tgt(i)) for i in all_ids)
+    print("           confusion (hand→model): " + ", ".join(f"{h}→{x} {n}" for (h, x), n in tconf.most_common(9)))
+    asked = [i for i in all_ids if hand_target[i] != "none"]
+    sys_ids = [i for i in all_ids if hand_target[i] == "system"]
+    for dim, fn, only in (("kind", lambda h: KIND_OF_HAND.get(h.get("kind")), sys_ids),
+                          ("level", lambda h: h.get("level") or None, asked),
+                          ("detect", lambda h: h.get("detect") or None, sys_ids)):
+        ok, tot, conf = dim_match(dim, fn, only)
+        print(f"  {dim:<8} {pct(ok, tot)} of the hand-labelled")
+        print("           confusion (hand→model): " + ", ".join(f"{h}→{x} {n}" for (h, x), n in conf.most_common(8)))
+    # themes: the model's slugs, a week at a time with the known ones carried (as the weekly pass runs), cached
+    tcache = d / "model-themes.json"
+    slugs = {} if a.refresh else read_json(tcache, {})
+    todo = sorted((i for i in all_ids if (tgt(i) == "system" or hand_target[i] == "system") and str(i) not in slugs),
+                  key=lambda i: (corpus[i]["date"], i))
+    if todo:
+        weeks = defaultdict(list)
+        for i in todo:
+            weeks[iso_week(corpus[i]["date"])].append(i)
+        for wk in sorted(weeks):
+            slugs.update(theme_slugs(gate, {str(i): corpus[i]["text"] for i in weeks[wk]}, sorted(set(slugs.values())),
+                                     {str(i): corpus[i]["project"] for i in weeks[wk]}))
+        write_json(tcache, slugs)
+        print(f"theme labelling: {len(weeks)} weekly calls, {common.cost_text(gate.cost)} in all so far" +
+              (f" ({gate.error})" if gate.error else ""))
+    tp = fp = fn = 0
+    for ai, i in enumerate(sys_ids):
+        for j in sys_ids[ai + 1:]:
+            same_hand = corpus[i]["hand"].get("theme") == corpus[j]["hand"].get("theme") and corpus[i]["hand"].get("theme")
+            same_mine = bool(slugs.get(str(i))) and slugs.get(str(i)) == slugs.get(str(j))
+            tp += bool(same_hand and same_mine)
+            fp += bool(not same_hand and same_mine)
+            fn += bool(same_hand and not same_mine)
+    print(f"  theme    pairwise same-theme precision {pct(tp, tp + fp)}, recall {pct(tp, tp + fn)} (the model's slugs, "
+          f"{len(set(slugs.values()))} distinct over {len(slugs)} asks; the hashed-word overlap scored F1 0.16)")
+    # the pipeline's count, as the ledger would report it
+    asks_found, rep, seen_at = set(), set(), {}
+    for i in sorted((i for i in all_ids if tgt(i) == "system"), key=lambda i: (corpus[i]["date"], i)):
+        tid = slugs.get(str(i))
+        if not tid:
+            continue
+        key = (corpus[i]["session"], tid)
+        if key in asks_found:
+            continue
+        if any(se != corpus[i]["session"] for se in seen_at.get(tid, ())):
+            rep.add(key)
+        asks_found.add(key)
+        seen_at.setdefault(tid, set()).add(corpus[i]["session"])
+    det = Counter(m.get(i, {}).get("detect") for i in all_ids if tgt(i) == "system")
+    hand_asks = {(corpus[i]["session"], corpus[i]["hand"].get("theme")) for i in sys_ids}
+    hand_det = Counter()
+    seen_h = set()
+    for i in sys_ids:
+        k = (corpus[i]["session"], corpus[i]["hand"].get("theme"))
+        if k not in seen_h:
+            seen_h.add(k)
+            hand_det[corpus[i]["hand"].get("detect")] += 1
+    ph = sum(hand_det.values()) or 1
+    print(f"\nthe pipeline's count over the same 60 days: {len(asks_found)} session-theme asks (hand: {len(hand_asks)}); "
+          f"repeating a theme {pct(len(rep), len(asks_found))}; detectable (E or N) by prompt "
+          f"{pct(det['E'] + det['N'], sum(det.values()))} (hand, by ask: {100 * (hand_det['E'] + hand_det['N']) / ph:.0f} %)")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="asks", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--days", type=int, default=7)
+    r.add_argument("--digest")
+    r.add_argument("--no-model", action="store_true")
+    r.add_argument("--no-overrules", action="store_true")
+    r.add_argument("--dry-run", action="store_true")
+    n = sub.add_parser("numbers")
+    n.add_argument("--days", type=int, default=7)
+    n.add_argument("--json", action="store_true")
+    b = sub.add_parser("baseline")
+    b.add_argument("--corpus")
+    b.add_argument("--model", action="store_true")
+    b.add_argument("--refresh", action="store_true")
+    s = sub.add_parser("ship")
+    s.add_argument("theme")
+    s.add_argument("ref")
+    a = ap.parse_args()
+    return {"run": cmd_run, "numbers": cmd_numbers, "baseline": cmd_baseline, "ship": cmd_ship}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
