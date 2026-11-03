@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Every scope has its VS Code workspace with nobody running `scopes write` (2026-11-03): `sync.py` runs
+  `scopes write --from <the session's primary>` detached at each session start, so a scope added to repos.json gets its
+  file at the next start on each Mac and a scope's file follows its repos (one had missed three).
+  `--from` writes every open scope and a confidential one only from a session under one of its own
+  folders (the fence; never by a slug in the path), moves no retired file, and waits up to a minute for
+  another write's lock (giving up leaves the record as it was). What a run refused — a failed run included —
+  is kept in that repo's git dir and said once at its next start there, and a fault naming a confidential
+  scope the session is outside reads as one line naming none of it, so no confidential scope's name or
+  refusal reaches an open session. `REGATTA_SCOPE_FILES=off` (or any value but empty or `inline`) skips the
+  step (the knowledge layer's hook suite sets it), `=inline` runs it in place; `--from ""` is refused.
+  `write` puts a file that lands inside a git checkout into its `.git/info/exclude`, once; asks VS Code
+  which files are open only when one would change; and refuses an option it does not understand.
+
 - `council run` asks each arm for a complete design on the pen's mandate, not a position paper, and `council
   examine` for an agreement round: what each arm adopts from each paper, and its stand where they disagree (concede,
   hold with evidence, or a compromise), then what only the owner can decide (the principal tier's revision of

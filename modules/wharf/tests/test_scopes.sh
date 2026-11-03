@@ -97,6 +97,16 @@ check([f["name"] for f in json.loads((P / "work.code-workspace").read_text())["f
       "…a twin is named by its full key, never a second 'a'")
 again = s.write(repos, good, names, P, False, opened=none)
 check(again and all("is not on this Mac" in l for l in again), "a second write changes nothing (only the notes again)")
+live = s.opened_now
+def asked():
+    raise AssertionError("VS Code asked")
+s.opened_now = asked
+try:
+    s.write(repos, good, names, P, False)
+    check(True, "…and asks VS Code nothing: `code --status` only once a file would change")
+except AssertionError:
+    check(False, "…and asks VS Code nothing: `code --status` only once a file would change")
+s.opened_now = live
 before = (P / "work.code-workspace").read_text()
 (P / "work.code-workspace").write_text("{}")
 check(any("would write work" in l for l in s.write(repos, good, names, P, True, opened=none)) and
@@ -116,6 +126,35 @@ d["settings"]["stray"] = 1
 s.write(repos, good, names, P, False, opened=none)
 check(json.loads((P / "work.code-workspace").read_text())["settings"] == {"git.branchProtection": ["claude/x"]},
       "a rewrite drops an undeclared setting and keeps sync.py's git.branchProtection")
+
+# a write made while `code --status` ran (VS Code, sync.py's indicator) is never written over
+d["settings"]["stray"] = 2
+(P / "work.code-workspace").write_text(json.dumps(d))
+theirs = json.dumps({**d, "settings": {**d["settings"], "git.branchProtection": ["claude/y"]}})
+class Racing:
+    def holds(self, p):
+        p.write_text(theirs)
+        return None
+out = s.write(repos, good, names, P, False, opened=Racing())
+check((P / "work.code-workspace").read_text() == theirs and any("changed while this run read it" in l for l in out),
+      "a file written while VS Code was asked is left as the other writer wrote it, and said")
+
+# the exclude line is a gitignore pattern: a name holding one of its specials is escaped and matches
+E = T / "esc"
+subprocess.run(["git", "init", "-q", "-b", "main", str(E)], check=True)
+(E / "sec[1] *.code-workspace").write_text("{}")
+line = s.exclude(E / "sec[1] *.code-workspace", False)
+r = subprocess.run(["git", "-C", str(E), "status", "--porcelain"], capture_output=True, text=True)
+check(line and line.startswith("excluded") and r.stdout == "",
+      "exclude: `[`, `*` and a space escaped, so git ignores the very file")
+
+# only: the scopes a session may write (write --from); the rest untouched
+(P / "work.code-workspace").unlink()
+(P / "coding.code-workspace").unlink()
+out = s.write(repos, good, names, P, False, opened=none, only={"coding"})
+check((P / "coding.code-workspace").exists() and not (P / "work.code-workspace").exists(),
+      "only: the named scope written, another left alone")
+s.write(repos, good, names, P, False, opened=none)
 
 # a scope file whose folder is not on this Mac: a note, no traceback, the rest still written
 gone = {**good, "far": {"file": "nowhere/far.code-workspace", "repos": ["zz"]}}
@@ -363,6 +402,128 @@ else echo "  FAIL scopes set should refuse a primary main (rc $rc): $out"; fails
 REGATTA_CONFIG="$F/cfg" CLAUDE_REPOS_JSON="$T/gitreg-wt/repos.json" python3 "$B/scopes" set sec --open >/dev/null 2>&1 \
   && ! git -C "$T/gitreg-wt" diff --quiet && echo "  ok   …a claude/* worktree's copy is written" \
   || { echo "  FAIL scopes set on a worktree copy"; fails=$((fails+1)); }
+# write --from (wharf's sync.py at every start): every open scope, a confidential one only from a
+# session inside it; a file inside a git checkout goes into its .git/info/exclude, so it never dirties it
+W="$T/from"; WP="$W/projects"; mkdir -p "$W/cfg/regatta"; echo "$WP" > "$W/cfg/regatta/projects"
+for d in layer pub node; do git init -q -b main "$WP/$d"; done
+mkdir -p "$WP/node/memory"
+cat > "$WP/layer/repos.json" <<'J'
+{"repos": {"layer": {}, "pub": {}, "node": {}},
+ "scopes": {"coding": {"file": "coding.code-workspace", "repos": ["layer", "pub"]},
+            "sec": {"file": "node/sec.code-workspace", "repos": ["node"], "confidential": true}}}
+J
+FW() { REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" python3 "$B/scopes" write "$@" 2>&1; }
+out=$(FW --from "$WP/pub"); rc=$?
+if [ $rc -eq 0 ] && [ -f "$WP/coding.code-workspace" ] && [ ! -e "$WP/node/sec.code-workspace" ]; then
+  echo "  ok   write --from outside a confidential scope: the open scope's file written, the confidential one's not"
+else echo "  FAIL write --from outside (rc $rc): $out"; fails=$((fails+1)); fi
+mkdir -p "$W/scratch/node/s1"   # a folder named after the scope's repo is not in the scope (the guard-scratch trap)
+out=$(FW --from "$W/scratch/node/s1"); rc=$?
+[ $rc -eq 0 ] && [ ! -e "$WP/node/sec.code-workspace" ] \
+  && echo "  ok   …a path that only carries the scope's name is outside it: judged by its own folders, not a slug" \
+  || { echo "  FAIL write --from a scope-named scratch folder (rc $rc): $out"; fails=$((fails+1)); }
+out=$(FW --from "$WP/node"); rc=$?
+if [ $rc -eq 0 ] && [ -f "$WP/node/sec.code-workspace" ] && grep -qx "/sec.code-workspace" "$WP/node/.git/info/exclude" \
+   && [ -z "$(git -C "$WP/node" status --porcelain)" ] && printf '%s' "$out" | grep -q "^excluded /sec.code-workspace"; then
+  echo "  ok   …from inside it: written, and kept out of its checkout's git by .git/info/exclude"
+else echo "  FAIL write --from inside (rc $rc): $out"; fails=$((fails+1)); fi
+out=$(FW --from "$WP/node")
+if [ "$out" = "✓ 2 scope files current" ] && [ "$(grep -c sec.code-workspace "$WP/node/.git/info/exclude")" = 1 ]; then
+  echo "  ok   …a second run: nothing written, the exclude line not repeated"
+else echo "  FAIL write --from, second run: $out"; fails=$((fails+1)); fi
+echo '!/sec.code-workspace' > "$WP/node/.gitignore"   # a .gitignore that un-ignores it beats the exclude
+FW --from "$WP/node" >/dev/null; out=$(FW --from "$WP/node")
+if [ "$(grep -c sec.code-workspace "$WP/node/.git/info/exclude")" = 1 ] && printf '%s' "$out" | grep -q "un-ignores it"; then
+  echo "  ok   …un-ignored by its .gitignore: the exclude line never repeated, the conflict named"
+else echo "  FAIL write --from, un-ignored file: $out"; fails=$((fails+1)); cat "$WP/node/.git/info/exclude"; fi
+rm "$WP/node/.gitignore"
+bad=0
+FW --from "" >/dev/null; [ $? -eq 2 ] || { bad=1; echo '       not refused: write --from ""'; }
+for a in "--from" "--from=$WP/pub" "--frm $WP/pub" "--from --dry-run" "--from $WP/pub --from $WP/node"; do
+  # shellcheck disable=SC2086
+  FW $a >/dev/null; [ $? -eq 2 ] || { bad=1; echo "       not refused: write $a"; }
+done
+[ $bad -eq 0 ] && echo "  ok   write refuses what it does not understand (--from with no path or an empty one, --from=, a misspelling, twice) → exit 2" \
+  || { echo "  FAIL write's options"; fails=$((fails+1)); }
+# a run under another's lock waits, then gives up with exit 3 and no ✓ (each run's `only` differs:
+# skipping for an open session's run would drop a confidential one's write)
+cat > "$W/lockheld.py" <<'PY'
+import fcntl, subprocess, sys
+with open(sys.argv[1] + "/wharf/scopes-write.lock", "w") as h:
+    fcntl.flock(h, fcntl.LOCK_EX)
+    r = subprocess.run(sys.argv[2:], capture_output=True, text=True)
+    print(r.returncode, r.stdout.strip())
+PY
+out=$(REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" REGATTA_SCOPES_LOCK_WAIT=1 \
+  python3 "$W/lockheld.py" "$W/cfg" python3 "$B/scopes" write --from "$WP/pub")
+[ "$out" = "3 " ] && echo "  ok   write --from while another write holds the lock: waits, then exit 3, nothing written, no ✓" \
+  || { echo "  FAIL write --from under the lock: [$out]"; fails=$((fails+1)); }
+
+# hooks/sync.py's session-start run: what `write --from` refused is kept in that repo's git dir, and said
+# at the next start there, once — never in another repo's session (a confidential refusal stays in its node)
+SY="$(cd "$B/../hooks" && pwd)/sync.py"
+SR() { REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" python3 "$SY" --scope-files-run "$1"; }
+SN() { REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" python3 -c \
+  'import sys; from pathlib import Path; from importlib.machinery import SourceFileLoader as L; print(L("sy", sys.argv[1]).load_module().scope_files_notes(Path(sys.argv[2])))' "$SY" "$1"; }
+SR "$WP/pub"
+[ "$(SN "$WP/pub")" = "[]" ] && echo "  ok   sync.py --scope-files-run, all written: nothing to say" \
+  || { echo "  FAIL sync.py, clean run: $(SN "$WP/pub")"; fails=$((fails+1)); }
+cp "$WP/layer/repos.json" "$W/good.json"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['repos']['stray']={}; json.dump(d, open(sys.argv[1],'w'))" "$WP/layer/repos.json"
+SR "$WP/node"
+out=$(SN "$WP/node")
+if printf '%s' "$out" | grep -q "scope workspaces: ✗ stray is in no scope" && [ "$(SN "$WP/node")" = "[]" ]; then
+  echo "  ok   …a refused write is said at the next start in that repo, once"
+else echo "  FAIL sync.py refused write: $out"; fails=$((fails+1)); fi
+[ "$(SN "$WP/pub")" = "[]" ] && echo "  ok   …and never at a start in another repo: a confidential node's refusal stays in it" \
+  || { echo "  FAIL sync.py: node's refusal said in pub: $(SN "$WP/pub")"; fails=$((fails+1)); }
+printf '{"repos": ' > "$WP/layer/repos.json"
+SR "$WP/pub"
+out=$(SN "$WP/pub")
+printf '%s' "$out" | grep -q "scope workspaces: ✗ bin/scopes write exited" \
+  && echo "  ok   …a run that fails with no ✗ line (a torn registry) is recorded as failed, never as clean" \
+  || { echo "  FAIL sync.py, torn registry: $out"; fails=$((fails+1)); }
+cp "$W/good.json" "$WP/layer/repos.json"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['scopes']['sec']['repos'].append('ghostnode'); json.dump(d, open(sys.argv[1],'w'))" "$WP/layer/repos.json"
+SR "$WP/pub"
+out=$(SN "$WP/pub")
+if printf '%s' "$out" | grep -q "a confidential scope this session is outside" && ! printf '%s' "$out" | grep -q -e sec -e ghostnode; then
+  echo "  ok   …a fault naming a confidential scope reaches an open repo's record as one line naming none of it"
+else echo "  FAIL sync.py: a confidential scope's fault in pub's record: $out"; fails=$((fails+1)); fi
+SR "$WP/node"
+printf '%s' "$(SN "$WP/node")" | grep -q "ghostnode" && echo "  ok   …and is named in full at a start inside the scope" \
+  || { echo "  FAIL sync.py: the fault not named inside sec: $(SN "$WP/node")"; fails=$((fails+1)); }
+cp "$W/good.json" "$WP/layer/repos.json"
+printf '✗ an earlier refusal\n' > "$WP/pub/.git/claude/scope-files"
+REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" REGATTA_SCOPES_LOCK_WAIT=1 \
+  python3 "$W/lockheld.py" "$W/cfg" python3 "$SY" --scope-files-run "$WP/pub" >/dev/null
+[ "$(cat "$WP/pub/.git/claude/scope-files")" = "✗ an earlier refusal" ] \
+  && echo "  ok   …a run that never got the lock keeps the record as it was, never an empty one" \
+  || { echo "  FAIL sync.py, lock never freed: [$(cat "$WP/pub/.git/claude/scope-files")]"; fails=$((fails+1)); }
+git init -q -b main "$WP/quiet"
+SP() { REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$W/missing.json" REGATTA_SCOPE_FILES="$1" python3 -c \
+  'import sys; from pathlib import Path; from importlib.machinery import SourceFileLoader as L; L("sy", sys.argv[1]).load_module().spawn_scope_files(Path(sys.argv[2]))' "$SY" "$WP/quiet"; }
+# off, and any value it cannot read, never starts the child: a stand-in Popen counts the calls
+cat > "$W/spawncount.py" <<'PY'
+import sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+m = L("sy", sys.argv[1]).load_module()
+calls = []
+m.subprocess.Popen = lambda *a, **k: calls.append(a)
+m.spawn_scope_files(Path(sys.argv[2]))
+print(len(calls))
+PY
+SPN() { REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$W/missing.json" REGATTA_SCOPE_FILES="$1" python3 "$W/spawncount.py" "$SY" "$WP/quiet"; }
+bad=0
+for v in off 0 no false bogus; do [ "$(SPN "$v")" = "0" ] || { bad=1; echo "       spawned under REGATTA_SCOPE_FILES=$v"; }; done
+[ $bad -eq 0 ] && [ "$(SPN "")" = "1" ] \
+  && echo "  ok   REGATTA_SCOPE_FILES=off, or any value but empty or inline, starts no child; empty starts one" \
+  || { echo "  FAIL REGATTA_SCOPE_FILES's switch"; fails=$((fails+1)); }
+SP inline
+[ -s "$WP/quiet/.git/claude/scope-files" ] && echo "  ok   REGATTA_SCOPE_FILES=inline: run in place (its failure recorded)" \
+  || { echo "  FAIL REGATTA_SCOPE_FILES=inline left no record"; fails=$((fails+1)); }
+
 LIVE="${CLAUDE_REPOS_JSON:-${REGATTA_CONFIG:-$HOME/.config/regatta}/wharf/repos.json}"
 # the registry's first scope, read back from the file, never named here
 SCOPE=$( [ -f "$LIVE" ] && python3 -c "import json,sys; print(next(iter(json.load(open(sys.argv[1])).get('scopes') or {}), ''))" "$LIVE" 2>/dev/null)
