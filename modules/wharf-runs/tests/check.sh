@@ -34,17 +34,19 @@ else
 fi
 # Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
 # Linux launcher, stood in), test_autofinish (made
-# portable and run on ubuntu in the overlay's CI since 2026-10-07) and test_builder_coin (written portable, trim S6). The rest read launchd, plutil,
+# portable and run on ubuntu in the overlay's CI since 2026-10-07), test_builder_coin (written portable, trim S6) and test_kick_socket (the sheep road's socket
+# press; its stub-server cases where python3 has websockets 14.0+, which .circleci/linux-tools.sh
+# unpacks from PyPI's checked wheel). The rest read launchd, plutil,
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
-LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin "
+LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket "
 # Off macOS the rest do not run on this host. In regatta a pull request's `check` runs on a macOS runner (the
 # whole line, or with CircleCI's Linux share the rest: WHARF_RUNS_SKIP_LINUX_OK, .circleci/share.sh), and
 # `pr merge` waits for that required check before it merges, so a /finish on the Linux node (node-lands,
 # 2026-10-31) passes on these lines and its PR does not until they ran on a Mac. Elsewhere (a twin's Linux CI)
 # nothing runs them. Said per suite, and once at the end with the list.
 LEFT_TO_MAC="not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_build_review test_builder_coin test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_systemd test_wharf"
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_build_review test_builder_coin test_headroom test_harness test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_systemd test_kick_socket test_wharf"
 # Lane 2 is named; lane 3 is every other suite, so a suite added to SUITES lands there by itself.
 # Balanced on measured passes (the build Mac, load 8–12, 2026-10-27; seconds): test_dispatch 413 alone; lane 2
 # 669 (harness 64, pickup 335, autofinish 270); lane 3 830, test_autofinish_run 335 and test_wharf 244
