@@ -2218,7 +2218,8 @@ def bury(t, why):
 
 QUEUE = os.environ.get("AUTOFINISH_QUEUE") or os.path.join(HERE, "dispatch-queue")
 QUEUE_S = 120   # a queue verb's bound: its fetch may wait 45 s for the clone's lock and 30 s for the home
-OWN_FRESH_S = 600   # a claim this soon after its put, on the putting host, is the put's own handover: its caller's lock and
+OWN_FRESH_S = int(os.environ.get("AUTOFINISH_OWN_FRESH_S") or 600)   # the variable is the suite's (test_finish_queue)
+# OWN_FRESH_S: a claim this soon after its put, on the putting host, is the put's own handover: its caller's lock and
                     # its tree as they are; later, the caller may be at work again, and the start judges both as any
 _PUT = [False]      # the put was sent: a crash after it exits not confirmed, never "nothing ran"
 
@@ -2362,6 +2363,13 @@ def enqueue(t, args, by, via):
         print("autofinish-run: the queue did not take the finish (%s); starting it here, as before the queue"
               % ((r.stderr or r.stdout).strip()[-200:] or "exit 1"))
         return start_here(t, args, read_state(t), by, via)
+    if r.returncode not in (0, 1, 2, 3) or (r.returncode and d.get("qid")):
+        # the queue could not tell whether the put took (a crash after it, a torn read, a signal): never a refusal,
+        # which cold_prompt reads as "not started" and runs the typed /finish beside a queued one (AGENTS.md's trap on
+        # a new non-zero exit; the landing review, 2026-11-03)
+        print("not confirmed: the queue could not say whether the finish was put (exit %d); read it with dispatch --queue "
+              "— /finish --here only if nothing is queued; window and Remote Control \"%s\" once it starts" % (r.returncode, t.session))
+        return UNCONFIRMED_RC
     res = str(d.get("result") or "")
     if args.by == "chain" and r.returncode == 0 and res in ("queued", "replaced"):
         # counted where its stop is judged (chain_refusal reads this host's CHAIN), once the put took: a relaunch
@@ -2459,8 +2467,10 @@ def queued_main(argv):
     if not wt:
         return back("failed" if code in (2, 5) else "refused", why)
     # claimed on the host that put it: the putting caller's own session (the entry's `by`, cold_prompt's panel) holds
-    # the worktree's lock and is no refusal, as `--session` made it on the direct start
-    own = e.get("by") if not sent and fresh and isinstance(e.get("by"), str) and e.get("by") else None
+    # the worktree's lock and is no refusal, as `--session` made it on the direct start — past the handover too: nothing
+    # holds the lock for a queued finish now, so the panel that typed it still owns it when a slot frees later, and
+    # lock_refusal still refuses that session once it is back at work (the landing review, 2026-11-03)
+    own = e.get("by") if not sent and isinstance(e.get("by"), str) and e.get("by") else None
     if e.get("unattended"):
         # the put's caller was an unattended run: so is this start, for landing() and judged_stop (a mode-ask hold, E12's
         # standing yes), as AUTOFINISH_CALLER_UNATTENDED told the peer's job (round 2's S1). DROP_JOB keeps it out of
@@ -2645,6 +2655,10 @@ def queued_worktree(repo, branch, tip, own=False, pinned=False):
         # the pin names, often for commits origin lacks (a push that failed), which the fetch below would refuse for
         # good; it is taken clean only, as the caller may be at work in it again (the finish review, 2026-11-02)
         return wt, 0, None
+    if pinned and not own and wt and os.path.isdir(wt) and git(wt, "rev-parse", "HEAD") == tip:
+        # pinned here, its tree at the tip but not clean: the caller is at work in it again. Handed back, never the fetch
+        # below, which reads a tip origin lacks (the reason for the pin) as never anywhere (the landing review, 2026-11-03)
+        return None, 3, "%s's worktree here is at the queued tip with changes in it: the finish waits until it is clean" % branch
     m = NAME_RE.match(branch)
     if not m:
         return None, 2, "%s is not a claude/<host>/<date>-<topic> branch: no worktree can be made for it here" % branch

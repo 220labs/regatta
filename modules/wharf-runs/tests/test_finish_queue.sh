@@ -301,7 +301,7 @@ DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by typed --on here --dry > "$T/out" 2>&1; check "$?" "0" "--on here --dry: says what it would put"
 has "$T/out" "pinned here: --on here" "  pinned to this host"
 
-echo "  claimed on its own host, the panel that typed it holding the lock: its session is no refusal"
+echo "  claimed on its own host past the handover (OWN_FRESH_S), the panel that typed it holding the lock: its session is no refusal"
 python3 - "$GU/claude" <<'PY'
 import json, os, sys, time
 os.makedirs(sys.argv[1], exist_ok=True)
@@ -310,10 +310,29 @@ PY
 python3 "$QB" claim "${QL2[@]}" > /dev/null; JU=$(qget repo--u job)
 check "$(qget repo--u state by)" "claimed s-caller" "  claimed here, the entry naming the caller's session"
 rm -f "$T/start.args"
-DISPATCH_LABEL="$JU" AUTOFINISH_DISPATCH="$T/dispatch-start" AUTOFINISH_API_STUB="$T/api_stub.py" PICKUP_PRS="$T/none.json" AUTOFINISH_VERDICT_S=10 \
+AUTOFINISH_OWN_FRESH_S=0 DISPATCH_LABEL="$JU" AUTOFINISH_DISPATCH="$T/dispatch-start" AUTOFINISH_API_STUB="$T/api_stub.py" PICKUP_PRS="$T/none.json" AUTOFINISH_VERDICT_S=10 \
   "$B/dispatch" "$BR-u" --repo "$T/repo" --finish --from-queue fleet:repo--u > "$T/out" 2>&1; check "$?" "0" "  its job runs"
 check "$([ -f "$T/start.args" ] && echo started || echo refused)" "started" "  and starts: the lock is the putting caller's own"
 hasnt "$T/out" "lock is held" "  no lock refusal"
+
+echo "the landing review (2026-11-03): an unreadable put, another tip's finish held by another session"
+cat > "$T/dispatch-crash" <<'SH'
+#!/bin/sh
+printf '%s\n' '{"result": "queued", "qid": "fleet:repo--u"}'
+exit 5
+SH
+chmod +x "$T/dispatch-crash"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_DISPATCH="$T/dispatch-crash" \
+  "$B/autofinish-run" "$T/wt-u" --by typed --rule C > "$T/out" 2>&1; check "$?" "0" "a put the queue cannot confirm (exit 5): exit 0, never a refusal cold_prompt reads as not started"
+has "$T/out" "not confirmed: the queue could not say whether the finish was put (exit 5)" "  saying so, and where to read it"
+qreset
+TX=$(mkbranch x); git -C "$T/repo" checkout -q "$BR-x"; echo more > "$T/repo/f-x2"; git -C "$T/repo" add f-x2
+git -C "$T/repo" commit -qm "more x"; TX2=$(git -C "$T/repo" rev-parse HEAD); git -C "$T/repo" checkout -q main
+fin x "$TX" "$RIGHTS_B" --by s-held --host buildbox --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null
+fin x "$TX2" "$RIGHTS" --by s-other --host laptop --cap 0 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > "$T/out"
+check "$? $(python3 "$T/jget.py" result < "$T/out")" "3 busy queued by session s-held" \
+  "a finish of another tip over one another live session queued: a plain busy, never '(a finish)' (in hand), so the caller is refused"
+check "$(qget repo--x tip)" "$TX" "  the held entry kept"
 
 echo "round 2: the words, the end line, a death on an ended entry, a live build, the unattended mark"
 check "$(python3 - "$B" <<'PY'
@@ -386,11 +405,11 @@ out = [seen.get("own"), seen.get("pinned")]
 out.append(real(repo, br, tip, pinned=True)[1])          # clean at the tip: taken (0), origin never asked
 out.append(real(repo, br, tip)[1])                       # not pinned, not own: origin lacks the tip (5)
 open(os.path.join(wt, "dirt"), "w").write("x")
-out.append(real(repo, br, tip, pinned=True)[1])          # pinned but dirty: never as it is (5 by origin, as before)
+out.append(real(repo, br, tip, pinned=True)[1])          # pinned but dirty: never as it is, handed back (3), never origin's 5 (the landing review)
 print(" ".join(str(x) for x in out))
 PY
-check "$(python3 "$T/pinned.py" "$B/autofinish-run" "$T/repo" "$BR-pn" "$TP2" "$T/wt-pn" 2>/dev/null | tail -1)" "False True 0 5 5" \
-  "a pinned finish claimed late on its own host: its clean worktree at the tip, never origin's refusal; a dirty one is not taken"
+check "$(python3 "$T/pinned.py" "$B/autofinish-run" "$T/repo" "$BR-pn" "$TP2" "$T/wt-pn" 2>/dev/null | tail -1)" "False True 0 5 3" \
+  "a pinned finish claimed late on its own host: its clean worktree at the tip, never origin's refusal; a dirty one is handed back (3), never failed for good"
 rm -f "$T/wt-pn/dirt"
 
 echo "round 3: an old host never claims a finish; the putting worktree learns the end"
