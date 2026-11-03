@@ -4,8 +4,8 @@ Sextant is Regatta's strategy module: what you are aiming at, which ideas get yo
 of them get built. Today it holds its **ideas intake, Sparks** — ideas in, one note per idea out,
 filed where the strategy reads them — **`/sounding`**, which tests an idea before anything is
 built, and **`/sextant`**, the weekly pass that audits the layer against the world and starts the
-soundings the owner queued. The rest of the strategy half (goals, priorities and budgets in a North
-Star, candidates) joins this same plugin later; there is never a separate Sparks plugin.
+soundings the owner queued. **`sextant north-star`** holds the strategy half's one private file: the goals,
+caps, weekly ceilings and non-goals the owner decided. Candidates and the portfolio join this same plugin later; there is never a separate Sparks plugin.
 
 | Piece | What it does |
 | --- | --- |
@@ -13,6 +13,7 @@ Star, candidates) joins this same plugin later; there is never a separate Sparks
 | `bin/redactions` | what Sparks' redaction step hid, per recording, and putting it back on the owner's word |
 | `launcher.c.in`, `install.sh` | the launchd job that runs Sparks on a Mac, and the small launcher Full Disk Access is granted to |
 | `bin/soundings` | the sounding queue: the proposals the owner chose to have sounded, three a week and five open at most, each started by Sextant at the weekly reset with the week read when it fires |
+| `bin/sextant` | `sextant north-star init\|show\|check`: the deployment's North Star, `sextant/north-star.json` in the regatta config dir (a link to wherever the owner keeps it). `init` imports what is decided (the builds and soundings caps, the three weekly ceilings in the owner's units, goals from a Markdown file's Goals bullets, the ventures' gates) and infers nothing; `show` prints each ceiling in both columns from `cost-ratio.json`; `check` exits 0 (strategic allocation permitted), 3 (no complete goal or no file: maintenance runs, strategic allocation is blocked) or 4 (unusable). Never validated by the core's config check: a typo fails only this verb |
 | `bench/redaction/` | can a classifier find what a memo should not put in git? Five arms over an invented corpus |
 | `skills/sounding/` | `/sounding <idea> [--light] [--yolo]`: one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`) sounds the idea — a Landscape of what exists, a one-line Verdict — and the doc reaches the owner in full, as a chat questionnaire or with its reversible picks taken unattended |
 | `agents/sounder.md` | the sounder: an architect for an idea outside any repo — a venture, a pitch, a tool to build or adopt — held to the ventures README's four gates, with a money flow and a smallest test |
@@ -21,14 +22,14 @@ Star, candidates) joins this same plugin later; there is never a separate Sparks
 | `bin/pitch`, `bin/pitchlib.py` | a document's renders held to one method: `pitch check <root\|doc>` refuses a deck or page that breaks a rule (words, type, fit, contrast, the page contract, claims the document makes, a captain review's shape, the sidecar), `pitch build <doc\|deck> [--deck admiral\|commodore\|all]` writes the admiral deck (spoken) and the commodore deck (sent, with links) from the ```` ```deck ```` fence at the document's end (the admiral also from the export's `slides.json`), `pitch memo <doc>` writes the captain page from the document, `pitch review <doc>` holds a captain review to its template, `pitch renders <doc> [--links]` lists the renders and their published links, `pitch calibrate glyphs\|render` measures the deck's face and holds the fit estimate to headless Chrome (by hand, never in a check); config in `pitch.json` |
 | `skills/pitch/` | `/pitch <doc> [captain\|admiral\|commodore\|all]`: a document rendered for its readers, the page read in full, the commodore deck sent and the admiral deck spoken over, built never typed, published through the Artifact tool, the page first, their links in the sidecar; `method.md` is the method behind every rule, `config.md` every `pitch.json` key, the sidecar's shape and a pytest template |
 | `skills/captain/` | `/captain <topic\|doc> [--for <reader>]`: a captain review, one document for the person who decides, written first in `TEMPLATE.md`'s shape (the answer, where things stand, the options with their four lines, the best three, a D-list), fact-checked, then rendered by `/pitch` |
-| `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled, the queue's and the weekly job's suites |
+| `tests/check.sh` | the suite (macOS: it records real audio with `say`), the bench's `--help`, the launcher compiled, the queue's, the weekly job's and the North Star's suites |
 
 Install, from a clone (the shell and launchd face): `sh modules/sextant/install.sh --check` says
 what is found, `--launcher` builds and schedules Sparks' job, `--remove` takes it out;
 `--schedule` loads the weekly `/sextant` job (`--dry-run` prints its plist first, `--unschedule`
 takes it out). As a plugin:
 `claude plugin marketplace add <this repo>`, then `claude plugin install sextant@regatta` (it
-needs the core, `regatta`); the plugin puts `sparks`, `redactions`, `soundings` and `pitch` on the Bash PATH.
+needs the core, `regatta`); the plugin puts `sparks`, `redactions`, `soundings`, `sextant` and `pitch` on the Bash PATH.
 
 ## Sparks, the ideas intake
 
