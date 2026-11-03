@@ -15,7 +15,9 @@
                                       a WAITING line that asks for a go on an event the session
                                       can watch, or names a command without its Do-this-now block,
                                       a session handed to the owner to start (/pickup … --fresh, a
-                                      prompt to paste) where dispatch could start it
+                                      prompt to paste) where dispatch could start it,
+                                      a later-work list ("Notes for later:", "Follow-ups") whose
+                                      own block names no home (TODO.md, a hand-off, …)
                                       — blocks once with the reason
 
 The rule (the overlay's rules, "How to talk"): a relative path in a paste block resolves
@@ -261,6 +263,77 @@ def owed_unchecked(text: str) -> list[str]:
                 items = [head]
         bad += [it.strip()[:60] for it in items if not OWED_OK.search(it)]
     return bad
+
+
+# Later work kept in chat (the owner, 2026-11-02: "What exactly do you mean by 'notes for later' in a
+# finished session? Once I close it, what's going to happen to these notes?"). A /finish report listed
+# four follow-ups under "Notes for later, none started:", and two earlier replies of the same session
+# under "For a follow-up session, two fixes:" and "Found on the way, for other sessions:"; nothing reads
+# a closed session's chat, so all would have been lost. The rule was already prose (the overlay's
+# "How to talk": "later work is a `/todo handoff`, never a promise"); this makes it a check. Form, not
+# truth, like the owed list: a list under such a heading passes once its own block (the heading, its
+# list and the paragraph after it) names where the items went — TODO.md, `/todo`, a hand-off, the
+# bulletin, a docs/ file, the PR body, an issue, or a dispatched, seeded or queued branch. Judged per
+# list, never over the whole reply: a "queued" or a docs/ citation elsewhere let 3 of 4 real unhomed
+# lists pass on this Mac's 60 days of replies (the landing review, 2026-11-03).
+# "Follow-up questions:", "Follow-up fixes in this PR:" and "For later reference:" defer nothing (the
+# landing review's probes, 2026-11-03); a branch in inline code (`…-followups-2`) is stripped before.
+LATER_HEAD = re.compile(r"\b(?:for later(?! reference)|later work|future work|"
+                        r"follow[- ]?ups?(?!\s+(?:questions?|commits?|fix(?:es)?)\b)|for (?:a |the )?"
+                        r"(?:other|another|next|fresh|later) sessions?)\b", re.I)
+# A heading that says the work is done, recorded or under way now is a report; one longer than a
+# heading is a sentence that names a follow-up branch ("The second follow-ups' review is back: …").
+# Replayed over the last two weeks' replies of every login (about 70,600, 2026-11-02): 84 blocked, half
+# of them sentences or lists already homed in a PR body or the queue; 30 with the cap, those homes and
+# the link rule, each a real "Left for later:" kind (the login dirs share transcripts, so about 10 unique).
+LATER_DONE = re.compile(r"\b(?:fixed|applied|done|landed|shipped|built|recorded|filed|now|here)\b|"
+                        r"\bthis (?:session|branch|turn|PR)\b", re.I)
+LATER_HOME = re.compile(r"TODO\.md|/todo\b|\bhand-?off\b|\bhanded off\b|/share\b|\bbulletin\b|"
+                        r"\bdocs/[\w./-]+\.md|\bPR body\b|/issues/\d+|\bdispatched\b|\bseeded\b|"
+                        r"\bqueued\b|\blaid on\b", re.I)
+# A done-word under a negation still defers: "Follow-ups not yet filed:", "Not done, for later:".
+LATER_NOT = re.compile(r"\b(?:not|never|still|yet|to be|none)\s+(?:\w+\s+)?(?:fixed|applied|done|landed|"
+                       r"shipped|built|recorded|filed)\b|\bnot\s+(?:\w+\s+)?(?:now|here)\b", re.I)
+LATER_WORDS = 10
+
+
+def later_unhomed(text: str) -> list[str]:
+    """Headings of later-work lists in a reply that names no home for them.
+
+    A heading counts only when it reads as one — `#`, or, stars stripped, ending in a colon — and a
+    list item follows it (one blank line allowed); one that says the work is done or recorded is a
+    report, not a deferral."""
+    lines, heads = text.splitlines(), []
+    for i, line in enumerate(lines):
+        bare = re.sub(r"^\s*(?:#{1,6}\s*|[-*•]\s+)?", "", line[:200]).strip().strip("*").strip()
+        if not (line.lstrip().startswith("#") or bare.endswith(":")):
+            continue
+        if "](" in bare:  # a link's text ("[repo#148 (… follow-ups)](…):") names a branch, not a list
+            continue
+        if len(bare.split()) > LATER_WORDS or not LATER_HEAD.search(re.sub(r"`[^`]*`", "", bare)):
+            continue
+        if LATER_DONE.search(bare) and not LATER_NOT.search(bare):
+            continue
+        nxt = lines[i + 1:i + 3]
+        if nxt and not nxt[0].strip():
+            nxt = nxt[1:]
+        if not (nxt and OWED_ITEM.match(nxt[0])):
+            continue
+        # the list's own block: the heading, its items (and their wrapped lines), the paragraph after
+        j, blanks, para = i + 1, 0, False
+        while j < len(lines):
+            if not lines[j].strip():
+                blanks += 1
+                if para or blanks >= 2:
+                    break
+            elif OWED_ITEM.match(lines[j]) or lines[j][:1].isspace():
+                blanks = 0
+            else:
+                para = True
+            j += 1
+        if not LATER_HOME.search("\n".join(lines[i:j])):
+            heads.append(bare[:60])
+    return heads
 
 
 # The hand-over line (the owner, 2026-10-07: "It should apply to every single message that asks for Dx
@@ -1037,6 +1110,12 @@ def stop_findings(text: str) -> list[str]:
                      f'<result>" or "not checked: <why> — ask?" (skills/finish step 10; the cheap probe is '
                      f"python3 {_cmd('owed')} '<marker>'): " + " | ".join(owed[:3])
                      + (" …" if len(owed) > 3 else ""))
+    later = later_unhomed(unfenced)
+    if later:
+        found.append("later work with no home (" + " | ".join(later[:3]) + "): put each item in TODO.md "
+                     "(`/todo`, or `/todo handoff` for work that earns its own session) and say so, or drop "
+                     "it — nobody reads a closed session's chat (rules 'How to talk': later work is a "
+                     "/todo handoff, never a promise)")
     prose = prose_only(text)
     found += [f"bare PR number (write [repo#N (summary)](https://github.com/…/pull/N)): {m.group(0).strip()}"
               for m in BARE_PR.finditer(prose)]

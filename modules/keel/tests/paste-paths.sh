@@ -105,6 +105,37 @@ check "$(sh_ "$T/t5.jsonl" | wc -c | tr -d ' ')" 0 "stop: every item checked pas
 tr_ "$T/t6.jsonl" $'The owed list should name its checks.\nNothing carried forward.\n```text\nStill owed:\n- inside a fence\n```'
 check "$(sh_ "$T/t6.jsonl" | wc -c | tr -d ' ')" 0 "stop: prose about owed lists, and a fenced one, pass"
 
+# later work kept in chat (Sam, 2026-11-02: "Once I close it, what's going to happen to these notes?")
+tr_ "$T/l1.jsonl" $'Landed.\n\nNotes for later, none started:\n\n- Cached login readings that go stale.\n- The node never pushes.'
+check "$(sh_ "$T/l1.jsonl" | grep -c 'later work with no home (Notes for later, none started:)')" 1 "stop: a later-work list with no home blocks, naming its heading"
+tr_ "$T/l2.jsonl" $'**For a follow-up session, two fixes:**\n- Stale readings.\n\n### Follow-ups\n- Retry limit stops.'
+check "$(sh_ "$T/l2.jsonl" | grep -c 'For a follow-up session, two fixes: | Follow-ups)')" 1 "  a bold heading and a # heading both count"
+tr_ "$T/l3.jsonl" $'Notes for later:\n- Stale readings.\n\nAll of them are in TODO.md as [ci-lanes-session].'
+check "$(sh_ "$T/l3.jsonl" | wc -c | tr -d ' ')" 0 "stop: the same list passes once the reply names TODO.md"
+tr_ "$T/l4.jsonl" $'Found on the way, for other sessions:\n- The node never pushes.\n\nSeeded as a `/todo handoff` branch.'
+check "$(sh_ "$T/l4.jsonl" | wc -c | tr -d ' ')" 0 "  or a hand-off"
+tr_ "$T/l5.jsonl" $'Follow-ups fixed at the landing:\n- The stub checks its arguments.\n\nBoth are worth a follow-up.\n```text\nNotes for later:\n- inside a fence\n```'
+check "$(sh_ "$T/l5.jsonl" | wc -c | tr -d ' ')" 0 "stop: a done list, a follow-up in prose, and a fenced list pass"
+tr_ "$T/l6.jsonl" $'The second follow-ups\' deep review is back with two confirmed bugs in the fence:\n- one'
+check "$(sh_ "$T/l6.jsonl" | wc -c | tr -d ' ')" 0 "  and a sentence (the replay's false blocks, 2026-11-02)"
+tr_ "$T/l7.jsonl" $'[house#148 (modes follow-ups)](https://github.com/samco/house/pull/148):\n- two'
+check "$(sh_ "$T/l7.jsonl" | wc -c | tr -d ' ')" 0 "  a PR link"
+tr_ "$T/l8.jsonl" $'Three follow-ups to do here:\n- three'
+check "$(sh_ "$T/l8.jsonl" | wc -c | tr -d ' ')" 0 "  work under way"
+tr_ "$T/l9.jsonl" $'Follow-ups, in the PR body:\n- four'
+check "$(sh_ "$T/l9.jsonl" | wc -c | tr -d ' ')" 0 "  and a list homed in the PR body"
+# a home is judged per list (the landing review, 2026-11-03: a "queued" or a docs/ citation elsewhere let 3 of 4 pass)
+tr_ "$T/la.jsonl" $'CI\'s check was queued when I stopped; see docs/pace-2026-10-30.md.\n\n**Notes for later:**\n- window_max.\n\nShipped.'
+check "$(sh_ "$T/la.jsonl" | grep -c 'later work with no home (Notes for later:)')" 1 "stop: a home word outside the list's own block homes nothing"
+tr_ "$T/lb.jsonl" $'Notes for later:\n- a\n\nIn TODO.md as [a].\n\nFor another session:\n- b'
+check "$(sh_ "$T/lb.jsonl" | grep -c 'later work with no home (For another session:)')" 1 "  one homed list leaves a second unhomed one blocked"
+tr_ "$T/lc.jsonl" $'Follow-ups not yet filed:\n- a'
+check "$(sh_ "$T/lc.jsonl" | grep -c 'later work with no home')" 1 "  a negated done-word still defers"
+tr_ "$T/ld.jsonl" $'Follow-ups:\n- a\n- b\n\nBoth dispatched: claude/x/a, claude/x/b.'
+check "$(sh_ "$T/ld.jsonl" | wc -c | tr -d ' ')" 0 "  a list dispatched in the paragraph after it passes"
+tr_ "$T/le.jsonl" $'A few follow-up questions:\n- a\n\nFollow-up fixes:\n- b\n\nFor later reference:\n- c\n\nReview of `modes-followups-2`:\n- d'
+check "$(sh_ "$T/le.jsonl" | wc -c | tr -d ' ')" 0 "  questions, fixes, a reference list and a branch in inline code defer nothing"
+
 # a reply asking D-items carries its doc's hand-over line, as `keel line` prints it (Sam, 2026-10-07)
 R="$T/repo"; mkdir -p "$R/docs"
 git -C "$R" init -q -b main && git -C "$R" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
