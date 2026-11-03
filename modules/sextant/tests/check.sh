@@ -6,8 +6,9 @@
 # printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish on a Mac; off one,
 # the pull request's macOS check). The
 # sounding queue's suite (tests/soundings.sh) and the weekly job's (tests/schedule.sh: install.sh's
-# plist with and without aurora, the module's own runner) run everywhere, and so does pitch's
-# (tests/pitch.sh: the renders' checker and builder against their fixtures).
+# plist with and without aurora, the module's own runner) run everywhere, and so do pitch's
+# (tests/pitch.sh: the renders' checker and builder against their fixtures) and the North Star's
+# (tests/north_star.sh: init, show and check against scratch config dirs).
 # `sparks --help` prints its usage and an unknown argument exits 2 before anything runs (both
 # checked below); a bare `sparks` is still a live pass on the Mac's own config.
 #   bash modules/sextant/tests/check.sh            SPARKS_SUITE=0 skips the suite (about 6 min)
@@ -116,6 +117,9 @@ done
 # the sounding queue (the Sounding's S7): scratch dirs and git only, any OS
 bash "$D/tests/soundings.sh" | tail -1; ok "${PIPESTATUS[0]}" "the sounding queue's suite (tests/soundings.sh)"
 python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings --help prints its usage"
+# the North Star (Evolve S4): init, show and check against scratch config dirs, any OS
+bash "$D/tests/north_star.sh" >"$T/north_star.log" 2>&1; nr=$?; grep -E '^  FAIL|all passed|failed$' "$T/north_star.log"; ok "$nr" "the North Star's suite (tests/north_star.sh)"
+python3 "$D/bin/sextant" north-star --help | grep -q 'check'; ok $? "sextant north-star --help prints its verbs"
 # /sextant (B13): its frontmatter, and the weekly job and the module's own runner (G29), any OS
 SX="$D/skills/sextant/SKILL.md"
 head -3 "$SX" | grep -q '^name: sextant$' && grep -q '^disable-model-invocation: true$' "$SX"; ok $? "skills/sextant: named, and never invoked by the model"

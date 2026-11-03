@@ -1,0 +1,599 @@
+#!/usr/bin/env python3
+"""Sextant's North Star: the deployment's goals, caps, ceilings and non-goals, one private file.
+
+    sextant north-star init [--goals FILE] [--ventures DIR] [--force]   write the file from what is decided
+    sextant north-star show [--json]                                    the file, ceilings in both columns
+    sextant north-star check [--json]                                   judge it; the exit code says what it permits
+
+The file is `sextant/north-star.json` in the regatta config dir ($REGATTA_CONFIG, else
+the core's default config dir), $NORTH_STAR over it; the config dir holds a link to wherever the owner keeps
+it (a private repo), and `init` writes through that link. Never a file of this repo, and never
+validated in the core's `config_problems()`: a typo fails nothing but this verb (a hook that
+imported the file would lose every turn over one comma).
+
+What `init` writes is what the owner already decided, never inferred (the Evolve design's S4,
+docs/self-improvement-portfolio-2026-10-30.md "The barrier and the North Star"):
+  - the caps: builds 3 a week and $45 list (the strategy record's D2-B, Evolve D1), soundings 2 a
+    week admitted (D1);
+  - the three weekly ceilings per provider (Evolve D2, the owner's own units: Claude effective,
+    Codex and Gemini list; the owner's to change). `show` prints the other column from the core's
+    cost-ratio.json (list for a Claude ceiling, effective for the others) when it can;
+  - `caps.control_slots_per_week` 1 and `meta.trials_in_flight` 1 — the design's defaults, not answers of
+    the owner's, so their provenance says so and `show` prints them;
+  - goals from `--goals FILE` (the bullets under its `Goals` heading; only the outcome is filled,
+    measure, horizon and priority stay empty for the owner) and each venture file of `--ventures DIR`
+    (its first heading, its `Status:` line and the lines of its `## Gates` section, copied into
+    `ventures` as the gates the owner set);
+  - everything else (allowances, the confidential reservation, error budgets per live scope,
+    authority references, constraints, non-goals) as empty lists or null: the owner's to fill.
+`init` refuses to overwrite a file that exists; `--force` replaces it, keeping the old one beside it as
+`north-star.json.prev` (an older `.prev` moves to the first free `.prev.1`, `.prev.2` …, so a retry never loses it).
+
+What the file permits (`check`'s exit code, which a consumer may read as `status()`): without a goal
+that has an outcome, a measure, a horizon and a priority, **already-authorised maintenance may run
+and strategic allocation is blocked**, and the weekly memo says so in one line. A missing file reads
+the same way. `check` exits 0 (strategic allocation permitted), 3 (maintenance only: no complete
+goal, or no file), 4 (the file is unreadable or breaks its shape: nothing strategic, and the
+problems printed), 2 (usage, or the core missing); any other exit means "could not tell", never "refused".
+`init` exits 0, or 5 when it refused and wrote nothing (the file exists, a link on its path leads into a missing folder, an input is unreadable or yields no goal or venture). The revision
+is the first 12 hex digits of the SHA-256 of the file's canonical JSON: the barrier names it in a
+cycle's start, so a later edit is a new revision. Stdlib only, Python 3.9.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import math
+import os
+import re
+import sys
+import shutil
+import tempfile
+from pathlib import Path
+
+# The core (the regatta module) is found by lib/find_core.py, as sparks does.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  the config dir and the cost ratios
+
+VERSION = 1
+UNITS = ("effective", "list")
+EXIT_OK, EXIT_MAINTENANCE, EXIT_BAD, EXIT_USAGE, EXIT_REFUSED = 0, 3, 4, 2, 5
+
+# The owner's answers, with where each came from. Provenance is kept per dotted path in the file, so
+# a default the owner did not give (caps.control_slots_per_week, meta.trials_in_flight) is never mistaken for an answer.
+OWNER_D1 = "owner: Evolve D1 (builds after a dry week, the strategy record's D2-B; soundings admitted)"
+OWNER_D2 = "owner: Evolve D2 (the weekly envelope; the owner's units, the owner's to change)"
+DESIGN = "design default: not an answer of the owner's"
+CEILINGS = (  # provider, USD, the owner's unit, the key cost-ratio.json names it by
+    ("claude", 10, "effective", "anthropic"),
+    ("codex", 150, "list", "codex"),
+    ("gemini", 350, "list", "agy-gemini"),
+)
+TOP = {"version", "goals", "constraints", "non_goals", "commitments", "ventures", "allowances", "ceilings",
+       "caps", "meta", "framework_share", "confidential_reservation", "error_budgets",
+       "authority_references", "provenance"}
+GOAL_KEYS = ("id", "outcome", "measure", "horizon", "priority")
+ALLOWANCES = ("cash", "model", "ci", "host", "owner_attention")
+
+
+def path():
+    """The file: $NORTH_STAR, else sextant/north-star.json in the regatta config dir."""
+    p = os.environ.get("NORTH_STAR")
+    return Path(p).expanduser() if p else common.CONFIG / "sextant" / "north-star.json"
+
+
+def blank():
+    """The file's shape with the owner's answers in it and nothing inferred."""
+    return {
+        "version": VERSION,
+        "goals": [],
+        "constraints": [],
+        "non_goals": [],
+        "commitments": [],
+        "ventures": [],
+        "allowances": {k: None for k in ALLOWANCES},
+        "ceilings": {
+            "weekly": {p: {"usd": usd, "unit": unit, "ratio_key": key} for p, usd, unit, key in CEILINGS},
+            "arms": [],
+        },
+        "caps": {
+            "builds_per_week": 3,
+            "builds_usd_list_per_week": 45,
+            "soundings_per_week": 2,
+            "control_slots_per_week": 1,
+        },
+        "meta": {"trials_in_flight": 1},
+        "framework_share": {"print": "weekly", "with_displacement": True, "reservation": None},
+        "confidential_reservation": None,
+        "error_budgets": {},
+        "authority_references": [],
+        "provenance": {
+            "caps.builds_per_week": OWNER_D1,
+            "caps.builds_usd_list_per_week": OWNER_D1,
+            "caps.soundings_per_week": OWNER_D1,
+            "caps.control_slots_per_week": DESIGN,
+            "ceilings.weekly.claude": OWNER_D2,
+            "ceilings.weekly.codex": OWNER_D2,
+            "ceilings.weekly.gemini": OWNER_D2,
+            "meta.trials_in_flight": DESIGN,
+            "framework_share": "owner: the design's D26 (printed weekly with its displacement, no reservation)",
+        },
+    }
+
+
+def revision(doc):
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+
+class Unreadable(Exception):
+    pass
+
+
+def load(p=None):
+    """The parsed file, or None when it does not exist. Unreadable or not an object: Unreadable. A link
+    that leads nowhere (an unmounted drive, a moved vault) is unreadable, not absent."""
+    p = p or path()
+    try:
+        text = p.read_text(encoding="utf-8-sig")  # an editor's byte-order mark is no reason to block allocation
+    except FileNotFoundError:
+        if os.path.islink(p) or any(os.path.islink(q) and not os.path.exists(q) for q in Path(os.path.abspath(p)).parents):
+            raise Unreadable(f"{p} is a link that leads nowhere (is its drive mounted?)")
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        raise Unreadable(f"{p} is unreadable ({e})")
+    try:
+        doc = json.loads(text)
+    except (ValueError, RecursionError, MemoryError) as e:  # a deeply nested file is no JSON this verb reads
+        raise Unreadable(f"{p} is not JSON ({type(e).__name__}: {e})"[:300])
+    if not isinstance(doc, dict):
+        raise Unreadable(f"{p} holds {type(doc).__name__}, not an object")
+    try:  # the encoder recurses deeper than the parser: a file just under the parse limit breaks revision()
+        revision(doc)
+    except RecursionError:
+        raise Unreadable(f"{p} nests too deep to read")
+    return doc
+
+
+def is_num(x):
+    """A finite number; an int too large for a float is no number here (isfinite overflows on it)."""
+    try:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    except OverflowError:
+        return False
+
+
+def is_count(x):
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def filled(v):
+    """A value the owner wrote: not null, a boolean, blank text, or an empty list or object."""
+    return not (v is None or isinstance(v, bool) or (isinstance(v, str) and not v.strip()) or (isinstance(v, (list, dict)) and not v))
+
+
+def complete(goal):
+    # priority is what the portfolio ranks goals by, so it is a number ("high" beside 1 cannot be sorted)
+    return isinstance(goal, dict) and all(filled(goal.get(k)) for k in GOAL_KEYS) and is_num(goal.get("priority"))
+
+
+def ceiling_errors(prov, c):
+    """The errors of one weekly ceiling: `problems` reports them and `show` prints a ceiling with any as
+    not readable, so the two cannot disagree."""
+    if not isinstance(c, dict):
+        return [f"ceilings.weekly.{prov}: not an object"]
+    err = []
+    if not (is_num(c.get("usd")) and c["usd"] >= 0):
+        err.append(f"ceilings.weekly.{prov}.usd: not an amount of at least 0 (0 forbids the provider)")
+    if c.get("unit") not in UNITS:
+        err.append(f"ceilings.weekly.{prov}.unit: {c.get('unit')!r}, expected one of {', '.join(UNITS)}")
+    if "ratio_key" in c and not (isinstance(c["ratio_key"], str) and c["ratio_key"]):
+        err.append(f"ceilings.weekly.{prov}.ratio_key: not a name")
+    return err
+
+
+def problems(doc):
+    """(errors, warnings) for a parsed file. An error breaks the shape; a warning is the owner's to
+    finish or a number to look at. Only the keys this verb knows are judged: an unknown top-level
+    key is a warning, never an error (a later step adds its own)."""
+    err, warn = [], []
+    if not isinstance(doc, dict):  # a consumer may hand status() a doc of its own
+        return [f"the file holds {type(doc).__name__}, not an object"], warn
+    if type(doc.get("version")) is not int or doc["version"] != VERSION:
+        err.append(f"version: expected {VERSION}, got {doc.get('version')!r}")
+    for k in sorted(set(doc) - TOP):
+        warn.append(f"{k}: not a key this verb knows")
+    goals = doc.get("goals", [])
+    if not isinstance(goals, list):
+        err.append("goals: not a list")
+        goals = []
+    seen = set()
+    for i, g in enumerate(goals):
+        if not isinstance(g, dict):
+            err.append(f"goals[{i}]: not an object")
+            continue
+        gid = g.get("id")
+        if not isinstance(gid, str) or not gid:
+            err.append(f"goals[{i}]: no id")
+        elif gid in seen:
+            err.append(f"goals[{i}]: id {gid!r} twice")
+        else:
+            seen.add(gid)
+        gaps = [k for k in GOAL_KEYS if not filled(g.get(k))]
+        if gaps:
+            warn.append(f"goal {gid or i}: empty {', '.join(gaps)}; not counted until it has all five")
+        elif not is_num(g.get("priority")):
+            warn.append(f"goal {gid or i}: priority {g.get('priority')!r} is not a number; not counted until it is")
+    for k in ("constraints", "non_goals", "commitments", "ventures", "authority_references"):
+        if not isinstance(doc.get(k, []), list):
+            err.append(f"{k}: not a list")
+    caps = doc.get("caps", {})
+    if not isinstance(caps, dict):
+        err.append("caps: not an object")
+        caps = {}
+    # every cap is a North Star line the portfolio reads: a deleted one is no cap, so it is an error
+    for k in ("builds_per_week", "soundings_per_week", "control_slots_per_week"):
+        if not is_count(caps.get(k)):
+            err.append(f"caps.{k}: missing, or not a whole number of at least 0")
+    if not (is_num(caps.get("builds_usd_list_per_week")) and caps["builds_usd_list_per_week"] >= 0):
+        err.append("caps.builds_usd_list_per_week: missing, or not an amount of at least 0")
+    meta = doc.get("meta", {})
+    if not isinstance(meta, dict) or not is_count(meta.get("trials_in_flight")):
+        err.append("meta.trials_in_flight: missing, or not a whole number of at least 0")
+    cl = doc.get("ceilings", {})
+    weekly = cl.get("weekly") if isinstance(cl, dict) else None
+    if not isinstance(weekly, dict):
+        err.append("ceilings.weekly: not an object")
+        weekly = {}
+    # a ceiling only narrows, so it fails closed: a provider key this verb does not know (a typo, another
+    # case) and a known provider left out are both errors, or the ceiling check would hold nothing
+    known = [p for p, *_ in CEILINGS]
+    for prov, c in sorted(weekly.items()):
+        if prov not in known:
+            err.append(f"ceilings.weekly.{prov}: not a provider this verb knows ({', '.join(known)})")
+        else:
+            err.extend(ceiling_errors(prov, c))
+    for prov in [p for p in known if p not in weekly]:
+        err.append(f"ceilings.weekly.{prov}: missing; a ceiling of 0 forbids the provider, a missing one would hold nothing")
+    if isinstance(cl, dict) and not isinstance(cl.get("arms", []), list):
+        err.append("ceilings.arms: not a list")
+    al = doc.get("allowances", {})
+    if not isinstance(al, dict):
+        err.append("allowances: not an object")
+    if not isinstance(doc.get("error_budgets", {}), dict):
+        err.append("error_budgets: not an object")
+    if not isinstance(doc.get("provenance", {}), dict):
+        err.append("provenance: not an object")
+    return err, warn
+
+
+def ceiling_columns(prov, c):
+    """(list USD, effective USD, ratio key) of a ceiling in the owner's unit and the other column, from
+    the core's cost-ratio.json. A column that cannot be known is None: a ceiling exists for a
+    subscription provider, so a key the file does not name (or a typo) is unknown, never the core's
+    pay-per-use fallback of effective = list, which would invent a figure."""
+    key = c.get("ratio_key") or prov
+    ratio, entry = common.cost_ratio(key)
+    usd, unit = c["usd"], c["unit"]
+    if ratio is None or entry is None:
+        return (usd, None, key) if unit == "list" else (None, usd, key)
+    lst, eff = (usd, usd * ratio) if unit == "list" else (usd / ratio, usd)
+    if not (math.isfinite(lst) and math.isfinite(eff)):
+        return (usd, None, key) if unit == "list" else (None, usd, key)  # an overflow is no figure
+    return lst, eff, key
+
+
+def status(doc=None):
+    """What the file permits: {'strategic': bool, 'maintenance': True, 'why': str, 'revision': str|None}.
+    A consumer reads this and never re-derives it; the maintenance already authorised is never
+    blocked here (the file only gates allocation), so it is always True."""
+    try:
+        doc = load() if doc is None else doc
+    except Unreadable as e:
+        return {"strategic": False, "maintenance": True, "why": str(e), "revision": None}
+    if doc is None:
+        return {"strategic": False, "maintenance": True, "why": f"no North Star at {path()}", "revision": None}
+    try:
+        revision(doc)
+    except RecursionError:  # a consumer's own doc too deep to encode: no revision, nothing strategic
+        return {"strategic": False, "maintenance": True, "why": "the North Star nests too deep to read", "revision": None}
+    err, _ = problems(doc)
+    if err:
+        return {"strategic": False, "maintenance": True, "why": f"{err[0]} ({len(err)} problem{'s' * (len(err) != 1)})",
+                "revision": revision(doc)}
+    ok = [g for g in doc.get("goals", []) if complete(g)]
+    if not ok:
+        return {"strategic": False, "maintenance": True, "why": "no goal with an outcome, a measure, a horizon and a priority",
+                "revision": revision(doc)}
+    return {"strategic": True, "maintenance": True, "why": f"{len(ok)} goal{'s' * (len(ok) != 1)}", "revision": revision(doc)}
+
+
+def memo_line(doc=None):
+    """The one line the weekly memo carries when strategic allocation is blocked (None when it is not)."""
+    s = status(doc)
+    if s["strategic"]:
+        return None
+    return f"No usable North Star ({s['why']}): already-authorised maintenance runs, strategic allocation is blocked."
+
+
+# ---- init ---------------------------------------------------------------------------------------
+
+def section_lines(text, heading_re, stop_re=None):
+    """The lines under the first heading `heading_re` matches, up to the next heading of the same or
+    a higher level (a deeper heading stays inside, unless `stop_re` matches it), fenced code skipped."""
+    out, level, fence = [], None, None  # fence: the opener's run (``` or ~~~, its length); only its like closes it
+    for line in text.splitlines():
+        m = re.match(r"\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence is None and m:
+            fence = m.group(1)
+        elif fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+                fence = None
+            continue
+        elif re.match(r"#+(\s|$)", line):  # a heading; "#2 is hard" is text
+            depth = len(line) - len(line.lstrip("#"))
+            if level is not None and (depth <= level or (stop_re and re.match(stop_re, line, re.I))):
+                break
+            if level is None and re.match(heading_re, line, re.I):
+                level = depth
+        elif level is not None:
+            out.append(line)
+    return out
+
+
+def goal_bullets(text):
+    """The top-level bullets (`-`, `*` or `1.`) under the first heading that is Goals ("Non-goals" is
+    not), a wrapped line or a sub-bullet joined to the goal above."""
+    out = []
+    # the heading is "Goals" ("Goal-setting" is not); a deeper "Non-goals" or "Not now" ends the list
+    for line in section_lines(text, r"#+\s*goals?(?![\w-])", r"#+\s*(non-?\s*goals?|not now|out of scope)\b"):
+        m = re.match(r"(?:[-*]|\d+[.)])\s+(.*\S)\s*$", line)
+        if m:
+            out.append(m.group(1))
+        elif out and re.match(r"\s+\S", line):
+            out[-1] += " " + line.strip()
+    return out
+
+
+def venture(p):
+    text = p.read_text(encoding="utf-8")
+    title = next((l.lstrip("# ").strip() for l in text.splitlines() if l.startswith("# ")), p.stem)
+    status_line = ""
+    lines = text.splitlines()
+    for i, l in enumerate(lines):
+        if l.startswith("Status:"):
+            parts = [l.strip()]
+            # a wrapped status runs to the blank line, the next `Key:` line or the next heading
+            for nxt in lines[i + 1:]:
+                if (not nxt.strip() or nxt.startswith("#") or re.match(r"[A-Z][\w ]*:\s", nxt)
+                        or re.match(r"\s*([-*]|\d+[.)])\s|\*\*|```", nxt)):
+                    break
+                parts.append(nxt.strip())
+            status_line = " ".join(parts).rstrip(" ·").strip()
+            break
+    # List items are the gates when there are any: a wrapped or indented line joins its item, prose before
+    # the first item is an intro and unindented prose after a blank line ends the item, neither a gate.
+    # With no item, each blank-line-separated paragraph is one gate.
+    # A paragraph led by bold (`**Pain** — open`) is a gate even beside list items, kept in its place.
+    seq, items, paras, in_item, ended, after_blank = [], [], [], False, False, False
+    for line in section_lines(text, r"#+\s*gates\b"):
+        if not line.strip():
+            after_blank = True
+            continue
+        if re.match(r"(\d+[.)]|[-*])\s", line):
+            items.append([line.strip()])
+            seq.append(("item", items[-1]))
+            in_item = True
+            ended = False
+        elif in_item and not (after_blank and line.lstrip().startswith("**")):
+            if ended or (after_blank and line[0] not in " \t"):
+                ended = True
+            else:
+                items[-1][0] += " " + line.strip()
+        elif after_blank or not paras or in_item:
+            paras.append([line.strip()])
+            seq.append(("para", paras[-1]))
+            in_item = False
+        else:
+            paras[-1][0] += " " + line.strip()
+        after_blank = False
+    gates = [t[0] for k, t in seq if k == "item" or not items or t[0].startswith("**")]
+    return {"id": p.stem, "title": title, "status": status_line, "gates": gates}
+
+
+def cmd_init(a):
+    p = path()
+    target = Path(os.path.realpath(p))  # write through the config dir's link to where the owner keeps it
+    try:
+        exists = target.exists()
+        # an unmounted drive reads as no file: a link anywhere on the path that leads nowhere is never built over
+        # (the file itself may be a link to a file not yet there, in a folder that is; a link above it must lead somewhere)
+        for part in [Path(os.path.abspath(p)), *Path(os.path.abspath(p)).parents]:
+            leaf = str(part) == os.path.abspath(p)
+            if os.path.islink(part) and not os.path.exists(part) and (
+                    not leaf or not os.path.isdir(os.path.dirname(os.path.realpath(part)))):
+                raise OSError(f"{part} is a link into a folder that is missing (is its drive mounted?)")
+    except OSError as e:
+        print(f"sextant north-star: {p}: {e} (nothing written)", file=sys.stderr)
+        return EXIT_REFUSED
+    if exists and not a.force:
+        print(f"sextant north-star: {p} exists; --force replaces it (nothing written)", file=sys.stderr)
+        return EXIT_REFUSED
+    doc = blank()
+    if a.goals:
+        try:
+            bullets = goal_bullets(Path(a.goals).expanduser().read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"sextant north-star: --goals {a.goals}: {e} (nothing written)", file=sys.stderr)
+            return EXIT_REFUSED
+        doc["goals"] = [{"id": f"g{i}", "outcome": b, "measure": None, "horizon": None, "priority": None}
+                        for i, b in enumerate(bullets, 1)]
+        if not bullets:  # a file that yields no goal is an unusable input, and --force would drop the owner's goals
+            print(f"sextant north-star: no goal bullets under a Goals heading in {a.goals} (nothing written)", file=sys.stderr)
+            return EXIT_REFUSED
+    if a.ventures:
+        try:
+            if not Path(a.ventures).expanduser().is_dir():
+                raise OSError("not a folder")
+            files = sorted(Path(a.ventures).expanduser().glob("*.md"))
+            doc["ventures"] = [venture(f) for f in files if f.name.lower() != "readme.md"]
+            if not doc["ventures"]:
+                raise OSError("no venture files (*.md) in it")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"sextant north-star: --ventures {a.ventures}: {e} (nothing written)", file=sys.stderr)
+            return EXIT_REFUSED
+    doc["provenance"]["imported"] = f"init {datetime.date.today().isoformat()}" + (
+        f" from {Path(a.goals).name}" if a.goals else "") + (" and the venture files" if a.ventures else "")
+    tmp = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".north-star.")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        # mkstemp makes 0600: keep an existing file's mode (a vault's readers); a new file stays private
+        os.chmod(tmp, (target.stat().st_mode & 0o777) if target.is_file() else 0o600)
+        if target.is_file():  # --force replaces the whole file: the owner's edits stay one step away
+            prev = Path(str(target) + ".prev")
+            if prev.exists():  # a retry never overwrites an older .prev: it moves to the first free number
+                n = 1
+                while Path(f"{prev}.{n}").exists():
+                    n += 1
+                os.replace(prev, f"{prev}.{n}")
+            shutil.copy2(target, str(prev))
+        os.replace(tmp, target)  # whole or not at all
+    except OSError as e:
+        try:
+            if tmp:
+                os.unlink(tmp)
+        except OSError:
+            pass
+        print(f"sextant north-star: cannot write {target} ({e}); nothing written", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"wrote {target} (revision {revision(doc)}): {len(doc['goals'])} goals, {len(doc['ventures'])} ventures; "
+          f"measure, horizon and priority of each goal are yours to fill")
+    return 0
+
+
+# ---- show ---------------------------------------------------------------------------------------
+
+def money(x):
+    return common.usd(x) if x is not None and math.isfinite(x) else "?"
+
+
+def ceiling_line(prov, c):
+    lst, eff, key = ceiling_columns(prov, c)
+    if lst is None or eff is None:
+        return f"{prov}: {money(c['usd'])} {c['unit']}; the other column unknown: no usable ratio {key!r} in cost-ratio.json"
+    return f"{prov}: {money(lst)} list ({money(eff)} effective), set in {c['unit']}"
+
+
+def cmd_show(a):
+    try:
+        doc = load()
+    except Unreadable as e:
+        print(f"sextant north-star: {e}", file=sys.stderr)
+        return EXIT_BAD
+    if doc is None:
+        print(f"sextant north-star: no file at {path()}; `sextant north-star init` writes one", file=sys.stderr)
+        return EXIT_MAINTENANCE
+    st = status(doc)
+    if a.json:
+        try:
+            print(json.dumps({"file": str(path()), "revision": st["revision"], "strategic": st["strategic"],
+                              "why": st["why"], "north_star": doc}, indent=1, ensure_ascii=False))
+        except RecursionError:  # the parse allows deeper nesting than the pure-Python encoder (3.12+)
+            print("sextant north-star: the file nests too deep to print", file=sys.stderr)
+            return EXIT_BAD
+        return EXIT_OK
+    prov = doc.get("provenance", {}) if isinstance(doc.get("provenance"), dict) else {}
+    out = [f"North Star {st['revision']} — {path()}",
+           f"strategic allocation: {'permitted' if st['strategic'] else 'blocked'} ({st['why']}); maintenance: permitted"]
+    goals = doc.get("goals", []) if isinstance(doc.get("goals"), list) else []
+    out.append(f"goals ({len(goals)}):")
+    for g in goals:
+        if isinstance(g, dict):
+            def v(k):
+                return g[k] if filled(g.get(k)) else "—"
+            out.append(f"  {g.get('id', '?')}{'' if complete(g) else ' (incomplete)'}: {v('outcome')}"
+                       f" | measure {v('measure')} | horizon {v('horizon')} | priority {v('priority')}")
+    caps = doc.get("caps", {}) if isinstance(doc.get("caps"), dict) else {}
+    out.append("caps a week: " + ", ".join(
+        f"builds spend {common.cost_text(caps[k])}" if k == "builds_usd_list_per_week" and is_num(caps[k])
+        else f"{k.replace('_', ' ')} {caps[k]}" for k in sorted(caps)))
+    meta = doc.get("meta", {}) if isinstance(doc.get("meta"), dict) else {}
+    out.append(f"meta.trials_in_flight {meta.get('trials_in_flight')}")
+    for k, v in sorted(prov.items()):  # what the owner did not give is said, wherever it sits
+        if isinstance(v, str) and v.startswith("design default"):
+            out.append(f"  {k} — {v}")
+    cl = doc.get("ceilings")
+    weekly = cl.get("weekly") if isinstance(cl, dict) else None
+    out.append("weekly ceilings (ceilings, not targets):")
+    for p_, c in sorted(weekly.items()) if isinstance(weekly, dict) else []:
+        out.append("  " + (f"{p_}: not readable (see check)" if ceiling_errors(p_, c) else ceiling_line(p_, c)))
+    fs = doc.get("framework_share")
+    out.append(f"framework share: {fs.get('print', '—') if isinstance(fs, dict) else '—'}, printed with its displacement"
+               + (f"; reservation {fs['reservation']}" if isinstance(fs, dict) and filled(fs.get("reservation")) else ", no reservation"))
+    out.append(f"confidential reservation: {doc['confidential_reservation'] if filled(doc.get('confidential_reservation')) else 'none set'}")
+    for k in ("non_goals", "constraints", "commitments", "ventures", "authority_references"):
+        v = doc.get(k)
+        out.append(f"{k.replace('_', ' ')}: {len(v) if isinstance(v, list) else '?'}")
+    eb = doc.get("error_budgets")
+    out.append(f"error budgets: {', '.join(sorted(eb)) if isinstance(eb, dict) and eb else 'none set'}")
+    print("\n".join(out))
+    return EXIT_OK
+
+
+# ---- check --------------------------------------------------------------------------------------
+
+def cmd_check(a):
+    try:
+        doc = load()
+    except Unreadable as e:
+        res = {"exit": EXIT_BAD, "errors": [str(e)], "warnings": [], "strategic": False, "revision": None, "why": str(e)}
+    else:
+        if doc is None:
+            res = {"exit": EXIT_MAINTENANCE, "errors": [], "warnings": [], "strategic": False, "revision": None,
+                   "why": f"no North Star at {path()}"}
+        else:
+            err, warn = problems(doc)
+            st = status(doc)  # its verdict comes from the same problems(), so the two cannot disagree
+            res = {"exit": EXIT_BAD if err else (EXIT_OK if st["strategic"] else EXIT_MAINTENANCE),
+                   "errors": err, "warnings": warn, "strategic": st["strategic"], "revision": st["revision"], "why": st["why"]}
+    if a.json:
+        print(json.dumps(res, indent=1, ensure_ascii=False))
+    else:
+        for e in res["errors"]:
+            print(f"error: {e}")
+        for w in res["warnings"]:
+            print(f"warning: {w}")
+        line = {EXIT_OK: "ok: strategic allocation permitted", EXIT_MAINTENANCE: "maintenance only: strategic allocation blocked",
+                EXIT_BAD: "unusable: strategic allocation blocked"}[res["exit"]]
+        print(f"{line}{' (' + res['why'] + ')' if res.get('why') and res['exit'] != EXIT_OK else ''}"
+              f"{' — revision ' + res['revision'] if res['revision'] else ''}")
+    return res["exit"]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="sextant", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd")
+    ns = sub.add_parser("north-star", help="the deployment's goals, caps and ceilings").add_subparsers(dest="verb")
+    i = ns.add_parser("init", help="write the file from what the owner decided")
+    i.add_argument("--goals", metavar="FILE", help="a Markdown file; the bullets under its Goals heading become goals")
+    i.add_argument("--ventures", metavar="DIR", help="a folder of venture files; each one's status and gates are copied")
+    i.add_argument("--force", action="store_true", help="replace a file that exists")
+    ns.add_parser("show", help="print the file, ceilings in both columns").add_argument("--json", action="store_true")
+    ns.add_parser("check", help="judge the file; exit 0 permits strategic allocation, 3 maintenance only, 4 unusable").add_argument("--json", action="store_true")
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        return EXIT_USAGE if e.code else 0
+    if a.cmd != "north-star" or not a.verb:
+        ap.print_usage(sys.stderr)
+        return EXIT_USAGE
+    return {"init": cmd_init, "show": cmd_show, "check": cmd_check}[a.verb](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
