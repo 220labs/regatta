@@ -2,6 +2,84 @@
 
 ## Unreleased
 
+- `scope-pass check`: the scan reads the whole text, not a line at a time, so a word of the node's list
+  split by a hard wrap is held; a space in a word or a repo name matches any run of whitespace, and a hit
+  is named by the line it starts on; a wrap whose next line opens with `>`, `#` or `//` counts too. A
+  `words.txt` line `re:<pattern>` holds an open-ended family of ids (case-blind, on word edges, `^`/`$` per
+  line); one that does not compile alone, sets a flag (global, `(?i)`, or in a group, `(?-i:…)`), matches an
+  empty string or a single character (its least width under two: `[a-z]`, `\b`, `x[0-9]*`, `(?=@)`) makes
+  `check` exit 2 (the scope not ready where the list is read), as do a pattern that matches a line of plain
+  text (`--`, `\w\w`, `[a-z]{2,}`, `\d\d`) and a list that cannot be read (a BOM before its first line is read past), and a load-time probe that backtracks stops at the scan's clock
+  the same way. A hit is named by its `words.txt` line, so nothing check prints quotes the pattern; two
+  patterns that differ only in letter case are both kept. A pattern's match that is the scope's own name is
+  exempt where the name is; `proof` reports LEAKED from the list's other terms, every pattern but the one
+  that fails included, and a stalled pattern's hits before the stall, and from the day's receipts, even when a `re:` line is broken; a scan past
+  `SCOPE_PASS_SCAN_SECONDS` (60) exits 2. A list line that began `re:` before this, a literal then, is a
+  pattern now. `weekly-run aurora --scope` stops a pass whose word list cannot judge (proof's exit 2 naming
+  words.txt, or `where` refusing the list alone) with that reason and no session, after proof has read every run day; every run day's proof is read, and a LEAKED stands over a
+  word-list stop, on any day and after the backstop's record. `record` on a scope stopped for two reasons names both.
+  The list must read as UTF-8 (a Latin-1 or UTF-16 list, or a line holding a NUL or a later BOM, exits 2: its words
+  never matched); a `#` starts a comment only at a line's start or after a space (`re:ACME-#?\d+`, `C# Labs`); a
+  wrap whose next line opens with `*` or `-` (a block comment, a bullet, a `--` comment) counts as one.
+
+- Evolve S3 (docs/self-improvement-2026-10-30.md): the schemas and coverage. `lib/evolve_schema.py` holds the
+  finding (its lifecycle in three families: proposal `proposed | routed | parked | killed`, execution
+  `reserved … cancelled`, outcome `pending | benefit_observed | closed_verified | closure_regression`;
+  `found_by` and `also_found_by`; `action_id` = hash(finding id, action version, target scope), the cycle in
+  provenance only), the findings file, the coverage record, the manifest, the receipt and the ledgers, as
+  data a validator walks; `evolve validate`, `evolve schema` and `evolve action-id` use it. `lenses.json`
+  (Ring 1, read with `open()`, on `autofinish_exclude`) declares the fourteen lenses, their sources and
+  readers, the collectors and the outcome classes. `evolve coverage` builds the register from it and each
+  scope's profile, `inaccessible` (declared, unreadable on this yard) apart from `stale` (read, old by its
+  newest record's own time), names the surface nothing reads, and writes the collector manifest a quiet
+  receipt needs, against the last complete pass's baseline (the pass runs `coverage --scope S --open` as it
+  starts (with `--session ID`, its own session, which carries over) and `--promote` once complete, which copies that opening manifest: a run that only
+  looked consumes no change, what landed during the pass is still one, and the pass's own output — `dreams/`,
+  `evolve/`, its records branch, its session — is none): every required collector fresh (a verb's with its
+  run receipt), nothing changed in lenses.json, the profile, the North Star or the scope's registry entry, no
+  commit in its repos outside the pass's output, no other session of the scope since, no record newer than that cutoff in a source that wakes the scope (its own, or a shared log marked
+  `wakes`), no exclusion past its review. A source the pass's section never names reads `unread`. `evolve conformance` sorts the
+  declared rules against the transcripts' tool calls, the subagents' too: dead, holds (a hook's or the
+  permission system's refusal counts as holding),
+  violated, worked around (three successes in two sessions); a call with no result is unknown, and a call is
+  counted once however many files or linked login dirs carry it, and a scope's transcripts are its members'
+  own session folders (a sibling repo that shares a prefix is not the scope's). Times are read the same on
+  every Python (a `+HHMM` offset; a bare date is no time). Both read the registry once through the
+  core's `read_registry()`, fail closed on a torn one and walk every scope; a confidential scope is judged
+  only under its own `--scope` (a global run counts it, `skipped_confidential`, and opens nothing of it), named by
+  its marker, its profile's words never shown, its transcripts judged on their path before any open (the
+  core's fence: a session started in a scratch folder named after the scope is not recognised as its). New suite: `tests/evolve-schemas.sh`.
+- Evolve S2 (docs/self-improvement-2026-10-30.md): `scope-pass record` is the export gate. The dream goes on
+  the anchor's records branch (`claude/<host>/<day>-scope-pass`, git plumbing, pushed; kl-s5 D1-B), whose
+  pull request record opens and readies, so the anchor's own merge lands it; `dreams/` in the anchor's
+  `in_place` is all it needs (autofinish judges no worktree-less branch, and would skip this one anyway).
+  The draft's heading is made export-safe, `# Upstream — <day>` (no scope, no count), the same in
+  heading_ok, record and proof; then the scan with the scope's own name, the gate's `scope.upstream` judge,
+  and the exact bytes written and read back. The receipt, `dreams/<day>-receipt.json` beside the dream,
+  carries their SHA-256, the cycle, the records ref and the judge's revision; a held or failed one goes
+  beside a complete one, never over it, and bytes a current complete receipt names are not judged again.
+  The vault's `log.md` gets `evolve --scope <scope>: complete|held`, a word, no count. record exits 0
+  recorded, 3 held, 1 retry (a judge that could not tell, a commit, a push), 4 LEAKED. `proof` says
+  LAUNCHED once the dream is on the anchor's main and the vault's file is certified, WAITING (5) while
+  the pull request is open, HELD, and LEAKED only for bytes no complete receipt of the day named (a receipt
+  of another judge revision is MISSING a current one). The new `scope-pass receipt` and weekly-run's
+  `RECEIPT` line verify it; weekly-run's backstop records once more after a session that stopped or a
+  judge that could not tell. `gate` and `jev`, which record's judge loads, are on `autofinish_leaks`.
+  `embark-memo` renders vault first: `--vault-out` the whole memo (weekly-run commits it to
+  `<vault>/dreams/<day>-embark.md` before regatta's copy; one written already is never written over), and
+  regatta's view leaves out every item, section or line about a venture or the household (main's
+  `ventures/|Vault only` floor, any path to `me/household.md` or `me/pointers.md`), with a pointer or a
+  count, never silently (TODO.md [embark-on-helm] (2), (12)); the parts both views share are read once. New `bin/evolve
+  probes`: the answer surface end to end, zero tokens, every night after the tend on its own fixture;
+  `--doc` and `--board` never read or name a confidential scope's doc.
+- `week-digest` intake made trustworthy (evolve S1): the fence is judged from the path before any file is opened (a
+  confidential transcript is counted by name and never read, so its prompt count is no longer printed); the window
+  is each prompt's own time, not its file's modification time; every login dir's transcripts are read (the core's
+  `login_dirs`), where only the home's were; a prompt another session holds with the same time and words counts once;
+  `--json` prints the same read whole (full text, no cut) for plumb's `asks`. The text form keeps its shape; its
+  heading counts open sessions only, the confidential ones in the footer.
+- The night gains an `asks` step (after the dream, before trim; evolve S1): plumb's `asks run`, once a week, no
+  session, where plumb's `asks` is installed; a crash fails the step, a gate that is off is a sieve-only week.
 - The night's trim step (S5's landing review): it runs last, after the dream, and on a Sunday night waits
   until 00:30 for every host's day file of the week's last day (each Mac collects a day only after it
   ends and pushes it at about 00:10), noting a host still short; its calls share the night's `WEEKLY_CAP`, so

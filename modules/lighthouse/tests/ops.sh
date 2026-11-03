@@ -134,11 +134,20 @@ check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; 
   "[(0, None), (0, None), (0, None)]" "…nor to a host that only starts like this one's (the second landing review)"
 
 echo "ops pick: usage first, then ci-provider per repo, the marker stripped"
-printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$*" "${LIGHTHOUSE_DESK:-unset}" >> "%s"\n' "$T/cp.calls" > "$T/cp"; chmod +x "$T/cp"
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$*" "${LIGHTHOUSE_DESK:-unset}" >> "%s"\n[ "$WHARF_READ_TOKEN" = "%s" ] && echo tok >> "%s.tok"\nexit 0\n' "$T/cp.calls" "$TOK" "$T/cp.calls" > "$T/cp"; chmod +x "$T/cp"
 : > "$T/calls"; python3 "$T/drive.py" "$OPS" "$T/answers.json" "$T/calls" --tool "$T/cp" pick --apply "$T/r1" "$T/r2" > "$T/out" 2>&1
 check "$?" "0" "ops pick --apply over two repos"
 check "$(cat "$T/cp.calls")" "$T/r1 --pick --usage $T/logs/ci-usage.json --apply|unset
 $T/r2 --pick --usage $T/logs/ci-usage.json --apply|unset" "…ci-provider --pick per repo with the desk's usage file, LIGHTHOUSE_DESK never passed on"
+check "$(cat "$T/cp.calls.tok" 2>/dev/null)" "tok
+tok" "…the desk's GITHUB_TOKEN passed as WHARF_READ_TOKEN, for the two admin reads the gh login cannot make"
+printf '#!/bin/sh\nprintf "%%s\\n" "${WHARF_READ_TOKEN:-none}" >> "%s"\n' "$T/cp3.seen" > "$T/cp3"; chmod +x "$T/cp3"
+WHARF_READ_TOKEN=old python3 "$T/drive.py" "$OPS" "$T/answers.json" "$T/calls" --tool "$T/cp3" pick "$T/r1" > "$T/out" 2>&1
+check "$(cat "$T/cp3.seen")" "$TOK" "…an inherited WHARF_READ_TOKEN is replaced by the desk's, never forwarded"
+cp "$TF" "$T/ops.env.keep"; printf 'CIRCLECI_TOKEN=%s\n' "$CTOK" > "$TF"; : > "$T/cp3.seen"
+WHARF_READ_TOKEN=old python3 "$T/drive.py" "$OPS" "$T/answers.json" "$T/calls" --tool "$T/cp3" pick "$T/r1" > "$T/out" 2>&1
+check "$(cat "$T/cp3.seen")" "none" "…and with no GITHUB_TOKEN in ops.env, none is passed, the inherited one dropped"
+cat "$T/ops.env.keep" > "$TF"
 printf '#!/bin/sh\ncase "$1" in *r2) exit 2;; *r3) exit 3;; esac\n' > "$T/cp2"; chmod +x "$T/cp2"
 python3 "$T/drive.py" "$OPS" "$T/answers.json" "$T/calls" --tool "$T/cp2" pick "$T/r1" "$T/r2" > "$T/out" 2>&1; check "$?" "0" "a repo the pick does not handle (exit 2) is reported, not the job's failure"
 grep -q '2 repos — 1 picked or unchanged, 1 refused or not handled, 0 on a failing lane' "$T/out"; check "$?" "0" "…counted in the summary"
@@ -155,7 +164,10 @@ mkdir -p "$T/fail"
 stub dispatch-queue 'case "$1" in home) exit "$(cat '"$T"'/q.home)";; list) cat '"$T"'/q.json;; esac'
 stub dispatch '[ "$1" = --slots ] && echo "4 6"'
 stub headroom 'echo "{\"room\": true, \"sample\": {\"avail\": 51.0, \"swap\": 1.65, \"rate\": 0.0}}"; exit 0'
-stub account 'printf "%s\n" "[{\"label\": \"acct-a\", \"eligible\": true, \"limits\": {\"seven_day\": 31, \"five_hour\": 3, \"fable_week\": 0, \"locked\": []}}]"'
+# account logs its arguments; acct-a's reading was taken at $T/acct.sampled, Orca's agent row at a fixed time, and
+# acct-far is a row whose login is not set up here. An uncached call reads acct-a again when $T/probe-ok exists.
+stub account 'echo "$*" >> '"$T"'/account.calls; case "$*" in *--cached*) ;; *) [ -e '"$T"'/probe-ok ] && date +%s > '"$T"'/acct.sampled;; esac; printf "%s\n" "[{\"label\": \"acct-a\", \"eligible\": true, \"sampled\": $(cat '"$T"'/acct.sampled), \"limits\": {\"seven_day\": 31, \"five_hour\": 3, \"fable_week\": 0, \"locked\": []}}, {\"label\": \"agy\", \"report\": true, \"eligible\": false, \"sampled\": 1793545472.5, \"limits\": {\"seven_day\": 8, \"five_hour\": 0, \"locked\": []}}, {\"label\": \"acct-far\", \"here\": false, \"eligible\": false, \"sampled\": null, \"limits\": null}]"'
+date +%s > "$T/acct.sampled"; : > "$T/account.calls"
 stub usage-report 'echo "{\"window\": [\"2026-10-20\", \"2026-10-26\"], \"proxy_usd\": 1000.0}"'
 echo 0 > "$T/q.home"
 cat > "$T/q.json" <<'EOF'
@@ -220,6 +232,9 @@ check "$(tail -n 1 "$T/logs/ops.jsonl" | python3 -c 'import json,sys,os; l=json.
 check "$(last mem.avail) $(last mem.swap_gb) $(last mem.rate) $(last mem.room)" "51.0 1.65 0.0 True" "mem: headroom's sample"
 check "$(last check.slots_busy) $(last check.waiting)" "1 1" "check: a slot and a ticket whose pid runs, the dead ones not"
 check "$(last weeks.acct-a.weekly) $(last weeks.acct-a.five_hour) $(last weeks.acct-a.fable) $(last weeks.acct-a.eligible)" "31 3 0 True" "weeks: account limits per login label"
+check "$(last weeks.acct-a.sampled) $(last weeks.agy.weekly) $(last weeks.agy.report) $(last weeks.agy.eligible)" "$(cat "$T/acct.sampled") 8 True False" \
+  "…with when each reading was taken, and Orca's agent as a report row (2026-11-01)"
+check "$(cat "$T/account.calls")" "limits --all --orca --cached --json" "…read from the caches, Orca's included; a fresh reading refreshes nothing"
 check "$(last cost.week_list) $(last cost.week_effective)" "1000.0 20.0" "cost: the week's list price and its effective figure by the core's ratio"
 check "$(last budget.gh-user.state) $(last budget.gh-user.used) $(last budget.gh-user.cap) $(last budget.gh-user.share)" "ok 300.0 3000 0.1" "budget: S1's usage, used of the month's cap"
 check "$(last budget.gh-org.state) $(last budget.cci.used) $(last budget.cci.share)" "refused 1200.0 0.04" "…an account its endpoint refused, and CircleCI's credits"
@@ -263,6 +278,75 @@ OPS_TIMEOUT=5 OPS_SAMPLE_DEADLINE=1 smp sample > /dev/null 2>&1
 check "$(last partial) $(last cost) $(last slots.busy)" "True None 4" "the sample's deadline: the read still out is null, the row partial, the rest kept"
 stub usage-report 'echo "{\"window\": [\"2026-10-20\", \"2026-10-26\"], \"proxy_usd\": 1000.0}"'
 
+echo "ops sample: budget alarms, one logbook issue a crossing (ci-budgets)"
+# helm's real ask files them; ASK_GH_API stands in for GitHub as helm's suite does: each call recorded,
+# issues numbered from 41, a POST failing while $T/ghfail exists
+ln -sf "$C/../helm/bin/ask" "$TL/ask"
+mkdir -p "$REGATTA_CONFIG/helm"; printf '%s\n' acme/logbook > "$REGATTA_CONFIG/helm/logbook-repo"; printf '%s\n' '@acme-owner' > "$REGATTA_CONFIG/helm/mention"
+cat > "$T/askgh" <<'EOF'
+#!/bin/sh
+[ -e "$GHF" ] && { echo "HTTP 502" >&2; exit 1; }
+n=$(( $(wc -l < "$GHC" 2>/dev/null || echo 0) + 41 )); printf '%s ' "$*" >> "$GHC"; tr '\n' ' ' >> "$GHC"; echo >> "$GHC"
+printf '{"number": %d}\n' "$n"
+EOF
+chmod +x "$T/askgh"; export ASK_GH_API="$T/askgh" GHC="$T/ask.calls" GHF="$T/ghfail"; : > "$GHC"
+cci() { python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["reporting-window=last-30-days"]=[200,{"org_data":{"metrics":{"total_credits_used":float(sys.argv[2])}}}]; a["reporting-window=last-7-days"]=[200,{"org_data":{"metrics":{"total_credits_used":float(sys.argv[3])}}}]; json.dump(a,open(sys.argv[1],"w"))' "$T/answers.json" "$1" "$2"; }
+AL="$T/logs/ci-budget-alarms.json"
+smp sample > "$T/out" 2>&1
+check "$? $(wc -l < "$GHC" | tr -d ' ') $(test -e "$AL" && echo there || echo absent)" "0 0 absent" "every account under its terms: nothing filed, no state written"
+cci 1200 8500; smp sample > "$T/out" 2>&1
+grep -q "budget cci: past its week share — logbook issue #41" "$T/out"; check "$?" "0" "CircleCI's week past its share (8500, the margin counted: 9350 of 9000): one issue"
+has "$(cat "$GHC")" "--method POST /repos/acme/logbook/issues" "…filed in helm/logbook-repo"
+has "$(cat "$GHC")" '"title": "CI budget: cci past its week share"' "…its title naming the account and the crossing"
+has "$(cat "$GHC")" '"body": "@acme-owner' "…its body led by helm/mention, so the owner's phone hears it"
+has "$(cat "$GHC")" '"labels": ["budget"]' "…labelled budget"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cci"]; print(d["level"], d["issue"])' "$AL")" "week 41" "…the level and the issue kept"
+smp sample > "$T/out" 2>&1
+check "$(wc -l < "$GHC" | tr -d ' ') $(grep -c 'budget cci' "$T/out")" "1 0" "the next sample at the same level: nothing filed (once a crossing, not a sample)"
+cci 25000 8500; smp sample > "$T/out" 2>&1
+grep -q "budget cci: into its month reserve — logbook issue #42" "$T/out"; check "$?" "0" "the month into its reserve (27500 of 24000): a second crossing, a second issue"
+grep -q "budget cci: issue #41 closed, superseded" "$T/out"; check "$?" "0" "…and the week's issue #41 closed as superseded, never left open for good"
+has "$(tail -n 1 "$GHC")" '--method PATCH /repos/acme/logbook/issues/41 --input - {"state": "closed"}' "…its PATCH on #41"
+aged() { python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))
+for v in a.values(): v["since"]-=90000
+json.dump(a,open(sys.argv[1],"w"))' "$AL"; }
+cci 1200 300; n=$(wc -l < "$GHC" | tr -d ' '); smp sample > "$T/out" 2>&1
+check "$(wc -l < "$GHC" | tr -d ' ') $(grep -c 'budget cci' "$T/out")" "$n 0" "back under within a day of the crossing: held, nothing closed (a hovering account files no issue a sample)"
+aged; smp sample > "$T/out" 2>&1
+grep -q "budget cci: back under, issue #42 closed" "$T/out"; check "$?" "0" "back under its terms: the issue closed"
+has "$(tail -n 2 "$GHC" | head -1)" "/repos/acme/logbook/issues/42/comments" "…commented first, saying what cleared it"
+has "$(tail -n 1 "$GHC")" '--method PATCH /repos/acme/logbook/issues/42 --input - {"state": "closed"}' "…then closed"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cci"]; print(d["level"], d["issue"])' "$AL")" "ok None" "…the level back at ok"
+: > "$GHF"; cci 1200 8500; smp sample > "$T/out" 2>&1
+grep -q "budget cci: past its week share, not filed (HTTP 502); the next sample tries again" "$T/out"; check "$?" "0" "GitHub refusing the issue: said, the level kept at ok"
+rm -f "$GHF"; smp sample > "$T/out" 2>&1
+grep -q "budget cci: past its week share — logbook issue #" "$T/out"; check "$?" "0" "…and filed on the next sample"
+mv "$TF" "$T/tf.away"; n=$(wc -l < "$GHC" | tr -d ' '); smp sample > "$T/out" 2>&1
+check "$(wc -l < "$GHC" | tr -d ' ') $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cci"]["level"])' "$AL")" "$n week" "no token: the accounts read absent, which changes no level and files nothing"
+mv "$T/tf.away" "$TF"
+cci 1200 300; aged; : > "$GHF"; smp sample > "$T/out" 2>&1
+grep -q "budget cci: back under, issue #[0-9]* left open (.*HTTP 502); the next sample tries again" "$T/out"; check "$?" "0" "a close GitHub refuses: said…"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cci"]; print(d["level"], d["issue"] is not None)' "$AL")" "ok True" "…the issue number kept"
+rm -f "$GHF"; smp sample > "$T/out" 2>&1
+grep -q "budget cci: back under, issue #[0-9]* closed" "$T/out"; check "$?" "0" "…and closed on the next sample"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cci"]; print(d["level"], d["issue"])' "$AL")" "ok None" "…then forgotten"
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("ops", sys.argv[1]); o=u.module_from_spec(u.spec_from_loader("ops", l)); l.exec_module(o); print(o.kind_of([{"name": "budget"}]), o.ladder(None, {"kind": "budget"}))' "$OPS")" \
+  "('budget', 'budget') (4, 'kind budget')" "the intake reads a budget issue as an alarm kind: rung 4, no model asked"
+echo "ops sample: the pick in the job (ops.json's pick_repos, pick_apply)"
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$*" "${LIGHTHOUSE_DESK:-unset}" >> "%s"\n' "$T/jp.calls" > "$TL/ci-provider"; chmod +x "$TL/ci-provider"
+PJ="$T/clones"; printf '%s\n' "$PJ" > "$REGATTA_CONFIG/regatta/projects"   # where the core looks for a clone (regatta/projects)
+mkdir -p "$PJ/alpha/.git"
+printf '%s\n' '{"dry": true}' > "$REGATTA_CONFIG/lighthouse/ops.json"; smp sample > "$T/out" 2>&1
+check "$(test -e "$T/jp.calls" && echo called || echo none)" "none" "no pick_repos: the job picks nothing"
+printf '%s\n' '{"dry": true, "pick_repos": ["alpha", "gone"]}' > "$REGATTA_CONFIG/lighthouse/ops.json"; smp sample > "$T/out" 2>&1
+check "$(cat "$T/jp.calls")" "$PJ/alpha --pick --usage $T/logs/ci-usage.json|unset" "pick_repos: each cloned repo picked with the job's usage file, no --apply, the marker never passed on"
+grep -q "ops pick: gone is not cloned at $PJ/gone, skipped" "$T/out"; check "$?" "0" "…a repo not cloned here said"
+: > "$T/jp.calls"; printf '%s\n' '{"dry": true, "pick_repos": ["alpha"], "pick_apply": true}' > "$REGATTA_CONFIG/lighthouse/ops.json"; smp sample > /dev/null 2>&1
+check "$(cat "$T/jp.calls")" "$PJ/alpha --pick --usage $T/logs/ci-usage.json --apply|unset" "pick_apply: --apply"
+printf '%s\n' '{"dry": true, "pick_apply": "yes"}' > "$REGATTA_CONFIG/lighthouse/ops.json"; smp sample > "$T/out" 2>&1
+grep -q "ops pick: not run, .*ops.json: pick_apply is true or false" "$T/out"; check "$?" "0" "a pick_apply that is no boolean: refused, said, the row still written"
+rm -f "$REGATTA_CONFIG/lighthouse/ops.json" "$TL/ci-provider" "$TL/ask" "$REGATTA_CONFIG/helm/logbook-repo" "$REGATTA_CONFIG/helm/mention" "$REGATTA_CONFIG/regatta/projects"; unset ASK_GH_API
+
 echo "ops sample: the token's standing (token.plan, token.project)"
 python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); a["/graphql"]=[200,{"data":{"viewer":{"projectsV2":None}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by personal access token"}]}]; json.dump(a,open(sys.argv[1],"w"))' "$T/answers.json"
 smp sample > /dev/null 2>&1
@@ -273,7 +357,10 @@ check "$(grep -c '/graphql' "$T/calls")" "0" "…and nothing asked of GitHub's G
 mv "$T/tf.away" "$TF"; chmod 644 "$TF"; smp sample > /dev/null 2>&1
 check "$(last token.plan) $(last token.project)" "refused refused" "a token file readable by others: refused, never read"
 chmod 600 "$TF"
+echo $(( $(date +%s) - 3600 )) > "$T/acct.sampled"; : > "$T/account.calls"
 smp sample --print > "$T/out" 2>&1; n=$(wc -l < "$T/logs/ops.jsonl" | tr -d ' ')
+check "$(cat "$T/account.calls")" "limits --all --orca --cached --json" "--print: an hour-old reading is not read again (the refresh is the desk job's)"
+date +%s > "$T/acct.sampled"
 check "$(field token.plan < "$T/out") $(field budget < "$T/out") $(grep -c '/graphql\|billing' "$T/calls")" "None None 0" "--print: no token read, no budget, nothing asked of GitHub"
 unset LIGHTHOUSE_DESK; smp sample --print > /dev/null 2>&1; check "$? $(wc -l < "$T/logs/ops.jsonl" | tr -d ' ')" "0 $n" "…outside the desk's job too, and no row written"
 export LIGHTHOUSE_DESK=1
@@ -304,6 +391,40 @@ check "$(python3 "$T/sig.py" "$OPS" | tail -1)" "ops h: queue 1 (1 high) · runs
   "the board's line"
 rm -f "$T/logs/ops.jsonl"; smp status --json > "$T/out" 2>&1
 check "$? $(field row < "$T/out")" "3 None" "no row: exit 3, row null (never 1, a crash's code)"
+
+echo "ops sample: a login read over 30 minutes before is read again after the row (2026-11-01)"
+echo $(( $(date +%s) - 3600 )) > "$T/acct.sampled"; : > "$T/account.calls"; rm -f "$T/logs/weeks-refresh.json"
+smp sample > "$T/out" 2>&1; check "$?" "0" "a row with acct-a's reading an hour old, its probe failing"
+check "$(cat "$T/account.calls")" "limits --all --orca --cached --json
+limits acct-a --json" "…then that login alone read uncached: never Orca's agents, never a login not set up here"
+has "$(cat "$T/out")" "weeks: still old: acct-a" "…a probe that handed back the old reading is said so, never counted as read"
+: > "$T/account.calls"; touch "$T/probe-ok"; smp sample > "$T/out" 2>&1
+check "$(cat "$T/account.calls")" "limits --all --orca --cached --json" "…a sample within the half hour tries nothing (one try a half hour, whatever fails)"
+smp status > "$T/out" 2>&1
+has "$(cat "$T/out")" "acct-a: week 31%, 5-hour 3%, Fable 0%, read 6" "ops status: each reading's age"
+has "$(cat "$T/out")" "agy: week 8%, 5-hour 0%, read " "…a report row with no Fable figure prints none"
+has "$(cat "$T/out")" "acct-far: no window figure" "…and a row with none says so"
+rm -f "$T/logs/weeks-refresh.json"; : > "$T/account.calls"; smp sample > "$T/out" 2>&1
+has "$(cat "$T/out")" "weeks: read again for the next sample: acct-a" "the half hour past, a probe that reads: read again"
+check "$(( $(date +%s) - $(cat "$T/acct.sampled") < 60 ))" "1" "…the reading the next sample takes is fresh"
+: > "$T/account.calls"; rm -f "$T/logs/weeks-refresh.json"; smp sample > /dev/null 2>&1
+check "$(cat "$T/account.calls")" "limits --all --orca --cached --json" "a fresh reading: nothing read again"
+rm -f "$T/probe-ok"; : > "$T/fail/account"; : > "$T/account.calls"; rm -f "$T/logs/weeks-refresh.json"; smp sample > /dev/null 2>&1
+check "$(grep -c . "$T/account.calls")" "0" "account failing (the stub exits before it logs): no refresh call beside the field's why"
+rm -f "$T/fail/account"; date +%s > "$T/acct.sampled"
+cat > "$T/wc.py" <<'PY'
+import importlib.machinery, importlib.util, sys, time
+l = importlib.machinery.SourceFileLoader("ops", sys.argv[1]); ops = importlib.util.module_from_spec(importlib.util.spec_from_loader("ops", l)); l.exec_module(ops)
+now = time.time()
+for weeks in ({"agy": {"eligible": False, "report": True}},
+              {"a": {"eligible": True, "sampled": now - 7 * 3600}, "agy": {"eligible": True, "report": True}},
+              {"a": {"eligible": True, "sampled": now - 600}, "b": {"eligible": True, "sampled": now - 7 * 3600}}):
+    ops.last_row = lambda: ({"as_of": now, "weeks": weeks, "cost": {"week_list": 100.0}}, None)
+    print(ops.week_cap({"week_share": 0.3}, 0, now))
+PY
+check "$(python3 "$T/wc.py" "$OPS")" "the week is unread (no login in the sample, only Orca's report rows)
+the week is unread (every login's reading is over 6 h old)
+ok" "week_cap: Orca's report rows and readings over 6 h old never decide the week"
 
 # ---- S4: the intake -----------------------------------------------------------------------------
 # `gh` a stub answering from $T/gh.json by path substring (`[rc, [objects]]`, or `[rc, "stderr"]` for a

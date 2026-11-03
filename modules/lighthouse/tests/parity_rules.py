@@ -6,12 +6,14 @@ against every CLI, so a gap shows as a red row").
     python3 parity_rules.py      the fixture paths come from the environment parity.sh sets
 
 A case names a neutral call — (kind, argument, cwd) with kind shell, read, write or edit — and each CLI builds
-its own payload for it (BUILD): Claude Code's is the guard's own input; Codex's goes through hooks/vendor_hook.py
-as Codex sends it (`Bash`, `apply_patch`; it has no read tool, so a read is the shell read it makes); Antigravity's
+its own payload for it (BUILD): Claude Code's is the guard's own input; Codex's goes through the one entry
+bin/vendor-hooks writes, `hooks/vendor_hook.py codex guards` (every guard, then the trailer), as Codex sends it (`Bash`, `apply_patch`; it has no read tool, so a read is the shell read it makes); Antigravity's
 the same, as it sends it (`run_command`, `view_file` and `read_file`, `write_to_file`, `replace_file_content`).
 A CLI with no builder for a kind, or whose call the adapter does not translate, is a red row, never a skip.
 `native` marks a rule whose Claude socket is not a hook (Claude Code's own trailer; dispatch's launch-time deny
-list, checked here by reading that list): it is judged where it lives. Exit 1 on any red row.
+list, checked here by reading that list): it is judged where it lives. Through the one entry a rule fires once:
+its deny case gets exactly one answer, a deny (a second line is `broken` on either CLI), and its allow case passes
+every guard — the trailer's rewrite of a commit counts as the allow it is. Exit 1 on any red row.
 """
 import json
 import os
@@ -140,7 +142,8 @@ def run(cmd, payload, env):
 
 
 def verdict(cli, out, rc, err):
-    """deny | rewrite | allow | broken (an answer the CLI would not read), from what the CLI would read."""
+    """deny | rewrite | allow | broken (an answer the CLI would not read, or more than one), from what the CLI
+    would read."""
     if cli == "antigravity":
         try:
             v = json.loads(out.splitlines()[-1]) if out else None
@@ -153,6 +156,8 @@ def verdict(cli, out, rc, err):
         return "rewrite" if "overwrite" in v else "allow"
     if rc == 2:
         return "deny"
+    if len(out.splitlines()) > 1:
+        return "broken"   # the one entry answers once
     for line in reversed(out.splitlines()):
         try:
             v = json.loads(line)
@@ -181,10 +186,9 @@ def judge(cli, guard, case, env):
                 return "native", native(guard)[0]
             out, rc, err = run([sys.executable, guard], p, env)
         else:
-            g = CP if guard.startswith("native:") else guard
-            if not g:
+            if guard.startswith("native:") and not CP:
                 return "red", "the guard's module is not here"
-            out, rc, err = run([sys.executable, str(ADAPTER), cli, g], p, env)
+            out, rc, err = run([sys.executable, str(ADAPTER), cli, "guards"], p, env)
         seen.add(verdict(cli, out, rc, err))
         detail = out[:160]
     if len(seen) != 1:
@@ -211,7 +215,7 @@ def main():
                 if not ok:
                     why.append(f"{cli}: {dd} does not hold it")
                 continue
-            ok = d == want and a == "allow"
+            ok = d == want and (a == "allow" or (a == "rewrite" and guard != "trailer"))
             if guard == "trailer" and d == "rewrite":
                 name = {"codex": "Codex gpt-test <noreply@openai.com>",
                         "antigravity": "Antigravity gemini-test <noreply@google.com>"}[cli]
@@ -230,7 +234,7 @@ def main():
 def _full(cli, guard, case, env):
     """The whole answer for a trailer case (judge() keeps a prefix)."""
     kind, arg, cwd = case
-    out, _, _ = run([sys.executable, str(ADAPTER), cli, guard], BUILD[cli](kind, arg, cwd)[0], env)
+    out, _, _ = run([sys.executable, str(ADAPTER), cli, "guards"], BUILD[cli](kind, arg, cwd)[0], env)
     return out
 
 

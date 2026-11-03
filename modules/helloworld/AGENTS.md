@@ -5,6 +5,9 @@ Read `README.md` first: it is the chart. For an agent:
 - `helloworld check <repo>` is the agent's verb and never pushes; `publish --pr` pushes a
   `claude/publish/*` branch and opens a PR, and the owner's merge is the publish; plain `publish`
   is the owner's alone, in their own terminal (it refuses `CLAUDECODE` and a non-terminal stdin).
+- `nightly` is launchd's (README, "The nightly"): an agent runs `nightly --dry-run` only, and a
+  real night refuses its shell. Its merge is the one this module makes, and only where the repo's
+  `.helloworld/nightly` says `on-green`; the twin itself never merges by a workflow (`--pr` refuses one).
 - Every scan pattern has a planted case in `tests/helloworld.sh`; a pattern without one is not a
   pattern. Planted words are made up: never a real name, house, machine or account, not even in a
   test (this module is public).

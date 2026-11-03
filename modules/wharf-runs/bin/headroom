@@ -2,6 +2,8 @@
 """headroom — whether this host has the memory for one more run; dispatch asks it beside the run cap.
 
     headroom [check] [--json] [--no-log] [--floor PCT]
+    headroom limits             this host's limits as it reads them (`avail=10,rate=40`) and where from;
+                                exit 2 on a line it cannot read: `regatta limit`'s trial read of a value
 
 Why (2026-10-22): six runs took a 16 GB, 10-core host to load 65, 0.9 % idle and 58 % system time,
 251 MB free and 11.2 of 12 GB swap — thrashing — while dispatch would still have started four more:
@@ -38,6 +40,7 @@ holding meminfo and vmstat), and HEADROOM_SAMPLE_S (the sample's seconds) stand 
 """
 import argparse
 import json
+import math
 import os
 import platform
 import re
@@ -79,6 +82,10 @@ def parse_limits(text):
         if k not in ("avail", "swap", "rate"):
             raise ValueError("unknown rule %r" % k)
         out[k] = float(v)
+        # nan or inf never compares over a limit, and a negative one never under: either switches the rule off
+        # unsaid (the live-limits review), so it is no limit, as a word it cannot read is none
+        if not math.isfinite(out[k]) or out[k] < 0:
+            raise ValueError("%s=%s is no limit (a finite number, 0 or more)" % (k, v))
     return out
 
 
@@ -94,7 +101,10 @@ def limits(host):
         name, colon, rules = l.partition(":")
         if not colon:
             raise ValueError("%s: a line without <host>: (%r)" % (KEY, l))
-        table[name.strip().lower()] = rules
+        # a host's first line wins, as the core's config_entries and dispatch's cap_here read: the live layer stands
+        # first, so a config line the merge could not take out (`host :…`, a space before the colon) never outranks
+        # it (the round-1 review of the laptop run)
+        table.setdefault(name.strip().lower(), rules)
     host = host.lower()
     for name in (host, "*"):
         if name in table:
@@ -192,11 +202,20 @@ def headroom(write_log=True, floor=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="headroom", description=__doc__.split("\n\n")[0])
-    ap.add_argument("verb", nargs="?", default="check", choices=["check"])
+    ap.add_argument("verb", nargs="?", default="check", choices=["check", "limits"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-log", action="store_true", help="write no headroom.jsonl row")
     ap.add_argument("--floor", type=float, help="the force's line: avail lowered to this %%, swap and rate kept")
     a = ap.parse_args(argv)
+    if a.verb == "limits":
+        try:
+            lim, src = limits(here().lower())
+        except ValueError as e:
+            print("headroom: %s" % e, file=sys.stderr)
+            return 2
+        print(",".join("%s=%g" % (k, lim[k]) for k in ("avail", "swap", "rate") if k in lim))
+        print("(%s)" % src, file=sys.stderr)
+        return 0
     if a.floor is not None and not 0 <= a.floor <= 100:
         print("headroom: --floor takes a percentage, 0 to 100")
         return 2

@@ -1,0 +1,444 @@
+/* keel's copy (helm-ui S10), served by keel's foundation_css; tools/contrast.py's pairs are `keel ui check`'s now.
+   tokens.css — the one token set and the shared chrome of the Helm board and keel's Course page (round 6, Fable,
+   polishing Opus's option 1 "under the sky"). Round 6: the sky runs into the paper through a horizon haze under
+   the strip; colour is kept where it carries meaning (a tier, a status that needs action, a ship's hue) and the rest
+   is ink and graphite; every tier mark is a hand-drawn buoy and every flag a hand-drawn one (art.js, fx.css). Paper and Ink from the lab's brand (Ink #15171C, Paper #FFFFFF, Graphite, Mist); the
+   blue flag #0000AA / #9999FF only for Recommended and the owner's pick; a thin strip of the banner's sky on every
+   view (day #0000AA→#1F45E0, night #04050E→#0E1F66) carrying the mark and the fleet sailing to the finish.
+   Colour means one thing everywhere: four tiers (safe, irreversible, held, yours), five statuses (ok, run, wait, bad,
+   park), the modes in the colour of the highest tier they take, one hue per ship for its pennant. Every text pair is
+   measured by tools/contrast.py (≥ 4.5:1 in both themes) and re-read by the self-tests. */
+
+:root {
+  --ground: #FFFFFF;
+  --surface: #FFFFFF;
+  --wash: #F4F5F7;
+  --wash-2: #ECEDF1;
+  --ink: #15171C;
+  --ink-2: #33373F;
+  --graphite: #5B606B;
+  --rule: #E3E4E8;
+  --rule-strong: #CDD0D6;
+  --flag: #0000AA;
+  --flag-ink: #FFFFFF;
+  --flag-wash: #EEF0FF;
+  --flag-line: #AEB5F2;
+
+  /* the four tiers: a shape and a hue, the same on both pages and in the mode switch */
+  --safe: #0A7A4C;      --safe-wash: #E6F4ED;
+  --irr: #B04A00;       --irr-wash: #FCEEE1;
+  --held: #9A2A8C;      --held-wash: #F7E9F5;
+  --yours: #15171C;     --yours-wash: #EEEFF2;
+
+  /* the five statuses: every run, task, PR, check, host, skipper, slip and alarm reads one of these, word beside it */
+  --ok: #3F6B56;        --ok-wash: #EDF2EF;      /* landed, done, passing, live, awake, early: a quiet green-grey, never a shout */
+  --run: #1655C0;       --run-wash: #E8F0FD;     /* running, claimed, sent, in review */
+  --wait: #7A5A00;      --wait-wash: #FAF1D6;    /* waiting, queued, quiet, asleep, picked and not saved */
+  --bad: #C0262D;       --bad-wash: #FCEAEA;     /* stuck, failed, blocked, deaf, late, over estimate, alarm */
+  --park: #585D70;      --park-wash: #EEEFF4;    /* parked, relayed, draft, planned, unread */
+  --hue-slate: #5C6475;
+  --stripe: color-mix(in srgb, var(--flag) 7%, var(--surface));   /* round 6b: the ships board's alternate rows */
+
+  --hue-violet: #5A3FD6;
+  --hue-teal: #0B7480;
+  --hue-rose: #BC2558;
+  --hue-orange: #B34A00;
+  --hue-green: #2A7D3B;
+  --hue-blue: #1660A8;
+  --hue-gold: #866300;
+  --hue-magenta: #9C1E95;
+
+  --sky-top: #0000AA;
+  --sky-bottom: #1F45E0;
+  --sea-top: #0A26B8;
+  --sea-bottom: #02084A;
+  --band-text: #FFFFFF;
+  --band-dim: #D3DAFF;
+  --band-safe: #8FF0C2;
+  --band-irr: #FFD39E;
+  --band-held: #F6C2EE;
+  --wave-1: #4D66FF;
+  --wave-2: #7F93FF;
+  --wave-3: #B3C0FF;
+
+  --shadow-1: 0 1px 2px rgba(21, 23, 28, .06), 0 1px 1px rgba(21, 23, 28, .04);
+  --shadow-2: 0 2px 6px rgba(21, 23, 28, .06), 0 12px 32px rgba(21, 23, 28, .10);
+  --shadow-3: 0 8px 24px rgba(21, 23, 28, .12), 0 32px 80px rgba(21, 23, 28, .18);
+  --glass: rgba(255, 255, 255, .86);
+  --scrim: rgba(21, 23, 28, .32);
+
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* type, opened up in round 5: 40 headline · 22 doc · 19 question · 16 option and body · 14 meta · 12.5 mono */
+  --t-h1: 650 40px/46px var(--display);
+  --t-doc: 650 22px/29px var(--display);
+  --t-q: 620 18.5px/26px var(--display);
+  --t-body: 400 16px/25px var(--sans);
+  --t-opt: 400 16px/24px var(--sans);
+  --t-ctx: 400 15px/23px var(--sans);
+  --t-meta: 500 14px/20px var(--sans);
+  --t-small: 400 13.5px/19px var(--sans);
+  --t-mono: 500 12.5px/18px var(--mono);
+  --t-label: 650 11.5px/14px var(--mono);
+  --t-title: 650 21px/27px var(--display);
+
+  --r-chip: 7px;
+  --r-row: 12px;
+  --r-card: 16px;
+  --r-pill: 999px;
+
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --fast: 120ms;
+  --slow: 220ms;
+
+  /* spacesheep's frame (measured off .inputs/sheep-chrome at 1440/720/390): the capsule's bottom with its glow,
+     the right reserve for the comment and mic buttons, the left tab's width */
+  --top-reserve: 0px;
+  --right-reserve: 0px;
+  --left-reserve: 0px;
+  --bottom-lift: 0px;
+  --fab: 0px;   /* the viewer's comment and mic buttons: a column 84 px wide at the bottom right */
+  --strip-h: 56px;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --ground: #15171C;
+  --surface: #1B1E24;
+  --wash: #22252C;
+  --wash-2: #2A2E36;
+  --ink: #F3F4F6;
+  --ink-2: #D7DAE0;
+  --graphite: #A9ADB6;
+  --rule: #2C2F36;
+  --rule-strong: #3E424C;
+  --flag: #9999FF;
+  --flag-ink: #15171C;
+  --flag-wash: #22254A;
+  --flag-line: #4B50A0;
+  --safe: #4CCB98;      --safe-wash: #15302A;
+  --irr: #FF9F5A;       --irr-wash: #362414;
+  --held: #EE8AE0;      --held-wash: #361B33;
+  --yours: #F3F4F6;     --yours-wash: #2B2E36;
+  --ok: #8FCBB0;        --ok-wash: #1E2A26;
+  --run: #7FB2FF;       --run-wash: #172642;
+  --wait: #E8C547;      --wait-wash: #33270F;
+  --bad: #FF8A85;       --bad-wash: #3C1A1C;
+  --park: #B3B8CC;      --park-wash: #272A33;
+  --hue-violet: #A99BFF;
+  --hue-teal: #4CCFD8;
+  --hue-rose: #FF8DB4;
+  --hue-orange: #FFA35E;
+  --hue-green: #6AD487;
+  --hue-blue: #79BEFF;
+  --hue-gold: #F2C94C;
+  --hue-magenta: #F08AE8;
+  --hue-slate: #9AA3B5;
+  --stripe: color-mix(in srgb, #9999FF 11%, var(--surface));
+  --sky-top: #04050E;
+  --sky-bottom: #0E1F66;
+  --sea-top: #0A174A;
+  --sea-bottom: #02030C;
+  --band-text: #FFFFFF;
+  --band-dim: #B9C6F0;
+  --band-safe: #7FE3B6;
+  --band-irr: #FFC27A;
+  --band-held: #F6B3EC;
+  --wave-1: #1E2E6E;
+  --wave-2: #3D55B0;
+  --wave-3: #7A8FDE;
+  --shadow-1: 0 0 0 1px rgba(255, 255, 255, .04);
+  --shadow-2: 0 0 0 1px rgba(255, 255, 255, .06), 0 12px 32px rgba(0, 0, 0, .45);
+  --shadow-3: 0 0 0 1px rgba(255, 255, 255, .08), 0 32px 80px rgba(0, 0, 0, .6);
+  --glass: rgba(21, 23, 28, .86);
+  --scrim: rgba(0, 0, 0, .55);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: var(--t-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
+button { font: inherit; color: inherit; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.dim { color: var(--graphite); }
+.nowrap { white-space: nowrap; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.ic { display: inline-block; vertical-align: middle; flex: none; }
+:focus-visible { outline: 2px solid var(--flag); outline-offset: 2px; }
+
+/* The section label: the site's h2 — system mono, upper case, under one stroke of the pen. */
+.lbl {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite);
+  padding-top: 10px; border-top: 3px solid var(--ink); margin: 0;
+}
+.lbl b { color: var(--ink); font-weight: 650; }
+
+/* buttons: a quiet pill; .primary is the flag; .ghost is text */
+.btn {
+  position: relative; display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 15px;
+  border: 1px solid var(--rule-strong); border-radius: var(--r-pill); background: var(--surface);
+  font: 550 14px/1 var(--sans); color: var(--ink); cursor: pointer; white-space: nowrap; text-decoration: none;
+  transition: background var(--fast), border-color var(--fast);
+}
+.btn:hover { background: var(--wash); }
+.btn.primary { background: var(--flag); border-color: var(--flag); color: var(--flag-ink); font-weight: 650; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost { border-color: transparent; background: transparent; padding: 0 10px; }
+.btn.ghost:hover { background: var(--wash); }
+.btn.sm { height: 32px; padding: 0 13px; font-size: 13.5px; }
+.btn[disabled], .btn.off { opacity: 1; color: var(--graphite); border-style: dashed; cursor: not-allowed; background: transparent; }
+.btn .k { font: 600 11px/1 var(--mono); color: var(--graphite); }
+.btn.primary .k { color: inherit; opacity: .85; }
+
+.kc {
+  display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px;
+  border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: 6px;
+  font: 650 11.5px/1 var(--mono); color: var(--ink-2); background: var(--surface);
+}
+
+/* tier pills: a buoy + the word — the buoy's shape is the tier (a can, a nun, a box, a spar), so it reads without
+   colour too; the spar is "yours" and nothing else */
+.tier { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-pill);
+  font: 600 13px/1 var(--sans); white-space: nowrap; }
+.tier .buoy { width: 18px; height: 18px; }
+.tier.safe { color: var(--safe); background: var(--safe-wash); }
+.tier.irreversible { color: var(--irr); background: var(--irr-wash); }
+.tier.held { color: var(--held); background: var(--held-wash); }
+.tier.yours { color: var(--yours); background: var(--yours-wash); }
+.tier.bare { background: none; padding: 0; height: auto; }
+
+/* status pills: one hue per status, the word always inside */
+.st { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: var(--r-chip);
+  font: 600 12.5px/1 var(--sans); white-space: nowrap; color: var(--park); background: var(--park-wash); }
+.st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.st.ok { color: var(--ok); background: var(--ok-wash); }
+.st.run { color: var(--run); background: var(--run-wash); }
+.st.wait { color: var(--wait); background: var(--wait-wash); }
+.st.bad { color: var(--bad); background: var(--bad-wash); }
+.st.park { color: var(--park); background: var(--park-wash); }
+.st.held { color: var(--held); background: var(--held-wash); }
+.st.irr { color: var(--irr); background: var(--irr-wash); }
+.st.flag { color: var(--flag); background: var(--flag-wash); }
+.st.ok::before { content: "✓"; width: auto; height: auto; background: none; font-weight: 800; }
+.st.park::before { display: none; }
+.st.bad::before { border-radius: 2px; }
+.st.nodot::before { display: none; }
+.st.mono { font-family: var(--mono); font-size: 12px; }
+/* a status word in running text: the colour and the word, no pill */
+.t-ok { color: var(--ok); font-weight: 600; } .t-run { color: var(--run); font-weight: 600; } .t-wait { color: var(--wait); font-weight: 600; }
+.t-bad { color: var(--bad); font-weight: 600; } .t-park { color: var(--graphite); font-weight: 600; } .t-held { color: var(--held); font-weight: 600; }
+.t-ink { color: var(--ink); font-weight: 600; }
+.t-irr { color: var(--irr); font-weight: 600; } .t-flag { color: var(--flag); font-weight: 600; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.safe { background: var(--safe); } .dot.irreversible { background: var(--irr); border-radius: 1.5px; transform: rotate(45deg) scale(.85); }
+.dot.held { background: var(--held); border-radius: 2px; } .dot.yours { border: 2px solid var(--yours); }
+.dot.taken { background: transparent; border-radius: 0; width: auto; height: auto; color: var(--graphite); }
+.dot.taken::before { content: "✓"; font: 800 11px/1 var(--sans); }
+.dot.picked { background: var(--flag); border-radius: 50%; transform: none; border: 0; }
+
+/* ship hues: a pennant and the ship's name, never a status */
+[data-hue="violet"] { --hue: var(--hue-violet); } [data-hue="teal"] { --hue: var(--hue-teal); }
+[data-hue="rose"] { --hue: var(--hue-rose); } [data-hue="orange"] { --hue: var(--hue-orange); }
+[data-hue="green"] { --hue: var(--hue-green); } [data-hue="blue"] { --hue: var(--hue-blue); }
+[data-hue="gold"] { --hue: var(--hue-gold); } [data-hue="magenta"] { --hue: var(--hue-magenta); }
+[data-hue="slate"] { --hue: var(--hue-slate); }
+.ship {
+  display: inline-flex; align-items: center; gap: 5px; font: 650 13px/18px var(--mono); color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.ship .pennant { width: 13px; height: 13px; color: var(--hue, var(--rule-strong)); margin-top: -1px; }   /* the pennant: a ship's own flag, in its hue */
+a.ship:hover { text-decoration: underline; }
+
+/* the mode switch: ask · auto · dnd · yolo, each in the colour of the highest tier it takes */
+.modes {
+  display: inline-flex; padding: 3px; border-radius: var(--r-pill); background: var(--wash);
+  border: 1px solid var(--rule); gap: 0; flex: none;
+}
+.modes button {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border: 0;
+  border-radius: var(--r-pill); background: transparent; color: var(--graphite); cursor: pointer;
+  font: 600 13.5px/1 var(--sans); transition: background var(--fast), color var(--fast);
+}
+.modes button:hover { color: var(--ink); }
+.modes button.on { background: var(--surface); box-shadow: var(--shadow-1), 0 0 0 1px var(--rule-strong); }
+.modes button.on[data-mode="ask"] { color: var(--ink); }
+.modes button.on[data-mode="auto"] { color: var(--safe); }
+.modes button.on[data-mode="dnd"] { color: var(--irr); }
+.modes button.on[data-mode="yolo"] { color: var(--held); }
+.modes button.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.modes button.on[data-mode="ask"]::before { background: transparent; border: 1.6px solid currentColor; width: 5px; height: 5px; }
+.modes.sm button { height: 26px; padding: 0 10px; font-size: 12.5px; }
+.mode-word { font-weight: 650; }
+.mode-word.ask { color: var(--ink); } .mode-word.auto { color: var(--safe); } .mode-word.dnd { color: var(--irr); } .mode-word.yolo { color: var(--held); }
+
+/* segmented control (group by, report kinds) */
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: var(--r-pill); padding: 3px; background: var(--wash); }
+.seg button, .seg a { border: 0; background: transparent; height: 30px; padding: 0 14px; border-radius: var(--r-pill);
+  font: 550 13.5px/30px var(--sans); color: var(--graphite); cursor: pointer; text-decoration: none; white-space: nowrap; }
+.seg .on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1), 0 0 0 1px var(--rule-strong); }
+.seg .later { color: var(--graphite); cursor: default; }
+.seg .later small { font: 600 10px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; margin-left: 5px; }
+
+/* ───────────── the sky strip: the banner's sky and sea, thin, on every view; the horizon under it runs the sky
+   into the paper (round 6: no hard edge between the strip and the page, in either theme) ───────────── */
+.strip {
+  position: relative; color: var(--band-text); overflow: hidden; z-index: 5;
+  background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-bottom) 100%);
+  padding: var(--top-reserve) calc(24px + var(--right-reserve)) 0 calc(24px + var(--left-reserve));
+}
+.strip-in { position: relative; height: var(--strip-h); display: flex; align-items: center; gap: 18px; }
+.strip .mark { position: relative; z-index: 3; display: inline-flex; align-items: center; gap: 9px; color: var(--band-text); text-decoration: none; font: 800 18px/1 var(--mono); letter-spacing: -.01em; flex: none; }
+.strip .crumb { position: relative; z-index: 3; font: 500 13px/1 var(--mono); color: var(--band-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.strip .crumb b { color: var(--band-text); font-weight: 650; }
+.strip .sea { position: relative; flex: 1; min-width: 60px; height: 100%; }
+.strip .sea::before { content: ""; position: absolute; left: 0; right: 0; top: 37px; height: 1px; background: rgba(255, 255, 255, .22); }
+.strip .boat { position: absolute; top: 13px; display: block; color: var(--band-text); text-decoration: none; transform: translateX(-11px); z-index: 2; }
+.strip .boat svg { display: block; }
+.strip .boat:hover { filter: drop-shadow(0 0 4px rgba(255, 255, 255, .6)); }
+.strip .boat.shipped { color: var(--band-dim); }
+.strip .sea.narrow .boat.shipped { display: none; }
+.strip .finish { position: absolute; top: 6px; bottom: 6px; width: 0; border-left: 2px dotted rgba(255, 255, 255, .55); z-index: 1; }
+.strip .finish i { position: absolute; left: 1px; top: 1px; width: 7px; height: 8px; background: var(--band-text); opacity: .9; clip-path: polygon(0 0, 100% 10%, 100% 90%, 0 100%); }
+.strip .finish::after { content: "finish"; position: absolute; top: 3px; left: -6px; transform: translateX(-100%); font: 650 9.5px/1 var(--mono); color: var(--band-dim); letter-spacing: .08em; text-transform: uppercase; }
+.strip .stat { position: relative; z-index: 3; display: flex; align-items: center; gap: 14px; font: 500 12.5px/1 var(--mono); color: var(--band-dim); white-space: nowrap; flex: none; }
+.strip .stat b { color: var(--band-text); font-weight: 650; }
+.strip .stat .short { display: none; }
+.strip .sbtn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; border: 0; background: transparent; color: var(--band-text); cursor: pointer; flex: none; text-decoration: none; }
+.strip .sbtn:hover { background: rgba(255, 255, 255, .14); }
+.strip .sbtn .kc { background: transparent; color: var(--band-text); border-color: rgba(255, 255, 255, .5); }
+.strip .contents-btn { display: none; }
+/* the horizon: the sky's last colour fades into the paper over 72 px; the page's first things sit on the haze */
+.horizon { height: 72px; margin-bottom: -72px; pointer-events: none; position: relative; z-index: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sky-bottom) 46%, var(--ground)) 0%, color-mix(in srgb, var(--sky-bottom) 20%, var(--ground)) 24%, color-mix(in srgb, var(--sky-bottom) 6%, var(--ground)) 60%, var(--ground) 100%); }
+:root.nosky .horizon { display: none; }
+.frame, .tabbar, .cwrap { position: relative; z-index: 1; }
+/* the Course page's strip: the doc's decisions as buoys on a dotted course line */
+.strip .course-line { position: absolute; top: 36px; height: 0; border-top: 2px dotted rgba(255, 255, 255, .5); }
+.strip .sbuoy { position: absolute; top: 9px; display: grid; justify-items: center; gap: 0; transform: translateX(-50%); color: var(--band-text); text-decoration: none; z-index: 2; }
+.strip .sbuoy .buoy { width: 26px; height: 26px; }
+.strip .sbuoy b { font: 700 9.5px/1 var(--mono); color: var(--band-dim); margin-top: -2px; }
+.strip .sbuoy:hover b { color: #fff; text-decoration: underline; }
+.strip .course-line { top: 34px; }
+/* ?sky=0 — the same strip on plain paper, for the owner to compare */
+:root.nosky .strip { background: var(--ground); color: var(--ink); border-bottom: 1px solid var(--rule); --band-text: var(--ink); --band-dim: var(--graphite); --band-safe: var(--safe); --band-irr: var(--irr); --band-held: var(--held); --wave-1: var(--rule-strong); --wave-2: var(--rule-strong); }
+:root.nosky .strip .sea::before, :root.nosky .strip .finish { border-color: var(--rule-strong); background: var(--rule); }
+:root.nosky .strip .waves .far, :root.nosky .strip .waves .near { stroke: var(--rule-strong); }
+:root.nosky .strip .boat { color: var(--ink); }
+:root.nosky .strip .sbtn:hover { background: var(--wash); }
+:root.nosky .strip .sbtn .kc { border-color: var(--rule-strong); color: var(--ink-2); }
+
+/* sheets: the keys sheet, the yolo confirm, the hail, the memo */
+.scrim { position: fixed; inset: 0; z-index: 90; background: var(--scrim); display: none; }
+.scrim.on { display: block; }
+.sheet {
+  position: fixed; z-index: 100; left: 50%; top: calc(var(--top-reserve) + 48px); transform: translateX(-50%);
+  width: min(720px, calc(100vw - 32px - var(--right-reserve) - var(--left-reserve)));
+  max-height: calc(100vh - var(--top-reserve) - 96px); overflow: auto; display: none;
+  background: var(--surface); border-radius: 20px; box-shadow: var(--shadow-3); border: 1px solid var(--rule);
+  padding: 28px 30px 30px;
+}
+.sheet.on { display: block; }
+.sheet h2 { font: var(--t-title); margin: 0 0 6px; }
+.sheet .x { position: absolute; right: 16px; top: 16px; }
+.toast {
+  position: fixed; z-index: 120; left: 50%; bottom: calc(96px + var(--bottom-lift)); transform: translate(-50%, 8px); opacity: 0;
+  background: var(--ink); color: var(--ground); font: 500 14px/20px var(--sans); padding: 11px 16px; border-radius: 12px;
+  transition: opacity var(--slow) var(--ease), transform var(--slow) var(--ease); pointer-events: none; max-width: min(560px, calc(100vw - 32px));
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.iconbtn { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: var(--ink-2); cursor: pointer; }
+.iconbtn:hover { background: var(--wash); }
+
+/* ───────────── the save strip: in the page's flow, sticky at the bottom only while something is unsaved ───────────── */
+.savebar { display: none; align-items: center; gap: 14px; flex-wrap: wrap; margin: 40px 0 28px; padding: 14px 18px;
+  border-radius: 16px; border: 1px solid var(--rule); background: var(--wash); font: var(--t-meta); color: var(--ink-2);
+  max-width: calc(100vw - 32px - var(--fab)); }
+.savebar.on { display: flex; }
+.savebar.dirty { position: sticky; bottom: calc(14px + var(--bottom-lift)); z-index: 60; background: var(--surface);
+  border-color: var(--flag-line); box-shadow: var(--shadow-2); margin-right: var(--fab); }
+.savebar .sb-n { font-weight: 650; color: var(--ink); display: inline-flex; align-items: center; gap: 8px; }
+.savebar .sb-n::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--graphite); }
+.savebar.dirty .sb-n::before { background: var(--wait); }
+.savebar .sb-r { color: var(--graphite); }
+.savebar .sp { flex: 1; }
+.savebar .sb-acts { display: flex; gap: 8px; }
+
+/* ───────────── ?sheep=1: a faithful stand-in for spacesheep's viewer chrome (.inputs/sheep-chrome) ─────────────
+   capsule 8 px in, 46 px tall, glass, a rainbow glow under it; the Shepherd tab at the left edge at mid-height; the
+   comment and mic buttons, 52 px circles 16 px from the right edge; the Beta pill at the bottom left. Drawn above
+   the page, pointer-events off except its own buttons, so the page's reserves are what is being judged. */
+:root.sheep { --top-reserve: 62px; --right-reserve: 52px; --left-reserve: 0px; --fab: 84px; }
+.ss { display: none; }
+:root.sheep .ss { display: block; }
+.ss-cap {
+  position: fixed; z-index: 2147483640; left: 8px; right: 8px; top: 8px; height: 46px; border-radius: 23px;
+  background: rgba(30, 31, 38, .72); -webkit-backdrop-filter: blur(18px) saturate(1.6); backdrop-filter: blur(18px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, .14); display: flex; align-items: center; gap: 12px; padding: 0 6px 0 8px;
+  color: #fff; font: 600 15px/1 var(--sans); box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+}
+:root:not([data-theme="dark"]) .ss-cap { background: rgba(250, 250, 252, .78); color: #15171C; border-color: rgba(0, 0, 0, .1); box-shadow: 0 6px 20px rgba(0, 0, 0, .10); }
+.ss-cap .logo { width: 34px; height: 34px; border-radius: 50%; background: #111; display: grid; place-items: center; }
+.ss-cap .logo::after { content: ""; width: 18px; height: 14px; border-radius: 8px 8px 6px 6px; background: #f5f5f5; box-shadow: -6px -2px 0 -2px #FFC400, 6px -3px 0 -2px #E06BD6; }
+.ss-cap .sess { font: 500 12.5px/1 var(--sans); padding: 7px 10px; border-radius: 12px; border: 1px solid rgba(127, 127, 127, .35); opacity: .85; }
+.ss-cap .sp { flex: 1; }
+.ss-cap .ico { width: 18px; height: 18px; border-radius: 50%; border: 1.6px solid currentColor; opacity: .7; margin: 0 7px; }
+.ss-cap .share { background: #7C4DFF; color: #fff; border-radius: 17px; height: 34px; padding: 0 16px; display: grid; place-items: center; font: 600 13.5px/1 var(--sans); }
+.ss-glow { position: fixed; z-index: 2147483639; left: 120px; right: 120px; top: 52px; height: 14px; pointer-events: none;
+  background: linear-gradient(90deg, rgba(255, 70, 70, .0), rgba(255, 120, 60, .35), rgba(255, 210, 60, .35), rgba(60, 220, 140, .35), rgba(60, 160, 255, .35), rgba(170, 90, 255, .35), rgba(255, 80, 200, 0));
+  filter: blur(8px); }
+.ss-tab { position: fixed; z-index: 2147483640; left: 0; top: calc(50% - 38px); width: 20px; height: 76px; border-radius: 0 8px 8px 0;
+  background: #1E1F27; border: 1px solid rgba(255, 255, 255, .15); border-left: 0; }
+.ss-tab::after { content: "SHEPHERD"; position: absolute; left: 4px; top: 66px; transform: rotate(-90deg); transform-origin: 0 0; font: 700 7.5px/1 var(--sans); letter-spacing: .08em; color: #9DA3FF; }
+.ss-fab { position: fixed; z-index: 2147483640; right: 16px; width: 52px; height: 52px; border-radius: 50%; background: #2A2C35; border: 1px solid rgba(255, 255, 255, .18); box-shadow: 0 4px 16px rgba(0, 0, 0, .3); }
+.ss-fab::after { content: ""; position: absolute; inset: 16px; border: 2px solid #E9EAF0; border-radius: 50%; }
+.ss-fab.c { bottom: 80px; } .ss-fab.m { bottom: 16px; } .ss-fab.m::after { border-radius: 8px; inset: 15px 20px; }
+.ss-beta { position: fixed; z-index: 2147483640; left: 20px; bottom: 20px; height: 30px; padding: 0 12px; border-radius: 8px; background: #23252D; color: #D9DBE3; font: 500 11.5px/30px var(--sans); border: 1px solid rgba(255, 255, 255, .12); }
+
+/* widths: the VS Code tab and the phone */
+@media (max-width: 1100px) { :root.sheep { --left-reserve: 16px; } }
+@media (max-width: 760px) {
+  :root { --t-h1: 650 32px/38px var(--display); --strip-h: 52px; }
+  .strip { padding-left: calc(16px + var(--left-reserve)); padding-right: calc(12px + var(--right-reserve)); }
+  .strip .finish::after { display: none; }
+  .strip .stat .long { display: none; } .strip .stat .short { display: inline; }
+  .strip .contents-btn { display: inline-grid; }
+  :root.sheep { --right-reserve: 52px; }   /* the comment and mic buttons still float at 720 (sheep-720): the column clears them */
+}
+@media (max-width: 520px) {
+  :root { --t-h1: 650 26px/32px var(--display); --t-doc: 650 19px/25px var(--display); --t-q: 620 17px/24px var(--display); --strip-h: 46px; }
+  :root.sheep { --left-reserve: 18px; --top-reserve: 60px; --right-reserve: 0px; }   /* the phone viewer draws no button there (sheep-390) */
+  .strip-in { gap: 10px; }
+  .strip .mark { font-size: 16px; }
+  .strip .stat { gap: 8px; }
+  .strip .sbtn { width: 32px; height: 32px; }
+  .strip .stat { display: none; }
+  .ss-cap .sess, .ss-cap .ico:nth-of-type(n+2), .ss-cap .share { display: none; }
+  .ss-fab { display: none; }   /* the phone viewer shows no comment or mic button (sheep-390); the corner stays clear anyway */
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+@media (max-width: 760px) { .horizon { height: 56px; margin-bottom: -56px; } }
+@media (max-width: 520px) { .horizon { height: 44px; margin-bottom: -44px; } }
+
+/* the save strip on a phone: one line — what is unsaved and Save; the doc names and Copy wait for a wider screen */
+@media (max-width: 520px) {
+  .savebar { gap: 10px; padding: 10px 12px; margin-top: 28px; border-radius: 14px; flex-wrap: nowrap; }
+  .savebar .sb-r { display: none; }
+  .savebar.dirty .sb-acts .btn:not(.primary) { display: none; }
+  .savebar .sb-n { font-size: 14px; line-height: 19px; }
+  .savebar .btn { height: 34px; padding: 0 13px; }
+  .savebar .st { display: none; }
+  .savebar .sb-n .lg { display: none; }
+}
+.strip .sea { margin-left: 8px; }

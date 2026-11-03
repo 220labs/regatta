@@ -13,18 +13,37 @@ If the project has its own `/todo` (`.claude/commands/todo.md` or
 transcript, needs to know is still owed. It is not a backlog, not a roadmap and not a place
 for learnings — those go in `docs/`, the project's `CLAUDE.md`, or `/promote`. Read it at the
 start of any session the owner opens with "pick up", "continue" or "what's left". A project with
-no `TODO.md` gets one on the first `add`.
+no `TODO.md` gets one on the first `add`, and `.gitattributes` gets the line `TODO.md merge=union`.
+
+Every item has an id, and is cited by it, never by a position: `TODO.md [<id>]`, the one form, in docs,
+briefs, code comments and the other items (another repo's item: its path, `<the repo>/TODO.md [<id>]`).
+`todo-md` (wharf's `bin/todo-md`; a bare tool name here is its module path, as "Where the tools are"
+says, and where a run is denied it the same edit by hand, then the check, does the same) reads the shape: `todo-md list <repo>` names the ids, `todo-md lint <repo>` fails
+an item without an id, a duplicate id, a numbered citation anywhere (`TODO.md item <n>`, `TODO.md <n>`; a bare
+`TODO <n>` or `TODO #<n>` in code is an issue number as often, and only `migrate` reads it), a live file citing an id `TODO.md`
+lacks, or a missing union line. Run the lint after every change here. A `TODO.md` still numbered (from
+before 2026-10-31) is converted at its first `add`, `done` or `defer`: `todo-md migrate <repo> --dry-run`
+shows the ids it would give and every citation it would rewrite with the words before it, `--ids <file>`
+(a JSON object, number to id) overrides a poor pick, then the same without `--dry-run`, and the change
+continues from there. Read the citations first: one that names another repo ("<repo>'s TODO item <n>") is
+that repo's item, and the number would map to this repo's; rewrite it by hand as the other repo's
+`<the repo>/TODO.md` and its number, or its id once that repo has ids.
 
 ## Forms
 
 - `/todo` — print the list, then the honesty check below.
-- `/todo add <text>` — append one item. Refuse if the list is at 10; warn at 6+. An item only a
+- `/todo add <text>` — append one item at the end of the list, with an id (below). Refuse if the list is
+  at 10; warn at 6+. An item only a
   person can do carries its owner, `@<person>` (a name helm's board knows): it is then a card in that person's column
   of Helm's board (`bin/helm board`, docs/session-asks-2026-10-09.md section 3); an item
   with no tag is a session's and stays off the board.
-- `/todo done <n>` — **delete** the item (git history is the record; no ticked ghosts).
-- `/todo defer <n> <doc path>` — move the item's substance into that doc (create a section
-  if needed) and replace the item with nothing. Use this when an item has grown past one
+- `/todo done <id>` — **delete** the item (git history is the record; no ticked ghosts):
+  `todo-md done <id> <repo>`. It names each live file that still cites the id; rewrite each one in the
+  same change (a record, under `docs/` or a CHANGELOG, keeps its citation as written; a handoff brief
+under `docs/handoff/` is a run's input, so it is live). A number is
+  refused: ask `todo-md list` for the id.
+- `/todo defer <id> <doc path>` — move the item's substance into that doc (create a section
+  if needed), then `todo-md done <id>`. Use this when an item has grown past one
   session's work or is really a design question.
 - `/todo handoff <topic> — <task>` — a follow-up that earns a session of its own, handed over
   as a branch the next session starts from (below).
@@ -125,10 +144,28 @@ Only a repo on the worktree workflow takes a handoff; elsewhere it is a TODO lin
 
 ## Shape of an item
 
-One numbered line, at most two: **what**, then *where the context lives* (a doc section, a
+One list item, at most two lines: its id, **what**, then *where the context lives* (a doc section, a
 commit, a branch, a file:line). It must be actionable by a session with no memory of this
-one. Bad: "fix the dimmer". Good: "**Dimmer turn-on floor** — pick the floor, then two
-lines in `counter_dim.yaml` + a test. Context: `docs/audit-2026-09-16.md` section 3.1."
+one. Bad: "fix the dimmer". Good: "- [dimmer-floor] **Dimmer turn-on floor** — pick the floor, then two
+lines in `counter_dim.yaml` + a test. Context: `docs/audit-2026-09-16.md` section 3.1." A second line is
+indented two spaces.
+
+**The id** is picked at `add` from the item's subject: lower-case words and digits joined by hyphens, at
+most 24 characters, short enough to type in a citation (`dimmer-floor`, `keel-b4`, `ci-scope`), and unique
+in the file, and never used before: `todo-md check-id <id>` says so (exit 0 free, 1 in use or done). It
+never changes while the item lives, and is never reused once the item is done: `lint --base` reads a done id
+back in the list as an item a merge brought back.
+
+Why ids and the union line (the owner, 2026-10-31): numbered items made every two branches that each added
+one conflict on `TODO.md`, and each rebase restarted the check; and since two appends at the end of a file
+conflict even without numbers, `.gitattributes` names `TODO.md merge=union` (and `CHANGELOG.md merge=union`,
+release notes alike, 2026-11-02). In a repo whose `merge.union.driver` is wharf's `list-merge` (wharf's sync.py
+sets it in each repo it tends at a session start; `list-merge install <repo> --check` says), both merge by item: a done stands,
+a line stays under its item, a CHANGELOG line stays under `## Unreleased` when main cut a release, and two
+edits of one item stop as a conflict around that item alone. Elsewhere (GitHub's server, a CI runner) git
+merges them as plain union, which never drops a line but can keep one too many: a duplicate id, an item done
+on main brought back (both named by `todo-md lint --base origin/main`), a `done` of the last item undone or a
+line moved to the item main appended (named by nothing: read `git diff origin/main -- TODO.md`).
 
 A TODO line is work under about an hour in this repo; anything that would earn a session
 name is a handoff (above).

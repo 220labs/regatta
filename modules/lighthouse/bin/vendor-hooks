@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """vendor-hooks — the guards and the global rules a Claude session gets, wired into Codex's and Antigravity's own sockets.
 
-    vendor-hooks apply [--dry-run]   write each CLI home's PreToolUse entries and its rules pointer; idempotent
-    vendor-hooks check               per CLI home: each entry there, each Codex entry reviewed, the pointer; exit 1 on a gap
+    vendor-hooks apply [--dry-run]   write each CLI home's one PreToolUse entry and its rules pointer; idempotent
+    vendor-hooks check               per CLI home: the entry there and current, Codex's reviewed, the pointer; exit 1 on a gap
     vendor-hooks homes               the CLI homes this Mac has: `<cli>\t<home>`, one per line
 
 Why (the owner's D2-A, 2026-10-29, docs/codex-agy-gaps-2026-10-29.md): one rule set, each CLI's own socket. A
@@ -11,15 +11,21 @@ hooks/vendor_hook.py, which runs each guard unchanged on a translated payload (i
 
 What it writes, per CLI home this Mac has (a home is never created; a hooks file is, beside an existing home):
 - Codex — every home: `$CODEX_HOME`, else `~/.codex`, and each Codex row the account registry names (its
-  `home`, or for an Orca login the home orca-sync read back). `<home>/hooks.json` gains one PreToolUse group per
-  guard (GUARDS), matcher "" (vendor_hook passes a tool it does not translate), timeout 30. Codex keys its review
-  by position (`<file>:pre_tool_use:<group>:<handler>`, keel's sheep `codex_unreviewed`), so ours are rewritten
-  where they stand and a missing one appended, never moved: an entry of Orca's or sessionpipe's after ours keeps
-  its review. `<home>/AGENTS.md` becomes the rules pointer (below); an `AGENTS.override.md` that is not empty
+  `home`, or for an Orca login the home orca-sync read back). `<home>/hooks.json` gains one PreToolUse group
+  holding one handler of ours: `vendor_hook.py codex guards`, which runs every guard at once (the first deny in order the answer) and then the
+  trailer (guards()), matcher "" (vendor_hook passes a tool it does not translate), timeout 30, and
+  `statusMessage` NAME — the name Codex's /hooks lists it by; a handler without one reads "Unnamed hook" there
+  (Codex 0.166.0, probed live in /hooks, 2026-10-31). Codex keys its review by position
+  (`<file>:pre_tool_use:<group>:<handler>`, keel's sheep `codex_unreviewed`), so ours is rewritten where the
+  first of ours stands, or appended, never moved: an entry of Orca's or sessionpipe's after ours keeps its review.
+  A home holding the older shape — one group per guard (vendor-hooks, 2026-10-29) — is merged into the first of
+  them; check calls that shape stale. `<home>/AGENTS.md` becomes the rules pointer (below); an `AGENTS.override.md` that is not empty
   shadows it, and check says so (Codex reads the first non-empty of the two: its AGENTS.md docs).
 - Antigravity — `$GEMINI_CLI_HOME`, else `~/.gemini` (keel's sheep reads it the same way). `<home>/config/
-  hooks.json` gets our key, `regatta` (hook names are its top-level keys), replaced whole, an owner's
-  `enabled: false` kept. `<home>/GEMINI.md`, one of the four global rules files its rules docs list, is the
+  hooks.json` gets our key, `regatta`, replaced whole, an owner's `enabled: false` kept: one PreToolUse group,
+  one handler, the same `guards` call. The key is the name: agy's handler takes `type`, `command` and `timeout`
+  only, and `agy plugin validate` refuses unknown fields (agy 1.4.12's embedded hooks guide), so no
+  `statusMessage` there. `<home>/GEMINI.md`, one of the four global rules files its rules docs list, is the
   pointer.
 
 The rules pointer names, never copies, what a Claude Code session of the same tenant loads, less what must not
@@ -41,10 +47,11 @@ config.toml holds, 2026-10-29). So `apply` cannot leave an entry trusted: it say
 asks again; `apply` names every Codex entry it changed. A run Regatta starts can pass Codex's
 `--dangerously-bypass-hook-trust` instead (the vendor-fence slice's `_argv`).
 
-Each entry runs the adapter through a two-line python launcher (launcher()): when a re-layout moved the
+Each entry runs the adapter through a two-line python launcher (LAUNCHER): when a re-layout moved the
 adapter away, the entry prints one stderr line and the CLI's "carry on" (nothing for Codex, `{}` for agy)
 rather than python's exit 2, which Codex would read as a deny of every call. A group of ours that loses its
-entry stays, empty, so no later group's index (Codex's review key) shifts.
+entry stays, empty, while a later group has a handler, so no later group's index (Codex's review key) shifts;
+empty ones at the end are dropped.
 
 Environment: HOME, CODEX_HOME, GEMINI_CLI_HOME as the CLIs read them; ACCOUNTS_FILE, ACCOUNT_ORCA_FILE and
 TENANTS_FILE as `account` reads them; REGATTA_CONFIG the config dir; VENDOR_HOOKS_ROOT the checkout whose modules the entries name (default: this repo's main
@@ -59,6 +66,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOME = Path.home()
+ENTRY = "guards"   # vendor_hook.py's argument for the whole chain: the one entry's last word
+SHORT = {"secrets_guard": "secrets"}   # a guard's word in NAME
 MARK = "<!-- regatta vendor-hooks: written by lighthouse's bin/vendor-hooks apply, rewritten at each apply; edit nothing here -->"
 TIMEOUT = 30
 AG_KEY = "regatta"
@@ -94,6 +103,22 @@ def adapter():
     return root() / "modules" / "lighthouse" / "hooks" / "vendor_hook.py"
 
 
+def adapter_ok():
+    """The adapter is there and answers the `guards` form: its ENTRIES line names it (vendor_hook.py's header).
+    An adapter from before the one entry reads `guards` as a guard path and allows every call, silently."""
+    try:
+        text = adapter().read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    return any(l.startswith("ENTRIES = (") and f'"{ENTRY}"' in l for l in text.splitlines())
+
+
+def name():
+    """NAME: what Codex's /hooks lists our entry as — `regatta guards: secrets, checkpoint, trailer`, from the
+    guards this checkout has."""
+    return "regatta guards: " + ", ".join(SHORT.get(n, n) for n, _ in guards())
+
+
 # Runs the adapter when it is there; else one stderr line and the CLI's carry-on (the docstring). Python, not
 # `test -f … ||`: it reads the same whether the CLI hands the line to a shell or splits it itself.
 LAUNCHER = ("import os,runpy,sys;a=sys.argv[1];sys.argv=sys.argv[1:];os.path.isfile(a) and runpy.run_path(a,run_name='__main__');"
@@ -101,10 +126,10 @@ LAUNCHER = ("import os,runpy,sys;a=sys.argv[1];sys.argv=sys.argv[1:];os.path.isf
             "sys.stderr.write('regatta vendor-hooks: %s is gone, so no guard ran; run vendor-hooks apply\\n'%a)")
 
 
-def command(cli, arg):
+def command(cli):
     # -I: the CLI's cwd is the repo it works in, which `-c` would put first on sys.path (a repo's `json.py`
     # would run inside the hook; the finish review, 2026-10-31)
-    return f'python3 -I -c "{LAUNCHER}" "{adapter()}" {cli} ' + (arg if arg == "trailer" else f'"{arg}"')
+    return f'python3 -I -c "{LAUNCHER}" "{adapter()}" {cli} {ENTRY}'
 
 
 def ours(cmd):
@@ -204,8 +229,19 @@ def tenants():
         except (OSError, ValueError):
             continue
         if isinstance(d, dict):
-            return {n: [x for x in (t.get("logins") or []) if isinstance(x, str)]
-                    for n, t in d.items() if isinstance(t, dict)}
+            # a confined routing login is its tenant's too, only narrowed: its home takes the tenant's layer, never
+            # the default dir's; a Claude row there is never read, as in account (agy-confine-fail-closed, 2026-11-01).
+            # `logins` as a string is one label, as account's tenant_logins reads it
+            routing = {a.get("label") for a in registry_rows() if a.get("provider", "claude") != "claude"}
+            out = {}
+            for n, t in d.items():
+                if not isinstance(t, dict):
+                    continue
+                logins = [t["logins"]] if isinstance(t.get("logins"), str) else t.get("logins")
+                confined = t.get("confined") if isinstance(t.get("confined"), dict) else {}
+                out[n] = [x for x in (logins if isinstance(logins, list) else []) if isinstance(x, str)] \
+                    + [x for x in confined if isinstance(x, str) and x in routing]
+            return out
     out = {}
     for a in registry_rows():
         if isinstance(a.get("tenant"), str) and a.get("label"):
@@ -292,44 +328,54 @@ def write_text(path, text):
     os.replace(tmp, path)   # the link, if the file is one, is replaced by a file: neither CLI links these
 
 
-def codex_handler(cli, arg):
-    return {"type": "command", "command": command(cli, arg), "timeout": TIMEOUT}
+def handler(cli):
+    """Our one handler for CLI's hooks file: Codex's carries NAME, agy's cannot (the docstring)."""
+    h = {"type": "command", "command": command(cli), "timeout": TIMEOUT}
+    return dict(h, statusMessage=name()) if cli == "codex" else h
 
 
 def plan_codex(cfg):
-    """(new cfg, changes) for Codex's hooks.json: ours rewritten where they stand, a missing one appended."""
+    """(new cfg, changes) for Codex's hooks.json: our one entry where the first of ours stands (the older shape's
+    others merged into it), or appended; trailing groups left empty dropped (the docstring)."""
     hooks = cfg.get("hooks", {})
     if not isinstance(hooks, dict):
         raise Refused("its `hooks` is not an object: not touched")
     groups = hooks.get("PreToolUse", [])
     if not isinstance(groups, list):
         raise Refused("its `PreToolUse` is not a list: not touched")
-    want = {name: codex_handler("codex", arg) for name, arg in guards()}
-    changes, seen, keep = [], set(), []
+    want = handler("codex")
+    seen, same, keep, empty = [], False, [], []
     for g in groups:
         if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
             keep.append(g)
+            empty.append(False)
             continue
-        hs = []
+        hs, had = [], False
         for h in g["hooks"]:
             if isinstance(h, dict) and ours(h.get("command")):
-                name = guard_of(h["command"])
-                if name in want and name not in seen:
-                    seen.add(name)
-                    if h != want[name] or g.get("matcher") != "":
-                        changes.append(f"rewrote {name}")
-                    hs.append(want[name])
-                else:
-                    changes.append(f"dropped {name}")   # a guard no longer wired, or a second copy
+                had = True
+                if not seen:
+                    same = h == want and g.get("matcher") == ""
+                    hs.append(want)
+                seen.append(guard_of(h["command"]))
                 continue
             hs.append(h)
-        # a group of ours takes matcher "": vendor_hook judges which tools it reads. One left empty stays, so no
-        # later group's index — Codex's review key — shifts (the docstring)
-        keep.append(dict(g, hooks=hs, matcher="") if any(ours(h.get("command")) for h in hs) or not hs else dict(g, hooks=hs))
-    for name, h in want.items():
-        if name not in seen:
-            keep.append({"matcher": "", "hooks": [h]})
-            changes.append(f"added {name}")
+        # the group of ours takes matcher "": vendor_hook judges which tools it reads
+        keep.append(dict(g, hooks=hs, matcher="") if any(h is want for h in hs) else dict(g, hooks=hs))
+        # emptied now, or left empty by an earlier apply (its matcher "" and no handler: ours' mark)
+        empty.append(not hs and (had or g.get("matcher") == ""))
+    while keep and empty[-1]:   # an empty group at the end shifts no later index: dropped
+        keep.pop()
+        empty.pop()
+    if not seen:
+        keep.append({"matcher": "", "hooks": [want]})
+        changes = ["added the guards entry"]
+    elif seen == [ENTRY]:
+        changes = [] if same else ["rewrote the guards entry"]
+    else:
+        changes = [f"merged {', '.join(seen)} into one entry"]   # the older shape, a gone guard or a second copy
+    if seen and not changes and len(keep) != len(groups):
+        changes = ["dropped the empty groups after it"]
     new = dict(cfg, hooks=dict(hooks, PreToolUse=keep))
     return new, changes
 
@@ -337,7 +383,7 @@ def plan_codex(cfg):
 def plan_ag(cfg):
     have = cfg.get(AG_KEY) if isinstance(cfg.get(AG_KEY), dict) else {}
     want = {"enabled": have.get("enabled") is not False,
-            "PreToolUse": [{"matcher": "*", "hooks": [codex_handler("antigravity", arg) for _, arg in guards()]}]}
+            "PreToolUse": [{"matcher": "*", "hooks": [handler("antigravity")]}]}
     if cfg.get(AG_KEY) == want:
         return cfg, []
     return dict(cfg, **{AG_KEY: want}), ["added its entry" if not have else "rewrote its entry"]
@@ -421,8 +467,9 @@ REVIEW = "start `codex` with CODEX_HOME={home}, then /hooks, and trust them: Cod
 def cmd_apply(dry):
     verb = "would change" if dry else "changed"
     rc = 0
-    if not adapter().is_file():
-        print(f"vendor-hooks: {adapter()} is not there — launch the branch that adds it (or pull main) first")
+    if not adapter_ok():
+        print(f"vendor-hooks: {adapter()} is not there, or predates the `{ENTRY}` entry — pull main (or launch "
+              "the branch that adds it) first")
         return 1
     hs = homes()
     if not hs:
@@ -441,9 +488,10 @@ def cmd_apply(dry):
         print(f"{f}: " + (f"{verb}: {', '.join(changes)}" if changes else "up to date"))
         if cli == "codex" and not dry:
             n = len(unreviewed(f))
-            if n or any(c.startswith("rewrote") for c in changes):
+            asked = any(c.startswith(("rewrote", "merged")) for c in changes)
+            if n or asked:
                 print(f"  {n} entr{'y' if n == 1 else 'ies'} of ours not yet reviewed"
-                      + (", and a rewritten one is asked again" if any(c.startswith("rewrote") for c in changes) else "")
+                      + (", and a rewritten one is asked again" if asked else "")
                       + " — " + REVIEW.format(home=home))
         state, target, shadow = pointer_state(cli, home)
         if state == "foreign":
@@ -462,9 +510,14 @@ def cmd_apply(dry):
 
 
 def cmd_check():
-    """One line per home's hooks file and pointer; exit 1 on a missing entry, a foreign or missing pointer."""
+    """One line per home's hooks file and pointer; exit 1 on a missing or stale entry (the older shape included),
+    a foreign or missing pointer."""
     rc = 0
-    want = [n for n, _ in guards()]
+    want = [n for n, _ in guards()]   # what the one entry runs, for the lines below
+    if not adapter_ok():
+        print(f"--  {adapter()}: not there, or predates the `{ENTRY}` entry — every entry of ours allows every "
+              "call; pull main")
+        rc = 1
     for n in ("secrets_guard", "checkpoint"):
         if n not in want:
             print(f"--  {n}: its module is not in {root() / 'modules'} — no CLI meets it")
@@ -479,21 +532,26 @@ def cmd_check():
             continue
         if cli == "codex":
             groups = (cfg.get("hooks") or {}).get("PreToolUse") or [] if isinstance(cfg.get("hooks"), dict) else []
-            cmds = [h.get("command") for g in groups if isinstance(g, dict) for h in g.get("hooks") or []
-                    if isinstance(h, dict)]
+            hs = [h for g in groups if isinstance(g, dict) for h in g.get("hooks") or [] if isinstance(h, dict)]
         else:
             entry = cfg.get(AG_KEY) if isinstance(cfg.get(AG_KEY), dict) else {}
-            cmds = [h.get("command") for g in entry.get("PreToolUse") or [] if isinstance(g, dict)
-                    for h in g.get("hooks") or [] if isinstance(h, dict)]
-        args = dict(guards())
-        have = {guard_of(c) for c in cmds if ours(c) and guard_of(c) in args and c == command(cli, args[guard_of(c)])}
-        missing = [n for n in want if n not in have]
+            hs = [h for g in entry.get("PreToolUse") or [] if isinstance(g, dict)
+                  for h in g.get("hooks") or [] if isinstance(h, dict)]
+        mine = [h for h in hs if ours(h.get("command"))]
         off = cli == "antigravity" and isinstance(cfg.get(AG_KEY), dict) and cfg[AG_KEY].get("enabled") is False
-        if missing:
-            print(f"--  {f}: no current entry for {', '.join(missing)} — `vendor-hooks apply`")
+        if mine == [handler(cli)]:
+            print(f"ok  {f}: one entry, " + (f"named {name()!r}" if cli == "codex" else f"under `{AG_KEY}` ({', '.join(want)})")
+                  + (" — disabled by its owner (`enabled: false`)" if off else ""))
+        elif not mine:
+            print(f"--  {f}: no regatta guards entry — `vendor-hooks apply`")
+            rc = 1
+        elif len(mine) > 1 or any(guard_of(h["command"]) != ENTRY for h in mine):
+            print(f"--  {f}: stale, the older shape: {len(mine)} entr{'y' if len(mine) == 1 else 'ies'} of ours "
+                  f"({', '.join(guard_of(h['command']) for h in mine)}) — `vendor-hooks apply` merges them into one")
             rc = 1
         else:
-            print(f"ok  {f}: {len(want)} entries ({', '.join(want)})" + (" — disabled by its owner (`enabled: false`)" if off else ""))
+            print(f"--  {f}: the guards entry is not current (another checkout, or unnamed) — `vendor-hooks apply`")
+            rc = 1
         if cli == "codex":
             n = unreviewed(f)
             if n:

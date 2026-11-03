@@ -272,4 +272,77 @@ CLAUDE_REPOS_JSON="$T/torn.json" python3 "$QB" list "${QC[@]}" > "$T/list" 2>&1
 has "$T/list" "not here: the registry" "  a torn registry: nothing claimed from the fleet (S5's eligibility says it first, the fence after)"
 rm -f "$REGATTA_CONFIG/wharf-runs/queue-repos"; unset CLAUDE_REPOS_JSON
 
+echo "the node's cap and kick (node-cap-kick): a host's run-cap, and an ssh road only the kick reads"
+RC="$REGATTA_CONFIG/wharf-runs"
+printf 'node1:4\nother:5\n' > "$RC/run-cap"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap) $(DISPATCH_HOST=mac1 "$B/dispatch" --cap)" "4 3" "dispatch --cap: this host's line in wharf-runs/run-cap, the default elsewhere"
+check "$(DISPATCH_HOST=node1 DISPATCH_MAX_RUNS=2 "$B/dispatch" --cap)" "2" "  DISPATCH_MAX_RUNS over it"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --slots | cut -d' ' -f2)" "4" "  --slots, berth's read over ssh, says the same"
+for bad in node1:0 node1:many node1: node1:-1 node1:99999999999999999999; do
+  echo "$bad" > "$RC/run-cap"
+  check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2> "$T/err")" "3" "  $bad is no cap: the default…"
+  has "$T/err" "wharf-runs/run-cap" "  …said on stderr"
+done
+printf 'node1:\n4\n' > "$RC/run-cap"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>&1)" "4" "  a value split one word per line, as the overlay writes it, reads as one line"
+printf '# node1:9\nnode1:4  # the owner\n' > "$RC/run-cap"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>&1)" "4" "  a commented line is no line, and a note after the value is no value"
+for spelt in 'node1:4\n5\n' 'node1:4 5\n' 'node1:4 (the owner)\n' 'node1: 4\n' 'node1 : 4\n' 'other:\nnode1:4\n' '(node1:9 was too many)\nnode1:4\n'; do
+  printf "$spelt" > "$RC/run-cap"
+  check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>&1)" "4" "  [$spelt] reads 4: one value per host, whatever stands beside it"
+done
+printf 'node1:\nother:5\n' > "$RC/run-cap"
+check "$(DISPATCH_HOST=other "$B/dispatch" --cap 2>&1)" "5" "  a bare host: takes no other host's line"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>&1 | tail -1)" "3" "  …and is no cap itself"
+rm -f "$RC/run-cap"; mkdir "$RC/run-cap"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>/dev/null)" "3" "  a key that will not read: the default…"
+DISPATCH_HOST=node1 "$B/dispatch" --cap 2> "$T/err" > /dev/null; has "$T/err" "wharf-runs/run-cap" "  …said on stderr"
+rmdir "$RC/run-cap"
+printf 'srv_01:6\n*:9\n' > "$RC/run-cap"
+check "$(DISPATCH_HOST=srv-01 "$B/dispatch" --cap 2>&1) $(DISPATCH_HOST=node1 "$B/dispatch" --cap 2>&1)" "6 3" "  a host spelled as the kernel does matches as local_host spells it; a * line is no line: the default stays dispatch's"
+check "$(DISPATCH_HOST=srv_01 "$B/dispatch" --cap 2>&1)" "6" "  DISPATCH_HOST spelled with an underscore reads its own line too, spelled as local_host spells it"
+rm -f "$RC/run-cap"
+check "$(DISPATCH_HOST=node1 "$B/dispatch" --cap 2> "$T/err") $(wc -c < "$T/err" | tr -d ' ')" "3 0" "  no key: the default, nothing said"
+
+# The node in kick-ssh and not in wharf-runs/ssh: the kick reaches it, and berth and dispatch --on do not.
+RGY="$T/reg-kick.json"
+printf '{"repos": {"open": {"hosts": ["mac1", "node1"]}, "plain": {"hosts": ["mac1", "node1"]}}, "scopes": {"s": {"repos": ["open"], "berths": ["mac1", "node1"]}}}\n' > "$RGY"
+SSHKEPT="$(cat "$RC/ssh" 2>/dev/null)"; echo "mac2:mac2-alias" > "$RC/ssh"
+echo "node1:node1-alias" > "$RC/kick-ssh"; echo "node1:ssh" > "$RC/kick-roads"
+printf '#!/bin/sh\necho "$*" >> "$T/kick.calls"\n' | sed "s|\$T|$T|" > "$T/stub/kickssh"; chmod +x "$T/stub/kickssh"
+kl() { CLAUDE_REPOS_JSON="$RGY" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import kicklib as k; exec(sys.argv[2])' "$B" "$1"; }
+check "$(kl 'print(k.roads_for("node1", "mac1"), k.reached("node1"), k.reached("mac9"))')" "(['ssh'], 'kick-roads') True False" "the kick's roads: the node's line, reached"
+check "$(DISPATCH_SSH="$T/stub/kickssh" kl 'print(k.road_ssh("node1", k.payload("mac1", ["mac1"]))[1])')" "ssh node1-alias" "  the ssh road takes the alias from kick-ssh"
+has "$T/kick.calls" "--claim --full mac1 --from mac1" "  host names only, to the peer's own dispatch"
+hasnt "$T/kick.calls" "fleet:" "  no entry crosses"
+check "$(kl 'print(sorted(ln for ln in k.roads_lines("mac1", "/nonexistent") if not ln.startswith("#")))')" "['mac2:ssh', 'node1:ssh']" "  dispatch --roads names both"
+: > "$RC/kick-roads"
+check "$(kl 'print(k.derived("node1", "mac1"), k.reached("node1"))')" "['ssh'] True" "  no line: ssh derived from kick-ssh, as from wharf-runs/ssh"
+printf 'node1:\nnode1-alias\n# none\nmac3:mac3-alias # a note\nmac4:mac4-alias (a note)\n' > "$RC/kick-ssh"
+check "$(kl 'print(k.ssh_alias("node1"), k.ssh_alias("mac3"), k.ssh_alias("mac4"))')" "node1-alias mac3-alias mac4-alias" "  a value split one word per line reads as one, and a note is no alias"
+echo "node1:node1-alias" > "$RC/kick-ssh"
+berthc() { CLAUDE_REPOS_JSON="$RGY" BERTH_HOST=mac1 python3 -c 'import sys, importlib.machinery as m, importlib.util as u
+l = m.SourceFileLoader("berth", sys.argv[1] + "/berth"); b = u.module_from_spec(u.spec_from_loader("berth", l)); l.exec_module(b)
+print(b.sample_peer("node1").get("answered"), sorted(b.ssh_aliases()))' "$B"; }
+check "$(berthc)" "False ['mac2']" "  berth holds no alias for it: never probed, so never placed on"
+check "$(DISPATCH_HOST=mac1 "$B/dispatch" claude/mac1/2026-10-31-x --on node1 --dry-run 2>&1 | grep -c 'unknown host node1')" "1" "  dispatch --on does not know it"
+# the receiver: on Linux through systemd-launchctl, whose kickstart never waits on the unit, the road's bound being 15 s
+: > "$T/sd.calls"
+python3 "$QB" kicked --full mac1 --from mac1 "${QC[@]}" > "$T/out" 2>&1
+has "$T/sd.calls" "systemctl --user start --no-block org.example.claude.queue-sweep.service" "the kick heard here starts this host's sweep through the launcher"
+has "$T/out" "kick heard from mac1" "  said"
+# the same on the road's own line, through dispatch's choice of launcher (its own on Linux; a Mac has no OSTYPE road to it)
+: > "$T/sd.calls"; DL=""; [ "$(uname)" = Darwin ] && DL="$SL"
+DISPATCH_LAUNCHCTL="$DL" "$B/dispatch" --claim --full mac1 --from mac1 > "$T/out" 2>&1; check "$?" 0 "  the ssh road's command line, on dispatch itself: exit 0"
+has "$T/sd.calls" "--no-block" "  …the launcher's kickstart, which never waits on the unit"
+has "$T/sd.calls" "queue-sweep.service" "  …of this host's sweep"
+cat > "$T/stub/xdgctl" <<'SH'
+#!/bin/sh
+echo "[$XDG_RUNTIME_DIR]" >> "$XDGLOG"
+SH
+chmod +x "$T/stub/xdgctl"
+( unset XDG_RUNTIME_DIR; XDGLOG="$T/xdg" SYSTEMD_LAUNCHCTL_SYSTEMCTL="$T/stub/xdgctl" "$SL" kickstart "gui/$(id -u)/org.example.x" )
+has "$T/xdg" "[/run/user/$(id -u)]" "  a session with no XDG_RUNTIME_DIR, an ssh command's: the user manager is found all the same"
+rm -f "$RC/kick-ssh" "$RC/kick-roads"; if [ -n "$SSHKEPT" ]; then echo "$SSHKEPT" > "$RC/ssh"; else rm -f "$RC/ssh"; fi
+
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

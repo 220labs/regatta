@@ -2,6 +2,7 @@
 # check — a checkout's AGENTS.md `check:` line, one script at a time, under one of N slots per Mac login.
 #
 #   bin/check [<checkout>] [--only <script>…] [--full] [--fresh] [--out <dir>]
+#   bin/check --slots    the slot count this host runs by, nothing run (`regatta limit`'s trial read)
 #
 # Scoped by default (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
 # the checkout changed something under modules/<m>/ since it forked from origin/main (main without a
@@ -26,7 +27,8 @@
 # three or four times (the build run, /finish, the PR's CI, main's CI) while the Macs sat at load 98
 # (docs/check-load-2026-10-23.md). CI still runs the whole line on the pull request, and `pr merge`
 # refuses until it passed (an admin token is not refused by the protection): the scope is for the
-# session's own loop, the proof stays whole.
+# session's own loop, the proof stays whole (bar the PR's Linux share, which skips a PR of docs only:
+# .circleci/share.sh scope asks check_scope.py the same question).
 # A pass is remembered per tree: after a run, each script that passed is recorded under
 # $CHECK_LOGS/passed/<tree> (the checkout's exact content, `git write-tree` over a scratch index,
 # uncommitted files included), and a later run of the same tree reports it `PASSED <when> <command>`
@@ -83,6 +85,19 @@
 # Not parallel inside one check: the scripts' timing tests assume they run alone (brief, 2026-10-19).
 set -u
 
+# this host's line of wharf-runs/check-slots, else `*`'s, else 2. The live layer first (`regatta limit`,
+# live-limits 2026-11-01: <config>/live/<key>, which --config never writes): its lines stand in front of
+# the base file's, so the first match is the layer's, as the core's config_read merges them.
+slots_here() {
+  local c f h v
+  c="${REGATTA_CONFIG:-$HOME/.config/regatta}"; f="$c/wharf-runs/check-slots"
+  # spelled as the core's host_name and `regatta limit` spell it: lower case, any other character a dash
+  h="${CHECK_HOST:-$( { scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//')}"
+  # sed over both files, never `cat` into it: a layer whose last line has no newline would join the config's first
+  v="$(sed -n "s/^[[:space:]]*$h:[[:space:]]*//p" "$c/live/wharf-runs/check-slots" "$f" 2>/dev/null | head -1)"
+  [ -n "$v" ] || v="$(sed -n 's/^[[:space:]]*\*:[[:space:]]*//p' "$c/live/wharf-runs/check-slots" "$f" 2>/dev/null | head -1)"
+  echo "${v:-2}" | tr -d '[:space:]'
+}
 wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""
 # a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
 refuse() {
@@ -92,6 +107,11 @@ refuse() {
 }
 while [ $# -gt 0 ]; do
   case "$1" in
+    # the slot count this host runs by, judged as a check judges it, and nothing run: `regatta limit`'s
+    # trial read of a value (exit 2 on a count the slot would refuse)
+    --slots) n="${CHECK_SLOTS:-$(slots_here)}"
+             case "$n" in ''|*[!0-9]*|0*) refuse "CHECK_SLOTS must be a number from 1 (got $n)" ;; esac
+             echo "$n"; exit 0 ;;
     --only) mode=only; asked_only=1; shift; continue ;;
     --out) [ $# -ge 2 ] || refuse "--out needs a folder"; out="$2"; mode=""; shift 2; continue ;;
     --full) full=1; mode=""; shift; continue ;;
@@ -218,88 +238,9 @@ if [ -z "$full" ] && [ ${#only[@]} -eq 0 ] && [ -d "$wt/modules" ] && in_git; th
                  git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | cut -c4- | sed 's/ -> /\
 /'; } | sort -u)
     [ -n "$mb" ] || changed=""
-    # one verdict per command, in order — RUN<tab><why> or SKIP<tab><why> — after a SCOPE<tab><said> line
-    verdicts=$(CHECK_CMDS="$(printf '%s\n' "${run[@]}")" python3 - "$wt" "$base" "$changed" <<'PY'
-import json, os, re, sys
-wt, base, changed = sys.argv[1], sys.argv[2], [p for p in sys.argv[3].split("\n") if p]
-cmds = [l for l in os.environ.get("CHECK_CMDS", "").split("\n") if l.strip()]   # the heredoc is stdin
-mods = sorted(d for d in os.listdir(os.path.join(wt, "modules")) if os.path.isdir(os.path.join(wt, "modules", d)))
-def declared(m):
-    """m's plugin.json dependencies, every name (a module since removed still counts)"""
-    try:
-        return list(json.load(open(os.path.join(wt, "modules", m, ".claude-plugin/plugin.json"))).get("dependencies") or [])
-    except Exception:
-        return []
-def suite_of(c):
-    for w in c.split():
-        m = re.match(r"modules/([^/]+)/tests/", w)
-        if m and m.group(1) in mods: return m.group(1)
-    return None
-def say(line, verdicts):
-    print("SCOPE\t" + line)
-    for v in verdicts: print(v)
-if not changed:
-    say("the whole line: nothing changed since %s" % base, ["RUN\tnothing changed since %s" % base] * len(cmds)); sys.exit(0)
-# own: modules whose own suite runs; deep: changes other modules' suites follow (code, not a suite or prose)
-own, deep, roots, why_all = set(), set(), False, None
-for p in changed:
-    m = re.match(r"modules/([^/]+)/(.*)", p)
-    if m:
-        name, rest = m.group(1), m.group(2)
-        own.add(name)
-        # a suite or prose is the module's own; a skill or an agent is behaviour another suite may read
-        if name not in mods or not (rest.startswith("tests/") or (rest.endswith(".md") and not rest.startswith(("skills/", "agents/")))): deep.add(name)
-        continue
-    m = re.match(r"\.([^/]+)/", p)
-    if m and m.group(1) in mods: own.add(m.group(1))
-    elif p.startswith(("docs/", ".github/")): pass
-    elif "/" not in p and p.endswith(".md"): roots = True
-    else: why_all = why_all or p
-if why_all:
-    say("the whole line: %s changed, outside modules/" % why_all, ["RUN\t%s changed, outside modules/" % why_all] * len(cmds)); sys.exit(0)
-names = sorted(set(mods) | own)
-def mentions(m):
-    """the modules m's files (not Markdown) name by path"""
-    out = set()
-    pat = re.compile(r"modules/(%s)(?![\w-])" % "|".join(re.escape(x) for x in names if x != m))
-    for root, dirs, files in os.walk(os.path.join(wt, "modules", m)):
-        dirs[:] = [d for d in dirs if not d.startswith(".") or d == ".claude-plugin"]
-        for f in files:
-            if f.endswith(".md"): continue
-            p = os.path.join(root, f)
-            try:
-                if os.path.getsize(p) > 2_000_000: continue
-                with open(p, "rb") as fh: out |= set(pat.findall(fh.read().decode("utf-8", "replace")))
-            except OSError:
-                pass
-    out.discard(m); return out
-def reach(m):
-    """what m's suite may see change: its declared dependencies, followed through, and what its own
-    files name by path (one hop: a loose mention followed through would reach everything)"""
-    seen, todo = set(), [m]
-    while todo:
-        x = todo.pop()
-        for d in declared(x) if x in mods else []:
-            if d not in seen and d != m: seen.add(d); todo.append(d)
-    seen |= mentions(m); seen.discard(m); return seen
-universal = [m for m in mods if all(m in declared(x) for x in mods if x != m)]   # the core: every other module declares it
-run_why = {}
-for m in mods:
-    if m in own: run_why[m] = "modules/%s changed" % m; continue
-    hit = sorted(reach(m) & deep)
-    if hit: run_why[m] = "uses modules/%s, changed" % hit[0]
-    elif m in universal and (own or deep): run_why[m] = "modules/%s checks every module" % m
-    elif roots and not declared(m): run_why[m] = "a root Markdown file changed, which modules/%s checks" % m
-out = []
-for c in cmds:
-    s = suite_of(c)
-    if s is None: out.append("RUN\tnot a module's suite: runs every time")
-    elif s in run_why: out.append("RUN\t" + run_why[s])
-    else: out.append("SKIP\tno change under modules/%s or what it uses since %s" % (s, base))
-n = sum(1 for v in out if v.startswith("RUN"))
-say("%d of %d script(s): %s changed since %s" % (n, len(cmds), ", ".join(["modules/" + m for m in sorted(own)] + (["a root Markdown file"] if roots else [])), base), out)
-PY
-    ) || verdicts=""
+    # one verdict per command, in order — RUN<tab><why> or SKIP<tab><why> — after a SCOPE<tab><said> line;
+    # check_scope.py holds the rules, which the Linux PR trigger (.github/workflows/check-linux.yml) asks too
+    verdicts=$(CHECK_CMDS="$(printf '%s\n' "${run[@]}")" python3 "$(cd "$(dirname "$0")" && pwd)/check_scope.py" "$wt" "$base" "$changed") || verdicts=""
     if [ -n "$verdicts" ]; then
       scope_line="${verdicts%%
 *}"; scope_line="${scope_line#SCOPE	}"
@@ -380,16 +321,8 @@ fi
 run=("${todo[@]}")
 
 # --- the slot --------------------------------------------------------------------------------------
-slots_here() {   # this host's line of wharf-runs/check-slots, else `*`'s, else 2
-  local f h v
-  f="${REGATTA_CONFIG:-$HOME/.config/regatta}/wharf-runs/check-slots"
-  h="${CHECK_HOST:-$( { scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr '[:upper:]' '[:lower:]')}"
-  v="$(sed -n "s/^[[:space:]]*$h:[[:space:]]*//p" "$f" 2>/dev/null | head -1)"
-  [ -n "$v" ] || v="$(sed -n 's/^[[:space:]]*\*:[[:space:]]*//p' "$f" 2>/dev/null | head -1)"
-  echo "${v:-2}" | tr -d '[:space:]'
-}
 sd="${CHECK_SLOT_DIR:-$HOME/Library/Caches/check-slots}"; n="${CHECK_SLOTS:-$(slots_here)}"; poll="${CHECK_SLOT_POLL:-5}"
-case "$n" in ''|*[!0-9]*|0) refuse "CHECK_SLOTS must be a number from 1 (got $n)" ;; esac
+case "$n" in ''|*[!0-9]*|0*) refuse "CHECK_SLOTS must be a number from 1 (got $n)" ;; esac   # 00 too: seq 1 00 is empty on GNU
 mkdir -p "$sd/queue" || refuse "cannot make $sd"
 pstart() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | xargs; }
 me_start="$(pstart $$)"

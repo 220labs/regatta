@@ -11,15 +11,18 @@ the checkpoint hook commits each turn there, pushes it, and keeps the primary ch
 | `hooks/branches.py`, `hooks/carried.py` | the branch survey and the proof a branch's content is on `main`; what one branch carries from another |
 | `hooks/worktree_allow.py` | EnterWorktree and ExitWorktree into any repo's `.claude/worktrees/` never ask |
 | `libexec/pr` | the branch's pull request without `gh`: `regatta pr status | ready | strays | merge | carried` — outside `bin/`, since `/usr/bin/pr` wins on a stock PATH |
+| `bin/council` | the principal tier's council: blind position papers from an Opus, a Codex and a Gemini arm, each on its own copy of the home repo (git writes it from a pack of the commit's trees) behind its fence, a blind cross-examination, the build path's `codex exec review`, the Receipt read from what the arms recorded, and `council fences`, the monthly re-probe: the H probes' nine commands and a denied tool per arm as a table, an arm a case broke refused until one holds; its model rows in `settings/models.json` |
 | `bin/review-gate` | `/finish`'s review step: which two reviews a branch gets (by inserted lines and the week), and one merged list from their reports |
 | `skills/finish`, `skills/evacuate`, `skills/todo` | land a branch; park a session's open items; keep `TODO.md` short |
 | `templates/code/` | what a new project starts with: `AGENTS.md`'s session contract, the CI and automerge workflows, the pre-push guard |
 | `bin/repos` | the registry (`repos.json`, read through the core) against this machine: what is cloned, pushed, behind; `--clone`, `--github`, `--branches`, `--hooks` |
 | `bin/scopes` | the registry's scopes: groups of repos worked on together, each written as a VS Code workspace file; which are confidential and on which login (`set`, `configure`) |
 | `bin/github-repo` | a local repo onto GitHub, private, with the merge policy and CI settings, then registered |
-| `bin/ci-provider` | which CI runs a repo's check — Actions on ubuntu, Actions on a self-hosted runner on a Mac of one's own (`self-hosted`, or the name `wharf/ci-runner-kind` gives it), or CircleCI — switched in one command; `--protect` swaps main's required check, `--runner` installs the repo's runner over ssh (the Mac's arm64 or x64 build; `--host`, `--name` and `--labels` for a further runner Mac of a fleet, `--instance N` for a further runner on one Mac) and sets the runs-on variable unless the fleet's other runners already serve it; `--pick [--apply]` chooses the lane by lighthouse's lanes, budgets and queue and flips that variable, logged with its undo (lighthouse-ops S1); the self-hosted kind keeps a job's `git config --global` in its own file and refuses a check that writes the runner login's own (`npm install -g`, `sudo`). Writes live state: lands by `/finish` only |
-| `bin/ci-circleci` | a repo's CircleCI runs through the API: `trigger` a pipeline on a branch with parameters, `wait` for it, a job's `steps` output and `artifacts`, or all four as `run`; the token from the main checkout's `.env`, never printed |
+| `bin/ci-provider` | which CI runs a repo's check — Actions on ubuntu, Actions on a self-hosted runner on a Mac of one's own (`self-hosted`, which ci.json and `--to` may still call by an older name `wharf/ci-runner-kind` lists), or CircleCI — switched in one command; `--protect` swaps main's required check, `--runner` installs the repo's runner over ssh (the Mac's arm64 or x64 build; `--host`, `--name` and `--labels` for a further runner Mac of a fleet, `--instance N` for a further runner on one Mac) and sets the runs-on variable unless the fleet's other runners already serve it; `--pick [--apply]` chooses the lane by lighthouse's lanes, budgets and queue and flips that variable, and moves a Linux share between CircleCI orgs by theirs, off when none has month left, each flip logged with its undo (lighthouse-ops S1, ci-two-orgs); the self-hosted kind keeps a job's `git config --global` in its own file and refuses a check that writes the runner login's own (`npm install -g`, `sudo`). Writes live state: lands by `/finish` only |
+| `bin/ci-circleci` | a repo's CircleCI runs through the API: `trigger` a pipeline on a branch with parameters, `wait` for it, a job's `steps` output and `artifacts`, or all four as `run`; `rerun` a failed job's workflow from failed, once (one caller after another, not two at the same moment) and only on the checkout's branch unless `--branch` says otherwise; the token from the main checkout's `.env`, never printed |
 | `templates/ci/` | the CircleCI part `ci-provider` writes; its Actions file is `templates/code/`'s check.yml |
+| `bin/list-merge` | git's merge driver for `TODO.md` and `CHANGELOG.md` (by item: a done stands, a line stays under its item, a CHANGELOG line stays under `## Unreleased`), any other union file as union; `install <repo>` makes it that repo's `merge.union.driver`, never over one the repo set (sync.py runs it for each repo it tends) |
+| `bin/todo-md` | a repo's `TODO.md` items by id (`/todo`'s shape): `lint` (an item without an id, a duplicate, a numbered citation, a cited id `TODO.md` lacks, the `merge=union` line; `--base <ref>`: an item done there that a union merge brought back), `list`, `done <id>`, `migrate` from a numbered list |
 | `bin/tend` | `sync.py`'s worktree pass over every registered repo cloned here |
 | `bin/finish-stuck-rebase` | finishes a rebase a session-end commit left stuck in a records repo, keeping both sides of the append-only files |
 | `bin/fork_claude_session.py`, `skills/fork` | a session forked into another Claude Code session with its transcript |
@@ -34,7 +37,7 @@ GitHub's API with a token (`GH_TOKEN`, `~/.git-credentials`, else `gh auth token
 core's `common.tool()` and skipped with the loss named when absent (`install.sh --check` lists
 them): keel (the D-list page and the hand-over-line block), wharf-runs' `autofinish` and `pickup`,
 plumb's `usage-report` and `tier_check`, lighthouse's `claude-settings` and `trust-projects`,
-wharf-runs' `rc-hosts`, atlas's `knowledge-commit`. `repos` reads a CircleCI repo through this
+wharf-runs' `rc-hosts`, wharf-runs' `harness` (council's Codex arm, its sibling checkout's first), atlas's `knowledge-commit`. `repos` reads a CircleCI repo through this
 module's own `ci-provider`, its sibling in `bin/`, loaded directly (missing or broken, its CI line
 says `ci-provider unloadable`). The registry is the core's `repos_json()`:
 `$CLAUDE_REPOS_JSON`, else `wharf/repos.json` in the regatta config dir.
@@ -54,9 +57,10 @@ check` names a missing one where an overlay is installed.
 | Key | What | Read by | Absent |
 | --- | --- | --- | --- |
 | `wharf/ci-runner-ssh` | the ssh alias that logs in to the runner Mac as the runner's user (`--runner --host` and `--labels` stand in for this key and the next, for another Mac of a fleet) | `ci-provider --runner` | `--runner` refuses, naming the file |
-| `wharf/ci-runner-labels` | runs-on's labels for the runner Mac, one per line: `self-hosted`, `macOS` and at least one of its own; the first of its own names the runner on GitHub | `ci-provider --to <self-hosted kind>`, `--runner` | both refuse, naming the file; status reads the labels from the repo's check.yml or its variable instead |
-| `wharf/ci-runner-user` | the runner's macOS user, named in the trust warning | `ci-provider --to <self-hosted kind>`, `--runner install` | the warning says "the runner's user" |
-| `wharf/ci-runner-kind` | the self-hosted kind's name in every repo's `.github/ci.json` and `--to`: an installer whose repos already name it after a Mac writes that name | `ci-provider`, `repos` (through `provider_from`) | `self-hosted` |
+| `wharf/ci-runner-labels` | the runner Mac's labels, one per line: `self-hosted`, `macOS` and at least one of its own. The first of its own names the runner on GitHub; a runner in `wharf/ci-runner-caps.json` also takes the automatic labels from here, and an own label only while a runs-on asks for it. No check.yml is written from it | `ci-provider --to self-hosted`, `--runner` | both refuse, naming the file; status reads the labels from the repo's check.yml or its variable instead |
+| `wharf/ci-runner-user` | the runner's macOS user, named in the trust warning | `ci-provider --to self-hosted`, `--runner install` | the warning says "the runner's user" |
+| `wharf/ci-runner-kind` | older names of the self-hosted kind, one per line: an installer whose repos' `.github/ci.json` still name it after a Mac lists that name, and ci.json and `--to` read it as `self-hosted`, which is what `--to` writes back | `ci-provider`, `repos` (through `provider_from`) | no older names |
+| `wharf/ci-runner-caps.json` | `{"<runner name>": ["<capability>", …]}`: what each self-hosted runner can do (Capabilities, below) | `ci-provider --runner caps` (sets the custom labels), `--runner install` (registers with them) | `caps` refuses, naming the file; `install` takes the labels key's |
 | `wharf/hosts` | the Macs a repo clones on, each one's short name, one per line; every one but `regatta/laptop`'s clones as the registry's `machine_account` | `github-repo` (a new repo's `hosts`), `repos --github` (which repos invite the machine account) | `github-repo` registers this host alone, saying so where an overlay is installed; `repos` checks no invitation |
 
 The registry (`wharf/repos.json`) is the core's `repos_json()`, above. The two knowledge repos are
@@ -65,3 +69,42 @@ the core: the checkpoint hook gives a write that reaches one from another sessio
 recipe, `sync.py` fast-forwards both at every start, and `finish-stuck-rebase` defaults to the
 vault. Absent, there is no knowledge repo (no guessed folder), and `sync.py` says so in one line
 where an overlay is installed.
+
+## Capabilities
+
+CI routes on what a runner can do, never on which machine it is (the owner, 2026-10-31). A job's
+runs-on lists the capabilities it needs, beside `self-hosted` and `macOS`: through a variable
+(`CI_RUNS_ON`, `CI_RUNS_ON_FULL`, `CI_RUNS_ON_AUTOMERGE`), or on the line itself for a repo with no
+public twin, where `.github/ci.json`'s `needs` says what the check needs (`["macos", "browser"]`;
+with no OS named, or absent: macOS; another OS takes the variable form) and `ci-provider <repo> --to self-hosted` writes `runs-on: [self-hosted, macOS,
+browser]` from it. A runner's custom labels are its capabilities; GitHub gives the job to a runner
+carrying every label it asks for. The lanes' pick reads the same `needs`: a capability there is met
+only by a self-hosted lane whose label list names it. The capabilities live in
+`wharf/ci-runner-caps.json`, and `ci-provider <repo> --runner caps` makes GitHub's labels equal to it
+with one PUT per runner: a change in the file reaches the queue as soon as it runs, with no
+re-registration and no workflow edit. It fetches and reads the workflows of origin's default branch beside
+this checkout's, as GitHub runs those until a branch lands, and refuses a change that would leave a runs-on, a variable or a literal list
+(flow, the label alone, or block), with no runner, so a move goes: add the new capability,
+point the variable at it (GitHub's variables API, `gh api -X PATCH
+repos/<owner>/<repo>/actions/variables/<NAME> -f value='<JSON list>'`: `caps` writes labels only) or the
+literal (add it to `needs`, then `--to self-hosted`, which also replaces a literal it wrote naming the
+Mac), and once that is on main drop the old label. A runs-on it cannot read (a matrix's expression, a
+runner group, an anchor, a variable mixed with labels: anything but plain labels) refuses the change when its
+text names a label leaving every runner, and is otherwise said and not judged. `--runner install` reads the
+same, fetching for a listed runner alone, and registers it with its capabilities, plus any own label a runs-on or a variable still asks for, which `--runner caps` then
+refuses to drop until none asks for it: list it in the table meanwhile. Both read repository variables
+only: an organization's or an environment's reads as unset, so `caps` does not judge it. `--to self-hosted` warns of a `needs` label no runner in the file lists, as `needs` is
+open to any label and a typo reads as a capability.
+
+| Capability | The runner… | Why a job asks for it |
+| --- | --- | --- |
+| `browser` | has a desktop login session, where headless Chrome runs | keel's in-Chrome cases; Chrome under a daemon with no session dumps the DOM and segfaults on exit |
+| `git-2.43` | has git 2.43 or newer | `merge-tree --write-tree` (2.38), `--merge-base` (2.40), `merge_adds`' `-X` (2.43): wharf's rebase cases and plumb's trim cases |
+| `whole-line` | runs the whole check line inside check.yml's 90-minute limit | a push, the nightly run, a hand start, and a pull request while the Linux share is off |
+| `automerge` | is kept for automerge.yml's short job alone | so that job never queues behind hour-long checks (docs/ci-queue-health-2026-10-27.md); give it nothing else |
+
+The OS and the architecture are GitHub's own labels (`macOS`, `Linux`, `ARM64`, `X64`), read-only,
+and a job names them directly. A runner's name stays an identity for people: no variable names one.
+A repo may use a capability of its own; the table above is wharf's vocabulary, not a closed list.
+A capability is what a job needs from the machine, never whether the machine is there: being awake
+or on the network is availability, which no label routes on (the owner, 2026-10-31).

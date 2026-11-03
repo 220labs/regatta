@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- trim reads the builder rotation's rows (S6 of the Trim design): a vertical's `builders` source
+  (`builder-rotation.jsonl`, dispatch's draw), joined by session to a landing's last build run, so a coin build is
+  `arm_source: coin` with its drawn arm (a forced coin `pinned`, as the finisher's rows read) whether or not its
+  run record is still here, and `trim report`'s scorecard shows `builder sonnet:high coin` once rows exist.
+  `trim/coding.json` names the file.
+- The tier check reads the session's effort at every prompt, from the tail of its transcript (the newest main-thread
+  assistant entry; a subagent's and a `<synthetic>` one skipped), or the hook input's `effort.level` once Claude Code
+  sends it to a prompt hook (2.1.316 does not), and at `xhigh`
+  or `max` puts one line before the model: tell the owner first thing and suggest `/effort high`, unless the owner
+  asked for it. Once per stretch at a value; the first prompt flags a settings pin at `xhigh` the same way (a `max` pin never runs: Claude Code keeps none in settings);
+  quiet under an unattended run (xhigh-warning, 2026-11-01: `xhigh` was a third of four days' list spend).
+- `usage-report numbers`: WRONG per 100 lines skips a build round's review-gate line (`phase: build`), so a branch's
+  rate is its landing's gate (TODO.md [second-review]).
+- `trim`: a review-gate `skipped` line is no review, so it never grades a branch as its first review.
+- The limits widget: a line `<agent>:<family>` in `plumb/widget-hide` hides that bucket family of an agent's card, in the
+  widget's call only (`antigravity:Claude/GPT`, account's `--hide`); with one family left its bars read `5h` and `week`,
+  and each family's resets take one line, `Gemini: 5h resets … · week resets …` (2026-11-01).
+- The limits widget: Antigravity's buckets in the Claude cards' words (`Gemini 5h`, `Claude/GPT week`), no second 5h
+  bar beside a 5h bucket; a plan with no 5-hour window
+  (account's `no_five_hour`: the primary's, Codex prolite) says "no 5h window" in its footer, not "5h unknown", and the
+  tier check's account line says "no 5-hour window"; `plumb/widget-hide` names cards to leave out (2026-11-01).
+- `trim verdict` takes the vertical file's `verdict.from_number`: a landing whose pull request is numbered below
+  it is out of the join count and the arms (other units stay; a floor breach after `floor_since` still refuses, and a
+  value that is not a whole number turns the window off with one stderr line). regatta's `trim/coding.json` sets 161,
+  about where run records begin; before it 45 of the 53 unjoined landings refused every verdict, and the ones that
+  joined are the dispatched subset only (trim-join-3; the skipper's call, 2026-11-01).
+- `trim`: a finisher row's `fin_pass` is unknown for `nothing-to-land` and for a `no-landing` stop until
+  `autofinish-run rotation --settle` proves it landed, then a pass (task-shape S1: failing every stop misread the
+  arms by 27 points); a finish row with no arm drawn is no draw (no arm, out of the finisher verdict, counted
+  apart in the report), and a landing's finisher names its model and effort, `pinned`. A landing's `gate_stops`
+  leaves out the stops `fin_pass` reads as unknown (`fin_stop`).
+- usage-report's trim line fences a key `repo_key` leaves absolute (outside this Mac's projects folder), where it
+  tested `repo_key(key) == key`, which a worktree path from another Mac no longer met (S6's sixth landing review).
+- `asks` (new; evolve S1): the owner's typed asks as the weekly loop's miss signal. `asks run` reads
+  `week-digest --json`, takes the zero-token sieve as a pre-label, sends every owner prompt through the gate
+  (one batched classify call per dimension per 50 prompts, per repo, on the row `evolve.ask`: target, kind, level,
+  detectability; `unknown` allowed; a guarded repo's prompts are refused there and keep the sieve's labels), names
+  each ask's theme with a slug on `evolve.theme`, matches detectable asks to findings dated before them on `evolve.match`
+  (idle until findings exist) and writes ids, labels, counts, model slugs and short word hashes, never a prompt's text, to plumb's state dir (`asks.jsonl`,
+  `themes.json`, the overrule ledger from `interruptions`, a run log with the spend). `numbers` prints asks per 100
+  owner prompts, the detectable and judgement shares, the 60-day repeat share, recall and lead time, and the loop's
+  cost; `baseline` replays the 60-day labelled corpus and prints the agreement per dimension. A gate that is off or
+  failing is a sieve-only week the rows say. `knowledge-numbers` gains the row (`asks_7d` in `--json`).
 - `trim`: the S1+S2 landing review's leftovers (trim-s1s2-leftovers, 2026-10-29). G1 is the cost per step (a
   landing's `steps` from its brief's `Steps:` line, one without), and G4 reads the Size table's own 300–999 row; `wrong_at_review` is the
   gate's first review of a branch, not the re-review; the PR search runs per 28-day window of merge dates and

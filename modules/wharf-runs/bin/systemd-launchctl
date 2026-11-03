@@ -69,8 +69,10 @@ STOP_WAIT = 60
 
 
 def ctl(*a, timeout=STOP_WAIT):
+    # a session with no pam_systemd (a kick's ssh command, say) has no XDG_RUNTIME_DIR, and `--user` then finds no bus
+    env = dict(os.environ, XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid())
     try:
-        return subprocess.run([SYSTEMCTL, "--user", *a], capture_output=True, text=True, timeout=timeout)
+        return subprocess.run([SYSTEMCTL, "--user", *a], capture_output=True, text=True, timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as x:
         return subprocess.CompletedProcess([SYSTEMCTL, *a], 1, "", str(x))
 

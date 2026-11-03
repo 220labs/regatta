@@ -14,9 +14,9 @@ Read `README.md` first: it is the chart. For an agent:
   suite stubs `gh` and `ssh`, and pins every runner key in a scratch `REGATTA_CONFIG`, whatever the
   caller's; never run `--protect`, `--runner install|remove` or a variable write against a real
   repo from a session without the owner's say-so. It lands by `/finish` only (`autofinish_exclude`).
-  The self-hosted kind's name is a config key (`wharf/ci-runner-kind`, default `self-hosted`): the
-  owner's repos' ci.json carry the first runner Mac's name, which the overlay writes there (renaming it would be a
-  data migration across repos).
+  The self-hosted kind is `self-hosted`. `wharf/ci-runner-kind` lists older names of it: the owner's repos'
+  ci.json may carry the first runner Mac's name, which the overlay writes there, and ci.json and `--to` read
+  each as the kind; a repo moves to the new name at its next `--to`, so nothing migrates at once.
 - No hooks/hooks.json until the plugin install is decided (the design's D3-B): the same handler
   wired by a settings file and by the plugin runs twice.
 - Public since its scrub (2026-10-22): every file is on the allowlist, so new text names no real

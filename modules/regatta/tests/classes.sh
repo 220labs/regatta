@@ -39,6 +39,10 @@ for d in sorted(os.listdir(os.path.join(root, "modules"))):
         for dp, _, ns in os.walk(top):
             for n in ns:
                 live.setdefault(rel(os.path.join(dp, n)), "a hook, lib or shell file")
+    # a module's `limits` file: the core's live_keys reads it in every hook, and it names the keys a live/ file may
+    # stand over (live-limits review, round 2: a data file a judge reads, which no import shows)
+    if os.path.isfile(os.path.join(root, "modules", d, "limits")):
+        live.setdefault("modules/%s/limits" % d, "a limits file every hook's core reads")
 agents = os.path.join(root, "AGENTS.md")
 if os.path.isfile(agents):
     text = open(agents).read()
@@ -206,6 +210,38 @@ printf '%s\n' "$out" | grep -v '^RESULT \|^LEAKS ' | sed 's/^/    /'
 check "$(printf '%s\n' "$out" | sed -n 's/^RESULT //p')" none "every file a judge loads lies on autofinish_exclude"
 leaks=$(printf '%s\n' "$out" | sed -n 's/^LEAKS //p')
 check "${leaks:-none}" none "every file a leak gate loads lies on autofinish_leaks"
+
+# A leak gate's own table is live too: council reads which vendor each arm sends to from wharf's settings/models.json
+# (gate.module_table), so a branch flipping a row there would land unattended past both lists (the council's third
+# landing review, finding 9). Every module table a file on autofinish_leaks names is on both.
+echo "every module table a leak gate reads is on both lists"
+out=$(python3 -I - "$ROOT" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+wf = os.path.join(root, ".claude", "workflow.json")
+if not os.path.isfile(wf):
+    print("none")
+    sys.exit(0)
+w = json.load(open(wf))
+lists = {k: tuple(w.get(k) or ()) for k in ("autofinish_exclude", "autofinish_leaks")}
+miss = set()
+for dp, _, ns in os.walk(os.path.join(root, "modules")):
+    for n in ns:
+        f = os.path.relpath(os.path.join(dp, n), root)
+        if not f.startswith(lists["autofinish_leaks"]) or not lists["autofinish_leaks"]:
+            continue
+        try:
+            text = open(os.path.join(root, f), encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in set(re.findall(r'module_table\(\s*"([a-z0-9-]+)"', text)):
+            t = "modules/%s/settings/models.json" % m
+            if os.path.isfile(os.path.join(root, t)):
+                miss |= {"%s off %s (read by %s)" % (t, k, f) for k, v in lists.items() if not t.startswith(v)}
+print("; ".join(sorted(miss)) or "none")
+PY
+)
+check "$out" none "every module table a leak gate reads (gate.module_table) lies on autofinish_exclude and autofinish_leaks"
 
 [ "$fails" -eq 0 ] && echo "classes: all ok" || echo "classes: $fails failed"
 [ "$fails" -eq 0 ]

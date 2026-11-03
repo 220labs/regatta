@@ -1,0 +1,1583 @@
+#!/usr/bin/env python3
+"""evolve — the code half of Evolve, the self-improvement loop (docs/self-improvement-2026-10-30.md). Stdlib, 3.9.
+
+    evolve probes [--doc FILE]... [--board [--limit N]] [--json] [--no-record]
+        The owner's answer surface, probed end to end at zero tokens: exit 0 when every stage holds,
+        1 naming each that does not, 2 when a tool it drives is missing.
+    evolve coverage [--scope S [--open | --promote] [--session ID]] [--since TIME] [--json] [--no-record]
+        The register — lens x source x scope — from lenses.json and each scope's profile, the surface
+        nothing reads, and each scope's collector manifest: exit 0 when every cell is seen and the surface
+        is read, 1 naming each blind spot, 2 when the registry or lenses.json cannot be read.
+    evolve conformance [--scope S] [--days 7] [--json] [--no-record]
+        The declared rules against the transcripts' tool calls: exit 0 when every rule holds, 1 when one is
+        dead, violated or worked around (or none is declared), 2 when the registry or a rule cannot be read.
+    evolve validate KIND FILE [--quiet] · evolve schema [KIND] · evolve action-id FINDING_ID VERSION SCOPE
+        A record (a .jsonl file: each line) against its schema (lib/evolve_schema.py); the schemas; an
+        action's identity.
+
+**Why it exists** (Evolve S2; the scope-pass component's lens 3). The owner's asks about the live
+surfaces — a course link that opens nothing, an answer nobody picked up, a board card that never came —
+came to about 45 in 60 days (the answer surface in 17 sessions, links that open where the owner is in
+10) and nothing probed them: the dream saw only the complaint, after it. A probe walks the journey a
+decision takes, each stage through the verb the live system uses, and says which stage broke before the
+owner meets it:
+
+  board     keel list (helm's board reads it) lists the doc with its decisions open
+  link      every local file link in the doc opens on this Mac (the path, or the same path under this
+            Mac's projects root when another Mac's home wrote it), and has a GitHub address
+  render    keel build --form: a field per decision, and every link that has an address is a link on
+            the page — not `[x](/path)` as text, which is what every course page showed until keel's
+            local_href (2026-10-31)
+  saved     keel merge --write: the form's store document (an answer per item) is written into the doc
+  ingested  keel parse reads every decision answered
+  resumed   keel status --stamp moves the doc's Status line to answered, and keel list stops counting
+            its decisions open: the step that waited on them may run
+
+The journey runs on a synthetic doc in a scratch repo (a GitHub-shaped origin, its refs set locally: no
+network, nothing live is written). `--doc FILE` (repeatable) and `--board` (the docs `keel list` finds
+with decisions open, newest first, `--limit` of them, default 10) add the read-only stages, link and
+render, on real docs: the render goes to a scratch file. A doc of a confidential scope (the core's
+gather_fence: an unreadable registry fences every doc) is neither read nor named: the run counts it
+(`fenced`), since its record is global. The link stage reads links with keel's own rule (its
+LOCAL_LINK_RE over the text as inline() escapes it, and its local_candidates), so the probe judges what
+the page renders. A run appends one line to
+`<log dir>/aurora/evolve/probes.jsonl` (the core's LOG_DIR; EVOLVE_STATE replaces the folder) — the
+stage verdicts and counts, never a doc's text — for the coverage lens (S3) and G2, the asks after a
+shipped mechanism; `--no-record` skips it.
+
+**coverage** (Evolve S3; the scope-pass component's "By construction"). A blind spot is what nothing reads,
+found by construction, never by a model guessing. For every scope of the registry (read once through the
+core's read_registry(): a torn one fails closed, exit 2; every scope walked, never the first that lists a
+repo) and every source of every lens, a cell: `not_applicable` (the profile says so), `excluded` (a reason
+and a review date; past it, overdue), `fenced` (a path of another confidential scope's: never judged),
+`inaccessible` (declared, and not readable on this yard: the repo is not on this host, or the file cannot
+be read), `source_missing` (the root is here, nothing at the path; a verb not installed), `unread` (nothing
+reads it into a lens: its reader is null or not installed, or it is `pass` and the pass's section —
+evolve-scope.md once S5 writes it, dream-scope.md until then — names neither its id, its verb nor its file),
+`stale` (older than the source's `fresh_days` by its newest record's own time — the value, not the
+timestamp: the freshest member for `need: any`, the oldest for `all`), else `observed`. A member repo or a
+path of another confidential scope (an open scope's glob may list one) is skipped, never judged. The surface diff lists every
+registry repo in no scope and each entry of the log dir and the config dir no source reads (never through
+a link: the config dir links synced cloud folders). The **collector manifest** (`<state>/manifests/<scope>.json`)
+is what a `quiet` receipt (S5) rests on, judged against the last COMPLETE pass's manifest
+(`<scope>.complete.json`, which only `--promote` writes, copying the manifest the pass's opening run wrote:
+the pass runs `coverage --scope S --open --session ID` as it starts and `--promote` once its receipt is
+complete, so a run that only looked consumes no change, what landed while the pass ran is still one, and
+the pass's own output — `dreams/`, `evolve/`, its records branch, its session — is none): every required collector's sources seen fresh — a verb's only with
+its run receipt, `<state>/receipts/<scope>/<cell's source id>.json` {"time"} (a confidential
+scope's profile source by its neutral id), which the pass writes when it ran it —
+no change in lenses.json, the profile, the North Star or the scope's registry entry, no commit in its repos
+outside the pass's output, no session of the scope newer than the baseline, no record (judged by when it was
+written; a record stamped ahead of the clock is read as now) newer than
+the baseline's cutoff (`--since` overrides) in a source that wakes the scope (its own repos' always, a
+shared log's only where lenses.json marks it `wakes`: the ops desk writes every quarter hour), no exclusion
+past its review; else `quiet_ok` false with why. A
+confidential scope is judged only under its own --scope (its pass, inside): a global run counts it
+(`skipped_confidential`) and opens nothing of it, since what leaves one is its checked lines and its receipt
+word. It is named by the core's scope_marker() in every output and record, its profile's own
+source ids and reasons never shown; its manifest files, which stay on the host, keep its hashes and its heads
+under hashed keys, never a repo's path. The surface lists no worktree apart: every member's worktree
+branches are among the heads the manifest reads, and a repo in no scope is listed as its repo. One line a run in `<state>/coverage.jsonl`: ids, states and counts.
+
+**conformance** (lens 11: work-as-imagined against work-as-done). Rules live in the overlay
+(`<config>/aurora/conformance.json`) and a scope's profile (`conformance`, read on that scope's transcripts
+only; a confidential scope's only under its own --scope, where its transcripts are read): {id, ref, tool, when, breach}, regexes over a tool call's command (Bash) or its input. Over the
+window's tool calls in every login dir's transcripts, the subagents' included — a confidential scope's
+judged on its path and never opened (the S1 trap) — a rule is `dead` (never applied), `holds` (applied,
+never breached, or every breach refused by a guard: an error result in a PreToolUse hook's or the
+permission system's own shape; a call with no result, or one the classifier gave no verdict on, is
+`unknown`, neither ok nor failed, and a rule whose breaches are all unknown is `unknown`, never holds; one call
+counted once, by its id, however many files carry it, with the outcome a copy knows), `worked_around` (breaches that succeeded `workaround_min` times in `workaround_sessions`
+sessions: a candidate for promotion, not punishment) or `violated`. One line a run in
+`<state>/conformance.jsonl`: rule ids and counts, never a command's text.
+
+Not probed, and said in every run: whether the spacesheep page deploys (`keel line` deploys a live
+page), whether VS Code opens a link (no script can click it), and the owner's phone.
+"""
+import argparse
+import datetime as dt
+import fnmatch
+import functools
+import glob as globmod
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "lib"))
+import find_core  # noqa: E402  the regatta core's hooks/; none: one line, exit 2
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402  tool, LOG_DIR, PROJECTS
+import evolve_schema as schema  # noqa: E402  the finding, coverage, receipt and ledger schemas (S3)
+
+PROG = "evolve"
+STAGES = ("board", "link", "render", "saved", "ingested", "resumed")
+NOT_PROBED = "not probed: the spacesheep deploy (keel line deploys a live page), VS Code opening a link, the phone"
+CODE_SPAN = re.compile(r"`[^`\n]*`")
+# the same link as a rendered page would show it, escaped: what keel left as text before local_href
+RAW_ON_PAGE = re.compile(r"\[[^\]<>\n]+\]\((?:/|~/|&lt;)")
+
+
+def keel_bin():
+    """keel in this checkout's modules (a branch probes its own keel), else the core's peer lookup.
+    EVOLVE_KEEL replaces it (a suite's stand-in)."""
+    if os.environ.get("EVOLVE_KEEL"):
+        return Path(os.environ["EVOLVE_KEEL"])
+    here = HERE.parent.parent / "keel" / "bin" / "keel"
+    if here.is_file():
+        return here
+    k = common.tool("keel")
+    return Path(k) if k else None
+
+
+_KEEL = None
+
+
+def keel_mod():
+    """keel, loaded as a module (its local_href is the one rule for where a link goes)."""
+    global _KEEL
+    if _KEEL is None:
+        from importlib.machinery import SourceFileLoader
+        argv, sys.argv = sys.argv, ["keel"]
+        try:
+            _KEEL = SourceFileLoader("keel_for_evolve", str(keel_bin())).load_module()
+        finally:
+            sys.argv = argv
+    return _KEEL
+
+
+def keel(*args, cwd=None, timeout=120):
+    try:
+        return subprocess.run([sys.executable, str(keel_bin()), *map(str, args)], capture_output=True, text=True,
+                              cwd=cwd, timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "timed out after %ss" % timeout)
+
+
+def git(repo, *a):
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def local_links(text):
+    """[(label, target)] — the doc's local file links outside code spans and fences, read as keel's
+    inline() reads them: its LOCAL_LINK_RE over the escaped line (S2 landing review, finding 16)."""
+    rx = getattr(keel_mod(), "LOCAL_LINK_RE", None) or re.compile(r"\[([^\]\n]+)\]\((&lt;[^\n]+?&gt;|(?:/|~/)[^)\s]*)\)")
+    out, fence = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        for m in rx.finditer(html.escape(CODE_SPAN.sub("", line), quote=False)):
+            t = html.unescape(m.group(2))
+            out.append((html.unescape(m.group(1)), t[1:-1] if t.startswith("<") else t))
+    return out
+
+
+def opens_here(target):
+    """Does the link's file exist on this Mac, by keel's candidate rule (local_candidates: as written, or
+    under this Mac's projects root)?"""
+    path = target.partition("#")[0]
+    cands = getattr(keel_mod(), "local_candidates", None)
+    return any(c.exists() for c in (cands(path) if cands else [Path(path).expanduser()]))
+
+
+def stage(name, ok, detail):
+    return {"stage": name, "ok": bool(ok), "detail": detail}
+
+
+def probe_link(doc, text):
+    links = local_links(text)
+    dead = [t for _, t in links if not opens_here(t)]
+    href = getattr(keel_mod(), "local_href", None)
+    if href is None:   # a keel before 2026-10-31: no address for any local link
+        return stage("link", False, "%d local link%s; this keel has no local_href, so none has a GitHub address" % (
+            len(links), "" if len(links) == 1 else "s")), links
+    nowhere = [t for _, t in links if t not in dead and not href(t)]
+    ok = not dead and not nowhere
+    detail = "%d local link%s: %d open here, %d with a GitHub address" % (
+        len(links), "" if len(links) == 1 else "s", len(links) - len(dead), len(links) - len(dead) - len(nowhere))
+    if dead:
+        detail += "; open nothing here: " + ", ".join(Path(t.partition("#")[0]).name for t in dead[:5])
+    if nowhere:
+        detail += "; no GitHub address (on no origin ref): " + ", ".join(Path(t.partition("#")[0]).name for t in nowhere[:5])
+    return stage("link", ok, detail), links
+
+
+def probe_render(doc, text, links, scratch):
+    out = Path(scratch) / ("%s.html" % Path(doc).stem)
+    r = keel("build", doc, "-o", out)
+    if r.returncode != 0 or not out.is_file():
+        return stage("render", False, "keel build failed: %s" % ((r.stderr or r.stdout).strip().splitlines() or ["no output"])[-1][:200])
+    page = out.read_text(encoding="utf-8", errors="replace")
+    p = keel("parse", doc)
+    try:
+        ids = [i["id"] for i in json.loads(p.stdout)["items"]]
+    except (ValueError, KeyError):
+        return stage("render", False, "keel parse failed on the doc")
+    missing = [i for i in ids if 'id="ans-%s"' % i not in page]
+    # the symptom itself: a local link left as markdown text on the page (outside a code span)
+    visible = re.sub(r"<(script|style|code)\b.*?</\1>", "", page, flags=re.S | re.I)
+    shown = len(RAW_ON_PAGE.findall(re.sub(r"<[^>]*>", "", visible)))   # text, never an attribute (data-q)
+    ok = not missing and not shown
+    detail = "%d field%s for %d decision%s; %d local link%s, %d shown as text, not a link" % (
+        len(ids) - len(missing), "" if len(ids) - len(missing) == 1 else "s", len(ids), "" if len(ids) == 1 else "s",
+        len(links), "" if len(links) == 1 else "s", shown)
+    if missing:
+        detail += "; no field for " + ", ".join(missing)
+    return stage("render", ok, detail)
+
+
+FIXTURE = """# Probe — the owner's answer surface ({day})
+
+Status: proposed — 0 of 2 decisions answered · handed over {day}
+
+**Legend.** D<n> a decision only the owner makes. Written by `evolve probes` in a scratch repo; nothing
+here is live.
+
+What the decisions rest on: [the target]({target}#L1).
+
+## Decisions
+
+- **D1 — The first probe decision**
+  - A — the first option
+  - B — the second option
+
+  Reversible: yes
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+- **D2 — The second probe decision**
+  - A — the first option
+  - B — the second option
+
+  Reversible: yes
+
+  ➤ Recommended: B
+
+  ➤ Answer:
+
+## Open feedback
+"""
+
+
+def journey(scratch):
+    """The six stages on a synthetic doc in a scratch repo. [stage dict]."""
+    day = dt.date.today().isoformat()
+    root = Path(scratch) / "projects"
+    repo = root / "probe-demo"
+    (repo / "docs").mkdir(parents=True)
+    env_id = ["-c", "user.name=evolve probes", "-c", "user.email=probes@example.invalid"]
+    target = repo / "docs" / "target.md"
+    target.write_text("# The target\n\nA file a decision rests on.\n", encoding="utf-8")
+    doc = repo / "docs" / ("probe-%s.md" % day)
+    doc.write_text(FIXTURE.format(day=day, target=target), encoding="utf-8")
+    steps = [git(repo, "init", "-q", "-b", "main"), git(repo, "add", "-A"),
+             git(repo, *env_id, "commit", "-q", "-m", "probe fixture"),
+             git(repo, "remote", "add", "origin", "https://github.com/probe/probe-demo.git"),
+             git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")]
+    bad = next((s for s in steps if s.returncode != 0), None)
+    if bad:
+        return [stage("board", False, "the scratch repo could not be made: %s" % (bad.stderr or bad.stdout).strip()[:200])]
+    out = []
+    text = doc.read_text(encoding="utf-8")
+
+    def listed():
+        r = keel("list", "--root", root, "--json", "--limit", "50")
+        try:
+            return next((row for row in json.loads(r.stdout) if Path(row.get("path", "")).resolve() == doc.resolve()), None)
+        except ValueError:
+            return None
+    row = listed()
+    out.append(stage("board", row is not None and row.get("open") == 2,
+                     "keel list: %s" % ("the doc with %s of %s decisions open" % (row.get("open"), row.get("decisions")) if row
+                                        else "the doc is not listed — helm's board would show no card")))
+    s, links = probe_link(doc, text)
+    out.append(s)
+    out.append(probe_render(doc, text, links, scratch))
+    answers = Path(scratch) / "answers.json"
+    answers.write_text(json.dumps({"data": {"items": {"D1": "A", "D2": "B — the second option"}, "feedback": "",
+                                            "savedAt": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+                                            "version": 1}}), encoding="utf-8")
+    m = keel("merge", doc, answers, "--write")
+    after = doc.read_text(encoding="utf-8")
+    out.append(stage("saved", m.returncode == 0 and after != text and "changed: D1, D2" in (m.stdout + m.stderr),
+                     "keel merge --write: %s" % (((m.stdout or m.stderr).strip().splitlines() or ["no output"])[-1][:160])))
+    p = keel("parse", doc)
+    try:
+        d = json.loads(p.stdout)
+        answered = sum(1 for i in d["items"] if (i.get("answer") or "").strip())
+        dec = d.get("keel", {}).get("decisions")
+    except (ValueError, KeyError):
+        answered, dec = 0, None
+    out.append(stage("ingested", answered == 2 and dec == [2, 2],
+                     "keel parse: %d of 2 answered, decisions %s" % (answered, dec)))
+    st = keel("status", "--stamp", doc)
+    line = next((l for l in doc.read_text(encoding="utf-8").splitlines() if l.startswith("Status:")), "")
+    row = listed()
+    out.append(stage("resumed", line.startswith("Status: answered") and row is not None and row.get("open") == 0,
+                     "keel status --stamp: %s; keel list: %s open" % (
+                         (line[:70] or "no Status line") if st.returncode == 0 else "exit %d" % st.returncode,
+                         row.get("open") if row else "not listed")))
+    return out
+
+
+def board_docs(limit):
+    r = keel("list", "--root", common.PROJECTS, "--json", "--limit", "200", timeout=300)
+    try:
+        rows = json.loads(r.stdout)
+    except ValueError:
+        return []
+    return [Path(row["path"]) for row in rows if (row.get("open") or 0) > 0][:limit]
+
+
+def record(result):
+    return append_record("probes.jsonl", result)   # one state dir, one writer (S3's review: no second copy)
+
+
+def cmd_probes(a):
+    if not keel_bin() or not keel_bin().is_file():
+        print("%s probes: keel is not installed — nothing to probe the answer surface with" % PROG, file=sys.stderr)
+        return 2
+    result = {"time": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "journey": [], "docs": [],
+              "not_probed": NOT_PROBED}
+    with tempfile.TemporaryDirectory(prefix="evolve-probes-") as scratch:
+        result["journey"] = journey(scratch)
+        docs = [Path(p).expanduser() for p in a.doc] + (board_docs(a.limit) if a.board else [])
+        # a confidential scope's doc is neither read nor named here: the record is global (finding 10)
+        try:
+            fence = common.gather_fence()
+        except ValueError:
+            fence = lambda *paths: "fenced"   # noqa: E731  a registry no reader can trust fences everything
+        kept = [p for p in docs if fence(str(p), str(p.resolve()) if p.exists() else str(p)) == "quote"]
+        result["fenced"] = len(docs) - len(kept)
+        for p in kept:
+            if not p.is_file():
+                result["docs"].append({"doc": p.name, "stages": [stage("link", False, "no such file")]})
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")
+            s, links = probe_link(p, text)
+            result["docs"].append({"doc": p.name, "stages": [s, probe_render(p, text, links, scratch)]})
+    fails = [s for s in result["journey"] if not s["ok"]] + [s for d in result["docs"] for s in d["stages"] if not s["ok"]]
+    result["ok"] = not fails
+    if not a.no_record:
+        record({**result, "docs": [{"doc": d["doc"], "stages": [{"stage": s["stage"], "ok": s["ok"]} for s in d["stages"]]}
+                                   for d in result["docs"]]})
+    if a.json:
+        print(json.dumps(result, indent=1))
+    else:
+        print("journey (a synthetic doc in a scratch repo):")
+        for s in result["journey"]:
+            print("  %s %-8s %s" % ("ok  " if s["ok"] else "FAIL", s["stage"], s["detail"]))
+        for d in result["docs"]:
+            print("%s:" % d["doc"])
+            for s in d["stages"]:
+                print("  %s %-8s %s" % ("ok  " if s["ok"] else "FAIL", s["stage"], s["detail"]))
+        if result["fenced"]:
+            print("%d doc%s of a confidential scope: fenced, not probed or named here" % (
+                result["fenced"], "" if result["fenced"] == 1 else "s"))
+        print(NOT_PROBED)
+        print("probes: %s" % ("every stage holds" if not fails else "%d stage%s broken" % (len(fails), "" if len(fails) == 1 else "s")))
+    return 0 if not fails else 1
+
+
+# ---- S3: the register, the surface diff, the collector manifest, conformance, the schemas ------------------
+
+LENSES = HERE.parent / "lenses.json"
+SECTIONS = HERE.parent / "skills" / "aurora" / "sections"
+RANK = {"observed": 0, "stale": 1, "source_missing": 2, "inaccessible": 3}
+NOT_SEEN = ("stale", "source_missing", "unread", "inaccessible")
+TIME_KEYS = ("time", "ts", "at", "as_of", "created", "timestamp", "date", "ended", "started")   # as_of: ops' rows; created: its intake;
+# ended, started: build-review's (the finish review)
+ROOTS = ("{log}", "{config}", "{anchor}", "{repo}")
+OWN_ROOTS = ("{anchor}", "{repo}")   # the scope's own: a record there wakes it; a shared log's only when marked
+# what a confidential scope's profile source says in place of its own words (finding 1, S3's first review)
+NEUTRAL = {"source_missing": "nothing there", "inaccessible": "not readable on this host", "unread": "nothing reads it yet",
+           "stale": "older than its freshness", "fenced": "another confidential scope's", "excluded": "excluded by the profile",
+           "not_applicable": "the profile says so"}
+VERB_RECEIPT_DAYS = 7
+
+
+def valid_day(v):
+    """V when it is a real YYYY-MM-DD date, else None: a review date that does not read lapses at once."""
+    return v if isinstance(v, str) and re.fullmatch(schema.DAY, v) and schema._is_date(v) else None
+
+
+class Refused(Exception):
+    """A refusal the verb names and exits 2 on (never 1, which means blind spots: AGENTS.md's probe trap)."""
+
+
+def state_dir():
+    return Path(os.environ.get("EVOLVE_STATE") or Path(common.LOG_DIR) / "aurora" / "evolve")
+
+
+def lenses_path():
+    return Path(os.environ.get("EVOLVE_LENSES") or LENSES)
+
+
+def sections_dir():
+    return Path(os.environ.get("EVOLVE_SECTIONS") or SECTIONS)
+
+
+def source_problem(s, where):
+    """None, or why a source declaration cannot be judged: an id, a known kind, a path under a root (a bare
+    or relative path would be judged against the cwd), a verb by name, a number of days."""
+    if not isinstance(s, dict) or not isinstance(s.get("id"), str) or not s["id"]:
+        return "%s: a source with no id" % where
+    k = s.get("kind")
+    if k not in ("path", "verb", "git"):
+        return "%s: source %s: unknown kind %r" % (where, s["id"], k)
+    if k == "path" and not (isinstance(s.get("at"), str) and s["at"].startswith(ROOTS)):
+        return "%s: source %s: its `at` starts with none of %s" % (where, s["id"], ", ".join(ROOTS))
+    if k == "verb" and not (isinstance(s.get("name"), str) and s["name"] and "/" not in s["name"]):
+        return "%s: source %s: a verb needs a tool's name" % (where, s["id"])
+    if s.get("need") is not None and s.get("need") not in ("any", "all"):
+        return "%s: source %s: need is any or all, not %r" % (where, s["id"], s.get("need"))
+    fd = s.get("fresh_days")
+    if fd is not None and (isinstance(fd, bool) or not isinstance(fd, (int, float))):
+        return "%s: source %s: fresh_days is no number" % (where, s["id"])
+    if s.get("reader") is not None and not isinstance(s.get("reader"), str):
+        return "%s: source %s: reader is no name" % (where, s["id"])
+    return None
+
+
+def load_lenses():
+    """lenses.json, read with open() (classes.sh never sees it: it is named on autofinish_exclude by hand),
+    and checked: unique lens and source ids, every source judgeable, every collector naming a declared source."""
+    p = lenses_path()
+    with open(p, encoding="utf-8") as fh:
+        raw = fh.read()
+    d = json.loads(raw)
+    lenses = d.get("lenses") if isinstance(d, dict) else None
+    if not isinstance(lenses, list) or not lenses:
+        raise ValueError("no lenses")
+    seen, ids = set(), set()
+    for ln in lenses:
+        if not isinstance(ln, dict) or not isinstance(ln.get("id"), str) or ln["id"] in ids:
+            raise ValueError("a lens with no id, or one id twice")
+        ids.add(ln["id"])
+        for s in ln.get("sources") or []:
+            why = source_problem(s, "lens %s" % ln["id"])
+            if why:
+                raise ValueError(why)
+            if s["id"] in seen:
+                raise ValueError("source %s declared twice" % s["id"])
+            seen.add(s["id"])
+    cols = d.get("collectors") or []
+    if not isinstance(cols, list) or any(not isinstance(c, dict) for c in cols):
+        raise ValueError("collectors is no list of objects")
+    for c in cols:
+        missing = [s for s in c.get("sources") or [] if s not in seen]
+        if missing:
+            raise ValueError("collector %r names no declared source %s" % (c.get("id"), missing))
+    d["_sha"], d["_lens_ids"], d["_source_ids"] = hashlib.sha256(raw.encode("utf-8")).hexdigest(), ids, seen
+    return d
+
+
+def file_sha(p):
+    """The hash of a JSON file's content, parsed and dumped sorted, so a reindent or a key reorder is no change
+    (engineering.md: compare structured files structurally; the finish review); its bytes where it is no JSON."""
+    try:
+        with open(p, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    try:
+        raw = json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except ValueError:
+        pass
+    return hashlib.sha256(raw).hexdigest()
+
+
+def parse_time(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):   # an epoch, in seconds or milliseconds
+        try:
+            return dt.datetime.fromtimestamp(v if v < 1e11 else v / 1000).astimezone()
+        except (OverflowError, OSError, ValueError):
+            return None
+    t = schema.read_time(v, date_ok=True)
+    return None if t is None else t if t.tzinfo else t.astimezone()
+
+
+def newest_value(p):
+    """The newest time a file's records carry — the value, not the timestamp (engineering rules): a JSON
+    lines file's last parseable line's time, a JSON object's own; the file's mtime otherwise."""
+    try:
+        if p.suffix in (".jsonl", ".json"):
+            with open(p, "rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - 65536))
+                tail = fh.read().decode("utf-8", "replace")
+            for line in reversed(tail.strip().splitlines() if p.suffix == ".jsonl" else [tail]):
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                for k in TIME_KEYS if isinstance(rec, dict) else ():
+                    t = parse_time(rec.get(k)) if rec.get(k) not in (None, "") else None
+                    if t:
+                        return t
+                break
+        return dt.datetime.fromtimestamp(p.stat().st_mtime).astimezone()
+    except OSError:
+        return None
+
+
+def judge_path(p, root_here):
+    """(state, newest, why, written) for one declared path: `inaccessible` when its root (the scope's anchor or a
+    member repo) is not on this host or the path cannot be read here, `source_missing` when the root is
+    here and nothing is at the path; else observed with its newest time (staleness is judged later). A
+    linked folder is judged by its own time, never listed: a link may lead into a synced drive."""
+    if not root_here:
+        return "inaccessible", None, "declared, and its repo is not on this host", None
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return "source_missing", None, "nothing at the declared path", None
+    except OSError:
+        return "inaccessible", None, "declared, and unreadable here", None
+    if p.is_dir():
+        if not os.access(p, os.R_OK | os.X_OK):
+            return "inaccessible", None, "declared, and unreadable here", None
+        times = [st.st_mtime]
+        if not p.is_symlink():
+            try:
+                times += [c.lstat().st_mtime for c in p.iterdir()]
+            except OSError:
+                return "inaccessible", None, "declared, and unreadable here", None
+        t = dt.datetime.fromtimestamp(max(times)).astimezone()
+        return "observed", t, None, t
+    if not os.access(p, os.R_OK):
+        return "inaccessible", None, "declared, and unreadable here", None
+    # the record's own time judges staleness; a change is whichever is later, it or the write (a record stamped
+    # before the cutoff and written after it is still new: round 3)
+    return "observed", newest_value(p), None, dt.datetime.fromtimestamp(st.st_mtime).astimezone()
+
+
+@functools.lru_cache(maxsize=None)
+def peer(name):
+    """A peer tool: this checkout's modules first (a branch judges its own), then the core's lookup."""
+    if not name or "/" in name or name in (".", ".."):
+        return None
+    hits = sorted(p for p in HERE.parent.parent.glob("*/bin/%s" % globmod.escape(name)) if p.is_file())
+    return hits[0] if hits else common.tool(name)
+
+
+_SECTION = {}
+
+
+def section_text():
+    """(name, text) of the scope pass's section: evolve-scope.md (S5) once it exists, else dream-scope.md."""
+    if "t" not in _SECTION:
+        d = sections_dir()
+        f = d / "evolve-scope.md" if (d / "evolve-scope.md").is_file() else d / "dream-scope.md"
+        try:
+            _SECTION["t"] = (f.name, f.read_text(encoding="utf-8"))
+        except OSError:
+            _SECTION["t"] = (None, "")
+    return _SECTION["t"]
+
+
+FENCE_BLOCK = re.compile(r"^[ \t]*(```|~~~)[^\n]*\n(.*?)^[ \t]*\1", re.M | re.S)
+
+
+def code_text(text):
+    """What the section runs or names as code: the bodies of its fenced blocks and each inline code span,
+    paired properly (a pattern that spans from one span's closing backtick to the next's opening one reads
+    prose as code: round 4)."""
+    blocks = [m.group(2) for m in FENCE_BLOCK.finditer(text)]
+    rest = FENCE_BLOCK.sub("", text)
+    return "\n".join(blocks + CODE_SPAN.findall(rest))
+
+
+def anchor_text(scope, fenced_by):
+    """The anchor's own `.claude/scope-pass.md`, once a run — never another confidential scope's (an open
+    scope whose first repo is one: round 4)."""
+    if not hasattr(scope, "_anchor_text"):
+        scope._anchor_text = None
+        if scope.anchor is not None and not (fenced_by and fenced_by(scope.anchor)):
+            try:
+                scope._anchor_text = (scope.anchor / ".claude" / "scope-pass.md").read_text(encoding="utf-8")
+            except OSError:
+                pass
+    return scope._anchor_text
+
+
+def reader_here(src, scope=None, fenced_by=None):
+    """(read, why). `pass` reads a source only where the pass's section (or the anchor's own
+    `.claude/scope-pass.md`, where a confidential scope names what the public section cannot) names it — its
+    id or its verb as code (a fenced block or an inline span), or its file's name — so prose never makes a
+    source read (rounds 1, 3, 4)."""
+    reader = src.get("reader")
+    if reader is None:
+        return False, "nothing reads it yet"
+    if reader == "pass":
+        name, text = section_text()
+        own = anchor_text(scope, fenced_by) if scope is not None else None   # the scope's own judgement, never public
+        if own is not None:
+            text, name = text + "\n" + own, name or "scope-pass.md"
+        if not name:
+            return False, "no scope pass section reads it"
+        at = src.get("at") or ""
+        base = os.path.basename(at) if at and not at.endswith("}") else ""
+        code = code_text(text)
+        # an id or a verb only as code — a fenced block or an inline span — never prose ("the board", "health")
+        hit = bool(re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(src["id"]), code))
+        if src.get("name"):   # a verb as a command: at a word's start, or after a path's slash
+            hit = hit or bool(re.search(r"(?:^|[\s/`])%s(?=[\s`]|$)" % re.escape(src["name"]), code, re.M))
+        if "." in base:       # a file by its name (TODO.md, fence.log), anywhere; a folder's bare name is a word
+            hit = hit or bool(re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(base), text))
+        return (True, None) if hit else (False, "the pass section (%s) does not read it yet" % name)
+    if reader == PROG:
+        return True, None
+    return (True, None) if peer(reader) else (False, "its reader %s is not installed" % reader)
+
+
+def scope_label(name, sc):
+    """A scope as every output, record and file name says it: a confidential one by the core's marker."""
+    return common.scope_marker(name) if isinstance(sc, dict) and sc.get("confidential") is True else name
+
+
+def member_sessions(members):
+    """path -> True when a transcript is a member's own session: its folder is a member's slug, or a worktree's
+    of it, a subagent's under either. Exact, unlike the fence's prefix match (safe for a fence, too wide to count
+    a sibling repo's calls as the scope's: round 5)."""
+    slugs = {common.project_slug(m) for m in members}
+
+    def match(f):
+        f = Path(f)
+        folder = f.parent.parent.parent if f.parent.name == "subagents" else f.parent
+        return any(folder.name == x or folder.name.startswith(x + "--claude-worktrees-") for x in slugs)
+    return match
+
+
+class Scope:
+    """One scope of the registry as coverage reads it: its members' paths, its anchor, its profile — the
+    profile checked whole, so a bad value makes the scope's profile_error (never quiet), never a crash."""
+
+    def __init__(self, name, sc, repos, lens_doc):
+        self.name, self.sc = name, sc
+        self.confidential = sc.get("confidential") is True
+        self.label = scope_label(name, sc)
+        keys = common.scope_members(sc, repos)
+        self.members = [Path(k) if k.startswith("/") else Path(common.PROJECTS) / k for k in keys]
+        ms = sc.get("repos")
+        first = ms[0] if isinstance(ms, list) and ms else None
+        self.anchor = (Path(first) if first.startswith("/") else Path(common.PROJECTS) / first) \
+            if isinstance(first, str) and not common.is_glob(first) else None
+        # a registry change wakes the scope (finding 7): its own entry and the members it resolves to
+        self.reg_sha = hashlib.sha256(json.dumps({"scope": sc, "members": keys}, sort_keys=True).encode()).hexdigest()
+        self.refs, self.git_changed, self.sessions_at = {}, False, None
+        self.profile_file = Path(common.CONFIG) / "aurora" / "scopes" / ("%s.json" % name)
+        self.profile, self.profile_error = {}, None
+        if self.profile_file.exists():
+            try:
+                with open(self.profile_file, encoding="utf-8") as fh:
+                    prof = json.load(fh)
+                why = profile_problem(prof, lens_doc)
+                if why:
+                    raise ValueError(why)
+                self.profile = prof
+            except (OSError, ValueError, TypeError) as e:
+                detail = type(e).__name__ if not isinstance(e, ValueError) or isinstance(e, json.JSONDecodeError) else str(e)
+                self.profile_error = "the profile cannot be read" + ("" if self.confidential else " (%s)" % detail)
+
+
+def profile_problem(prof, lens_doc):
+    if not isinstance(prof, dict):
+        return "no object"
+    srcs = prof.get("sources") or []
+    if not isinstance(srcs, list):
+        return "sources is no list"
+    own = set()
+    for i, s in enumerate(srcs):
+        why = source_problem(s, "profile source %d" % (i + 1))
+        if why:
+            return why
+        if not isinstance(s.get("lens"), str) or s["lens"] not in lens_doc["_lens_ids"]:
+            return "profile source %d: no lens %r" % (i + 1, s.get("lens"))
+        if s["id"] in lens_doc["_source_ids"] or s["id"] in own:   # one id, one cell (finding: ids collide)
+            return "profile source %d: id %s is taken" % (i + 1, s["id"])
+        if s.get("collector") is not None and s.get("collector") not in {c.get("id") for c in lens_doc.get("collectors") or []}:
+            return "profile source %d: no collector %r" % (i + 1, s.get("collector"))   # a typo never drops a requirement
+        own.add(s["id"])
+    for k, t in (("not_applicable", list), ("exclude", dict), ("conformance", list)):
+        if prof.get(k) is not None and not isinstance(prof[k], t):
+            return "%s is no %s" % (k, t.__name__)
+    if any(not isinstance(x, str) for x in prof.get("not_applicable") or []):
+        return "not_applicable holds something other than a lens id"
+    if any(not isinstance(v, dict) for v in (prof.get("exclude") or {}).values()):
+        return "an exclusion is no object"
+    return None
+
+
+def expand(at, scope):
+    """[(path, root_here)] for a path source's `at`: one per member repo for {repo}, else one."""
+    log, cfg = str(common.LOG_DIR), str(common.CONFIG)
+    if at.startswith("{repo}"):
+        return [(Path(str(m) + at[len("{repo}"):]), m.is_dir()) for m in scope.members]
+    if at.startswith("{anchor}"):
+        return [(Path(str(scope.anchor) + at[len("{anchor}"):]), scope.anchor.is_dir())] if scope.anchor else []
+    return [(Path(at.replace("{log}", log, 1).replace("{config}", cfg, 1)), True)]
+
+
+def judge_source(src, scope, fenced_by):
+    """{state, stale, change, why} for one source of one scope, before the profile and the reader. A member
+    or path of another confidential scope is skipped, never judged; what is left is judged per member, the
+    state by `need` (any: the best; all: the worst), its staleness on the freshest member (any) or the
+    oldest (all), and its change time on the newest member whatever its rank (finding 2: a commit in any
+    member wakes the scope, not only in the first)."""
+    kind = src["kind"]
+    if kind == "verb":
+        ok = peer(src["name"])
+        return {"state": "observed" if ok else "source_missing", "stale": None, "change": None,
+                "why": None if ok else "the verb %s is not installed" % src["name"]}
+    if kind == "git":
+        res, need = [], "all"
+        kept = [m for m in scope.members if not fenced_by(m)]
+        for m in kept:
+            if not m.is_dir():
+                res.append(("inaccessible", None, "a member repo is not on this host", None))
+                continue
+            r = git(m, "log", "-1", "--format=%cI")
+            t = parse_time(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+            res.append(("observed", t, None, t) if t else ("source_missing", None, "a member is no git repo with a commit", None))
+        fenced = len(kept) < len(scope.members)
+    else:
+        pairs = expand(src["at"], scope)
+        if not pairs:
+            return {"state": "source_missing", "stale": None, "change": None, "why": "the scope has no named anchor"}
+        kept = [(p, h) for p, h in pairs if not fenced_by(p)]
+        res, need, fenced = [judge_path(p, h) for p, h in kept], src.get("need") or "any", len(kept) < len(pairs)
+    if not res:
+        return {"state": "fenced" if fenced else "source_missing", "stale": None, "change": None,
+                "why": "another confidential scope's path" if fenced else "the scope has no member repo"}
+    pick = (min if need == "any" else max)(res, key=lambda r: RANK[r[0]])
+    times = [t for st, t, _, _ in res if st == "observed" and t]
+    now = dt.datetime.now().astimezone()   # a record stamped ahead (a due date, a fast clock) is read as now (round 5)
+    res = [(st, min(t, now) if t else t, why, w) for st, t, why, w in res]
+    # a change is the write, where a file has one (a record stamped before the cutoff and written after it, or
+    # stamped ahead of the clock, judged by when it landed: rounds 3, 5); a folder's time is its newest entry's
+    writes = [w or t for st, t, _, w in res if st == "observed" and (t or w)]
+    # git's change is scope_state's (the heads, outside the pass's output): a HEAD's commit time would count
+    # the pass's own dream once it merges (round 4)
+    return {"state": pick[0], "why": pick[2], "change": max(writes) if writes and kind != "git" else None,
+            "stale": (max(times) if need == "any" else min(times)) if times else None}
+
+
+def cited_counts(scope, fenced_by):
+    """{source id: findings citing it} over the anchor's last four findings files; None when there are none."""
+    d = scope.anchor / "evolve" if scope.anchor and not fenced_by(scope.anchor) else None
+    try:   # an unreadable anchor (3.9's is_dir raises EACCES) is no count, never a crash (the finish review)
+        files = sorted(d.glob("*.findings.json"))[-4:] if d and d.is_dir() else []
+    except OSError:
+        return None
+    if not files:
+        return None
+    out = {}
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        fs = rec.get("findings") if isinstance(rec, dict) else None   # a model wrote it: every shape checked (round 5)
+        for fd in fs if isinstance(fs, list) else []:
+            refs = fd.get("evidence_refs") if isinstance(fd, dict) else None
+            for ref in refs if isinstance(refs, list) else []:
+                if isinstance(ref, dict) and isinstance(ref.get("source"), str):
+                    out[ref["source"]] = out.get(ref["source"], 0) + 1
+    return out
+
+
+def scope_cells(scope, lens_doc, fenced_by, now):
+    prof = scope.profile
+    na = set(prof.get("not_applicable") or [])
+    excl = prof.get("exclude") or {}
+    cited = cited_counts(scope, fenced_by)
+    lenses = [dict(ln, sources=list(ln.get("sources") or [])) for ln in lens_doc["lenses"]]
+    by_id = {ln["id"]: ln for ln in lenses}
+    for i, s in enumerate(prof.get("sources") or []):
+        by_id[s["lens"]]["sources"].append(dict(s, _profile=True, _n=i + 1))
+    required = {x for c in lens_doc.get("collectors") or [] if c.get("required") for x in c.get("sources") or []} | \
+        {s["id"] for s in prof.get("sources") or [] if any(c.get("id") == s.get("collector") and c.get("required")
+                                                           for c in lens_doc.get("collectors") or [])}
+    cells, extra = [], []
+    for ln in lenses:
+        for src in ln["sources"]:
+            hide = bool(src.get("_profile") and scope.confidential)   # its words never leave: neutral id, reader, why
+            sid = "profile-source-%d" % src["_n"] if hide else src["id"]
+            reader = src.get("reader")
+            cell = {"lens": ln["id"], "source": sid, "outcome": ln.get("outcome"), "stakeholder": ln.get("stakeholder"),
+                    "activity": ln.get("activity"),
+                    "reader": (reader if reader in (None, "pass", PROG) else "tool") if hide else reader,
+                    "age_days": None, "cited": None if cited is None else cited.get(src["id"], 0), "owner_read": None,
+                    "required": src["id"] in required, "why": None}
+            j = {"change": None}
+            if ln["id"] in na:
+                cell.update(state="not_applicable", why="the profile says so")
+            elif src["id"] in excl:
+                x = excl[src["id"]] if isinstance(excl[src["id"]], dict) else {}
+                review = valid_day(x.get("review"))
+                overdue = not review or review < now.date().isoformat()
+                cell.update(state="excluded", review=review, overdue=bool(overdue),
+                            why=("excluded, its review " + ("overdue" if overdue else "on %s" % review)) if scope.confidential
+                            else "%s (review %s%s)" % (x.get("reason") or "no reason given", review or "none", ", overdue" if overdue else ""))
+            else:
+                j = judge_source(src, scope, fenced_by)
+                state, why = j["state"], j["why"]
+                if state == "observed":
+                    ok, rwhy = reader_here(src, scope, fenced_by)
+                    if not ok:
+                        state, why = "unread", rwhy
+                    elif j["stale"] is not None and src.get("fresh_days") is not None:
+                        age = (now - j["stale"]).total_seconds() / 86400
+                        if age > float(src["fresh_days"]):
+                            state, why = "stale", "%.0f days old, fresh within %s" % (age, src["fresh_days"])
+                if j["stale"] is not None:
+                    cell["age_days"] = round(max(0.0, (now - j["stale"]).total_seconds() / 86400), 1)
+                cell.update(state=state, why=NEUTRAL.get(state) if hide and why else why)
+            cells.append(cell)
+            # the scope's own: its repos, and whatever its profile declares for it alone (round 2: a misfire log)
+            own = src["kind"] == "git" or bool(src.get("_profile")) or str(src.get("at") or "").startswith(OWN_ROOTS)
+            extra.append({"id": src["id"], "cell": sid, "kind": src["kind"], "collector": src.get("collector"),
+                          "change": j["change"], "wakes": bool(src.get("wakes", own)), "fresh_days": src.get("fresh_days")})
+    return cells, extra
+
+
+PASS_OUTPUT = (":!dreams/", ":!evolve/")   # what the pass itself writes into its anchor: never a change to it
+
+
+def scope_state(scope, fenced_by, base, current=None):
+    """Two values a quiet receipt may not sleep through (rounds 2, 3). The members' branch heads, as values:
+    against the baseline's heads, a change is a commit reachable now and not then that touches anything but
+    the pass's own output (the anchor's `dreams/` and `evolve/`; every other member's whole tree), so a fast-forward of old commits or a worktree's branch
+    wakes the scope and the pass's records branch, or its merge, does not. And the newest time a session of
+    the scope wrote its transcript (stat only, never opened), the pass's own session (--promote --session)
+    left out; a folder is the member's own (its slug, or a worktree's), never a sibling repo's that shares a
+    prefix."""
+    base_refs = (base or {}).get("refs") if isinstance((base or {}).get("refs"), dict) else None
+    # a baseline with no heads to compare is a change, never "git is not judged" (the finish review)
+    scope.refs, scope.git_changed = {}, bool(base) and base_refs is None
+    for m in scope.members:
+        if fenced_by(m) or not m.is_dir():
+            continue
+        r = git(m, "for-each-ref", "--format=%(objectname)", "refs/heads")
+        heads = sorted(set(r.stdout.split())) if r.returncode == 0 else []
+        key = hashlib.sha256(str(m).encode()).hexdigest()[:16]   # no repo's path in the manifest file (round 4)
+        scope.refs[key] = heads
+        if base_refs is None:
+            continue
+        old = base_refs.get(key)
+        new = [h for h in heads if h not in (old or [])]
+        if old is None:
+            scope.git_changed = True
+        elif new:
+            outside = PASS_OUTPUT if scope.anchor is not None and os.path.realpath(m) == os.path.realpath(scope.anchor) else ()
+            q = git(m, "rev-list", "--max-count=1", *new, "--not", *old, "--", ".", *outside)
+            if q.returncode != 0 or q.stdout.strip():
+                scope.git_changed = True
+    skip = {(base or {}).get("pass_session"), current} - {None}   # the last pass's session and this one's
+    newest = 0.0
+    for d in common.login_dirs():
+        root = d / "projects"
+        for m in scope.members:
+            if fenced_by(m):
+                continue
+            slug = common.project_slug(m)
+            for folder in [root / slug] + sorted(root.glob(globmod.escape(slug) + "--claude-worktrees-*")):
+                if fenced_by(folder):
+                    continue
+                for f in folder.glob("*.jsonl"):
+                    if f.stem in skip:
+                        continue
+                    try:
+                        newest = max(newest, f.stat().st_mtime)
+                    except OSError:
+                        continue
+    scope.sessions_at = dt.datetime.fromtimestamp(newest).astimezone() if newest else None
+
+
+def label_path(label, suffix):
+    return state_dir() / "manifests" / ("%s%s.json" % (label.replace(":", "-"), suffix))
+
+
+def label_file(scope, suffix):
+    return label_path(scope.label, suffix)
+
+
+def verb_receipt(scope, cell_id, now, days):
+    """A verb collector's run receipt, `<state>/receipts/<scope>/<cell's source id>.json` {"time"} (a confidential
+    scope's profile source by its neutral id), which the pass writes
+    when it ran the verb (S5): an installed verb that never ran is no fresh collector (finding 9)."""
+    try:
+        with open(state_dir() / "receipts" / scope.label.replace(":", "-") / ("%s.json" % cell_id), encoding="utf-8") as fh:
+            t = parse_time((json.load(fh) or {}).get("time"))
+    except (OSError, ValueError, AttributeError):
+        return False
+    return bool(t) and (now - t).total_seconds() <= float(days) * 86400
+
+
+def read_baseline(scope):
+    """The last complete pass's manifest, or None."""
+    try:
+        with open(label_file(scope, ".complete"), encoding="utf-8") as fh:
+            b = json.load(fh)
+        return b if isinstance(b, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def manifest(scope, lens_doc, cells, extra, now, since, base):
+    """The collector manifest a quiet receipt rests on, against the last COMPLETE pass's (finding 6: a run
+    that only looked moves nothing): every required collector's sources seen fresh (a verb with its run
+    receipt), no change in lenses.json, the profile, the North Star or the scope's registry entry, no record
+    newer than the baseline's cutoff in a source that wakes the scope, no exclusion past its review."""
+    cell_of = {e["id"]: c for e, c in zip(extra, cells)}
+    ex = {e["id"]: e for e in extra}
+    cols = [dict(c) for c in lens_doc.get("collectors") or []]
+    for e in extra:   # a profile source joins the collector it names
+        for c in cols:
+            if e["collector"] == c.get("id"):
+                c["sources"] = list(c.get("sources") or []) + [e["id"]]
+    out_cols, why = [], []
+    for c in cols:
+        bad = []
+        for sid in c.get("sources") or []:
+            cell = cell_of.get(sid)
+            st = cell["state"] if cell else "source_missing"
+            name = ex[sid]["cell"] if sid in ex else sid
+            if not (st in ("observed", "not_applicable") or (st == "excluded" and not cell.get("overdue"))):
+                bad.append("%s %s" % (name, st))
+            elif st == "observed" and ex[sid]["kind"] == "verb" and \
+                    not verb_receipt(scope, name, now, ex[sid]["fresh_days"] or VERB_RECEIPT_DAYS):
+                bad.append("%s no run receipt" % name)
+        out_cols.append({"id": c["id"], "required": bool(c.get("required")), "sources": [ex[s]["cell"] if s in ex else s for s in c.get("sources") or []],
+                         "fresh": not bad, "why": "; ".join(bad) or None})
+        if c.get("required") and bad:
+            why.append("collector %s: %s" % (c["id"], "; ".join(bad)))
+    hashes = {"lenses": lens_doc["_sha"], "profile": file_sha(scope.profile_file),
+              "north_star": file_sha(Path(common.CONFIG) / "sextant" / "north-star.json"), "registry": scope.reg_sha}
+    changed = ["no complete pass yet"] if not isinstance(base, dict) else \
+        [k for k in hashes if (base.get("hashes") or {}).get(k) != hashes[k]] + (["git"] if scope.git_changed else [])
+    if since is None and isinstance(base, dict):
+        since = base.get("cutoff")
+    st = parse_time(since) if since else None
+    if since and st is None:
+        why.append("the baseline's cutoff cannot be read")
+    changed_sources = sorted({e["cell"] for e in extra if st and e["wakes"] and e["change"] and e["change"] > st} |
+                             ({"sessions"} if st and scope.sessions_at and scope.sessions_at > st else set()))
+    overdue = [c["source"] for c in cells if c.get("overdue")]
+    if scope.profile_error:
+        why.append(scope.profile_error)
+    if changed:
+        why.append("changed: " + ", ".join(changed))
+    if changed_sources:
+        why.append("new records since the last complete pass: " + ", ".join(changed_sources))
+    if overdue:
+        why.append("an exclusion past its review: " + ", ".join(overdue))
+    # the cutoff to the microsecond: a file written in the same second after it is a change (its mtime is finer)
+    return {"scope": scope.label, "cutoff": now.isoformat(timespec="microseconds"), "since": since,
+            "collectors": out_cols, "hashes": hashes, "refs": scope.refs, "changed": changed, "changed_sources": changed_sources,
+            "overdue": overdue, "quiet_ok": not why, "why": why,
+            "not_judged": ["a due benefit check (the grader, S9)", "whether the owner read a source"]}
+
+
+def forms(paths):
+    """Each path as given (normalised) and resolved: a source named through a link is read either way."""
+    out = set()
+    for p in paths:
+        out.add(os.path.normpath(os.path.abspath(str(p))))
+        out.add(os.path.realpath(str(p)))
+    return out
+
+
+def surface(reg, scopes, lens_doc, fenced_by, now):
+    """The surface diff: every registry repo, each entry of the log dir and the config dir, minus what any
+    declared source reads (a source inside an entry opens it one level down, to three). A confidential
+    scope's path is counted, never named; an ignore glob (lenses.json, or the overlay's
+    <config>/aurora/surface.json with a reason and a review date, past which it lapses) drops an item."""
+    member_keys = set()
+    repos = reg.get("repos") or {}
+    for sc in (reg.get("scopes") or {}).values():
+        member_keys |= set(common.scope_members(sc, repos))
+    read, secret = set(), set()
+    for scope in scopes:
+        for ln in lens_doc["lenses"]:
+            for src in list(ln.get("sources") or []) + [s for s in scope.profile.get("sources") or [] if s.get("lens") == ln["id"]]:
+                if src["kind"] == "path":
+                    paths = forms(p for p, _ in expand(src["at"], scope))
+                    # a confidential profile's own paths name its folders: fenced, counted, never named (round 2)
+                    (secret if scope.confidential and src in (scope.profile.get("sources") or []) else read).update(paths)
+    torn = any(sc.confidential and sc.profile_error for sc in scopes)   # its folders unknown: name no entry
+    cfg = Path(common.CONFIG)
+    read |= forms((cfg / "aurora" / "scopes", cfg / "aurora" / "surface.json", cfg / "aurora" / "conformance.json",
+                   cfg / "sextant" / "north-star.json", state_dir()) + ((common.repos_json(),) if common.repos_json() else ()))
+    ignore = list((lens_doc.get("surface") or {}).get("ignore") or [])
+    try:
+        with open(cfg / "aurora" / "surface.json", encoding="utf-8") as fh:
+            ign = json.load(fh).get("ignore")
+            for x in ign if isinstance(ign, list) else []:
+                if isinstance(x, dict) and isinstance(x.get("glob"), str) and (valid_day(x.get("review")) or "") >= now.date().isoformat():
+                    ignore.append(x["glob"])
+    except (OSError, ValueError, AttributeError):
+        pass
+    items, unobserved, fenced, ignored = 0, [], 0, 0
+
+    def walk(root, tag, rel, depth):
+        nonlocal items, fenced, ignored
+        p = root / rel if rel else root
+        try:
+            kids = sorted(p.iterdir()) if p.is_dir() else []
+        except OSError:
+            kids = []
+        for k in kids:
+            name = "%s:%s" % (tag, k.relative_to(root))
+            if any(fnmatch.fnmatchcase(name, g) for g in ignore):
+                ignored += 1
+                continue
+            ks = forms([k])
+            if fenced_by(k) or any(x == r or x.startswith(r + os.sep) or r.startswith(x + os.sep) for x in ks for r in secret):
+                fenced += 1
+                continue
+            if ks & read or any(x.startswith(r + os.sep) for x in ks for r in read):
+                items += 1
+                continue
+            inside = [r for r in read for x in ks if r.startswith(x + os.sep)]
+            # never through a link: the config dir links synced cloud folders, and listing one fetches it (AGENTS.md)
+            if inside and depth < 3 and k.is_dir() and not k.is_symlink():
+                walk(root, tag, k.relative_to(root), depth + 1)
+                continue
+            items += 1
+            if not inside:
+                if torn:
+                    fenced += 1
+                else:
+                    unobserved.append(name)
+    for key in sorted(repos):
+        if fenced_by(Path(key) if key.startswith("/") else Path(common.PROJECTS) / key):
+            fenced += 1
+            continue
+        items += 1
+        if key not in member_keys:
+            unobserved.append("repo:%s" % key)
+    roots = {"log": Path(common.LOG_DIR), "config": cfg}
+    for tag in (lens_doc.get("surface") or {}).get("roots") or ["log", "config"]:
+        if tag in roots:
+            walk(roots[tag], tag, None, 1)
+    return {"items": items, "unobserved": unobserved, "fenced": fenced, "ignored": ignored}
+
+
+def registry_or_refusal():
+    """(reg, None) from one parse of the registry, or (None, why): an unreadable one fails closed, and no
+    registry is no scope to walk. Every scope is walked from this one read (AGENTS.md's fence traps)."""
+    reg, bad = common.read_registry()
+    if bad:
+        return None, "the registry cannot be read: every scope is fenced, nothing judged"
+    if reg is None:
+        return None, "no registry: no scope to walk"
+    return reg, None
+
+
+def matchers(reg):
+    """{name: matcher} for every confidential scope, built once from the one registry read: every scope
+    walked, never the first that lists a repo."""
+    return {n: common.scope_match(n, reg=reg) for n in common.confidential_scopes(reg=reg)}
+
+
+def fence_for(ms, own=None):
+    """path -> True when it is a confidential scope's other than OWN."""
+    others = [m for n, m in ms.items() if n != own]
+    return lambda p: any(m(p) for m in others)
+
+
+def cmd_coverage(a):
+    try:
+        lens_doc = load_lenses()
+    except (OSError, ValueError) as e:
+        raise Refused("lenses.json cannot be read (%s)" % e)
+    if a.since and schema.read_time(a.since) is None:   # a time, as the manifest's schema reads it: a bare date is none
+        raise Refused("--since %r is no ISO time (a date and a time)" % a.since)
+    if a.promote and not a.scope:
+        raise Refused("--promote names the scope whose pass completed (--scope)")
+    if a.promote and (a.no_record or a.open):
+        raise Refused("--promote writes the baseline: never with --no-record or --open")
+    if a.session and not (a.promote or a.open):
+        raise Refused("--session names the pass's own session, with --open or --promote, and nothing else")
+    if a.open and (not a.scope or a.no_record):
+        raise Refused("--open is the pass's opening run: with --scope, recorded")
+    if a.promote:
+        return promote(a)
+    reg, why = registry_or_refusal()
+    if why:
+        raise Refused(why)
+    names = sorted(reg.get("scopes") or {})
+    if a.scope and a.scope not in names:
+        raise Refused("no scope %r in the registry" % a.scope)
+    if a.scope and not isinstance(reg["scopes"][a.scope], dict):
+        raise Refused("scope %r in the registry is no object: nothing to judge" % a.scope)
+    def usable(x):   # an object whose `repos` is a list: anything else names nothing to judge (round 4)
+        return isinstance(x, dict) and isinstance(x.get("repos"), list)
+    if a.scope and not usable(reg["scopes"][a.scope]):
+        raise Refused("scope %r in the registry has no list of repos: nothing to judge" % a.scope)
+    bad_scopes = sum(1 for n in names if not usable(reg["scopes"][n]))
+    now = dt.datetime.now().astimezone()
+    repos = reg.get("repos") or {}
+    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc) for n in names if usable(reg["scopes"][n])]
+    ms = matchers(reg)
+    result = {"version": 1, "time": now.isoformat(timespec="seconds"), "lenses_sha": lens_doc["_sha"], "scopes": [],
+              "surface": {"items": 0, "unobserved": [], "fenced": 0, "ignored": 0}, "bad_scopes": 0 if a.scope else bad_scopes,
+              "skipped_confidential": 0}
+    for sc in scopes:
+        if a.scope and sc.name != a.scope:
+            continue
+        if sc.confidential and not a.scope:
+            # what leaves a confidential scope is its checked lines and the receipt word, nothing else (the
+            # scope-pass component): a global run neither opens its anchor nor records its ages, wakes or
+            # citations; its pass judges it under its own --scope (the finish review)
+            result["skipped_confidential"] += 1
+            continue
+        own_fence = fence_for(ms, own=sc.name)
+        base = read_baseline(sc)
+        cells, extra = scope_cells(sc, lens_doc, own_fence, now)
+        scope_state(sc, own_fence, base, a.session)
+        counts = {}
+        for c in cells:
+            counts[c["state"]] = counts.get(c["state"], 0) + 1
+        m = manifest(sc, lens_doc, cells, extra, now, a.since, base)
+        if a.session:
+            m["pass_session"] = a.session
+        # the global record keeps no heads, and of a confidential scope no hash a guess could be confirmed against
+        rec = {k: v for k, v in m.items() if k != "refs"}
+        if sc.confidential:
+            rec["hashes"] = {k: v for k, v in m["hashes"].items() if k in ("lenses", "north_star")}
+        result["scopes"].append({"scope": sc.label, "confidential": sc.confidential, "counts": counts, "cells": cells,
+                                 "manifest": rec, "profile_error": bool(sc.profile_error)})
+        if not a.no_record:
+            try:
+                label_file(sc, "").parent.mkdir(parents=True, exist_ok=True)
+                for suffix in ("", ".opening") if a.open else ("",):
+                    with open(label_file(sc, suffix), "w", encoding="utf-8") as fh:
+                        json.dump(m, fh, indent=1)
+            except OSError as e:
+                print("%s coverage: the manifest could not be written (%s)" % (PROG, e), file=sys.stderr)
+    if not a.scope:
+        result["surface"] = surface(reg, scopes, lens_doc, fence_for(ms), now)
+    if not a.no_record:
+        append_record("coverage.jsonl", result)
+    blind = [c for s in result["scopes"] for c in s["cells"] if c["state"] in NOT_SEEN] + result["surface"]["unobserved"] + \
+        ["a profile" for s in result["scopes"] if s["profile_error"]] + ["a scope entry"] * result["bad_scopes"] + \
+        [c for s in result["scopes"] for c in s["cells"] if c.get("overdue")]   # an overdue cell (the finish review)
+    if a.json:
+        print(json.dumps(result, indent=1))
+    else:
+        for s in result["scopes"]:
+            print("scope %s: %s" % (s["scope"], ", ".join("%d %s" % (n, k) for k, n in sorted(s["counts"].items()))))
+            for c in s["cells"]:
+                if c["state"] not in ("observed", "not_applicable"):
+                    print("  %-14s %s/%s — %s" % (c["state"], c["lens"], c["source"], c["why"] or ""))
+            m = s["manifest"]
+            if s["profile_error"]:
+                print("  profile        unreadable: its sources not judged")
+            print("  quiet: %s" % ("allowed" if m["quiet_ok"] else "not allowed — " + "; ".join(m["why"])))
+        if result["skipped_confidential"]:
+            n = result["skipped_confidential"]
+            print("%d confidential scope%s judged only inside it (--scope)" % (n, "" if n == 1 else "s"))
+        if not a.scope:
+            sf = result["surface"]
+            print("surface: %d items, %d nothing reads%s%s" % (sf["items"], len(sf["unobserved"]),
+                  ", %d of a confidential scope (counted, not named)" % sf["fenced"] if sf["fenced"] else "",
+                  ", %d ignored" % sf["ignored"] if sf["ignored"] else ""))
+            for u in sf["unobserved"]:
+                print("  unobserved     %s" % u)
+        if result["bad_scopes"]:
+            print("%d registry scope%s no object: not judged" % (result["bad_scopes"], " is" if result["bad_scopes"] == 1 else "s are"))
+        print("coverage: %s" % ("every cell observed" if not blind else "%d blind spot%s" % (len(blind), "" if len(blind) == 1 else "s")))
+    return 0 if not blind else 1
+
+
+def promote(a):
+    """The pass completed: the manifest its opening run wrote (`coverage --scope S --open`, a file no other run
+    writes, so a run in between moves nothing: round 3) becomes the scope's baseline, its cutoff, hashes and
+    heads as the pass saw them — never this moment's, so what landed while the pass ran is still a change next
+    time (round 2). --session names the pass's own session, whose transcript is then no change."""
+    reg, why = registry_or_refusal()
+    if why:
+        raise Refused(why)
+    if a.scope not in (reg.get("scopes") or {}) or not isinstance(reg["scopes"][a.scope], dict):
+        raise Refused("no scope %r in the registry" % a.scope)
+    sc = reg["scopes"][a.scope]
+    label = scope_label(a.scope, sc)
+    src = label_path(label, ".opening")
+    try:
+        with open(src, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if schema.validate("manifest", m):
+            raise ValueError("it does not hold its schema")
+    except (OSError, ValueError) as e:
+        raise Refused("no manifest of the pass's opening run to promote (%s): run `coverage --scope %s --open` as the pass starts"
+                      % (type(e).__name__ if isinstance(e, OSError) else e, label))
+    if a.session:
+        m["pass_session"] = a.session   # its own transcript is no change to the next run (else the opening run's)
+    with open(label_path(label, ".complete"), "w", encoding="utf-8") as fh:
+        json.dump(m, fh, indent=1)
+    print("%s coverage: %s's baseline is the pass's, cut off %s" % (PROG, label, m.get("cutoff")))
+    return 0
+
+
+def append_record(name, obj):
+    d = state_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / name, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj) + "\n")
+        return d / name
+    except OSError as e:
+        print("%s: the record could not be written (%s)" % (PROG, e), file=sys.stderr)
+        return None
+
+
+# ---- conformance: work-as-imagined (rules) against work-as-done (the transcripts' tool calls) ----------
+
+# a guard's refusal as Claude Code writes it into the tool result (read from transcripts, S3's review): a
+# PreToolUse hook's ("PreToolUse:Bash hook error: ⛔ …", whatever the words after) or the permission system's
+HOOK_DENIAL = re.compile(r"\s*PreToolUse:\S+ hook error")
+PERMISSION_DENIAL = re.compile(r"\s*(?:Permission to use \S+ .*?has been denied|Permission for this (?:action|command) was denied by"
+                               r"|The user doesn't want to proceed with this tool use)", re.S)
+NO_VERDICT = re.compile(r"\s*The server-side auto mode classifier gave no verdict")   # never ran: neither ok nor failed
+
+
+def load_rules(rules, where, named=True):
+    """[rule] from a list of {id, ref, tool, when, breach}, each regex compiled; ValueError naming the bad one
+    (by its place, never its id, where NAMED is false: a confidential scope's rule)."""
+    out = []
+    for i, r in enumerate(rules if isinstance(rules, list) else []):
+        tag = "rule %s" % (r.get("id") if named and isinstance(r, dict) else i + 1)
+        if not isinstance(r, dict) or not r.get("id") or not (r.get("when") or r.get("breach")):
+            raise ValueError("%s, rule %d: needs an id and a `when` or a `breach`" % (where, i + 1))
+        try:
+            out.append(dict(r, _tool=re.compile(r.get("tool") or r"^Bash$"),
+                            _when=re.compile(r["when"]) if r.get("when") else None,
+                            _breach=re.compile(r["breach"]) if r.get("breach") else None))
+        except (re.error, TypeError) as e:
+            raise ValueError("%s, %s: a pattern does not compile (%s)" % (where, tag, e))
+    return out
+
+
+def transcripts(since):
+    """Every transcript in every login dir touched since SINCE — the sessions' own and their subagents', where
+    workers run most of the shell (S3's review) — each file once by its real path (login dirs may link one
+    projects folder: round 2), the file's mtime only prefiltering; the events' times decide."""
+    seen = set()
+    for d in common.login_dirs():
+        for pat in ("*/*.jsonl", "*/*/subagents/*.jsonl"):
+            for f in sorted((d / "projects").glob(pat)):
+                try:
+                    real = os.path.realpath(f)
+                    if real in seen or f.stat().st_mtime < since.timestamp():
+                        continue
+                    seen.add(real)
+                    yield f
+                except OSError:
+                    continue
+
+
+def result_text(body):
+    if isinstance(body, str):
+        return body
+    if isinstance(body, list):
+        return "\n".join(x.get("text", "") for x in body if isinstance(x, dict) and isinstance(x.get("text"), str))
+    return ""
+
+
+def tool_calls(f, since):
+    """[(name, text, session, ok, denied)] — each tool call at or after SINCE, with its result: denied only
+    for an error result in a guard's shape, so a call that succeeded never counts as blocked."""
+    uses, results = [], {}
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if '"tool_use"' not in line and '"tool_result"' not in line:
+                continue   # most lines are text: only a tool call or its result is read
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            msg = ev.get("message") if isinstance(ev, dict) else None
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, list):
+                continue
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "tool_use" and ev.get("type") == "assistant":
+                    t = parse_time(ev.get("timestamp")) if ev.get("timestamp") else None
+                    if t is None or t < since:
+                        continue
+                    inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+                    text = inp.get("command") if isinstance(inp.get("command"), str) else json.dumps(inp, sort_keys=True)
+                    uses.append((c.get("id"), c.get("name") or "", text, ev.get("sessionId") or f.stem))
+                elif c.get("type") == "tool_result":
+                    err, body = bool(c.get("is_error")), result_text(c.get("content"))
+                    outcome = "ok" if not err else "denied" if HOOK_DENIAL.match(body) or PERMISSION_DENIAL.match(body) \
+                        else "unknown" if NO_VERDICT.match(body) else "failed"
+                    results[c.get("tool_use_id")] = outcome
+    # [(id, name, text, session, outcome)]: no result read is `unknown`, never a success nor a failure
+    return [(uid, name, text, sess, results.get(uid, "unknown")) for uid, name, text, sess in uses]
+
+
+def cmd_conformance(a):
+    try:
+        lens_doc = load_lenses()
+    except (OSError, ValueError) as e:
+        raise Refused("lenses.json cannot be read (%s)" % e)
+    conf = lens_doc.get("conformance") or {}
+    reg, why = registry_or_refusal()
+    if why:
+        raise Refused(why)
+    scopes_reg = reg.get("scopes") or {}
+    if a.scope and a.scope not in scopes_reg:
+        raise Refused("no scope %r in the registry" % a.scope)
+    rules_file = Path(common.CONFIG) / "aurora" / "conformance.json"
+    groups, skipped, unreadable = [], 0, 0   # (scope name or None, [rule])
+    try:
+        if rules_file.exists():
+            with open(rules_file, encoding="utf-8") as fh:
+                groups.append((None, load_rules(json.load(fh).get("rules"), "conformance.json")))
+        for n in sorted(scopes_reg):
+            if a.scope and n != a.scope:
+                continue
+            if not (isinstance(scopes_reg[n], dict) and isinstance(scopes_reg[n].get("repos"), list)):
+                if a.scope == n:
+                    raise ValueError("scope %s in the registry has no list of repos" % n)
+                unreadable += 1   # nothing to judge its rules on
+                continue
+            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc)
+            if sc.profile_error:
+                if a.scope == n:
+                    raise ValueError("scope %s: %s" % (sc.label, sc.profile_error))
+                unreadable += 1   # another scope's profile: its rules unknown, the rest still judged
+                continue
+            if not sc.profile.get("conformance"):
+                continue
+            if sc.confidential and a.scope != n:
+                skipped += 1   # its transcripts are fenced here: its rules are judged inside, under --scope
+                continue
+            try:
+                groups.append((n, load_rules(sc.profile["conformance"], "scope %s's profile" % sc.label, named=not sc.confidential)))
+            except ValueError:
+                if a.scope == n:
+                    raise
+                unreadable += 1   # another scope's bad rule: its rules unknown, the rest still judged (the finish review)
+    except (OSError, ValueError, AttributeError) as e:
+        raise Refused(str(e))
+    now = dt.datetime.now().astimezone()
+    since = now - dt.timedelta(days=a.days)
+    ms = matchers(reg)
+    others = fence_for(ms, own=a.scope)
+    def members(n):
+        return [Path(k) if k.startswith("/") else Path(common.PROJECTS) / k for k in common.scope_members(scopes_reg[n], reg.get("repos") or {})]
+    own = member_sessions(members(a.scope)) if a.scope else None
+    scope_m = {n: member_sessions(members(n)) for n, _ in groups if n}
+    calls, read, fenced, ids = [], 0, 0, {}
+    for f in transcripts(since) if groups else ():
+        if others(f):
+            fenced += 1
+            continue   # judged on the path before any open (the S1 trap)
+        if own and not own(f):
+            continue
+        read += 1
+        try:
+            for c in tool_calls(f, since):
+                if c[0] and c[0] in ids:   # a resumed or forked session carries the same call: counted once,
+                    i = ids[c[0]]          # with the outcome a copy knows over one that has no result
+                    if calls[i][-1] == "unknown" and c[-1] != "unknown":
+                        calls[i] = (f,) + c[1:]
+                    continue
+                if c[0]:
+                    ids[c[0]] = len(calls)
+                calls.append((f,) + c[1:])
+        except OSError:
+            continue
+    rows = []
+    for n, rules in groups:
+        conf_scope = bool(n) and scopes_reg[n].get("confidential") is True
+        inside = {f: scope_m[n](f) for f in {c[0] for c in calls}} if n else None   # once a file, not once a rule
+        for i, r in enumerate(rules):
+            applied = ok = failed = blocked = unknown = 0
+            ok_sessions = set()
+            for f, name, text, sess, outcome in calls:
+                if n and not inside[f]:
+                    continue
+                if not r["_tool"].search(name):
+                    continue
+                hit = bool(r["_when"] and r["_when"].search(text))
+                br = bool(r["_breach"] and r["_breach"].search(text))
+                if not (hit or br):
+                    continue
+                applied += 1
+                if br:
+                    if outcome == "denied":
+                        blocked += 1
+                    elif outcome == "ok":
+                        ok += 1
+                        ok_sessions.add(sess)
+                    elif outcome == "failed":
+                        failed += 1
+                    else:
+                        unknown += 1
+            cls = "dead" if not applied else "worked_around" if ok >= int(conf.get("workaround_min", 3)) and \
+                len(ok_sessions) >= int(conf.get("workaround_sessions", 2)) else "violated" if ok or failed \
+                else "unknown" if unknown else "holds"   # holds: no breach, or every one refused; unmeasured is not
+            rid = "%s/rule-%d" % (common.scope_marker(n), i + 1) if conf_scope else ("%s/%s" % (n, r["id"]) if n else r["id"])
+            rows.append({"rule": rid, "class": cls, "applied": applied, "breached_ok": ok, "breached_failed": failed,
+                         "blocked": blocked, "unknown": unknown, "sessions": len(ok_sessions), "ref": None if conf_scope else r.get("ref")})
+    result = {"time": now.isoformat(timespec="seconds"), "days": a.days,
+              "scope": (common.scope_marker(a.scope) if scopes_reg[a.scope].get("confidential") is True else a.scope) if a.scope else None,
+              "transcripts": read, "fenced": fenced, "skipped_confidential": skipped, "unreadable_profiles": unreadable, "rules": rows}
+    if not a.no_record:
+        append_record("conformance.jsonl", {**result, "rules": [{k: v for k, v in r.items() if k != "ref"} for r in rows]})
+    if a.json:
+        print(json.dumps(result, indent=1))
+    else:
+        print("%d transcript%s read over %d days%s" % (read, "" if read == 1 else "s", a.days,
+              "; %d of a confidential scope fenced, never opened" % fenced if fenced else ""))
+        if skipped:
+            print("%d confidential scope%s' rules judged only inside it (--scope)" % (skipped, "" if skipped == 1 else "s"))
+        if unreadable:
+            print("%d scope profile%s could not be read: %s rules not judged" % (unreadable, "" if unreadable == 1 else "s", "their" if unreadable > 1 else "its"))
+        if not rows:
+            print("no rules: declare them in %s or a scope's profile (`conformance`)" % rules_file)
+        for r in rows:
+            print("  %-13s %s — applied %d, breached %d ok %d failed, %d blocked by a guard, %d session%s%s" % (
+                r["class"], r["rule"], r["applied"], r["breached_ok"], r["breached_failed"], r["blocked"],
+                r["sessions"], "" if r["sessions"] == 1 else "s", " (%s)" % r["ref"] if r.get("ref") else ""))
+        n_bad = sum(1 for r in rows if r["class"] != "holds")
+        print("conformance: %s" % ("no rules declared" if not rows else "every rule holds" if not n_bad
+                                   else "%d rule%s dead, violated or worked around" % (n_bad, "" if n_bad == 1 else "s")))
+    return 0 if rows and all(r["class"] == "holds" for r in rows) else 1
+
+
+def cmd_validate(a):
+    if a.kind not in schema.SCHEMAS:
+        print("%s validate: no schema %r (one of %s)" % (PROG, a.kind, ", ".join(sorted(schema.SCHEMAS))), file=sys.stderr)
+        return 2
+    try:
+        with open(a.file, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as e:
+        print("%s validate: %s" % (PROG, e), file=sys.stderr)
+        return 2
+    try:
+        doc = load_lenses() if a.kind in ("finding", "findings") else {}
+        classes, lens_ids = doc.get("outcome_classes"), set(doc.get("_lens_ids") or [])
+    except (OSError, ValueError) as e:
+        raise Refused("a finding's outcome class is judged against lenses.json, which cannot be read (%s)" % e)
+    recs = []
+    if a.file.endswith(".jsonl"):
+        for n, line in enumerate(raw.splitlines(), 1):
+            if line.strip():
+                try:
+                    recs.append(("line %d" % n, json.loads(line)))
+                except ValueError:
+                    recs.append(("line %d" % n, ValueError("not JSON")))
+    else:
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            d = ValueError("not JSON")
+        recs = [(k, v) for k, v in d.items()] if a.kind == "theme" and isinstance(d, dict) else [("", d)]
+    bad = 0
+    for where, rec in recs:
+        probs = [str(rec)] if isinstance(rec, ValueError) else schema.validate(a.kind, rec, classes)
+        if lens_ids and not isinstance(rec, ValueError):   # a lens lenses.json never declared (the finish review)
+            fs = [rec] if a.kind == "finding" else (rec.get("findings") if isinstance(rec, dict) else None)
+            for i, f in enumerate(fs if isinstance(fs, list) else []):
+                ln = f.get("lens") if isinstance(f, dict) else None
+                if isinstance(ln, str) and ln and ln not in lens_ids:
+                    probs.append("%slens: %r is no lens lenses.json declares" % ("" if a.kind == "finding" else "findings[%d]." % i, ln))
+        for p in probs:
+            print("%s%s" % ("%s: " % where if where else "", p))
+        bad += bool(probs)
+    if not a.quiet:
+        print("%s: %d record%s, %s" % (a.kind, len(recs), "" if len(recs) == 1 else "s", "all hold" if not bad else "%d refused" % bad))
+    return 0 if not bad and recs else 1
+
+
+def cmd_schema(a):
+    if not a.kind:
+        print("\n".join(sorted(schema.SCHEMAS)))
+        return 0
+    if a.kind not in schema.SCHEMAS:
+        print("%s schema: no schema %r" % (PROG, a.kind), file=sys.stderr)
+        return 2
+    print(json.dumps(schema.describe(a.kind), indent=1))
+    return 0
+
+
+def cmd_action_id(a):
+    print(schema.action_id(a.finding_id, a.action_version, a.target_scope))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog=PROG, description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("probes", help="the owner's answer surface, end to end, zero tokens")
+    p.add_argument("--doc", action="append", default=[], help="also probe this real doc's links and render (read-only)")
+    p.add_argument("--board", action="store_true", help="also probe the docs keel list finds with decisions open")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-record", action="store_true")
+    p = sub.add_parser("coverage", help="the register of lens x source, the surface nothing reads, the quiet manifest")
+    p.add_argument("--scope", help="one scope's cells and manifest (the surface is the deployment's: left out)")
+    p.add_argument("--since", help="the last complete cutoff (ISO time); default: the last complete pass's manifest's")
+    p.add_argument("--open", action="store_true", help="the pass's opening run: also writes the manifest --promote takes")
+    p.add_argument("--promote", action="store_true",
+                   help="the pass completed: its opening run's manifest becomes the scope's baseline (with --scope)")
+    p.add_argument("--session", help="with --open or --promote: the pass's own session id, whose transcript is no change")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-record", action="store_true")
+    p = sub.add_parser("conformance", help="the rules against the transcripts: dead, holds, violated, worked around")
+    p.add_argument("--scope")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--no-record", action="store_true")
+    p = sub.add_parser("validate", help="a record or a JSON-lines ledger against its schema")
+    p.add_argument("kind")
+    p.add_argument("file")
+    p.add_argument("--quiet", action="store_true")
+    p = sub.add_parser("schema", help="the schemas, or one as JSON")
+    p.add_argument("kind", nargs="?")
+    p = sub.add_parser("action-id", help="hash(finding id, action version, target scope)")
+    p.add_argument("finding_id")
+    p.add_argument("action_version", type=int)
+    p.add_argument("target_scope")
+    a = ap.parse_args(argv)
+    cmds = {"probes": cmd_probes, "coverage": cmd_coverage, "conformance": cmd_conformance, "validate": cmd_validate,
+            "schema": cmd_schema, "action-id": cmd_action_id}
+    if a.cmd in cmds:
+        try:
+            return cmds[a.cmd](a)
+        except Refused as e:
+            print("%s %s: %s" % (PROG, a.cmd, e), file=sys.stderr)
+            return 2
+        except Exception as e:   # noqa: BLE001  a crash is "could not tell", never 1 (blind spots: AGENTS.md)
+            # the type alone: an OSError's text names its path, a confidential repo's included (the finish review)
+            print("%s %s: could not finish (%s)" % (PROG, a.cmd, type(e).__name__), file=sys.stderr)
+            return 2
+    ap.print_help(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

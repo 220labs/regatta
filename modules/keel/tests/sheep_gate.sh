@@ -61,6 +61,28 @@ rm "$REGATTA_CONFIG/wharf/repos.json"
 check "$(sg "{\"cwd\":\"$P/know\"}")" sent "no registry: as before the flag (PRIVATE_REPOS alone)"
 check "$(sg "{\"cwd\":\"$P/vault\"}")" dropped "…and vault still dropped"
 
+# a council arm (wharf's bin/council): its run dir's marker, or the variable its arm_env sets (the
+# council's landing review, 2026-10-28)
+CR="$T/council-1/arms/codex/copy"; mkdir -p "$CR/docs"; : > "$T/council-1/.council-run"; chmod 700 "$T/council-1"
+mkdir -p "$T/stray/sub"; : > "$T/stray/.council-run"; chmod 755 "$T/stray"
+check "$(sg "{\"cwd\":\"$T/stray/sub\"}")" sent "a marker in a dir open to others (no run dir council makes): sent, never silenced (round 6)"
+check "$(sg "{\"cwd\":\"$CR/docs\"}")" dropped "an event from under a council run dir: dropped"
+check "$(printf '{"workspacePaths":["file://%s"]}' "$T/council-1/arms/antigravity/empty" | (cd "$P/open" && rm -f "$T/ran"; python3 "$H/sheep_gate.py" "$T/hook" antigravity Stop >/dev/null 2>&1; [ -f "$T/ran" ] && echo sent || echo dropped))" \
+  dropped "  antigravity's workspace there too"
+check "$(REGATTA_COUNCIL_ARM=1 sg "{\"cwd\":\"$P/open\"}")" dropped "  an arm's hook (REGATTA_COUNCIL_ARM), wherever it runs"
+check "$(sg "{\"cwd\":\"$T/council-1x\"}")" sent "  a sibling folder with no marker: sent"
+# the marker's one home is the core's common (the council's third landing review, finding 24); the gate's own
+# name is for a keel with no core beside it, and must be the same
+check "$(python3 - "$H" <<'PY'
+import sys, types
+m = types.ModuleType("sg"); m.__file__ = sys.argv[1] + "/sheep_gate.py"
+exec(compile(open(m.__file__).read(), m.__file__, "exec"), m.__dict__)
+got = m.council_marker()   # it puts the core it found on sys.path
+import common
+print(got == common.COUNCIL_MARKER == m.COUNCIL_MARKER, common.__file__.startswith(sys.argv[1].rsplit("/modules/", 1)[0]))
+PY
+)" "True True" "  the marker read from the core's common.COUNCIL_MARKER (this checkout's), the gate's fallback the same name"
+
 # sheep's GATE: REGATTA_HOME at a worktree resolves to its main checkout, never the worktree a
 # /finish removes (B14a landing review, 2026-10-23)
 R="$T/rg"; mkdir -p "$R/modules/keel/hooks"; : > "$R/modules/keel/hooks/sheep_gate.py"

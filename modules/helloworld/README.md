@@ -8,11 +8,12 @@ The first Regatta module to go public, and the door a project goes out of: name 
 | `bin/helloworld` | puts a private repo's allowlisted files on its public twin, with a privacy scan as the gate |
 | `bin/name-check` | is a name free as a domain and as a GitHub, npm and PyPI handle, and what does the domain cost; read-only |
 | `skills/name` (`/name`) | takes an idea note to a decided name: probed, priced, trademark-searched, one naming doc |
+| `install.sh` | `--check` what the gate needs; `--schedule` the nightly's launchd agent (below) |
 | `tests/check.sh` | both suites; no network |
 
 Install: `claude plugin marketplace add <this repo>`, then `claude plugin install helloworld@regatta`
 (it needs the core, `regatta`). From a clone: `sh modules/helloworld/install.sh --check` says
-whether the core, the word list and the pre-push guard are found.
+whether the core, the word list, the pre-push guard and the nightly's repos are found.
 
 ## The publish gate
 
@@ -35,6 +36,7 @@ hook (`templates/code/git-hooks/pre-push`, found through the core); without whar
 | `check-message --subject S [--body-file F]`, `--message-file F` | any session, at the private commit's making | nothing: one message scanned as the replay would scan it; exit 1 when the replay would refuse its subject or drop its body |
 | `check-message --range A..B [--repo R]` | wharf's `/finish`, on the curated branch before its push | nothing: every commit of the range scanned so, checkpoints and commits changing no published file skipped (as the replay skips them), each finding under its commit; nothing to scan without `.helloworld/` |
 | `publish <repo>` | the owner, in their own terminal (refuses `CLAUDECODE` and a non-terminal stdin) | the public `main`, after the repo's name is typed back; the first publish, and any later one the owner prefers |
+| `nightly [<repo>…] [--dry-run] [--wait MIN]` | launchd, nightly (`install.sh --schedule`); `--dry-run` any session | `publish --pr` of each repo, then, where its `.helloworld/nightly` says `on-green`, the merge once the twin PR and the private main's named checks are green; a held night files an issue on the logbook |
 
 **The replay** (2026-10-19; the design's D1-B, the owner: "I want the 2 repos to be as similar as
 possible. We'll squash as a fallback, but will try to avoid it."). The base is the newest private
@@ -87,8 +89,55 @@ exists), with the wharf pre-push guard installed, so an agent's push from that
 clone reaches `claude/*` only; the clone takes the commit through a ref of the gate's own that is
 deleted again in the same run. Auto-merge is off by refusal: `--pr` stops when the public main or
 the new tree holds a workflow whose name or content merges PRs, or a Mergify config, since either
-would let a ready `claude/*` PR merge itself. A first publish has no `main` for a PR to merge
-into: it stays `publish`.
+would let a ready `claude/*` PR merge itself. The one merge the module makes is the nightly's, on
+the owner's Mac and only where the repo's own `.helloworld/nightly` says `on-green` (below): the
+twin never merges by itself. A first publish has no `main` for a PR to merge into: it stays `publish`.
+
+## The nightly
+
+Every public twin stays within a day of its private main (2026-10-31: a `check` replayed about 25 s
+per private commit, and main lands 30-60 a day; the owner: "make the nightly job be a standard for
+public twin repos. driven by config", the merge question answered "merge on green"). It is
+`helloworld nightly`, run by one launchd agent at 03:30 local time, and it is config, not code:
+
+| Where | Key | What it says |
+| --- | --- | --- |
+| the repo, `.helloworld/nightly` (read from `origin/main`, never published) | `mode: off\|pr\|on-green` | `off` (or no file): nothing; `pr`: `publish --pr`, and the owner's merge is the publish; `on-green`: the same, then `gh pr merge --rebase --match-head-commit <the sha the gate pushed>` once green |
+| the same file, any number of lines | `main-check: <status context>` | a check on the private main's published commit that must be green before an `on-green` merge (a CircleCI job posts `ci/circleci: <job>`) |
+| the same file, any number of lines | `twin-check: <check name>` | a check that must have reported on the twin PR, green, before an `on-green` merge: one that registers late is waited for, never passed over |
+| the host, the config dir's `helloworld/nightly-repos` | one checkout per line | the repos this Mac publishes; write it on the one Mac that runs the nightly (a path with no space: the overlay's writer splits a value on spaces) |
+| the host, the config dir's `helm/logbook-repo` | `owner/name` | the private repo a held night files its issue on (the project's logbook) |
+
+Each night, per repo: nothing new on the private main → one quiet line. Otherwise `publish --pr`
+(topic `nightly`; the gate and its every refusal unchanged), and for `on-green` a wait of up to 90
+minutes (`--wait`) for every check on the twin PR (a name with any red run is red), every `twin-check` and every
+`main-check` to be green, then the rebase merge, read back. Before it merges, the gh account that will
+merge is scanned, its login and its name: GitHub's merge writes the merger into each replayed commit as its
+committer, so the merger reaches the twin's public history; a private word there holds the night (a login
+already public as the author of a merged PR in the twin owner's public repos passes, as for `publish --pr`). An answer GitHub does not give is waited on, not
+taken as red; at the end of the wait it holds the night. A gate refusal, a red check, a check still running at the end of the wait, a
+PR head the gate did not push, a merging account that holds a private word, or a merge GitHub refuses (branch rules, the actor's rights) is a held
+night: nothing merged, and one issue on the logbook per twin (`helloworld nightly: <owner/name>
+held`; a later held night comments on the open one), the run's last lines in it with every private
+word, address and credential cut to two letters (a hit shorter than five, whole), the title as well. The next night tries again; an open PR of the
+same tree is merged rather than proposed twice.
+
+It runs only where the private word list is: it refuses on a CI runner (`CI`, `GITHUB_ACTIONS`,
+`CIRCLECI`), never runs a plain `publish`, and a real night refuses an agent's shell (`CLAUDECODE`, or the
+unattended marker `REGATTA_UNATTENDED` / `CLAUDE_UNATTENDED`):
+the agent's verb is `nightly --dry-run`, which runs `check`, reads the mode, main's checks on the
+commit that would go up and the merge actor's rights on the twin, judges the merge actor's names, and says where a held night would
+file, pushing, merging and filing nothing. `on-green` takes the owner's second look at the merge
+away: the gate is the review there, by the owner's choice; `pr` keeps it.
+
+**A new twin turns it on** in two steps: commit `.helloworld/nightly` (`mode: on-green` or `pr`, and
+any `main-check:` lines) through the repo's own landing, then on the Mac that runs the nightly add
+the checkout to the config dir's `helloworld/nightly-repos` and run `sh modules/helloworld/install.sh
+--schedule` once, by hand (it refuses an unattended caller, and while that Mac has no word list, no pre-push guard, or a dry run that
+does not pass, run by the copy the agent will run — the main checkout's; `--check` says whether the agent is
+loaded, `--remove` unloads it). The dry run judges the gate, the config and the merge actor's names; main's checks and the actor's rights
+it prints, for the reader to judge. Its log is
+`helloworld/nightly.log` in the core's log dir.
 
 ## What the gate cannot see — and which human check covers it
 

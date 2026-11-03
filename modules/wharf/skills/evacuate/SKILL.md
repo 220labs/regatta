@@ -34,7 +34,8 @@ skip none silently. Say what each found in one line.
 Skip if the contract says `live: none`. Otherwise list what this session deployed
 (checkpoint bodies carry `Deployed:`; or the contract's drift command against `main`'s
 tree). Each deployed item must be on `main` by the end of this command, **or** reverted on
-the live system, **or** the exact revert is TODO #1.
+the live system, **or** the exact revert is a TODO item, put first in the list (above the others, not appended: the next
+session reads it first).
 
 ## 4. Merge what helps others
 

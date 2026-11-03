@@ -7,7 +7,9 @@
                                (the prompt cache's hour) after it was first busy -> close the
                                window, SIGTERM the claude process, quit the screen, log the session
                                id. Never ends a busy session — bar one DISPATCH_MAX_H old (default
-                               8). A session idle a minute on a turn that ended on an API error
+                               8; up to DISPATCH_CHECK_GRACE_H, 2, more while its own check runs and
+                               its last turn hit no usage limit; what the cap cut goes in the record's
+                               `cut`). A session idle a minute on a turn that ended on an API error
                                (a server_error) is sent one post first, once a turn and twice a run
                                (NUDGE_FRAME; an end on such a turn says so). Exit 3: never started
                                — no prompt in its transcript within
@@ -163,6 +165,17 @@ PREV_WAIT = float(os.environ.get("DISPATCH_PREV_WAIT", "7200"))  # checkpoint.py
 # 2026-10-05: nothing ended one). Sleep is no longer held until then: hold_awake() drops caffeinate
 # the moment the session reads idle, so the warm hour above costs no wakefulness.
 MAX_S = float(os.environ.get("DISPATCH_MAX_H", "8")) * 3600
+# past MAX_S, a run whose own check still runs on its worktree is spared up to this much longer: a
+# check waiting on a slot read as "not idle", and the cap ended send-road-start with its check 7/7
+# a few minutes on and no session to read it (the node, 2026-11-02). Not when its last turn hit a
+# usage limit: that session cannot read the check either, so it ends and the cut is recorded.
+CHECK_GRACE = float(os.environ.get("DISPATCH_CHECK_GRACE_H", "2")) * 3600
+# once the check it was spared for exits, the session is still busy polling its summary: kept this
+# long more (inside CHECK_GRACE) to read it, or the next poll ends it before it reads the verdict
+CHECK_READ = float(os.environ.get("DISPATCH_CHECK_READ_S", "900"))
+# a login's usage limit as Claude Code says it: a wider form of helm stalls' NET_RE's last branch
+# (the window word optional, so any limit)
+LIMIT_RE = re.compile(r"^You(?:'|’)ve hit your (?:5-hour |weekly |session )?limit\b")
 # a session that handed its work to another machine (common.HANDOFFS) is done once it goes idle
 # within this long of the hand-off: that is the turn that did it. Idle later, it was used again since.
 HANDOFF_TURN = float(os.environ.get("DISPATCH_HANDOFF_TURN", "600"))
@@ -216,14 +229,30 @@ except Exception:
     common = None
 
 
-def proc_start(pid):
+def proc_start(pid, timeout=10):
     """`ps -o lstart` in UTC — the form bin/pickup's running() compares, and the registry's."""
     try:
         r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-                           env=dict(os.environ, TZ="UTC", LC_ALL="C"), timeout=10)
+                           env=dict(os.environ, TZ="UTC", LC_ALL="C"), timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return " ".join(r.stdout.split())
+
+
+def proc_start_settled(pid, budget=4.0):
+    """proc_start, read again 1 s apart while it is blank and the pid lives, within BUDGET s of the first read:
+    a loaded Mac's `ps` prints nothing for a live pid (running()'s docstring), and a person's --end then refuses
+    "not provably": the likely cause of regatta#324's CI failure at load 12-35 (2026-10-31; its log unread). A read that timed out (10 s) is past the budget, so
+    it is not read again, and a re-read waits what the budget leaves, 2 s at least (a slow `ps` that would answer
+    is not cut short): a blank first read costs about 6.5 s more at worst, and a first read that times out
+    (10 s) none. end_session adds its 20 s SIGTERM wait to either (the second to fifth fix-round reviews).
+    Never retries a mismatch."""
+    t0 = time.time()
+    now = proc_start(pid)
+    while not now and alive(pid) and time.time() - t0 + 1 < budget:
+        time.sleep(1)
+        now = proc_start(pid, timeout=max(2.0, budget - (time.time() - t0)))
+    return now
 
 
 def running(pid, start):
@@ -268,7 +297,7 @@ def yabai(*args):
 # were. A dict in, the same dict out: bin/helm_render reads records itself, and a record read over
 # ssh is JSON text, not a path load() takes (chain-manager launch review, E0).
 # bin/dispatch's record() keeps the same list: change both together.
-INTS = ("pid", "started", "ended", "window", "watcher", "screen_pid", "idle", "depth", "probe", "yolo")
+INTS = ("pid", "started", "ended", "window", "watcher", "screen_pid", "idle", "depth", "probe", "yolo", "handed")
 
 
 def typed(st):
@@ -551,35 +580,54 @@ def idle_limit(path, st):
     # not write (wharf S5, 12:38-12:41, 2026-10-19). Busy, it is never ended: the watcher's own test
     if st.get("idle") and said_its_end(st, rec):
         return min(base, NEXT_IDLE)
+    # a hand-over run (task-shape S3: started with the landing switch on, `handed=1`) has no `idle` of its
+    # own: it keeps the warm hour unless its reply is the hand-over line, which dispatch's launch waits on.
+    # A WAITING line (a D-item, a stopped review loop) keeps the hour, as for any `default` run
+    if handed_said(st, rec):
+        return min(base, NEXT_IDLE)
     return base
 
 
-_ENDS = {}   # transcript path → (size, said its end?): the watcher asks every POLL while idle
-
-
-def said_its_end(st, rec):
-    """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
-    fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
-    outcome from (read_outcome). A RELAYED line is no end: that run waits for its skipper's answer
-    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
-    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher. So is
-    WAITING FOR NOTHING (`idle`, 2026-10-29): nothing goes on and nothing is owed. A mark before any of
-    them changes nothing (common.ending reads past it). False whenever it cannot tell."""
-    if common is None or not rec or rec.get("status") != "idle" or not st.get("session"):
+def handed_said(st, rec=None):
+    """A `handed=1` run whose session is idle on a reply of the core's `handed` kind (the hand-over line)."""
+    if st.get("handed") != 1:
         return False
+    return last_kind(st, session_record(st) if rec is None else rec) == "handed"
+
+
+_ENDS = {}   # transcript path → (size, common.ending's kind of the last reply): the watcher asks every POLL while idle
+
+
+def last_kind(st, rec):
+    """common.ending's kind of the run's last reply while its session is idle; None when it is not idle,
+    has no closing line, or cannot be read (a reader's fault is no end)."""
+    if common is None or not rec or rec.get("status") != "idle" or not st.get("session"):
+        return None
     path = transcript(st["session"])
     try:
         size = os.path.getsize(path) if path else None
     except OSError:
         size = None
     if size is None:
-        return False
+        return None
     if _ENDS.get(path, (None,))[0] != size:
         try:
-            _ENDS[path] = (size, common.ending(last_answer(st["session"]))[0] not in (None, "relayed", "pending"))
+            _ENDS[path] = (size, common.ending(last_answer(st["session"]))[0])
         except Exception:  # noqa: BLE001 — a reader's fault keeps the ten minutes, never ends a run
-            _ENDS[path] = (size, False)
+            _ENDS[path] = (size, None)
     return _ENDS[path][1]
+
+
+def said_its_end(st, rec):
+    """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
+    fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
+    outcome from (read_outcome), bar Claude Code's unflagged "No response requested.", which last_answer
+    reads past and autofinish-run's last_reply does not (task-shape S3). A RELAYED line is no end: that run waits for its skipper's answer
+    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
+    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher. So is
+    WAITING FOR NOTHING (`idle`, 2026-10-29): nothing goes on and nothing is owed. A mark before any of
+    them changes nothing (common.ending reads past it). False whenever it cannot tell."""
+    return last_kind(st, rec) not in (None, "relayed", "pending")
 
 
 def left_behind(rec):
@@ -772,13 +820,48 @@ def same_repo(a, b):
     return bool(a) and bool(b) and (a == b or os.path.realpath(a) == os.path.realpath(b))
 
 
+RESEARCH_HORIZON = 86400 + 600   # bin/harness's RESEARCH_LIMIT, and the wrapper's kill grace with room
+
+
+def research_live():
+    """Paths of bin/harness's research-mode Codex runs whose codex still runs (principal tier S3): an
+    unattended council's Codex arm spends, so it holds a slot while it runs. Read from the harness's run
+    records (its codex adapter's HARNESS_RUNS_DIR), the pid alive with the start it recorded — running(),
+    so a `ps` that prints nothing counts it, as it does a run (the landing review, 2026-10-28)."""
+    if os.environ.get("DISPATCH_RC_VENDORS", "1") in ("0", "", "off") and not any(
+            os.environ.get(n) for n in ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED", "AUTOFINISH_CALLER_UNATTENDED")):
+        # a suite's switch, as vendor_slots() honours it (the landing review); never for an unattended caller,
+        # whose Codex run is the spend the cap bounds and which may inherit it from a suite (the fix round's review)
+        return []
+    d = os.environ.get("HARNESS_RUNS_DIR") or os.path.join(HOME, "Library", "Logs", "claude-weekly", "harness-runs")
+    out = []
+    # only the records written lately: a research turn lives at most bin/harness's RESEARCH_LIMIT (a day) and its
+    # record is written at its start, so an older file is ended — and none is ever pruned (the second landing
+    # review's finding 11: every count under the start lock parsed them all)
+    since = time.time() - RESEARCH_HORIZON
+    for path in sorted(glob.glob(os.path.join(d, "codex-*.json"))):
+        try:
+            if os.stat(path).st_mtime < since:
+                continue
+            st = load(path)
+        except (OSError, ValueError):
+            continue
+        if st.get("mode") != "research" or st.get("ended") or not isinstance(st.get("pid"), int):
+            continue
+        if not running(st["pid"], st.get("proc_start")):
+            continue
+        out.append(path)
+    return out
+
+
 def counted(runs):
     """The slots RUNS ([(path, state)], live()'s) hold: every run not parked, plus the parked ones past
     MAX_PARKED — parked runs stop counting, but not without end: were every unattended run to stop at
     the same prompt, the sweep would start one per pass for 8 h (review 2026-10-10). The one count the
-    CLI's `live` and the queue's claim both use (queue-s1's fourth review: the claim had dropped the overflow)."""
+    CLI's `live` and the queue's claim both use (queue-s1's fourth review: the claim had dropped the overflow).
+    A running research-mode Codex run holds one more each (research_live())."""
     n = len([1 for _, st in runs if not parked(st)])
-    return n + max(0, (len(runs) - n) - MAX_PARKED)
+    return n + max(0, (len(runs) - n) - MAX_PARKED) + len(research_live())
 
 
 BUSY_STATES = ("submitted", "working")   # a vendor run that waits (input-required, idle) is parked, as a Claude one is
@@ -804,7 +887,9 @@ def vendor_slots():
         for name, verb in (("codex", "harness_live"), ("orca", "vendor_live")):
             mod = ctx.adapter(name)
             if mod is not None and hasattr(mod, verb):
-                n += len([r for r in getattr(mod, verb)(ctx) if r.get("state") in BUSY_STATES])
+                # a research-mode run is counted() already, by research_live (round 1: each was counted twice)
+                n += len([r for r in getattr(mod, verb)(ctx) if r.get("state") in BUSY_STATES
+                          and ((r.get("native") or {}).get("mode") or r.get("mode")) != "research"])
         return n
     except Exception as e:   # noqa: BLE001
         print("dispatch-rc: the other CLIs' runs were not counted (%s: %s)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
@@ -1226,7 +1311,9 @@ def end_session(st):
     non-empty: same()'s benefit of the doubt (an empty `ps`) never reaches a signal. A record from
     before proc_start was recorded is never signalled. False when not signalled."""
     pid, want = st.get("pid"), " ".join(str(st.get("proc_start") or "").split())
-    if not isinstance(pid, int) or not want or proc_start(pid) != want:
+    # an empty read is no evidence: read again while the pid lives (proc_start_settled)
+    now = proc_start_settled(pid) if isinstance(pid, int) and want else ""
+    if not isinstance(pid, int) or not want or now != want:
         say("not signalling pid %s: not provably this run's claude (session %s)" % (pid, st.get("session")))
         return False
     try:
@@ -1375,7 +1462,7 @@ def queue_home_set():
 
 # a fired job's own words, which a claim from inside its run must not carry: dispatch reads DISPATCH_LABEL
 # as "I am a launchd job", and the rest name that job's log, year and queue claim
-JOB_ENV = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "DISPATCH_LOADED_AT", "DISPATCH_EVENT_AT", "DISPATCH_ORIGIN", "DISPATCH_PIN", "DISPATCH_HOST_PIN")
+JOB_ENV = ("DISPATCH_LABEL", "DISPATCH_LOG", "DISPATCH_YEAR", "DISPATCH_LOADED_AT", "DISPATCH_EVENT_AT", "DISPATCH_ORIGIN", "DISPATCH_PIN", "DISPATCH_HOST_PIN", "DISPATCH_HOST_PREFER")
 
 
 # False in the queue's own process (dispatch-queue's rc_mod()): a run its claim or sweep ends there is ended
@@ -1404,11 +1491,13 @@ def queue_claim(why, event_at=None):
             r.returncode, ((r.stderr or "").strip().splitlines() or [""])[-1][:160])))
 
 
-def lands_after(st):
+def lands_after(st, rec=None):
     """A run whose end hands its slot to its landing: dispatch's yolo_launch starts autofinish-run for a
     yolo or dnd run, and a claim at its parking took the slot and refused the landing at its cap (the
-    third landing review's item 11). Its fire path claims after the launch instead."""
-    return st.get("yolo") == 1 or st.get("task_mode") in ("yolo", "dnd")
+    third landing review's item 11). Its fire path claims after the launch instead. A hand-over run
+    (`handed=1`, task-shape S3) only once its reply is the hand-over line: parked on a WAITING line it
+    waits on a person, its hour as any `default` run's, and its slot is claimed at parking."""
+    return st.get("yolo") == 1 or st.get("task_mode") in ("yolo", "dnd") or handed_said(st, rec)
 
 
 def finish(path, st, reason):
@@ -1451,20 +1540,89 @@ def finish(path, st, reason):
         queue_claim("its run ended with no watcher (%s)" % reason, st["ended"])
 
 
+def checks_on(wt):
+    """wharf-runs' `check` processes running on worktree WT: [{"pid", "out"}], out its --out folder or
+    None. Read from ps, not check's slots: a check waiting for a slot holds none (the cut of
+    2026-11-02 waited). A path with a space splits and is missed: a missed check is the old end."""
+    if not wt:
+        return []
+    want = os.path.realpath(wt)
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    found = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or not parts[0].isdigit() or int(parts[0]) == os.getpid():
+            continue
+        args = parts[1:]
+        # the program, or the script its interpreter runs: a claude whose prompt names
+        # `bin/check <worktree>` is no check, and read as one it spared every such run
+        at = next((i for i, a in enumerate(args[:2]) if a.endswith("/bin/check")), None)
+        if at is None or not any(os.path.realpath(a) == want for a in args[at + 1:] if a.startswith("/")):
+            continue
+        rest = args[at + 1:]
+        o = rest[rest.index("--out") + 1] if "--out" in rest[:-1] else None
+        found.append({"pid": int(parts[0]), "out": o})
+    return found
+
+
+def cut_at_cap(st):
+    """What ending this run at the lifetime cap would cut: its checks in flight, and the usage-limit
+    line its last turn ended on. {} when neither."""
+    cut = {}
+    checks = checks_on(st.get("wt"))
+    if checks:
+        cut["checks"] = checks
+    text = last_answer(st["session"]) if st.get("session") else ""
+    if LIMIT_RE.match(text):
+        cut["limit"] = text[:120]
+    return cut
+
+
+def cut_line(cut):
+    bits = ["its check pid %s was running%s" % (c["pid"], " (out %s)" % c["out"] if c.get("out") else "")
+            for c in cut.get("checks") or []]
+    bits += ["its check pid %s had ended, its summary unread%s" % (c["pid"], " (out %s)" % c["out"] if c.get("out") else "")
+             for c in cut.get("checks_done") or []]
+    if cut.get("limit"):
+        bits.append("its last turn hit a usage limit: %s" % cut["limit"])
+    return "; ".join(bits)
+
+
 def last_answer(sid):
-    """The session's last assistant text, for a probe's log line."""
+    """The session's last assistant text, for a probe's log line. Claude Code's own `<synthetic>` entry is
+    no reply of the run's, as in yolo_launch's reader, so the watcher and the launch read the same last reply
+    (AGENTS.md's trap; task-shape S3 review): an unflagged "No response requested." is read past, and any
+    other (an API error, a limit) is the text — that turn ended on no reply, so the turn before's closing line
+    (a hand-over, a done line) is not its end, and common.ending reads no closing line in the error. ask_guard,
+    the probe's log line and dispatch-queue's requeue quote read it too, and keep the error's words."""
     text = ""
     try:
-        with open(transcript(sid)) as f:
+        # errors="replace": the cap reads this while the session is busy, mid-append of a multibyte
+        # character, and a UnicodeDecodeError (a ValueError) would end the watcher (as last_prompt)
+        with open(transcript(sid), errors="replace") as f:
             for line in f:
                 if '"type":"assistant"' not in line:
                     continue
                 try:
-                    content = json.loads(line).get("message", {}).get("content")
-                except ValueError:
+                    entry = json.loads(line)
+                    msg = entry.get("message", {})
+                except (ValueError, AttributeError):
                     continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("model") == "<synthetic>":
+                    said = msg.get("content")
+                    said = " ".join((c.get("text") or "") for c in said if isinstance(c, dict)) if isinstance(said, list) else ""
+                    if entry.get("isApiErrorMessage") or said.strip() != "No response requested.":
+                        text = said.strip() or "(an API error, no text)"
+                    continue
+                content = msg.get("content")
                 if isinstance(content, list):
-                    said = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+                    said = " ".join((c.get("text") or "") for c in content if isinstance(c, dict) and c.get("type") == "text")
                     text = said.strip() or text
     except (OSError, TypeError):
         pass
@@ -1581,7 +1739,7 @@ def on_will_sleep():
         return
     # the watcher's env, less what makes the verb refuse (an unattended caller: a --start run's watcher may
     # carry its caller's mark) or read a fired job's words; the lock is held here, so the verb takes none
-    env = {k: v for k, v in os.environ.items() if k not in JOB_ENV + ("CLAUDE_UNATTENDED", "AUTOFINISH_CALLER_UNATTENDED")}
+    env = {k: v for k, v in os.environ.items() if k not in JOB_ENV + ("REGATTA_UNATTENDED", "CLAUDE_UNATTENDED", "AUTOFINISH_CALLER_UNATTENDED")}
     env["DISPATCH_REQUEUE_LOCKED"] = "1"
     argv = [os.environ.get("DISPATCH_REQUEUE_BIN") or os.path.join(HERE, "dispatch"), "--requeue", "--all", "--why", "lid"]
     t0 = time.time()
@@ -1621,9 +1779,12 @@ def power_start():
 
 
 def watch(path):
+    # recorded so after() and status() can tell an orphan: claude running, its watcher gone. Settled before the
+    # load: the settle may take seconds under load, and a save of a copy read before it would drop what --end or
+    # --requeue wrote meanwhile (force-any's landing review)
+    ws = proc_start_settled(os.getpid())   # blank kept no watcher's identity
     st = load(path)
-    # recorded so after() and status() can tell an orphan: claude running, its watcher gone
-    st.update(watcher=os.getpid(), watcher_start=proc_start(os.getpid()))
+    st.update(watcher=os.getpid(), watcher_start=ws)
     save(path, st)
     start, busy = time.time(), False
     started = st.get("started") or start
@@ -1647,6 +1808,8 @@ def watch_loop(path, st, start, busy, started):
     awake0, before = time.monotonic(), max(0.0, start - started)
     seen = {"t": time.time(), "lines": [], "at": 0.0}   # the last screen a not-busy run showed (SNAP_EVERY)
     claimed = False   # this parked stretch has claimed (the queue's watcher claim, S2)
+    spared = False    # said once: past MAX_S, kept for its check (CHECK_GRACE)
+    last_check = None  # (checks, when last seen) while spared: CHECK_READ runs from there
     while True:
         if not same(st):
             if not busy and seen["lines"]:
@@ -1655,12 +1818,29 @@ def watch_loop(path, st, start, busy, started):
                     % (time.time() - seen["at"], "\n  ".join(seen["lines"][-15:])))
             # `dispatch --end` marks the record `ending` before its SIGTERM: its reason, not ours
             return finish(path, st, load(path).get("ending") or "claude exited by itself") or 0
-        if before + time.monotonic() - awake0 >= MAX_S:
-            say("ending session %s: still not idle after %.1f h (DISPATCH_MAX_H)" % (st["session"], MAX_S / 3600))
-            close_window(st)   # before the process: see close_window
-            end_session(st)
-            finish(path, st, "max lifetime %.1f h" % (MAX_S / 3600))
-            return MAX_AGE
+        age = before + time.monotonic() - awake0
+        if age >= MAX_S:
+            cut = cut_at_cap(st)
+            if cut.get("checks"):
+                last_check = (cut["checks"], time.time())
+            reading = (last_check is not None and not cut.get("checks")
+                       and time.time() - last_check[1] < CHECK_READ)
+            if (cut.get("checks") or reading) and not cut.get("limit") and age < MAX_S + CHECK_GRACE:
+                if not spared:
+                    spared = True
+                    say("past DISPATCH_MAX_H, spared while its check runs (pid %s), up to %.1f h more"
+                        % (cut["checks"][0]["pid"], CHECK_GRACE / 3600))
+            else:
+                say("ending session %s: still not idle after %.1f h (DISPATCH_MAX_H)" % (st["session"], age / 3600))
+                if last_check is not None and not cut.get("checks"):
+                    cut["checks_done"] = last_check[0]   # the check it was spared for, its verdict unread
+                if cut:
+                    st["cut"] = cut   # what the cap cut, for helm's S3 stall and whoever picks the run up
+                    say("cut: %s" % cut_line(cut))
+                close_window(st)   # before the process: see close_window
+                end_session(st)
+                finish(path, st, "max lifetime %.1f h" % (MAX_S / 3600))
+                return MAX_AGE
         rec = session_record(st)
         status = (rec or {}).get("status")
         # "busy" alone is not a start: a session stuck in its UserPromptSubmit hooks reads busy
@@ -1678,7 +1858,7 @@ def watch_loop(path, st, start, busy, started):
         # The watcher's claim (S2): the run's slot is free once it turns parked — warm, or waiting on a
         # prompt — and no longer counted (parked(), the cap's own rule), not at its end up to an hour on.
         # Once a stretch: busy again re-arms it. Never for a probe, or a run whose end hands its slot on
-        if busy and not st.get("probe") and not lands_after(st):
+        if busy and not st.get("probe") and not lands_after(st, rec):
             if status == "busy":
                 claimed = False
             elif not claimed and parked(st):
@@ -2142,7 +2322,9 @@ def status():
         if guard:
             state += " · " + guard
         bg = " · background %s" % st["background"] if st.get("background") else ""   # dispatch --background
-        print("%-28s %s · %s%s" % (st.get("topic", "?"), os.path.basename(st.get("repo", "?")), state, bg))
+        # a run's rank above normal (dispatch --priority; a landing's too since force-any: one rule for every kind)
+        pr = " · priority %s" % st["prio"] if st.get("prio") in ("high", "force") else ""
+        print("%-28s %s · %s%s%s" % (st.get("topic", "?"), os.path.basename(st.get("repo", "?")), state, pr, bg))
         print("    started %s, last activity %s, session %s" % (
             time.strftime("%m-%d %H:%M", time.localtime(st.get("started", 0))), ago(last), st.get("session")))
         if st.get("manager"):

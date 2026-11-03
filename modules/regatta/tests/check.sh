@@ -13,7 +13,7 @@ ROOT="$(cd "$M/../.." && pwd)"
 # the caller's config dir, read before the scratch one replaces it: the autofinish_exclude case names the overlay by it
 REAL_RC="${REGATTA_CONFIG:-}" REAL_HOME="$HOME"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+for v in $(env | sed -n 's/^\(REGATTA[A-Za-z0-9_]*\)=.*/\1/p; s/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(GATE_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(AUTOFINISH_CALLER_UNATTENDED\)=.*/\1/p'); do unset "$v"; done
 unset GATE_TABLE JEV_ENV_FILE JEV_LOG TYPESAFE_API_KEY TYPESAFE_BASE_URL COST_RATIO SECRETS_DIR SECRETS_REPOS SECRETS_PROJECTS SECRETS_HOST
 # The interpreter itself, for the two cases that must not start any other process: python3 may be a
 # shim script (pyenv's is bash), and bash started in a removed cwd prints "shell-init: error retrieving
@@ -73,6 +73,58 @@ mkdir -p "$T/dcfg/wharf"; ln -s "$T/moved.json" "$T/dcfg/wharf/repos.json"
 check "$(REGATTA_CONFIG="$T/dcfg" py 'print(common.registry_unreadable())')" "True" "  the config's own repos.json link, dangling: unreadable, not absent"
 check "$(SP 'print(common.scope_of_key("a", path="'"$T/odd.json"'"), common.scope_paths("x", path="'"$T/odd.json"'"))')" "None []" \
   "  a malformed scope: no member, no error"
+# S6's fifth landing review: a confidential scope whose `repos` is no list read as no members, which is open, in
+# every fence that asks registry_unreadable() (gather_fence, sheep_gate, account pick): torn in read_registry now
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": "k", "confidential": true}}}\n' > "$T/strrepos.json"
+check "$(SP 'print(common.registry_unreadable(path="'"$T/strrepos.json"'"), common.read_registry(path="'"$T/strrepos.json"'")[0], common.registry_unreadable(path="'"$T/odd.json"'"))')" \
+  "True None False" "  a confidential scope whose repos is a string: unreadable, as torn (an open scope's odd value is not)"
+check "$(SP 'import json
+try: print(common.scope_of_repo("k", reg=json.load(open("'"$T/strrepos.json"'"))))
+except TypeError as e: print("raises", e)')" "raises scope 'node': \`repos\` is str, not a list" \
+  "  scope_of_repo() raises on a string, as on 5: never a character-by-character read that finds no member"
+check "$(SP 'print(common.scope_of_repo("k", reg={"scopes": {"odd": {"repos": "k"}, "node": {"repos": ["k"]}}})[0])')" "node" \
+  "  an open scope's string is no member, never a raise (berth, usage-report, ops walk every scope; the sixth landing review)"
+mkdir -p "$T/nogit"
+printf '{"repos": {"k": {}}, "scopes": {}}\n' > "$T/no-scopes.json"
+check "$(cd "$PJ/k" && py 'print(common._same_repo("'"$PJ/k"'", "'"$T/nogit"'"), common._same_repo("'"$PJ/k"'", "'"$PJ/k"'"))')" "False True" \
+  "_same_repo: a repo with no git checkout is no caller's own, though realpath(\"\") is the caller's cwd (the sixth landing review)"
+check "$(SP 'v = common.spawn_gate("'"$PJ/k"'", None, None, node="gone"); print(v.final, "renamed or opened" in (v.why or ""), common.spawn_gate("'"$PJ/k"'", None, None, node="node").why)')" "True True None" \
+  "spawn_gate: a node queue's entry whose scope this registry no longer names confidential: refused for good, never judged open"
+check "$(CLAUDE_REPOS_JSON="$T/no-scopes.json" py 'print(common.spawn_gate("'"$PJ/k"'", None, None, node="node").final)')" "True" \
+  "  and so with no confidential scope left at all"
+# the sixth landing review's probe: Claude Code writes a moved cwd (a persisted `cd`) into each later transcript entry
+# and may into the session's record; the transcript's first entry keeps the start folder. A session that started in
+# the node and moved its cwd to an open folder is still inside, by that folder's real path — never by the transcript
+# folder's slug, which read an open sibling `k-x` as the node's `k` (the first review pass)
+mvt() {  # mvt <sid> <start folder> <record cwd>: a transcript and a record
+  local sl; sl=$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "$HD/.claude/sessions" "$HD/.claude/projects/$sl"
+  printf '{"type": "summary"}\n{"type": "user", "cwd": "%s"}\n{"type": "user", "cwd": "%s"}\n' "$2" "$3" > "$HD/.claude/projects/$sl/$1.jsonl"
+  printf '{"sessionId": "%s", "cwd": "%s", "updatedAt": 1}\n' "$1" "$3" > "$HD/.claude/sessions/$1.json"
+  printf '%s\n%s\n' "$HD/.claude/projects/$sl/$1.jsonl" "$HD/.claude/sessions/$1.json" >> "$T/mvt.made"
+}
+mkdir -p "$T/openwd"; git init -q "$PJ/k-x"
+mvt s-moved "$PJ/k" "$T/openwd"; mvt s-sib "$PJ/k-x" "$T/openwd"
+CD() { SP 'at = common.scope_resolver(common.read_registry()[0]); print([sorted(at.scopes(x)) for x in common.caller_dirs("'"$T/openwd"'", "'"$1"'")])'; }
+check "$(CD s-moved)" "[[], ['node']]" "caller_dirs: a session whose record moved to an open folder is judged by its transcript's start folder too"
+check "$(CD s-sib)" "[[], []]" "  one that started in an open sibling k-x of the node's k: open (the start folder's real path, never the slug)"
+check "$(cd "$PJ/k" && SP 'print(common.spawn_gate("'"$PJ/k"'", None, common.caller_dirs("'"$PJ/k"'", "s-own"), path="'"$T/strrepos.json"'").why)')" "None" \
+  "  a torn registry, a typed session in its own repo: goes on (no transcript here; the start folder is a checkout, never a slug)"
+mvt s-own "$PJ/k" "$PJ/k"
+check "$(cd "$PJ/k" && SP 'print(common.spawn_gate("'"$PJ/k"'", None, common.caller_dirs("'"$PJ/k"'", "s-own"), path="'"$T/strrepos.json"'").why)')" "None" \
+  "  and with its transcript: still goes on"
+while IFS= read -r f; do rm -f "$f"; done < "$T/mvt.made"   # k-x stays: an open repo no scope lists
+# the second pass: a checkout in more scopes than its folder shows — a glob's member the registry does not list (z-2,
+# by node's z-*), its worktree outside the projects folder — is its checkout's, never split and refused for good
+git init -q "$PJ/z-2"; git -C "$PJ/z-2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$PJ/z-2" worktree add -q "$T/z2wt" -b w2
+check "$(SP 'r, _ = common.read_registry(); print(common.scope_resolver(r).target("'"$T/z2wt"'"))')" "(frozenset({'node'}), None)" \
+  "  target(): an unlisted glob member's worktree outside the projects folder is its checkout's scope, never split"
+check "$(SP 'print(common.scope_of_repo("k", path="'"$T/strrepos.json"'"))')" "(None, {})" \
+  "scope_of_repo() reading the file itself: a confidential scope's string is no member, never a raise (crew-report passes reg=None)"
+mkdir -p "$PJ/k/.claude"; printf '{"checkpoint": true, "main": "trunk"}\n' > "$PJ/k/.claude/workflow.json"
+check "$(py 'print(common.primary_branch("'"$PJ/k"'"), common.primary_branch("'"$T/nogit"'"))')" "trunk main" \
+  "primary_branch(): the workflow's \"main\", else main (the unpushed-main hint names it)"
+rm -f "$PJ/k/.claude/workflow.json"
 echo "gather_fence: what a Gather reader may quote (knowledge-layers S4)"
 SK=$(printf '%s' "$PJ/k" | sed 's/[^A-Za-z0-9]/-/g')
 GF() { SP "f = common.gather_fence($1)
@@ -115,6 +167,9 @@ check "$(py 'print(common.unattended({}), common.unattended({"CLAUDE_UNATTENDED"
   "None old new new None" "unattended(): the new name first, the old name alone still honoured, an empty value is none"
 check "$(CLAUDE_UNATTENDED=dispatch py 'print(common.unattended(), common.unattended_label())')" "dispatch CLAUDE_UNATTENDED=dispatch" \
   "  from the environment: only the old name set, the run reads unattended and a refusal quotes that name"
+check "$(py 'print(common.unattended_caller({}), common.unattended_caller({"REGATTA_UNATTENDED": "d"}), common.unattended_caller({"AUTOFINISH_CALLER_UNATTENDED": "1"}), common.unattended_caller({"CLAUDE_UNATTENDED": "o", "AUTOFINISH_CALLER_UNATTENDED": "1"}), hasattr(common, "UNATTENDED_VARS"))')" \
+  "None REGATTA_UNATTENDED=d AUTOFINISH_CALLER_UNATTENDED=1 CLAUDE_UNATTENDED=o False" \
+  "unattended_caller(): the marker, else a peer job's AUTOFINISH_CALLER_UNATTENDED; one unattended() in common (the council's fourth review, 5)"
 check "$(py 'print(sorted(common.unattended_env("dispatch").items()))')" "[('CLAUDE_UNATTENDED', 'dispatch'), ('REGATTA_UNATTENDED', 'dispatch')]" \
   "  unattended_env(): what a launcher sets, both names"
 echo "the vendor fence (vendor-fence, docs/codex-agy-gaps-2026-10-29.md F1)"
@@ -132,6 +187,23 @@ chmod +x "$T/acct"
 VFP() { CLAUDE_REPOS_JSON="$T/vf.json" py "$1"; }
 check "$(VFP 'import json; r, _ = common.read_registry(); print(common.fenced_scopes("'"$VF/conf"'", r), common.fenced_scopes("'"$VF/conf-side"'", r), common.fenced_scopes("'"$VF/open"'", r), common.fenced_scopes("g", r))')" \
   "['conf'] ['conf'] [] ['guarded']" "fenced_scopes(): every scope walked; a worktree beside its checkout, found by git; a non-true flag is open; the guarded list"
+# S6's fifth round: a member named by its absolute path brings its checkout's worktrees (scope_paths), so the gate's
+# target() reads a sibling worktree as its checkout's scope, never split; repo_key keys a worktree outside the
+# projects folder as its checkout
+check "$(VFP 'print(sorted({p.name for p in common.scope_paths("conf")} & {"conf", "conf-side"}))')" "['conf', 'conf-side']" \
+  "scope_paths(): an absolute member's checkout and its worktree (git worktree list), as a registered key's"
+check "$(VFP 'r, _ = common.read_registry(); print(common.scope_resolver(r).target("'"$VF/conf-side"'"))')" "(frozenset({'conf'}), None)" \
+  "  the gate's target(): that worktree is its checkout's scope, never split"
+check "$(py 'import os; print(common.repo_key(os.path.join("/elsewhere/a", ".claude", "worktrees", "t")), common.repo_key("/elsewhere/a"))')" "/elsewhere/a /elsewhere/a" \
+  "repo_key: a worktree outside the projects folder keys as its checkout"
+# the sixth landing review: a confidential scope that lists its repo by its absolute path under the projects folder
+# (repo_key makes every path there relative) read its own checkout as split, and every run of it was refused for good
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["%s"], "confidential": true}}}\n' "$PJ/k" > "$T/absk.json"
+printf '{"repos": {"k": {}}, "scopes": {"node": {"repos": ["%s*"], "confidential": true}}}\n' "$PJ/k" > "$T/absg.json"
+for f in absk absg; do
+  check "$(CLAUDE_REPOS_JSON="$T/$f.json" py 'r, _ = common.read_registry(); print(common.scope_resolver(r).target("'"$PJ/k"'"), common.scope_of_repo("'"$PJ/k"'")[0], common.spawn_gate("'"$PJ/k"'", None, "'"$PJ/k"'").why)')" \
+    "(frozenset({'node'}), None) node None" "  a scope listing its repo by absolute path ($f): the checkout is that scope's, its own run passes"
+done
 mkdir -p "$T/vfcfg/regatta"; printf 'Cfg-Only\n' > "$T/vfcfg/regatta/guarded"
 check "$(REGATTA_CONFIG="$T/vfcfg" VFP 'r, _ = common.read_registry(); print(common.fenced_scopes("cfg-only", r), common.fenced_scopes("G", r), common.fenced_scopes("transcripts", r))')" \
   "['guarded'] ['guarded'] ['guarded']" "  and the guarded names every other guard reads: the config dir's regatta/guarded, the transcript archive, case-folded (landing review)"
@@ -512,7 +584,6 @@ unset CLAUDE_REPOS_JSON
 
 echo "the gate's table"
 G="$M/bin/gate"
-gp() { python3 -I -c "from importlib.machinery import SourceFileLoader as L; g = L('gate', '$G').load_module(); $1"; }
 check "$(gp 'print(g._path())')" "$M/settings/models.json" "no config table: the defaults beside the gate"
 check "$("$G" check >/dev/null 2>&1; echo $?)" 0 "  which validate"
 R2="$T/ov"; mkdir -p "$R2/settings"; cp "$M/settings/models.json" "$R2/settings/models.json"
@@ -525,6 +596,10 @@ git -C "$R2" init -q -b main && git -C "$R2" add -A && git -C "$R2" -c user.name
 ln -s "$R2/settings/models.json" "$T/config/regatta/models.json"
 check "$(gp 'print(g._path())')" "$T/config/regatta/models.json" "a config table wins over the defaults"
 check "$(GATE_TABLE=/z gp 'print(g._path())')" "/z" "  GATE_TABLE over both"
+printf '{"sites": {"only.here": {"kind": "classify", "provider": "off"}}}\n' > "$T/gtonly.json"
+check "$(GATE_TABLE="$T/gtonly.json" GATE_EXAMPLE_CLASSIFY_MODEL=x gp 'try: g.resolve("only.here"); print("passed")
+except Exception as e: print(type(e).__name__)')" "GateError" \
+  "  GATE_TABLE alone: a variable for a site only the shipped table holds is the typo it is, never skipped (round 6)"
 check "$(gp 'print(g._rel(g._path()))')" "settings/models.json" "  named as its repo names it, through the link"
 out=$("$G" set x.y model=haiku 2>&1); check "$?" 1 "set through the link onto a main checkout: refused"
 echo "$out" | grep -q "settings/models.json is on main"; check $? 0 "  the refusal names the real file"
@@ -538,6 +613,69 @@ mv "$T/config/regatta/models.json" "$T/models.link"; ln -s "$T/gone.json" "$T/co
 rm "$T/config/regatta/models.json"; mv "$T/models.link" "$T/config/regatta/models.json"
 cp -R "$M" "$T/gcopy"
 out=$(REGATTA_CONFIG="$T/none" "$T/gcopy/bin/gate" set example.classify provider=off 2>&1); check "$?" 1 "  outside git, no config table: set refuses the shipped defaults"
+
+echo "the gate: antigravity (Google's agy), vet, a module's own table (principal tier S3)"
+check "$(gp 'print(g.VENDOR["antigravity"], "antigravity" in g.PROVIDERS["generate"], "antigravity" in g.PROVIDERS["review"], "antigravity" in g.PROVIDERS["classify"])')" \
+  "google True True False" "antigravity: VENDOR google, a generate and a review provider, no classify adapter"
+check "$(gp 'print(g.validate({"sites": {"a.b": {"kind": "classify", "provider": "antigravity"}}}, "t"))')" \
+  "[\"t: sites.a.b: provider 'antigravity' is not one a classify row takes (jev, claude, codex, off)\"]" "  a classify row on it does not validate"
+MT="$T/mods"; mkdir -p "$MT/thing/settings"; cp -R "$M" "$MT/regatta"
+printf '{"sites": {"thing.x": {"kind": "generate", "provider": "antigravity", "model": "m1", "when_off": "skip"}}}\n' > "$MT/thing/settings/models.json"
+MG="$MT/regatta/bin/gate"; NC="$T/none-cfg"; mkdir -p "$NC"
+mp() { REGATTA_CONFIG="$NC" python3 -I -c "from importlib.machinery import SourceFileLoader as L; g = L('gate', '$MG').load_module()
+$1"; }
+echo notes > "$NC/regatta-guarded"; mkdir -p "$NC/regatta"; mv "$NC/regatta-guarded" "$NC/regatta/guarded"
+check "$(mp 'try: g.vet({"site": "x.y", "provider": "antigravity"}, "notes", {"anthropic": "q"})
+except g.GateError as e: print(e)')" "x.y: refused: data from notes goes to google only with the owner's say-so — approved has no 'google' quote (it has: anthropic)" \
+  "vet: a guarded source needs Google's own quote for an antigravity row"
+check "$(mp 'print(g.vet({"site": "x.y", "provider": "antigravity"}, "notes", {"google": " Sam, 2026-10-27: yes "}))')" "Sam, 2026-10-27: yes" "  with it: the quote, trimmed"
+check "$(mp 'print(g.vet({"site": "x.y", "provider": "antigravity"}, "elsewhere"))')" "None" "  an unguarded source: no quote asked"
+check "$(CLAUDE_REPOS_JSON="$T/conf.json" mp 'try: g.vet({"site": "x.y", "provider": "antigravity"}, "lab/site", {"anthropic": "q"})
+except g.GateError as e: print("refused")')/$(CLAUDE_REPOS_JSON="$T/conf.json" mp 'print(g.vet({"site": "x.y", "provider": "claude"}, "lab/site"))')" \
+  "refused/None" "  a confidential scope's repo: Google needs the quote, Anthropic does not"
+rm -rf "$NC/regatta"
+check "$(mp 'print(g.module_table("thing"), g.module_tables())')" "$MT/thing/settings/models.json {'thing': '$MT/thing/settings/models.json'}" \
+  "module_table: the module's shipped table beside the core, listed"
+check "$(mp 't = g.module_table("thing"); print(g.resolve("thing.x", table=t)["model"])')" "m1" "  resolve reads it with the table's rules"
+mkdir -p "$NC/thing"; printf '{"sites": {"thing.x": {"kind": "generate", "provider": "antigravity", "model": "m2"}}}\n' > "$NC/thing/models.json"
+check "$(mp 't = g.module_table("thing"); print(t == "'"$NC/thing/models.json"'", g.resolve("thing.x", table=t)["model"])')" "True m2" "  the config dir's <module>/models.json wins, whole"
+check "$(GATE_THING_X_MODEL=m3 mp 'print(g.resolve("example.classify"), g.resolve("thing.x", table=g.module_table("thing"))["model"])')" "None m3" \
+  "  an override of a module's site: the core's table leaves it, the module's applies it"
+check "$(GATE_THING_Y_MODEL=m3 mp 'try: g.resolve("example.classify")
+except g.GateError as e: print("raised")')" "raised" "  a typo still raises"
+# gate set writes the table that holds the site: a module's row in its module's table, the one its caller reads
+# (the council's third landing review, finding 10: `set council.codex …` said "no such row", and kind= made a dead
+# row in the core's). The config dir's copy is set aside meanwhile: the module's shipped table is the one written
+mv "$NC/thing" "$T/nc-thing"
+git -C "$MT" init -q -b claude/flip && git -C "$MT" add -A && git -C "$MT" -c user.name=t -c user.email=t@t commit -qm t
+tj() { python3 -c "import json,sys; c = json.load(open(sys.argv[2]))['sites']; print(json.load(open(sys.argv[1]))['sites']['thing.x'].get(sys.argv[3]), 'thing.x' in c)" \
+  "$MT/thing/settings/models.json" "$MT/regatta/settings/models.json" "$1"; }
+REGATTA_CONFIG="$NC" "$MG" set thing.x model=m9 > "$T/gs.out" 2>&1; check "$?/$(tj model)" "0/m9 False" \
+  "gate set on a module's site: written in the module's table, no row in the core's"
+grep -q "thing.x is thing's row" "$T/gs.out"; check $? 0 "  saying whose table it wrote"
+REGATTA_CONFIG="$NC" "$MG" set thing.x kind=generate provider=off >/dev/null 2>&1; check "$?/$(tj provider)" "0/off False" \
+  "  kind= on a module's site: the module's row, never a dead one in the core's"
+git -C "$MT" checkout -q -b main
+REGATTA_CONFIG="$NC" "$MG" set thing.x model=m8 > "$T/gs.out" 2>&1; check "$?/$(tj model)" "1/m9 False" "  a module's table on main: refused, live at save"
+mv "$T/nc-thing" "$NC/thing"
+# a marketplace install: each plugin in a cache folder of its own, so a module is never beside the core
+# (the council's second landing review, finding 10); another version of the core beside it is no module
+PI="$T/plugcache"; mkdir -p "$PI/regatta" "$PI/wharf/0.2.0/settings" "$PI/cfg/plugins"; cp -R "$M" "$PI/regatta/0.1.0"; cp -R "$M" "$PI/regatta/0.0.9"
+printf '{"sites": {"council.x": {"kind": "generate", "provider": "codex", "model": "w1", "when_off": "skip"}}}\n' > "$PI/wharf/0.2.0/settings/models.json"
+printf '{"plugins": {"regatta@regatta": [{"scope": "user", "installPath": "%s"}], "wharf@regatta": [{"scope": "user", "installPath": "%s"}]}}\n' \
+  "$PI/regatta/0.1.0" "$PI/wharf/0.2.0" > "$PI/cfg/plugins/installed_plugins.json"
+mkdir -p "$PI/rc"
+pip() { REGATTA_CONFIG="$PI/rc" CLAUDE_CONFIG_DIR="$PI/cfg" REGATTA_HOME= python3 -I -c "from importlib.machinery import SourceFileLoader as L; g = L('gate', '$PI/regatta/0.1.0/bin/gate').load_module()
+$1"; }
+check "$(pip 'print(g.module_table("wharf"), sorted(g.module_tables()))')" "$PI/wharf/0.2.0/settings/models.json ['wharf']" \
+  "module_table in a plugin install: wharf's table at its own install path (common's installed roots), no core version listed"
+check "$(GATE_COUNCIL_X_MODEL=w2 pip 'print(g.resolve("example.classify"), g.resolve("council.x", table=g.module_table("wharf"))["model"])')" "None w2" \
+  "  an override of wharf's site there: the core's table leaves it, wharf's applies it"
+REGATTA_CONFIG="$NC" "$MG" check > "$T/gc.out" 2>&1; check "$?" 0 "check validates the core's table and each module's"
+grep -q "gate: thing's .*thing/models.json validates, 1 sites" "$T/gc.out"; check "$?" 0 "  naming the module's"
+printf '{"sites": {"thing.x": {"kind": "generate", "provider": "nope"}}}\n' > "$NC/thing/models.json"
+REGATTA_CONFIG="$NC" "$MG" check > /dev/null 2>&1; check "$?" 1 "  a bad module table fails check"
+REGATTA_CONFIG="$NC" "$MG" show > /dev/null 2>&1; check "$?" 1 "  and so does show, which reads every table"
 
 echo "the gate's module rows: a site the config table lacks runs the module's own"
 # A copy of the module, so its table holds synthetic sites; a config table of its own, on a branch for set.
@@ -569,7 +707,8 @@ out=$(REGATTA_CONFIG="$C3" "$GC" show 2>&1)
 echo "$out" | grep -q '^mod.only .*mod-model.* (module default)$'; check $? 0 "show marks a module row"
 echo "$out" | grep -q '^rows marked (module default): settings/models.json @ '; check $? 0 "  and names the table it came from"
 echo "$out" | grep -q '^both.site .*(module default)'; check $? 1 "  a site in both is the config's, unmarked"
-check "$(REGATTA_CONFIG="$C3" "$GC" check 2>&1 | tail -1)" "gate: settings/models.json (module default) validates, 2 sites, 1 of them the table lacks" \
+# grep, not the last line: a folder beside the copy that ships a table reads as a module of its own (module_tables)
+check "$(REGATTA_CONFIG="$C3" "$GC" check 2>&1 | grep -F '(module default) validates')" "gate: settings/models.json (module default) validates, 2 sites, 1 of them the table lacks" \
   "check validates the module's table too"
 cp "$T/gcopy/settings/models.json" "$T/mod.keep"; printf '{"sites": {"bad": {"kind": "x"}}}\n' > "$T/gcopy/settings/models.json"
 REGATTA_CONFIG="$C3" "$GC" check >/dev/null 2>&1; check $? 1 "  a broken module table fails check, never skipped"
@@ -825,6 +964,8 @@ bash "$M/tests/flare.sh" | sed 's/^/  /'
 check "${PIPESTATUS[0]}" 0 "tests/flare.sh: regatta flare files, retries and refuses as it says"
 bash "$M/tests/attribution.sh" | sed 's/^/  /'
 check "${PIPESTATUS[0]}" 0 "tests/attribution.sh: common.attribution resolves and regatta attribution appends as it says"
+bash "$M/tests/limit.sh" | sed 's/^/  /'
+check "${PIPESTATUS[0]}" 0 "tests/limit.sh: regatta limit sets, reads and refuses live limits, and every reader reads the live layer first"
 
 
 # Every module targets going public, and nothing forces it (the owner, 2026-10-23: "target every
@@ -1002,13 +1143,14 @@ for r in acme-one app privy; do git init -q "$GHM/projects/$r"; done
 printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}\n' > "$GC/lighthouse/accounts.json"
 printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}\n' > "$GD/tenants.json"
 printf '{"logins":{"work":{"email":"z@example.com"}},"share":{"design":[{"email":"pat@example.com"}]}}\n' > "$GD/logins.json"
-for f in tenants logins; do ln -s "$GD/$f.json" "$GC/lighthouse/$f.json"; cp "$GD/$f.json" "$GC/lighthouse/.$f.json.last"; done
+printf '{"lab":{"week_max":95}}\n' > "$GD/budgets.json"
+for f in tenants logins budgets; do ln -s "$GD/$f.json" "$GC/lighthouse/$f.json"; cp "$GD/$f.json" "$GC/lighthouse/.$f.json.last"; done
 printf '{"oauthAccount":{"accountUuid":"u-z","emailAddress":"z@example.com"}}\n' > "$GHM/orca/pz/.claude.json"
 ln -s "$GD/_secrets" "$GC/regatta/secrets"; echo 'A=1' > "$GD/_secrets/app.env"; echo 'A=' > "$GHM/projects/app/.env.example"
 ln -s "$GD/_secrets/app.env" "$GHM/projects/app/.env"
 # g4 HOST CMD…: CMD in the fixture, the audit on; prints CMD's output, the opens go to $GL
 g4() { local host=$1; shift; : > "$GL"
-  env -u ACCOUNTS_FILE -u TENANTS_FILE -u ACCOUNT_LOGINS -u SECRETS_DIR -u SECRETS_PROJECTS \
+  env -u ACCOUNTS_FILE -u TENANTS_FILE -u ACCOUNT_LOGINS -u ACCOUNT_BUDGETS -u SECRETS_DIR -u SECRETS_PROJECTS \
     HOME="$GHM" REGATTA_CONFIG="$GC" REGATTA_CLAUDE_HOST="$host" REGATTA_DRIVE_ROOTS="$GD" ACCOUNT_ORCA_DATA="$GHM/orca" ACCOUNT_ORCA_FILE="$G4/no-orca.json" \
     PYTHONPATH="$M/tests/drive_audit" DRIVE_AUDIT_ROOT="$GD" DRIVE_AUDIT_LOG="$GL" "$@" 2>&1; }
 GDR=$(cd "$GD" && pwd -P); RTR=$(cd "$ROOT" && pwd -P)   # the audit logs real paths: mktemp's resolve through /private
@@ -1022,8 +1164,13 @@ if [ -f "$LH/hooks/account_guard.py" ]; then
   out=$(echo "{\"cwd\":\"$GHM/projects/privy\"}" | CLAUDE_CONFIG_DIR="$GHM/orca/pz" g4 0 python3 "$LH/hooks/account_guard.py")
   check "$(echo "$out" | grep -c "privy is off work, whose login this Orca dir is") $(opened)" "1 " "  account_guard on an Orca dir (allowed reads the logins file): work's list from the copy, no open"
   g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+  mv "$GC/lighthouse/.budgets.json.last" "$G4/budgets.held"   # the budgets file with no copy yet: the hook never seeds it
+  out=$(echo "{\"cwd\":\"$GHM/projects/acme-one\"}" | g4 0 python3 "$LH/hooks/account_guard.py")
+  check "$(echo "$out" | grep -c "acme-one is off main: it is acme's") $(opened)" "1 " "  account_guard with the budgets file's copy missing: the registry's rules, no open"
+  g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
+  mv "$G4/budgets.held" "$GC/lighthouse/.budgets.json.last"
   out=$(echo "{\"cwd\":\"$GHM/projects/acme-one\"}" | g4 1 python3 "$LH/hooks/account_guard.py")
-  check "$(opened)" "tenants.json at modules/lighthouse/bin/account:$(grep -n 'got = json.loads(TENANTS.read_text())' "$LH/bin/account" | cut -d: -f1);" \
+  check "$(opened)" "budgets.json at modules/lighthouse/bin/account:$(grep -n 'got = json.loads(BUDGETS.read_text())' "$LH/bin/account" | head -1 | cut -d: -f1);tenants.json at modules/lighthouse/bin/account:$(grep -n 'got = json.loads(TENANTS.read_text())' "$LH/bin/account" | cut -d: -f1);" \
     "  control: under claude-host bin/account opens the link, and the audit names its line"
 else echo "  --   lighthouse is not here: its readers skipped"; fi
 if [ -f "$LH/hooks/design_route.py" ]; then
@@ -1046,6 +1193,29 @@ if [ -f "$WH" ]; then
 fi
 check "$g4c" 0 "  G4: of $g4n hook readers, the number that opened a Drive-backed file (target 0)"
 
+echo "session names: <verb>-<topic>, fitted to regatta/session-name-max (the owner, 2026-11-01)"
+sn() { py "print(common.session_name($1))"; }
+check "$(sn '"build", "queue-s8-kick"')" "build-queue-s8-kick" "a short topic: the verb, then the topic"
+check "$(sn '"build", "principal-council-fences"')" "build-principal-council" "  past 27: whole words go from the end"
+check "$(sn '"work", "finish · vendor-hooks-names", lead=True')" "finish-vendor-hooks-names" "  --lead: a name that opens with a verb keeps it (autofinish's NAME)"
+check "$(sn '"work", "claude/host/2026-11-01-session-names", lead=True')" "work-session-names" "  …else the fallback; a branch's host and date dropped"
+check "$(sn '"build", "build-review"')" "build-build-review" "  without --lead a topic's first word stays a word (a topic named build-review)"
+check "$(sn '"work", "build-review", lead=True')" "work-build-review" "  --lead takes only the \"<verb> · \" form: a slug's first word is a topic's"
+check "$(sn '"work", "finish · finish-stale-tip", lead=True')" "finish-stale-tip" "  a topic that repeats its verb says it once"
+check "$(sn '"design", "supercalifragilisticexpialidocious"')" "design-supercalifragilisticexpialidocious" "  one word too long stays whole: the cap is soft, a cut word names nothing"
+mkdir -p "$REGATTA_CONFIG/regatta"; echo 40 > "$REGATTA_CONFIG/regatta/session-name-max"
+check "$(sn '"build", "principal-council-fences"')" "build-principal-council-fences" "  the cap is the config key's"
+echo 5 > "$REGATTA_CONFIG/regatta/session-name-max"
+check "$(sn '"build", "principal-council-fences"' 2>&1)" "regatta/session-name-max: '5' is no whole number of at least 12; using 27
+build-principal-council" "  a key below 12 or not a number: one line and the default, never an error"
+rm -f "$REGATTA_CONFIG/regatta/session-name-max"
+check "$("$RG" session-name --lead work "finish · x")|$("$RG" session-name build a b c)" "finish-x|build-a-b-c" "  the CLI: regatta session-name [--lead] VERB TOPIC…"
+check "$("$RG" session-name --verbs | head -1 | cut -c1-14)" "build   a buil" "  --verbs lists each verb with what it names"
+check "$(py 'print(common.autofinish_window({}, "claude/h/2026-11-01-vendor-hooks-names"))')" "finish-vendor-hooks-names" \
+  "autofinish_window: a record without a window reads as the session dispatch names"
+check "$(py 'print(common.autofinish_window({}, "claude/h/2026-11-01-finish-stale-tip"))')" "finish-stale-tip" \
+  "  the same call dispatch makes, so a topic finish-x is finish-x, never finish-finish-x"
+
 # 2026-10-25: a block of test_helm.sh run in a shell whose HOME was the real one emptied the build
 # Mac's run records. A suite's recursive or glob delete under HOME goes
 # through its rm_own, which deletes only under the suite's own $T and is absent from a block run outside.
@@ -1053,6 +1223,13 @@ echo "a suite deletes under HOME only through its rm_own (F2)"
 # (this file holds the lint's own fixture below, so it is not scanned)
 out=$(find "$ROOT/modules" -path '*/tests/*' -name '*.sh' ! -path "$M/tests/check.sh" -print0 | xargs -0 python3 "$M/tests/home_rm.py" | sed "s#$ROOT/##")
 check "$out" "" "  no suite's recursive or glob delete names a path under HOME (else: <file>:<line>, to go through rm_own)"
+if [ -x /bin/bash ] && [ "$(uname)" = Darwin ]; then
+  # macOS's bash 3.2 cannot parse an unpaired apostrophe in a quoted heredoc inside "$(…)": the suite then ends early,
+  # its later cases never run (AGENTS.md's trap; hit three times, the last in fence.sh, the council's landing review)
+  echo "every suite parses under macOS's /bin/bash 3.2"
+  out=$(find "$ROOT/modules" -path '*/tests/*' -name '*.sh' -print0 | xargs -0 -n1 /bin/bash -n 2>&1 | sed "s#$ROOT/##")
+  check "$out" "" "  bash -n on every modules/*/tests/*.sh (else: the file and line it stops at)"
+fi
 hv='$HOME' tl='~'   # the fixture's home paths, spelled apart: the publish gate refuses them whole
 printf 'R="%s/Library/Logs/x"\nrm -rf "$R"\nrm -fr %s/y\nrm_own "$R"\nrm -rf "$T/z"\n# rm -rf "%s"\n' "$hv" "$tl" "$hv" > "$T/hr.sh"
 check "$(python3 "$M/tests/home_rm.py" "$T/hr.sh" | sed "s#$T/##" | tr '\n' ';')" "hr.sh:2: rm -rf \"\$R\";hr.sh:3: rm -fr $tl/y;" \
@@ -1073,6 +1250,23 @@ check "$([ "$r" -ne 0 ] && echo refused)|$(ls "$T/own")|$(ls "$T/away")" "refuse
   "  …and with \$T empty (a block run outside its suite) it deletes nothing"
 check "$( (eval "$defs"; T="$T/own"; rm_own "$T//" 2>/dev/null || echo refused-double) )|$(ls "$T/own")" "refused-double|keep" \
   "  …nor \$T itself, spelled with a double slash"
+
+echo "TODO.md: this repo's items and their citations (wharf's todo-md lint; todo-ids, 2026-10-31)"
+# The core's suite runs on any change under modules/ and on a root Markdown file (wharf-runs' check scope),
+# so TODO.md and the code citing its items are judged here. A docs-only branch reaches no suite: the check
+# line's own `todo-md lint` command judges it on the Macs.
+if [ -f "$ROOT/modules/wharf/bin/todo-md" ]; then
+  # --base: an item done on main that a union merge brought back fails too (when the ref is there)
+  b=; git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null 2>&1 && b="--base origin/main"
+  out=$(python3 "$ROOT/modules/wharf/bin/todo-md" lint "$ROOT" $b 2>&1); r=$?
+  check "$r" 0 "todo-md lint: every item has an id, every citation names one ($(echo "$out" | tail -1))"
+  [ "$r" -eq 0 ] || echo "$out" | grep FAIL
+else
+  echo "  --   wharf absent: TODO.md not judged"
+fi
+
+echo "the council's fence: tests/fence.sh (its own scratch HOME)"
+bash "$M/tests/fence.sh" || fails=$((fails+1))
 
 [ "$fails" -eq 0 ] && echo "core: all ok" || echo "core: $fails failed"
 [ "$fails" -eq 0 ]

@@ -24,13 +24,48 @@ file per harness).
         V1: start a session; prints its record at once (state `submitted` or later, its session_id
         when the harness has one by then). claude-code (the default) is bin/dispatch: --prompt in
         --cwd, a claude/* worktree, is `dispatch --start` detached; --branch is a seeded branch,
-        `dispatch BRANCH` (launchd, about 2 min; --on PEER there only). orca makes the worktree
+        `dispatch BRANCH` (launchd, about 2 min; --on PEER there only: dispatch's --pin, S12). orca makes the worktree
         itself in --repo (`<yyyy-mm-dd>-<topic>` → claude/<host>/<yyyy-mm-dd>-<topic>) and starts an
         `--agent` worker in it — with --account (auto: bin/account's pick; --ship KEY keeps a ship on
         the login it was pinned to) a Claude worker on that login, in a terminal of ours (docs/
         orca-accounts-2026-10-16.md); codex is `codex exec --json` detached in --cwd, or Orca's codex
         worker with --runner orca; --timeout S ends a codex run past S seconds (default two hours) and
         --ephemeral runs it `codex exec --ephemeral`. Exit 1: the start failed; 2: refused before anything started.
+    harness run --harness codex --mode research --repo HOME --cwd COPY (--prompt TEXT | --prompt-file FILE)
+                [--review BASE] [--web] [--timeout S] [--deadline EPOCH] [--council RUN] [--approved QUOTE]
+                [--model M] [--effort E] [--json]
+        Research mode (principal tier S3, docs/principal-tier-2026-10-26.md; fenced since the isolation
+        design's S1, docs/principal-council-isolation-2026-10-29.md, whose fences F1–F7 these are): one Codex
+        turn in COPY, in the foreground: it returns when codex ends or at its deadline (killed then), the record
+        holding the reply, the usage summed over every turn.completed and each command codex ran. Refused (exit 2)
+        before codex starts:
+        - F1, the source judge (research_guard): HOME's contract (`physical: none`); a public repo (contract E4);
+          a confidential scope's repo, as HOME or as COPY, or any while the registry cannot be read (bin/jev's
+          rule, fail closed); a guarded HOME or prompt file without --approved, the owner's quote for OpenAI
+          (bin/gate's vet), never from an unattended caller.
+        - F2, the copy: COPY is a council arm's — `<run>/<phase>/<arm>/box/copy` or the review's `<run>/review/
+          box/repo`, under a 0700 run dir of this account's holding the council's marker (the core's
+          fence.box_why, which says what the rules it replaced read; council's git_copy writes the copy).
+        - F3, the start (the adapter): no scratch CODEX_HOME in the box (auth.json alone, council's
+          fence.arm_home), a feature `codex features list` shows on that fence.CODEX_FEATURES has not judged,
+          an administrator layer of Codex's (/etc/codex/*.toml, the managed preferences' config keys).
+        - F4, the seatbelt: none here (off macOS, until the design's S6), or its probe failing.
+        - F6, the bounds: --timeout finite, positive, at most a day; --deadline (the caller's clock: council's)
+          finite, ahead and within --timeout, so the waits below come out of the caller's bound; one Codex run
+          per council verb. Unattended (the core's common.unattended_caller(): REGATTA_UNATTENDED, CLAUDE_UNATTENDED or
+          AUTOFINISH_CALLER_UNATTENDED) only bounded: --timeout of at most 1800 s, --council RUN:VERB, at most two
+          Codex runs per council run (its arms and one examine) and twelve on this Mac in any 24 h (the adapter's
+          research_counts, read by mtime before any lock), the counts and the cap read from their defaults
+          (HARNESS_RUNS_DIR and HARNESS_DISPATCH only beside a stand-in HARNESS_CODEX), and a free slot under
+          dispatch's cap (`dispatch --cap` against dispatch-queue's busy(), runs and reservations, counted under
+          dispatch's start lock, held until codex runs; dispatch-rc's count then holds the slot).
+        Then codex runs under the seatbelt from the box's scratch CODEX_HOME and an allowlisted environment,
+        `codex exec --json --ephemeral --skip-git-repo-check -C COPY`, its shell on, its features judged off
+        turned off (hygiene), its own sandbox and approvals off; the proxy this process runs is its one door
+        (chatgpt.com alone, any public host with --web) and withdraws the login at its first connection to
+        chatgpt.com, before the reply (F7), the record's `credential` saying when and what was on disk at the
+        first tool call; F5 is codex's own events. --review BASE runs `codex exec review --base BASE` instead
+        (COPY then holds the review's two-commit repo). Every other mode stays attended only.
     harness resume REF (--prompt TEXT | --prompt-file FILE) [--fork] [--harness NAME] [--repo DIR]
                 [--timeout S] [--ephemeral] [--json]
         V2: REF's next turn — the same session, or with --fork a copy under a new id (claude-code,
@@ -39,7 +74,7 @@ file per harness).
         V5: end REF now, busy or not; prints the exit report. Only what a harness started: a dispatch
         run (dispatch --end), an Orca worker (worker-stop), a harness codex run (SIGTERM, its start
         time checked). The owner's own sessions are not this verb's to end (exit 2).
-    V1, V2 and V5 act on this Mac only (--host is refused): a peer's runs start through dispatch --on.
+    V1, V2 and V5 act on this Mac only (--host is refused): a peer's runs start through dispatch --pin.
 
 Every run is refused (exit 2) unless the repo's contract says `physical: none` — bin/dispatch's rule,
 which `dispatch --start` leaves to its caller — and a Codex run (--harness codex or --agent codex)
@@ -93,6 +128,7 @@ runs its CLI, never its libraries.
 import calendar
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -103,6 +139,7 @@ import time
 import types
 
 common = None   # the core's config reader; none on a peer (stdin has no path), where nothing here needs it
+CORE_MISSING = False   # True: a copy run from its file whose core did not import — the spawn gate fails closed
 if "__file__" in globals():   # here, not on a peer from stdin: the regatta core on the path, for the adapters' peers
     sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
     try:
@@ -110,7 +147,7 @@ if "__file__" in globals():   # here, not on a peer from stdin: the regatta core
         core_path.add()
         import common
     except ImportError:
-        pass
+        CORE_MISSING = True
 
 USAGE = __doc__ or "harness status|list"
 
@@ -246,6 +283,9 @@ class Ctx:
         self.dispatch_host = dispatch_host()
         self.warn = warn
         self.fail = fail
+        self.started = release_slot   # an adapter calls it once its run is under way (research mode's slot)
+        # and this, right before it starts codex: the start lock taken then, never through its probes (finding 9)
+        self.claim = lambda: research_room(self)
         self._mods = None
 
     def adapter(self, name):
@@ -488,7 +528,8 @@ def cmd_candidates(args):
 
 def git_out(cwd, *argv, strip=True):
     try:
-        r = subprocess.run(["git", "-C", cwd] + list(argv), capture_output=True, text=True, timeout=20)
+        r = subprocess.run(["git", "-C", cwd, "-c", "core.fsmonitor=false"] + list(argv), capture_output=True, text=True,
+                           timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if r.returncode:
@@ -582,11 +623,336 @@ def vendor_fence(root, vendor):
     return common.vendor_refusal(root, vendor, account=os.environ.get("HARNESS_ACCOUNT"))
 
 
+def spawn_refusal(req, harness, where):
+    """Why a start of HARNESS in WHERE may not go, by the core's spawn gate (confidential-reach S6), or None.
+    A claude-code run goes by bin/dispatch, which judges it there (its run, its `--start --resume`); an Orca
+    worker, a Codex run, an Orca retry or a resume's next turn start here, around dispatch, so they ask the
+    gate themselves (the fourth landing review, item 6). Each hands the run a prompt no review read, so
+    from inside a confidential scope into an open repo they are refused; an open caller on a branch whose
+    seed carries a review needs that review to hold. The caller is this shell's directory and its session's
+    own folder (common.caller_dirs), as dispatch judges it. A peer's stdin copy has no core and judges
+    nothing (its caller, on the other Mac, was judged there); a copy run from its file whose core did not
+    import refuses, as dispatch refuses (the fifth landing review). The tree judged is the one the run
+    reads: WHERE's own HEAD when WHERE is on the branch (or none is named), so an unpushed brief or review
+    there counts; else the branch's local tip, then origin's (the fifth landing review, item 12). A
+    detached HEAD names no topic, so every `.review` in it counts: the stricter reading."""
+    if harness in (None, "claude-code") and req.get("runner") != "orca":
+        return None
+    if common is None:
+        return None if not CORE_MISSING else (
+            "the regatta core did not load here, so whether this %s run leaves a confidential scope cannot be told "
+            "(fails closed; confidential-reach S6)" % (req.get("runner") or harness))
+    cur = git_out(where, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
+    branch = req.get("branch") or cur
+    ref = "HEAD"
+    if req.get("branch") and req["branch"] != cur:
+        ref = next((r for r in ("refs/heads/%s" % branch, "refs/remotes/origin/%s" % branch)
+                    if git_out(where, "rev-parse", "--verify", "--quiet", r)), None)
+        reg, torn = common.read_registry()
+        if ref is None and not torn and not common.confidential_scopes(reg=reg or {}):
+            return None   # no confidential scope here: nothing leaves one, as the gate's own first answer
+        if ref is None:
+            # a branch this host has neither made nor fetched: no tree to judge, and judging none read no review, so
+            # an open caller's spawn passed (the sixth landing review). Refused for now, in the cap's waiting words
+            return ("%s is refused for now: whether it leaves a confidential scope cannot be judged here — %s is not "
+                    "on this host (no local branch, none fetched from origin). End with the WAITING line — the next "
+                    "step waits for a run to end and for that branch to be fetched (confidential-reach S6)"
+                    % (req.get("runner") or harness, branch))
+    try:
+        v = common.spawn_gate(where, ref,
+                              common.caller_dirs(os.getcwd(), os.environ.get("CLAUDE_CODE_SESSION_ID")),
+                              topic=common.branch_topic(branch), start=True)
+    except Exception as e:   # noqa: BLE001 — the gate never raises; a broken core is no answer either
+        return "the spawn check could not run here (%s), so whether this run leaves a confidential scope cannot be told (fails closed; confidential-reach S6)" % e
+    if v.why and v.final:
+        return ("%s is refused for good, a run out of a confidential scope with no review that vouches for what it is "
+                "handed — %s (confidential-reach S6)" % (req.get("runner") or harness, v.why))
+    if v.why:
+        # a wait fixes this one (a torn registry, a branch not fetched here): the cap's waiting words, as dispatch's
+        # spawn_refuse says them (AGENTS.md's dispatch-refusal trap), so a managed run ending on it is no unrelayed ask
+        return ("%s is refused for now: whether it leaves a confidential scope cannot be judged here — %s. End with the "
+                "WAITING line — the next step waits for a run to end and for that to read (confidential-reach S6)"
+                % (req.get("runner") or harness, v.why))
+    return None
+
+
+RESEARCH_TIMEOUT, RESEARCH_MAX = 1200, 1800   # seconds: research mode's default and its unattended bound
+# and its bound for anyone: dispatch-rc's research_live() reads only the records written in the last
+# RESEARCH_LIMIT (and a margin), so a turn may not outlive it (the second landing review's finding 11)
+RESEARCH_LIMIT = 86400
+
+
+def core_tool(name):
+    """The core's bin/NAME, loaded as a module (jev, gate): the rules research mode asks."""
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader(name, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(common.__file__))),
+                                               "bin", name)).load_module()
+
+
+def confidential_why(root):
+    """Why a research run may not read ROOT, or None: a confidential scope's repo (or a path in one), or any
+    repo while the registry cannot be read — the core's bin/jev rule (it fails closed), which wharf's council
+    also asks; here too, for --repo and the copy alike, so no caller of this verb sends one to OpenAI. No
+    core: refused, the rule unreadable."""
+    try:
+        jev = core_tool("jev")
+        hit = jev.confidential(os.path.basename(root)) or jev.confidential(root)
+    except Exception as e:   # noqa: BLE001 — a fence that cannot be read refuses
+        return "research mode cannot read the confidential rule (%s): refused" % e
+    return ("%s is a confidential scope's repo, or the registry cannot be read: no research run reads it" % root) if hit else None
+
+
+def guarded_why(root, prompt_file, quote):
+    """Why a research run may not send ROOT's text (or the prompt file's) to OpenAI, or None: the core's
+    bin/gate vet(), the guarded-source rule — a guarded repo (jev's GUARDED) needs the owner's quote for
+    OpenAI, --approved (the second landing review's finding 4: no caller of this verb skips it, as wharf's
+    council does not). The prompt file is judged by its repo, else its path. A rule that cannot be read refuses."""
+    try:
+        gate = core_tool("gate")
+        jev = gate._jev_module()
+        sources = [jev.repo_of(root) or os.path.basename(root)]
+        if prompt_file:
+            real = os.path.realpath(prompt_file)
+            sources.append(jev.repo_of(real) or real)
+        row = {"site": "harness.research", "provider": "codex"}
+        for src in sources:
+            gate.vet(row, src, {"openai": quote} if quote else None)
+    except Exception as e:   # noqa: BLE001 — gate's refusal names what it needs; anything else is no rule
+        if type(e).__name__ in ("GateError", "GateOff"):
+            return "%s (--approved QUOTE is the owner's yes for OpenAI)" % e
+        return "research mode cannot read the guarded rule (%s): refused" % e
+    return None
+
+
+def core_fence():
+    """The core's hooks/fence.py, loaded as a module: research mode's box rule (box_why)."""
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader("fence", os.path.join(os.path.dirname(os.path.abspath(common.__file__)), "fence.py")).load_module()
+
+
+def unattended():
+    """`NAME=value` of what makes the caller an unattended run, or None: the core's rule (common.unattended_caller)."""
+    return common.unattended_caller()
+
+
+def stand_in_codex():
+    """HARNESS_CODEX names a codex other than the one on PATH: a suite's stand-in. Only beside one does an
+    unattended research run read its bounds from HARNESS_RUNS_DIR and HARNESS_DISPATCH (finding 9)."""
+    import shutil
+    cx = os.environ.get("HARNESS_CODEX")
+    real = shutil.which("codex")
+    if not cx or (real and os.path.realpath(cx) == os.path.realpath(real)):
+        return False
+    # the core's one rule (fence.is_stand_in): a `#!` script that is no node launcher. codex is a compiled binary
+    # or npm's node launcher, so a copy of it at another path is the real one (round 2; round 5's code review: npm's
+    # launcher read as a stand-in here alone, and moved an unattended run's bounds)
+    return core_fence().is_stand_in(cx)
+
+
+_RESEARCH_REQ = []   # the research request being judged: research_room counts it again under the lock
+_SLOT = []   # (dispatch-queue, its start lock) an unattended research run holds from its count until codex runs
+
+
+def research_room(ctx, hold=True):
+    """None when this Mac's run cap has a slot for one more run, else why not: `dispatch --cap` against
+    dispatch-queue's busy() — dispatch-rc's counted(live()), a running research run in it, plus the queue's
+    reservations — counted under dispatch's start lock. HOLD: the lock is then kept until codex runs (the adapter
+    takes it by ctx.claim() right before it starts codex and gives it back by ctx.started() once the record holds
+    codex's pid, which dispatch-rc counts; cmd_run's finally too), so a dispatch start or a queue claim never
+    takes the same last slot (the second landing review's finding 6) and the fleet's starts wait seconds, not the
+    probes' minute or two (the fourth landing review, finding 9). Without HOLD: the count alone, the lock given
+    back at once (research_guard's early refusal). Anything that cannot be read refuses: an unattended Codex run
+    is the spend the cap bounds."""
+    dispatch = dispatch_bin()   # the one rule for its path (round 6: a copy of it here)
+    try:
+        from importlib.machinery import SourceFileLoader
+        q = SourceFileLoader("dispatch_queue_room", os.path.join(ctx.coding, "bin", "dispatch-queue")).load_module()
+    except Exception as e:   # noqa: BLE001 — a broken install: no wait fixes it, so never the cap's waiting words
+        return "dispatch-queue cannot be loaded (%s: %s): refused, no research run starts" % (type(e).__name__, e)
+    try:
+        r = subprocess.run([dispatch, "--cap"], capture_output=True, text=True, timeout=30)
+        cap = int(r.stdout.strip().splitlines()[-1])
+    except Exception as e:   # noqa: BLE001 — a cap that cannot be read is no room
+        return "the run cap cannot be read (%s: %s): the next step waits for a run to end" % (type(e).__name__, e)
+    lock = q.start_lock(wait=60)
+    if lock is None:
+        return "dispatch's start lock is held: the next step waits for a run to end"
+    try:
+        n = q.busy(getattr(q, "LAUNCHCTL", "launchctl"))   # the queue's own (systemd-launchctl off macOS; round 6)
+    except Exception as e:   # noqa: BLE001
+        q.start_unlock(lock)
+        return "the run cap cannot be read (%s: %s): the next step waits for a run to end" % (type(e).__name__, e)
+    if n < cap and hold and _RESEARCH_REQ:
+        # the per-council and per-day counts again, now under the lock: two calls that both passed the early read
+        # cannot both start (round 2)
+        try:
+            why = chosen(adapters(), "codex")[0].research_counts(_RESEARCH_REQ[0], True)
+        except Exception as e:   # noqa: BLE001
+            why = "the research runs cannot be counted (%s: %s): the next step waits for a run to end" % (type(e).__name__, e)
+        if why:
+            q.start_unlock(lock)
+            return why
+    if n >= cap:
+        q.start_unlock(lock)
+        # the cap's own waiting words (AGENTS.md: a new refusal reuses them)
+        return "%d runs are busy, this Mac's cap is %d: the next step waits for a run to end" % (n, cap)
+    if hold:
+        _SLOT.append((q, lock))
+    else:
+        q.start_unlock(lock)
+    return None
+
+
+def release_slot():
+    """Give dispatch's start lock back: codex runs now, and dispatch-rc's count holds its slot."""
+    while _SLOT:
+        q, lock = _SLOT.pop()
+        q.start_unlock(lock)
+
+
+def research_guard(req, harness):
+    """Research mode's refusals (exit 2): judged by --repo and by the copy, the copy fenced, unattended only
+    bounded."""
+    if harness != "codex" or req.get("runner") or req.get("agent") not in (None, "", "codex"):
+        fail("--mode research is a Codex run of its own (--harness codex, no --runner or --agent)", 2)
+    if req.get("branch") or req.get("on") or req.get("account"):
+        fail("--mode research takes --repo, --cwd and a prompt; --branch, --on and --account are not its", 2)
+    repo, cwd = req.get("repo"), req.get("cwd")
+    if not repo or not os.path.isdir(repo):
+        fail("--mode research needs --repo, the home repo the copy was made from (got %r)" % repo, 2)
+    root = repo_root(repo)
+    if not root:
+        fail("%s is in no git repository" % repo, 2)
+    why = physical_ok(root)
+    if why:
+        fail(why, 2)
+    if public_repo(root):
+        fail("Codex does not run on %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — OpenAI's docs say not "
+             "to use a plan login in scripts there (contract E4)" % root, 2)
+    why = confidential_why(root)
+    if why:
+        fail(why, 2)
+    if not cwd or not os.path.isdir(cwd):
+        fail("--mode research needs --cwd, the scratch copy (got %r)" % cwd, 2)
+    # the copy is read back in whatever --repo says: judge it too (F1; the landing review, 2026-10-28: a
+    # confidential checkout on /Volumes named as --cwd passed). Then the one rule over where it sits (F2, F4): the
+    # seatbelt opens its box alone, so the box must be a council arm's (the core's fence.box_why, which says what
+    # the rules it replaced read)
+    why = confidential_why(os.path.realpath(cwd))
+    if why:
+        fail(why, 2)
+    # the refusals every other Codex start meets in guard(), which research mode returns before (the council's
+    # fourth landing review, finding 2): the vendor fence on the home repo and the copy (a confidential or guarded
+    # repo's text goes only to a login its tenant owns), the spawn gate on the caller's own folders (a confidential
+    # scope's caller hands OpenAI a prompt no review read: its brief in /private/tmp counts), and the depth cap
+    pf = req.get("prompt_file")
+    if pf:
+        # the prompt file's text goes to OpenAI too: judged as the home and the copy are (round 1's finding)
+        why = confidential_why(os.path.realpath(pf))
+        if why:
+            fail(why, 2)
+    for judged in (root, os.path.realpath(cwd)) + ((os.path.realpath(pf),) if pf else ()):
+        why = vendor_fence(judged, "codex")
+        if why:
+            fail(why, 2)
+    why = spawn_refusal(req, "codex", repo)   # --repo as given: a worktree's branch is the one judged (round 4)
+    if why:
+        fail(why, 2)
+    why = depth_refusal("codex")
+    if why:
+        fail(why, 2)
+    try:
+        why = core_fence().box_why(cwd)
+    except Exception as e:   # noqa: BLE001 — a fence that cannot be read refuses
+        why = "research mode cannot read the core's fence (%s): refused" % e
+    if why:
+        fail(why, 2)
+    if req.get("approved") and unattended():
+        fail("--approved stands for the owner's yes and the caller is unattended (%s): never passed unattended"
+             % unattended(), 2)
+    why = guarded_why(root, req.get("prompt_file"), req.get("approved"))
+    if why:
+        fail(why, 2)
+    try:
+        t = float(req.get("timeout") or RESEARCH_TIMEOUT)
+    except ValueError:
+        fail("--timeout is a number of seconds, not %r" % req.get("timeout"), 2)
+    # nan and inf compare false both ways, so every bound below would pass them (finding 12)
+    if not math.isfinite(t) or t <= 0 or t > RESEARCH_LIMIT:
+        fail("--timeout must be a finite number of seconds, positive and at most %d (a research run is one turn)"
+             % RESEARCH_LIMIT, 2)
+    if req.get("deadline") is not None:
+        # the caller's own clock (council's): the turn ends by it, so the start lock's and the cap's waits below
+        # come out of the caller's bound, never on top of it (finding 11)
+        try:
+            dl = float(req["deadline"])
+        except ValueError:
+            fail("--deadline is an epoch time in seconds, not %r" % req["deadline"], 2)
+        if not math.isfinite(dl) or dl <= time.time() or dl > time.time() + t:
+            fail("--deadline must be a finite epoch time after now and within --timeout (%d s) of it" % t, 2)
+        req["deadline"] = dl
+    if unattended():
+        # bounded: a timeout, a council run's id, the adapter's counts per council run and per day (from the
+        # run records), and a free slot under the cap before codex starts (dispatch-rc counts it after)
+        if not req.get("timeout") or t > RESEARCH_MAX or not re.match(r"^[^:\s]+:[^:\s]+$", req.get("council") or ""):
+            fail("an unattended research run is bounded: --timeout of at most %d s and --council RUN:VERB naming the "
+                 "council run (unattended: %s)" % (RESEARCH_MAX, unattended()), 2)
+        moved = [v for v in ("HARNESS_RUNS_DIR", "HARNESS_DISPATCH") if os.environ.get(v)]
+        if moved and not stand_in_codex():
+            # the counts and the cap are read from what these name: moved, they bound nothing (finding 9)
+            fail("an unattended research run reads its bounds from the defaults: %s would move them (honoured beside a "
+                 "stand-in HARNESS_CODEX only)" % ", ".join(moved), 2)
+    # the adapter's counts (one Codex run per council verb; unattended, its two per council run and twelve a day),
+    # read before research_room takes dispatch's start lock, so the records are parsed with nothing held (finding 8)
+    try:
+        why = chosen(adapters(), "codex")[0].research_counts(req, bool(unattended()))
+    except Exception as e:   # noqa: BLE001 — a count that cannot be read is no room
+        why = "the research runs cannot be counted (%s: %s): the next step waits for a run to end" % (type(e).__name__, e)
+    if why:
+        fail(why, 2)
+    if unattended():
+        # an early count, no lock kept: the adapter claims the slot right before codex starts (finding 9)
+        why = research_room(Ctx(), hold=False)
+        if why:
+            fail("an unattended research run needs a free slot: %s" % why, 2)
+        req["unattended"] = True
+        _RESEARCH_REQ[:] = [req]
+    req["timeout"] = t
+    req["repo"] = root
+    return req
+
+
+def depth_refusal(vendor):
+    """Why this caller may start no VENDOR run by depth, or None: the depth cap the attended-only rule also stood
+    for. A chain of runs stops at DISPATCH_MAX_DEPTH, as dispatch's does (the codex adapter's child_env counts one
+    deeper). guard() and research_guard() both ask it (the council's fourth landing review, finding 2)."""
+    d, top = os.environ.get("DISPATCH_DEPTH", ""), os.environ.get("DISPATCH_MAX_DEPTH", "")
+    d, top = (int(d) if d.isdigit() else 0), (int(top) if top.isdigit() else 5)
+    if d >= top:
+        return "this caller is at depth %d of DISPATCH_MAX_DEPTH %d: no %s run starts from it" % (d, top, vendor)
+    return None
+
+
 def guard(req, harness):
     """The shared refusals before any start (exit 2), and req["repo"] made the main checkout. Every vendor's
     run meets the same checks a Claude run does (docs/codex-agy-gaps-2026-10-29.md, D2-A): the contract's
     `physical: none`; for a non-Claude CLI, the vendor fence (a confidential or guarded repo only on a login
-    its tenant owns) and the run cap; Codex's public-repo rule (contract E4)."""
+    its tenant owns) and the run cap; Codex's public-repo rule (contract E4). Research mode has its own road
+    (research_guard), which asks the same vendor fence, spawn gate and depth cap first."""
+    if req.get("mode") == "research":
+        return research_guard(req, harness)
+    if req.get("mode") not in (None, ""):
+        fail("--mode is research or nothing, not %r" % req["mode"], 2)
+    if req.get("approved"):
+        fail("--approved is research mode's (the guarded-source rule); no other mode sends a repo's text by itself", 2)
+    if req.get("web"):
+        fail("--web is research mode's (its proxy)", 2)
+    if req.get("deadline"):
+        fail("--deadline is research mode's (its caller's clock)", 2)
+    for k in ("review", "council"):
+        # dropped without a word outside research mode, so the caller believed it ran a review (round 6's fourth)
+        if req.get(k):
+            fail("--%s is research mode's" % k, 2)
     where = req.get("cwd") or req.get("repo")
     if not where or not os.path.isdir(where):
         fail("--cwd or --repo must name a directory (got %r)" % where, 2)
@@ -610,13 +976,15 @@ def guard(req, harness):
     why = vendor_fence(root, vendor)
     if why:
         fail(why, 2)
+    # the spawn gate after the vendor fence: a refusal either would make, the fence's words first (its torn-registry
+    # line is its own); every start the fence passes is judged here before a slot is counted (S6's fifth round)
+    why = spawn_refusal(req, harness, where)
+    if why:
+        fail(why, 2)
     if vendor != "claude":
-        # the depth cap the attended-only rule also stood for: a chain of runs stops at DISPATCH_MAX_DEPTH, as
-        # dispatch's does (the codex adapter's child_env counts one deeper)
-        d, top = os.environ.get("DISPATCH_DEPTH", ""), os.environ.get("DISPATCH_MAX_DEPTH", "")
-        d, top = (int(d) if d.isdigit() else 0), (int(top) if top.isdigit() else 5)
-        if d >= top:
-            fail("this caller is at depth %d of DISPATCH_MAX_DEPTH %d: no %s run starts from it" % (d, top, vendor), 2)
+        why = depth_refusal(vendor)
+        if why:
+            fail(why, 2)
         # counted by the cap since vendor-fence, so an unattended caller may start one: the attended-only
         # rule this replaced said "no run cap counts them yet" (F6 of the gaps doc)
         slots = run_slots()
@@ -644,10 +1012,13 @@ def prompt_of(args):
 def request(args):
     """The adapter's request from the command line; the date is today's, here, once."""
     req = {k: args.get(k) for k in ("cwd", "repo", "name", "branch", "agent", "runner", "model", "effort",
-                                      "account", "ship", "on", "fork", "timeout")}
+                                      "account", "ship", "on", "fork", "mode", "timeout", "deadline", "council", "review", "approved")}
     req["prompt"] = prompt_of(args)
+    if args.get("prompt-file"):
+        req["prompt_file"] = os.path.abspath(os.path.expanduser(args["prompt-file"]))   # research mode judges its repo
     req["headless"] = bool(args.get("headless"))
-    req["ephemeral"] = bool(args.get("ephemeral"))   # a Codex run's --ephemeral: the council's research mode
+    req["web"] = bool(args.get("web"))
+    req["ephemeral"] = bool(args.get("ephemeral"))   # a Codex run's --ephemeral (research mode runs it so itself)
     req["date"] = time.strftime("%Y-%m-%d")
     for k in ("cwd", "repo"):
         if req.get(k):
@@ -672,7 +1043,7 @@ def show(rec, as_json):
 def one_here(args, verb):
     """(adapter, record) REF names on this Mac, or exits as status does: 1 none, 2 ambiguous."""
     if args.get("host") not in (None, "here", machine()):
-        sys.exit("harness: %s acts on this Mac only; a peer's runs start and end through dispatch --on" % verb)
+        sys.exit("harness: %s acts on this Mac only; a peer's runs start and end through dispatch --pin" % verb)
     mods = chosen(adapters(), args.get("harness"))
     ref = args.get("ref")
     if not ref:
@@ -705,10 +1076,17 @@ def cmd_run(args):
         warn("%s has no run" % name)
         return 2
     req = request(args)
-    if not (req.get("prompt") or req.get("branch")):
-        sys.exit("harness: run needs --prompt, --prompt-file or --branch\n" + USAGE)
+    if not (req.get("prompt") or req.get("branch") or (req.get("mode") == "research" and req.get("review"))):
+        sys.exit("harness: run needs --prompt, --prompt-file or --branch (research mode: or --review BASE)\n" + USAGE)
     try:
         guard(req, name)
+        if req.get("mode") == "research":
+            try:
+                rec = mod.research(Ctx(), req)
+            finally:
+                release_slot()
+            show(rec, args.get("json"))
+            return 0 if rec.get("state") == "completed" else 1
         if req.get("runner") == "orca" and name != "orca":
             # a harness run *by* Orca is Orca's worker: its records are the orca adapter's
             req["agent"] = req.get("agent") or {"claude-code": "claude"}.get(name, name)
@@ -760,7 +1138,9 @@ def exit_report(rec):
     the harness counted them (a codex run's turn.completed events)."""
     native = rec.get("native") or {}
     files = None
-    if rec.get("cwd") and os.path.isdir(rec["cwd"]):
+    # never in a research run's copy: an arm writes it, its .git config included (round 2: `harness stop` ran its
+    # core.fsmonitor as the owner, outside the seatbelt)
+    if rec.get("cwd") and os.path.isdir(rec["cwd"]) and native.get("mode") != "research":
         st = git_out(rec["cwd"], "status", "--porcelain", strip=False)   # its first column is the status
         files = [l[3:] for l in st.splitlines() if l.strip()] if st is not None else None
     return {"session_id": rec.get("session_id"), "harness": rec.get("harness"), "state": rec.get("state"),
@@ -787,11 +1167,13 @@ def cmd_stop(args):
 VALUED = {"status": ("--host", "--harness", "--repo"), "list": ("--host", "--harness", "--repo"),
           "candidates": ("--host", "--harness", "--repo"),
           "run": ("--host", "--harness", "--repo", "--cwd", "--prompt", "--prompt-file", "--branch", "--name",
-                  "--agent", "--runner", "--model", "--effort", "--account", "--ship", "--on", "--timeout"),
+                  "--agent", "--runner", "--model", "--effort", "--account", "--ship", "--on",
+                  "--mode", "--timeout", "--deadline", "--council", "--review", "--approved"),
           "resume": ("--host", "--harness", "--repo", "--prompt", "--prompt-file", "--model", "--effort", "--timeout"),
           "stop": ("--host", "--harness", "--repo"),
           "retry": ("--host", "--harness", "--repo", "--model", "--effort")}
-FLAGS = {"run": ("--json", "--headless", "--ephemeral"), "resume": ("--json", "--fork", "--ephemeral"), "list": ("--json", "--unsettled")}
+FLAGS = {"run": ("--json", "--headless", "--web", "--ephemeral"), "resume": ("--json", "--fork", "--ephemeral"),
+         "list": ("--json", "--unsettled")}
 
 
 def parse(argv):
@@ -844,4 +1226,16 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # research mode judged as main will read the line: parse() keeps the last --mode, so `--mode x --mode research`
+    # is research too (round 6: the first --mode alone was read, and that run kept the whole start environment)
+    if common is not None and parse(sys.argv[1:]).get("mode") == "research":
+        # research mode from nothing first: the arm reads this process's start environment through sysctl, so it
+        # holds no credential (the fourth landing review, finding 1); it needs none, the arm's login is in its box.
+        # Its refusal exits 2, as every research refusal does (round 5's second review: a traceback read as failed)
+        _f = core_fence()
+        try:
+            _f.reexec_clean(sys.argv)
+        except _f.FenceError as e:
+            print("harness: refused: %s" % e, file=sys.stderr)
+            sys.exit(2)
     sys.exit(main(sys.argv[1:]))

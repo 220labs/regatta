@@ -407,6 +407,126 @@ def group_cli(failing_dir, scratch):
         assert r.returncode == 1 and got == {"root.vacuous"}, (r.returncode, got)
     case("check <doc>: another document's finding is not this one's; a document with no render is vacuous", doc_alone)
 
+    def doc_retired_climbs():
+        # A retired_scan that climbs out of the root: the document's check reads what the root's does.
+        root = work / "climbs"
+        shutil.copytree(PASSING, root)
+        notes = work / "climbs-notes"
+        notes.mkdir()
+        (notes / "notes.md").write_text("The library opens every evening from week 1.\n", encoding="utf-8")
+        (root / "pitch.json").write_text(json.dumps({"extends": "../pitch.json", "claims": {
+            "retired_scan": ["**/*.md", "**/*.html", "../climbs-notes/*.md"]}}), encoding="utf-8")
+        for target in (root, root / f"{STEM}.md"):
+            r = run("check", target, "--json")
+            got = [f for f in json.loads(r.stdout) if f["rule"] == "claims.retired"]
+            assert r.returncode == 1 and len(got) == 1, (target.name, r.returncode, r.stdout, r.stderr)
+            assert got[0]["message"].startswith("../climbs-notes/notes.md:"), got
+    case("check <doc>: a retired_scan that climbs out of the root is read, as the root's check reads it",
+         doc_retired_climbs)
+
+    def doc_retired_nobodys():
+        # A file under the root that is no document's (a notes folder) is every document's to read; a
+        # second document's own file stays its own; a render linked in from outside is no crash.
+        root = work / "nobodys"
+        shutil.copytree(PASSING, root)
+        (root / "notes").mkdir()
+        (root / "notes" / "n.md").write_text("The library opens every evening.\n", encoding="utf-8")
+        (root / "other-2026-01-13.md").write_text("# Other\n\nIt opens every evening.\n", encoding="utf-8")
+        (root / "other-2026-01-13-draft.md").write_text("It opens every evening.\n", encoding="utf-8")
+        (root / "other-2026-01-13-admiral-deck").mkdir()    # not built yet: no project/
+        (root / "other-2026-01-13-admiral-deck" / "content.md").write_text("Opens every evening.\n", encoding="utf-8")
+        r = run("check", root / f"{STEM}.md", "--json")
+        got = [f["message"] for f in json.loads(r.stdout) if f["rule"] == "claims.retired"]
+        assert r.returncode == 1 and len(got) == 1 and got[0].startswith("notes/n.md:"), (r.returncode, got, r.stderr)
+        (root / "notes" / "n.md").unlink()
+        for p in ("other-2026-01-13.md", "other-2026-01-13-draft.md"):
+            (root / p).unlink()
+        shutil.rmtree(root / "other-2026-01-13-admiral-deck")
+        memo = root / f"{STEM}-memo.html"
+        outside = work / "nobodys-shared-memo.html"
+        memo.rename(outside)
+        memo.symlink_to(outside)
+        r = run("check", root / f"{STEM}.md", "--json")
+        assert r.returncode == 0 and json.loads(r.stdout) == [], (r.returncode, r.stdout[-400:], r.stderr[-400:])
+    case("check <doc>: a file named from no document's stem is read; another's (a draft, an unbuilt deck) is not; "
+         "a linked render is no crash",
+         doc_retired_nobodys)
+
+    def doc_retired_owners():
+        # A stem owns a name only up to a separator; a longer stem never takes this document's own render.
+        root = work / "owners"
+        shutil.copytree(PASSING, root)
+        (root / "plan.md").write_text("# Plan\n\nNothing retired here.\n", encoding="utf-8")
+        (root / "planning").mkdir()     # a folder: any top-level .md is a document of its own
+        (root / "planning" / "notes.md").write_text("It opens every evening.\n", encoding="utf-8")
+        memo = root / f"{STEM}-memo.html"
+        memo.write_text(memo.read_text(encoding="utf-8").replace("</body>", "<p>Opens every evening.</p></body>"),
+                        encoding="utf-8")
+        (root / f"{STEM}-memo.md").write_text("# A memo about the memo\n", encoding="utf-8")
+        r = run("check", root / f"{STEM}.md", "--json")
+        got = sorted(f["message"].split(":")[0] for f in json.loads(r.stdout) if f["rule"] == "claims.retired")
+        assert got == [f"{STEM}-memo.html", "planning/notes.md"], (got, r.stderr[-300:])
+    case("check <doc>: a stem owns a name up to a separator; a longer stem never takes this document's render",
+         doc_retired_owners)
+
+    def doc_retired_twins():
+        # Two files that normalise alike, one through a linked folder, are both read.
+        root = work / "twins"
+        shutil.copytree(PASSING, root)
+        (root / "notes").mkdir()
+        (root / "notes" / "a.md").write_text("Nothing retired.\n", encoding="utf-8")
+        far = work / "twins-far"
+        (far / "shared").mkdir(parents=True)
+        (far / "notes").mkdir()
+        (far / "notes" / "a.md").write_text("It opens every evening.\n", encoding="utf-8")
+        (root / "shared").symlink_to(far / "shared")
+        cfg = json.loads((FIXTURES / "pitch.json").read_text(encoding="utf-8"))
+        cfg["claims"]["retired_scan"] = ["*.md", "notes/*.md", "shared/../notes/*.md"]
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        got = [f["message"] for f in json.loads(run("check", root, "--json").stdout) if f["rule"] == "claims.retired"]
+        assert len(got) == 1 and got[0].startswith("shared/../notes/a.md:"), got   # the file read, by its glob name
+    case("claims.retired: two files that normalise alike, one through a linked folder, are both read",
+         doc_retired_twins)
+
+    def retired_keys():
+        root = work / "unretired"
+        shutil.copytree(PASSING, root)
+        cfg = json.loads((FIXTURES / "pitch.json").read_text(encoding="utf-8"))
+        cfg["claims"]["retired"] = []
+        cfg["claims"].pop("require_retired", None)
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        # opt-in (the owner, 2026-11-02): a default config that retired nothing passes
+        assert run("check", root).returncode == 0
+        cfg["claims"]["require_retired"] = True
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        got = [f["message"] for f in json.loads(run("check", root, "--json").stdout)]
+        assert got == ["the retired list is empty, so no corrected claim is kept out: retire one, or set "
+                       "require_retired false"], got
+        cfg["claims"]["require_retired"] = "false"
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        r = run("check", root)
+        assert r.returncode == 2 and "require_retired must be true or false" in r.stderr, (r.returncode, r.stderr)
+        cfg["claims"]["require_retired"] = False
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        assert run("check", root).returncode == 0
+        bad = dict(cfg, claims=None)
+        (root / "pitch.json").write_text(json.dumps(bad), encoding="utf-8")
+        r = run("check", root)
+        assert r.returncode == 2 and "claims is None, not an object" in r.stderr, (r.returncode, r.stderr[-300:])
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        cfg["claims"].update(retired=[["opens every evening", "x"]], retired_scan=["notes/*.md"])
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        got = [f["message"] for f in json.loads(run("check", root / f"{STEM}.md", "--json").stdout)]
+        assert len(got) == 1 and "reads none of evening-hours-2026-01-12's files" in got[0], got
+        # require_pins stays its own guard: a render with no pins is still claims.table's
+        cfg["claims"].update(retired=[], retired_scan=["**/*.md"], must_appear={}, admiral_must_appear={})
+        (root / "pitch.json").write_text(json.dumps(cfg), encoding="utf-8")
+        rs = {f["rule"] for f in json.loads(run("check", root, "--json").stdout)}
+        assert "claims.table" in rs and "claims.retired" not in rs, rs
+    case("claims.require_retired: off by default, true fires on an empty list, \"false\" is refused; a scan of "
+         "none of a document's files fires",
+         retired_keys)
+
     def not_a_doc():
         r = run("check", PASSING / f"{STEM}-memo.html")
         assert r.returncode == 2 and "not a document" in r.stderr, r.stderr

@@ -1,7 +1,83 @@
 # Changelog — regatta (the core)
 
 ## Unreleased
+- `hooks/fence.py`'s seatbelt narrowed by the council's landing reviews: `/dev` to Apple's pty shape (an arm opens its
+  own ptys, never the owner's terminals), the OS's db folder to its timezone, the pasteboard's mach service and
+  Homebrew's `var` and `etc` denied; F4's probe asks for each.
 
+- `hooks/fence.py` (the isolation design's S5): `outcomes(cli, log)`, the shell commands a CLI's own log shows run
+  with their output and exit; `offered(cli, log)`, the tools its init event offers; `features_diff(listing)`,
+  `codex features list` against the pinned `CODEX_FEATURES` (new, gone), which `codex_features` now reads through.
+  F5: a Claude call outside the start's tools that claude refused itself ("No such tool available") is recorded as
+  denied, not as a tool that ran; one with any other result, or none, still fails the arm. An agy step outside our
+  hook's list still running when the log ends fails the arm. F4's probe also asks, inside the box only, to submit a
+  launchd job and (in a GUI session) to open an app through LaunchServices: each would run outside the seatbelt.
+  `codex_ro()`: the Codex arm's scratch configs and `auth.json`, read-only to it.
+- `common.autofinish_landings()`: this Mac's landing switch (task-shape S3), beside `autofinish_armed()`.
+- `regatta limit list|get|set|unset` (live-limits, 2026-11-01): a fleet limit changed on one host or every host,
+  read on its next call. `config_read` merges the config dir's live layer (`live/<key>`, which only the verb writes)
+  in front of the config, so a value outlives the overlay's `--config`; each value is tried on the key's own reader
+  first and refused when it reads otherwise; an unreachable host is named (exit 3). `regatta check` notes each live key.
+  After a write, and in `get`/`list`, each host's own reader is asked, a peer's through its `home` file (a set exits 3
+  when it reads another value, refuses, or runs a checkout that predates the layer; `get` shows what it reads).
+- Session names (the owner, 2026-11-01): `common.session_name(verb, topic)` and `regatta session-name
+  [--lead] VERB TOPIC…` name a launched session `<verb>-<topic>`, fitted to `regatta/session-name-max` (27 by default; the verb and
+  the first word stay whole); `SESSION_VERBS` lists the verbs, and `--lead` keeps the verb of a `<verb> · <topic>`
+  NAME. `autofinish_window`'s fallback is the landing's session name, `finish-<topic>`, by dispatch's own call.
+- `hooks/fence.py` (the isolation design's S4, from its live turns): the seatbelt reads none of `/Library` but
+  the developer dir git and python3 run from (`/Library/Developer/CommandLineTools`, or what `xcode-select -p`
+  names: `developer_dir()`), and F4's probe refuses an arm whose profile reads `/Library/Preferences`. agy 1.4.12's
+  `antigravity-oauth-token`, which it wrote beside its state in the scratch HOME once F7 had deleted its
+  per-run keychain, is read-only to the arm and one of agy's login files, so F7 withdraws and names it.
+- `hooks/fence.py`'s `CODEX_FEATURES` judges codex-cli 0.166.0's nine new stable features (the isolation design's
+  S4: its live turn was refused on them): five off, four kept.
+- `hooks/common.py` holds `unattended_caller()` and `COUNCIL_MARKER` (the isolation design's S3, finding
+  24): council, harness, autofinish-run and keel's sheep_gate read them, never a copy. `hooks/fence.py`'s `box_why`
+  is harness's one rule over a research run's cwd. `bin/gate set` writes the table that holds the site, a module's
+  included; `kind=` on a module's site no longer makes a dead row in the core's table. `tests/classes.sh` checks
+  every module table a leak gate reads is on both autofinish lists.
+- F7 in `hooks/fence.py` (the isolation design's S1, amended 2026-10-30): an arm's login leaves the disk once its
+  CLI has signed in — the proxy's `on_vendor` runs `Credential.withdraw()` at the first request for a vendor host,
+  before it resolves or answers (Codex's `auth.json`, agy's per-run keychain); Claude's never enters the box, its
+  access token handed on a pipe (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, or the API-key one), and a token that
+  expires before the run's end refuses the arm. `FirstTool` reads what is on disk at the first tool call, `f7()`
+  judges it with a scan of every file the arm leaves for the login's strings (counted, never shown).
+  `codex_plugins` and the text-only flags are gone. `agy_hook.py` reads agy 1.4.11's `toolCall.name` beside
+  1.4.10's `tool_name`: the hook denied every tool of 1.4.11's arm.
+- `hooks/fence.py` and `hooks/agy_hook.py` (the council isolation design's S1,
+  docs/principal-council-isolation-2026-10-29.md): where a council arm runs — one macOS seatbelt over the arm's
+  box (`profile`, `wrap`) with `probe()`, its no-model check, run before every start; one proxy per arm as its
+  only door (the CLI's vendor hosts by exact name, any public host with research on, never loopback, the LAN or
+  the tailnet); a scratch home per CLI holding its login alone (agy's with a per-run keychain); an environment
+  from an allowlist; the plugin, MCP and feature gates read from each CLI's own listing; the record (F5) from
+  each CLI's own log; and what may not leave (a vault folder, an env file, a credential's shape in a paper).
+  `tests/fence.sh`, run by `tests/check.sh`: the seatbelt and keychain cases on macOS only.
+- The gate: an `antigravity` provider (Google's `agy`, VENDOR `google`) for generate and review rows;
+  `vet(row, source, approved)`, the guarded-source rule alone, which `classify` now calls; and a
+  module's own table, `module_table(<module>)` — the config dir's `<module>/models.json`, else the
+  module's `settings/models.json`, the module found as the core's `module_path` finds it (an installed
+  plugin's own folder too) — which `check` and `show` cover beside the core's, an override of a
+  module's site left to that table's load (principal tier S3; the owner, 2026-10-27: no new regatta
+  dependency in the overlay).
+- confidential-reach S6's sixth landing review (2026-10-31): `spawn_gate` refuses a caller in two confidential
+  scopes whose review vouches for one, and a node queue's entry whose scope no longer reads confidential (for good);
+  `entry_takes` lets an absolute entry under the projects folder take its relative key; `scope_of_repo` raises
+  only for a confidential scope; `_same_repo` needs both checkouts; `caller_dirs` adds the folder the session
+  started in, read from its transcript's first `cwd` (`session_start_dirs`): a persisted `cd` moves the cwd
+  Claude Code writes, never the transcript's start. The loop's later passes: `target()` splits only where the
+  folder names a scope the checkout is not in; `scope_of_repo` raises only for a registry handed to it;
+  `primary_branch()` (the workflow's "main", else origin's HEAD) names the branch in the unpushed refusal,
+  which stays final.
+- confidential-reach S6's fifth landing review, on the owner's accident standard (2026-10-30): `read_registry`
+  reads a confidential scope whose `repos` is no list as torn, so every fence asking `registry_unreadable()`
+  fails closed on it, not only S6's gates; `scope_of_repo` raises on a string as on `5`. `spawn_gate`: a
+  caller in two scopes is a scope's own run only where every scope it is in takes the repo (main refused the
+  rest); a node queue's claim runs the unpushed check; `unpushed_beyond` reads a merge by `--cc`, so a local
+  merge of origin's work is no unpushed path while an evil merge's own text is; a review that arrived inside
+  a merge is judged at the tip by the newest-brief rule. `_same_repo` uses `git_checkout`: one checkout rule.
+- Gate rows `evolve.ask`, `evolve.theme` and `evolve.match` in `settings/models.json` (evolve S1): plumb's `asks`
+  classifies the owner's prompts, names themes and matches asks to findings through them. Their prompts and label
+  set are the owner's (Ring 0).
 - `ORCA_ROW`, an Orca login no registry row names, takes `free_below` 70: under 70% of its 5-hour window it
   runs whatever the limit or pace, as every registry row (the owner, 2026-10-30; lighthouse's pace-window).
 - `regatta check`'s kick listener row (dispatch-queue S8): where this host's `wharf-runs/kick-roads` line names
@@ -38,6 +114,43 @@
   `check`, never a config site. `GATE_TABLE` resolves as one file, no fallback. `settings/` joins
   `autofinish_exclude`: every gate call on the Macs now reads it. Lighthouse's four `lighthouse.*` rows met "no row" on the Macs, whose config table links to the overlay's.
 
+- `spawn_review_ok(seed_commit, repo)` and `spawn_gate(repo, commit, cwd, origin)`
+  (confidential-reach S6): whether a seed leaving a confidential scope carries a `.review` whose sha256 is
+  its brief's, both verdicts clean, its origin a marker this host's registry reads back (one
+  `read_registry()`, a torn one refusing); whether a run is such a spawn at all, judged by the caller's
+  directory, the origin and the branch. No `--settings` for a spawned run: the outward fence's D5 was
+  answered A, not E, so a spawn starts unconfined and keeps its ssh.
+- S6's landing review (2026-10-28): `spawn_gate` returns a `Spawn(why, mark, scope, final)` from one
+  registry read (the origin's scope with it; `final` when no wait fixes the refusal), and judges whose
+  brief by who asks — a caller inside a confidential scope needs the newest brief (`newest_brief`, the one
+  dispatch hands the run) reviewed and may send no `--note` or `--start` prompt; an open caller needs the
+  seed's own brief reviewed (`seed_commit`: the commit that brought the branch's review, its blob judged,
+  never the tip's file of that path), so a spawned run's same-day `--next`, a re-dispatch and the lander
+  pass. `scope_resolver(reg)` is the one answer to "which confidential scope is this path in" for the gate
+  and the queue's `route()`: the fence's paths, then the repo key of the path and its checkout against
+  every confidential scope's entries and globs, so a caller in an unregistered repo a confidential glob
+  takes is inside it. `spawn_reviews` and `spawn_review_ok` take a `topic`.
+- S6's fourth landing review (2026-10-30): one rule of which `.review` counts — its run's own topic's
+  (`branch_topic(branch)`), for `spawn_gate`, the queue's `has_review` and pickup's `branch_origin` alike: a
+  seed beside a spawn is an open run. `spawn_gate` refuses an open caller's seed whose newest brief is not
+  the reviewed one, and a caller inside a node whose branch holds anything origin lacks beyond the seed's own
+  files (`unpushed_beyond`); takes `here_only` (a host-local queue's entry: an unknown marker is final); reads
+  a confidential scope whose `repos` is no list as torn (`registry_malformed`) and judges a missing registry
+  from its one read. `caller_dirs(here, sid)` and `caller_and_target(at, cwds, repo)` are the caller rule
+  dispatch, pickup and harness share; `session_dir` takes the newest record (`updatedAt`) and reads the
+  caller's own `CLAUDE_CONFIG_DIR` first; `entry_takes` matches an absolute key by real path. `scope_paths` and
+  `scope_match` take `reg` again (S8's removal took it out with the bridge; the resolver reads one parse). The `.review`
+  stays unsigned: a guard against accidents, not intent (S6b, later).
+- S6's third landing review (2026-10-29): `scope_resolver(reg)` gains `scopes(p)` (every confidential scope a
+  path is in: a repo may be in two) and `target(p)`, a run's repo judged by the checkout its git names
+  (`git_checkout()`), with a refusal where its folder says other scopes — a worktree or a clone of an open
+  repo inside a node's folder read as the node's own run and pushed to the open repo. `spawn_gate` judges
+  every run's target so, takes several caller directories (any one inside a scope places the caller),
+  compares scopes by membership, refuses a review whose origin is not the caller's scope, and returns the
+  caller's directory inside a scope (`Spawn.caller`); `Spawn` is a namedtuple. `session_dir(sid)` and
+  `session_dirs()` read a session's folder from its record in every login's and Orca profile's
+  `sessions/`. `entry_takes()` is the one entry-or-glob rule (`scope_of_repo` uses it); the resolver
+  passes `reg` to `scope_match`, and `_registry_file` is gone.
 - `scope_marker(name)` and `scope_of_marker(marker)` (confidential-reach S5's landing review, 2026-10-26):
   what text bound for an open repo says in place of a confidential scope's name, `confidential:<first 8
   hex of sha256(name)>`, and its reading back by this host's registry (None for an open scope, an unknown

@@ -2,6 +2,118 @@
 
 ## Unreleased
 
+- finish-as-task (2026-11-02): `hosts` keeps the fleet store alone, a finish being a fleet entry now; `local=_land`
+  is gone with the Mac-local landing queue, and a run claimed from any `local=` store counts as confined.
+
+- An account's cooldown and margin count only its own exhaustion records (cooldown-account, 2026-11-02): the primary's
+  week lock, in an Orca login's profile log, held that login a day past its own reset. A record whose `account` (or,
+  where both carry one, `org`: a new record stamps it) is another seat's is ignored; one with no `account` (or a value
+  that is no id), or a home whose login does not read, counts as before. Orca's profile setup mirrors the default
+  config dir's top-level files into each profile at each selection (a copy, read live; a link is handled the same
+  way), so a profile's `exhaustion.jsonl` may hold the primary's records, which are skipped; a write dedupes only
+  against its own seat's records. The copy also drops the profile's own records until it records again (the doc's
+  Left open). The same copy took `usage-probe.json`, so the profile's row read the
+  primary's whole reading: a probe's cached reading is now stamped with the login it read (`account`, `org`), and
+  `limits` reads one of another seat, or, on an Orca row, one with no stamp where the home's login reads, as no
+  reading (an unstamped one elsewhere is the row's own, so the caches written before the stamp still read) — it probes
+  again, or under `--cached` reads unknown, and a failed probe never falls back to it; `check` and `doctor` name such
+  a cache (info).
+  A write whose home's `.claude.json` reads no login (after one re-read) records nothing, and `account exhausted`
+  exits 0 with a stderr line, so the status line does not retry at every render; a log that cannot be appended to
+  records nothing and exits 1, so it tries again. A time written as a quoted number reads as that time. `check` and `doctor` name a log that is a
+  link or holds another seat's records still in force (info; a fix for a link on a row whose login does not read).
+- fork-read-token (2026-11-02): `ops pick` passes the desk's `GITHUB_TOKEN` to ci-provider as `WHARF_READ_TOKEN`,
+  for the admin-only reads the machine login cannot make (the fork-PR setting, the runner list); the token needs
+  `Administration: read` on the repo. A `WHARF_READ_TOKEN` the job inherited is dropped, never forwarded.
+- `account refresh` links the budgets key itself (budgets-link, 2026-11-01): where `lighthouse/budgets.json` is
+  neither a file nor a link, `tenants.json` is a link, and a `budgets.json` sits beside that link's target, it links
+  the key there, past its own claude-host gate, so a new host or a rebuilt config dir reads the owner's budgets within
+  the usage tick's 15 min with no hand-made link and no overlay line. It never replaces a file or a link; `doctor`
+  names a key it would link (`budgets_link_text`), a sibling it refuses (itself a link, or one `drive_backed()` would
+  judge otherwise than the tenants link), a budgets link that leads nowhere (an `rm` offered only where refresh would
+  link it again, a fix only where the dead link pointed into that target's own folder) or no longer sits beside that
+  target, a live link whose text reads as outside a drive while its file is in one (the hooks would open the drive
+  outside claude-host; relinked by its real path), and stays quiet on a plain file. A deleted key is linked again: a plain `{}` keeps a host on the registry's
+  rules.
+- A live week ceiling (live-limits, 2026-11-01): `lighthouse/week-max`'s `<login>:<pct>` stands over that row's
+  `rules.week_max` in `account`'s ceiling, `*:<pct>` only over a row that sets none (a reserve still first); `account week-max LOGIN` reads it, and
+  `regatta limit` sets it.
+- `account pick --room fable` (the principal tier's S6, docs/principal-tier-2026-10-26.md): only a Claude row
+  whose reading carries a weekly window scoped to Fable, that week under the row's week ceiling; a row whose
+  plan lacks Fable (the Pro fallback) is skipped, and one whose Fable is unknown too, the primary included (no
+  "rather than nothing" for a head that may not run). Exit 3 when none has room. An unknown room, or `--room`
+  with a Codex provider or kind, refuses with exit 3 before any probe, never the plain walk an unknown `--kind`
+  falls back to (an unknown room before the registry is read). A ship pinned to a row whose plan lacks Fable, or whose
+  Fable room is unknown, moves; one whose Fable week is full waits. A plan without Fable leads a row's skip.
+- `account limits --hide AGENT:FAMILY` drops one bucket family of an Orca agent's card from that call's answer, its 5h
+  and week taken again from the buckets left (`hide_families`); each Orca bucket carries its `family` and `win` in the
+  cards' words (`bucket_words`: Gemini 5h, Claude/GPT week). The widget passes it; the desk never does (2026-11-01).
+- A confined routing login is named in its tenant's `"confined": {label: [key or glob]}`, never in `logins`
+  (agy-confine-fail-closed, 2026-11-01). The tenants file is one file in the shared drive and every Mac reads it at
+  its own lighthouse: an account older than the confine read `logins` alone, so a label there owned the whole
+  tenant, the vault included, on that Mac (the account before the first confine answered `owns: true` in the
+  vault's repo; a case runs it from the history). Out of `logins`, an older account takes the row for no tenant's
+  and refuses it the tenant's repos. `tenant set --confine LABEL=KEY,…` writes `confined` and refuses a label
+  `--logins` also names; a set without the flag keeps and re-judges the confine (one that drops a covered repo is
+  refused); a bare `--confine` drops it. The first form, `"confine"` beside `logins`, now confines each label it
+  names to nothing until a set rewrites it, and no writer widens it: a set without the flag carries it over as
+  `confined` once the label leaves `--logins` and refuses while it is still there, an explicit or bare `--confine`
+  refuses the same, a label none of `logins` is never made a member, and `tenant drop`'s vault restore line moves
+  it into `--confine` and leaves out the routing logins of an entry that does not read. A `confined` that is no object, or names a label no codex or antigravity row has (a typo, a seat),
+  confines every routing login in the entry's `logins` to nothing. Doctor names each of these, a label in both
+  keys and a Claude row in `confined`, and says where a label two tenants hold sits in each. vendor-hooks gives a
+  confined login's home its tenant's layer, as one in `logins`, and reads a string `logins` as one label. `account add` on an Antigravity row says agy keeps
+  its login itself, never Codex's sign-in line.
+- `account`: a Claude reading whose `limits[]` names `weekly_all` and only weekly kinds has no 5-hour window and is
+  judged on its week, as Codex prolite is (the primary's, 2026-11-01: get_usage's `five_hour` null and the inference
+  headers' week alone, read as "limits unknown" and refused by `pick --ship`); `limits --json` says so per row,
+  `no_five_hour`, and the text says "5h unknown" for a lost figure. `pick --ship` takes a primary whose reading lost its
+  figures, as `pick` does. `limits --hide LABELS` leaves rows out, a hidden registry login unprobed (the widget's
+  `plumb/widget-hide`).
+- `bin/hosts` (the Engine room's S2, docs/fleet-page-2026-11-01.md): `hosts sample [--put]` builds this host's row from the
+  run record files (never `dispatch-rc status`), headroom, the slots and the cached logins, fenced by the core's
+  registry_unreadable() and scope_resolver (every scope walked; a confidential run a count), and `--put` hands it to
+  `dispatch-queue hosts put` (`--refresh`, the sweep's: whatever the row says); `hosts --json` merges the ref's rows, the fleet queue and `local=_land`, the logins by label
+  and the peer records. `tests/hosts.sh`.
+- `ops sample`'s `weeks` carry each reading's `sampled` time, `here`, and Orca's agents (Antigravity, Cursor) as `report`
+  rows; after the row the desk's job reads again, one `account limits LABEL` each, every login set up here whose reading
+  is over 30 minutes old, at most once a half hour (account's probe: no model call, no new login), and says which
+  came back fresh; `week_cap` leaves out report rows and readings over 6 hours old; `ops status` gives each reading's
+  age (2026-11-01: the desk read whatever its host's last pick left).
+- `lighthouse/ci-lanes.json`: a CircleCI lane takes `projects`, the project of its org per repo, which wharf's pick
+  moves the Linux share to (ci-two-orgs, 2026-11-01).
+- A tenant's logins may name an Antigravity row (agy-tenant, 2026-10-31: the owner's word to put another person's
+  agy login, its telemetry off, in the owner tenant): `"provider": "antigravity"`, its home agy's own
+  (`$GEMINI_CLI_HOME`, else `~/.gemini`). `pick --provider antigravity --repo` answers the tenant's own and says it
+  `owns` the repo, the vendor fence's yes, as a Codex row does; `tenant set` takes the label only while its home is
+  the one an agy run here uses. The row routes only: it sets no environment (agy picks its keychain login
+  itself), is never probed, `limits --all` leaves it out (Orca's report card is its figure), `check` reads no
+  login of it, `run` refuses it. The tenant routes, the skip line and doctor's roster name each routing vendor's
+  rows (`codex`, `antigravity`), not Codex's alone. Its home binds no account, as a Codex home does: the row stands
+  for whichever agy login the Mac's keychain holds. Cases in `tests/account.sh`.
+- A tenant may confine a routing login to part of its repos (the first form, replaced by `"confined"` the next
+  day, the entry above): `"confine": {label: [key or glob]}` in its tenants-file entry, written by `tenant set … --confine LABEL=KEY[,KEY…]` (kept by a later set without the flag, dropped with
+  the label). The row then owns, and `pick` runs it on, only those of the tenant's repos; elsewhere in the tenant
+  pick skips it saying so, so the vendor fence refuses. Why: the owner tenant holds the vault and the guarded repos
+  beside the scope another person's login was meant for, and tenancy alone would have given it all of them. It only
+  narrows: a malformed value confines to nothing, a Claude row is refused (a seat's guard reads its tenant
+  whole), and so is a key the tenant's `--repos` do not cover. A `confine` that is no object, or names a label that
+  is none of the tenant's logins, confines every routing login of it to nothing, and doctor names it; one on a
+  Claude row, or on a registry row, is never read. The vault's restore line carries the confine, a repeated
+  `--confine` adds, `pick --ship` and `limits LABEL --repo` read it too.
+- CI budget alarms (ci-budgets, 2026-10-31): after each row `ops sample` files one logbook issue, through helm's
+  `ask` (`helm/logbook-repo`, led by `helm/mention`, label `budget`), per account each time it crosses its week share
+  or into its month reserve, on ci-provider's own terms, and closes it when the account is back under
+  and the alarm is a day old (a step up closes the issue it supersedes; a refused close is retried)
+  (`ci-budget-alarms.json` in the log dir). The intake reads `budget` as an alarm kind (rung 4, no model). `ops.json`
+  gains `pick_repos` and `pick_apply`: the 15-minute job picks those repos, applying only when `pick_apply` is true.
+  `ci-budgets.json`'s top-level `reserve` now reaches `ops` as it reaches the pick.
+- The budgets file (the owner, 2026-10-31: "put the budget caps in a regatta config that I can edit myself,
+  quickly"): `lighthouse/budgets.json`, `{label: {week_max, window_max, free_below}}`, overrides those rules of a
+  registry row, and a ceiling it sets reads `week ceiling, budgets.json`. Optional: absent, the registry's rules;
+  torn, its last good copy, else the registry's; a value that is no finite number from 0 to 100, or an unknown key, is
+  skipped with a stderr line. Drive-backed like the tenants file (`refresh` keeps `.budgets.json.last`), except that a
+  hook never opens the link to seed a missing copy. Cases in `tests/account.sh`; G4 in the core's check.
 - A tenant's logins may name a Codex row (the owner, 2026-10-30: the vault's tenant "should also allow my codex"):
   `account tenant set` takes any claude or codex label (the refusal reads "no claude or codex row"), so
   `pick --provider codex --repo` runs a tenant's repo on its own Codex login and skips the others with the
@@ -59,6 +171,19 @@
   reads quotes in context (an apostrophe inside double quotes had let an operator ride along) and refuses
   ANSI-C `$'…'` quoting and any `${…}`; a commit with `--no-verify` (abbreviated too), `-n`, a `core.hooksPath`
   or any `-c` but the author's name and address gets no trailer; agy's `CodeEdit` is text; and the entry runs `python3 -I`, so a repo's own `json.py` never loads inside the hook.
+- An adapter from before the one entry (no `ENTRIES` line in `vendor_hook.py`) read `guards` as a guard path and
+  allowed every call: `vendor-hooks apply` refuses one and `check` reports it (vendor-hooks-names' finish review).
+- One named entry per CLI (vendor-hooks-names, 2026-10-31; the owner read three indistinguishable PreToolUse
+  entries in Codex's /hooks as a bug): `vendor_hook.py <cli> guards` runs `secrets_guard` and wharf's checkpoint at
+  once (the first deny in that order the answer: one after another, a slow secrets_guard starved checkpoint, the finish
+  review), then the trailer, under one 25 s deadline, so each Codex home and agy's `regatta` key
+  hold one handler: one approval in Codex, one launcher start per tool call instead of three. Codex's carries
+  `statusMessage` `regatta guards: secrets, checkpoint, trailer`, the name its /hooks lists (a handler without one
+  reads "Unnamed hook"; probed live on codex-cli 0.166.0); agy has no such field, its key names it. `apply` merges
+  the older one-per-guard shape into the first of its groups, never touching another tool's, and drops the emptied
+  groups at the end; `check` calls that shape stale. Each Mac's owner trusts the one entry once in Codex's /hooks.
+  The one-guard and `trailer` forms stay for a home not yet re-applied. Cases in `tests/parity.sh`, one on a copy
+  of the older shape (`tests/fixtures/codex-hooks-2026-10-31.json`); the parity table runs through the one entry.
 
 - The desk's sense, logged (lighthouse-ops S5, 2026-10-28): `ops classify` takes each new open issue the intake
   holds through four rows of the core's gate (`lighthouse.importance`, `.urgency`, `.cost`, `.clarity`; Sonnet in

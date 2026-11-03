@@ -359,7 +359,27 @@ SEND_ONLY = set(SENT_FIELDS) | {"task", "t", "lease_gen", "plan"}   # every key 
 SHRINK = ("progress", "summary", "recommended", "title", "waiting_for", "by", "owner", "branch", "pr", "check")
 # What a line keeps when shrinking the free text was not enough (long lists of owned paths, say)
 ESSENTIAL = ("task", "status", "t", "session", "host", "harness", "ask", "answered", "from", "plan", "repo",
-             "eta", "cost", "parked", "via", "wire") + SENT_FIELDS
+             "eta", "cost", "parked", "via", "wire", "charter", "charterer", "charterer_host", "road") + SENT_FIELDS
+# A ship's charterers (docs/charterer-2026-11-01.md S1): the sessions that sent it to its skipper, or that
+# announced themselves as its watchers, which the yard's charter pass (S4) hails every 5 minutes. Three
+# ship-level events — no `task` key, so no task's news — written by the yard's `helm charter
+# --join/--renew/--leave`: `{"charter": "chartered" | "charter renewed" | "charter left", "charterer":
+# <session id>, "charterer_host": <its Mac>, "road": <hail's road to it, when known>, "why": <a leave's>}`.
+# state() derives `charterers` (live) and `charterers_gone` (left, or lapsed). A charter lapses unless its road
+# is in CHARTER_SEES_END: a road on which the charter pass (S4) reads from hail that the session has ended and
+# writes `charter left`. None is, today: hail's verdicts carry no `ended` (an ended session on the socket road
+# falls through to Talk, `queued`, or the file road; S1's fourth review), so every charter, any road or none,
+# lapses when not renewed for CHARTER_LAPSE seconds (three 5-minute passes), and its charterer renews on each
+# wake to stay. The step that gives a road an end read-back (S2's mailbox, S4's socket read) names it here.
+CHARTER_KINDS = ("chartered", "charter renewed", "charter left")
+CHARTER_ROADS = ("socket", "mailbox", "codex", "orca", "talk", "file")   # hail's roads, S2's mailbox among them
+CHARTER_LAPSE = 900
+CHARTER_SEES_END = ()
+CHARTER_WHY = ("left", "lapsed", "ended")   # the whys a public copy carries; any other reads `left` there
+
+
+def charter_lapses(road):
+    return road not in CHARTER_SEES_END
 
 
 def plans_root():
@@ -574,9 +594,11 @@ def events(pid):
     out = []
     for x in lines:
         try:
-            out.append(json.loads(x))
+            e = json.loads(x)
         except ValueError:
             continue  # a torn line from a crash: skipped, never fatal
+        if isinstance(e, dict):  # valid JSON that is no object (`[]`, `null`) is skipped too: every reader calls e.get
+            out.append(e)
     return out
 
 
@@ -865,6 +887,12 @@ def guarded(repo):
 _guarded_repo = guarded  # the older name, kept for its callers
 
 
+# What an ask row may carry when guarded() cannot be trusted (a torn registry, no `regatta/guarded`): a doc's
+# own words, which ask poll's scan and the board's poll cards both keep home then (helm-board-ux S2), and the
+# worktree's path, whose folders above the repo may name what guarded() missed (finish review)
+DOC_TEXT = ("section", "summary", "doc_title", "options", "worktree")
+
+
 def guard_unread(fresh=False):
     """True when guarded() cannot be trusted to name every guarded repo: keel's gate did not load (the
     fallback list knows no confidential scope), its `regatta/guarded` key did not read where the
@@ -896,7 +924,8 @@ def state(pid, at=None):
     if plan is None:
         raise FileNotFoundError("no plan %s" % pid)
     at = at or now()
-    evs = sorted(events(pid), key=lambda e: e.get("t", 0))
+    raw = events(pid)   # charterers() reads the file's order: a charter line's stamp may be from a clock that stepped back
+    evs = sorted(raw, key=lambda e: e.get("t", 0))
     tasks = {}
     for name, t in (plan.get("tasks") or {}).items():
         tasks[name] = {"id": name, "title": t.get("title") or name, "by": doer(t), "block": t.get("block"),
@@ -914,7 +943,7 @@ def state(pid, at=None):
     for e in evs:
         name = e.get("task")
         if not name:
-            continue
+            continue   # a ship-level event: a lease's, a charter's (charterers() reads those)
         t = tasks.setdefault(name, {"id": name, "title": name, "by": None, "block": None, "kind": "session", "branch": None,
                                     "repo": plan.get("repo"), "pr": None, "deps": [], "owns": [], "live": [],
                                     "status": "planned", "eta": None, "eta_by": None, "cost_est": None, "cost": None,
@@ -927,6 +956,14 @@ def state(pid, at=None):
         if st:
             if st == "running" and not t["started"]:
                 t["started"] = e.get("t")
+            if st == "running" and t["status"] in ("planned", "blocked", "failed") + DONE:
+                # this round's start (the first run, a retry, a fix round): the ladder's under-way step. A run
+                # resuming after an ask (relayed, parked, waiting → running) is the same round (finish review)
+                t["run_started"] = e.get("t")
+            if st in DONE and not t.get("built_at"):
+                t["built_at"] = e.get("t")   # the ladder's built end (S2): never its landing, nor a later report
+            elif st not in DONE:
+                t["built_at"] = None          # reopened (a fix round): built again later
             t["status"] = st
         for k in ("progress", "session", "host", "harness", "branch", "pr", "check", "waiting_for"):
             if e.get(k):
@@ -1007,14 +1044,79 @@ def state(pid, at=None):
     # the ship's card (H1): started at its first apply, else its first running task; due and cost as
     # `helm ship` set them; none of the three on a plan from before rename S5
     first_run = min([t["started"] for t in tasks.values() if t.get("started")] or [None], key=lambda x: x or 0)
-    return {"id": plan["id"], "topic": plan.get("topic"), "manager": plan.get("manager") or {},
+    live, gone = charterers(raw, at)
+    return {"charterers": live, "charterers_gone": gone,"id": plan["id"], "topic": plan.get("topic"), "manager": plan.get("manager") or {},
             "started": plan.get("started") or first_run, "due": plan.get("due"), "cost": plan.get("cost"),
             "space": plan.get("space"), "repo": plan.get("repo"), "created": plan.get("created"),
             "as_of": at, "host": host(), "updated": max([t["updated"] or 0 for t in tasks.values()] + [plan.get("updated") or 0]),
             "tasks": [tasks[k] for k in _order(plan, tasks)], "milestones": ms, "totals": totals,
             # public() keys the guarded tokens with it and drops it; a plan from before the salt
             # falls back to its id until the skipper's next write adds one (save_plan)
-            "guard_salt": plan.get("salt") or plan["id"]}
+            "guard_salt": plan.get("salt") or plan["id"],
+            # the docs the ship's steps were compiled from (helm compile), for the hill's decision counts
+            # (ladder): absolute paths on this host, so public() drops them
+            "docs": sorted({str(t["doc"]) for name, t in (plan.get("tasks") or {}).items() if isinstance(t, dict) and t.get("doc")
+                            and not (tasks.get(name) or {}).get("guarded")})}   # a guarded step's doc is counted nowhere (K6)
+
+
+def _charter_t(e):
+    """A charter line's time; one that is no number reads as 0."""
+    t = e.get("t", 0)
+    return t if isinstance(t, (int, float)) and not isinstance(t, bool) else 0
+
+
+def charter_lines(evs):
+    """The verb's own lines, as charterers() reads them: a task's line, and any line a wire intake wrote
+    (`via`, `wire`: a Talk REPORT), is no charter, whatever keys it carries."""
+    return [e for e in evs if e.get("charter") in CHARTER_KINDS and not (e.get("task") or e.get("via") or e.get("wire"))]
+
+
+def charterers(evs, at=None):
+    """([live], [gone]) from a ship's events, in the order each charterer first joined: one row per session,
+    {session, host, road, since, renewed} — `since` its first join, `renewed` its newest join or renewal —
+    and, once gone, `gone` (when) and `why` (`left`, a leave's own why, or `lapsed`). A join after a leave or
+    a lapse starts a new charter (a new `since`). A renewal of a session not chartering adds nothing: the
+    verb refuses it, and a stray line in the file is no join. A lapsed Talk charterer is gone at its lapse,
+    renewed + CHARTER_LAPSE, whatever is read later. The lapse is the road's (charter_lapses): every road but
+    CHARTER_SEES_END lapses, no road included. Only the verb's own lines count: a task's line, and any line a
+    wire intake wrote (`via`, `wire`: a Talk REPORT), is no charter, whatever keys it carries; a line whose time
+    is no number reads as 0, so one torn task line never stops a charter's read. Lines are read in the file's
+    order, never sorted by time: the verb writes each one under the plan's lock, so the file's order is the order
+    written, while a clock that stepped back would sort a rejoin before the leave it follows (the closing review);
+    a caller passes events() as read (state() does). `renewed` is the newest line's own stamp, so a lapse counts
+    from the clock that wrote it. A row is gone once it has a `gone` key, whatever its time reads as."""
+    at = now() if at is None else at
+    rows = {}
+    for e in charter_lines(evs):
+        kind, sid = e.get("charter"), e.get("charterer")
+        if not isinstance(sid, str) or not sid:
+            continue
+        t = _charter_t(e)
+        r = rows.get(sid)
+        if r and "gone" not in r and charter_lapses(r["road"]) and t > r["renewed"] + CHARTER_LAPSE:
+            r["gone"], r["why"] = r["renewed"] + CHARTER_LAPSE, "lapsed"   # it lapsed before this event came
+        if kind == "chartered":
+            if r is None or "gone" in r:
+                rows.pop(sid, None)   # a new charter goes last, in join order
+                r = rows[sid] = {"session": sid, "host": None, "road": None, "since": t, "renewed": t}
+            r["renewed"] = t
+        elif r is None or "gone" in r:
+            continue
+        elif kind == "charter renewed":
+            r["renewed"] = t
+        else:
+            r["gone"], r["why"] = t, e.get("why") or "left"
+            continue
+        if isinstance(e.get("charterer_host"), str) and e["charterer_host"]:
+            r["host"] = e["charterer_host"]
+        if e.get("road") in CHARTER_ROADS:   # a road hail has; anything else leaves the one it had
+            r["road"] = e["road"]
+    live, gone = [], []
+    for r in rows.values():
+        if "gone" not in r and charter_lapses(r["road"]) and at > r["renewed"] + CHARTER_LAPSE:
+            r["gone"], r["why"] = r["renewed"] + CHARTER_LAPSE, "lapsed"
+        (gone if "gone" in r else live).append(r)
+    return live, gone
 
 
 # A blueprint block's fields in plan.json (bin/plan task; docs/orchestration-orca-2026-10-15.md Q1): what
@@ -1054,6 +1156,7 @@ def public(st):
     """The copy that may leave the Mac (K6): guarded tasks lose their text, raw tails never ride."""
     out = json.loads(json.dumps(st))
     salt = str(out.pop("guard_salt", None) or out.get("id") or "")
+    out.pop("docs", None)   # paths on this host, a login in them: the hill's counts leave, never the paths
     # A guarded task's id is often its topic ("tax-return"): it leaves as guarded-<hex>, a hash of
     # the id keyed by the plan's private salt. A counter (guarded-1, -2…) would renumber: plan.json
     # keeps its tasks in sorted keys, so a new task can sort before an old one. The salt keeps a
@@ -1063,6 +1166,14 @@ def public(st):
     import hashlib
     tokens = {t["id"]: "guarded-" + hashlib.sha256((salt + "\0" + t["id"]).encode()).hexdigest()[:8]
               for t in out["tasks"] if t.get("guarded")}
+    # a charterer's session id and its Mac stay here, as a send's sender does; how many watch, by which
+    # road and since when may leave (the board's charterer names are S6's, read from the local state). A
+    # leave's why is free text (S4's may quote hail): only one of CHARTER_WHY leaves, any other as `left`
+    for k in ("charterers", "charterers_gone"):
+        out[k] = [{x: r.get(x) for x in ("road", "since", "renewed", "gone", "why") if x in r} for r in out.get(k) or []]
+        for r in out[k]:
+            if "why" in r and r["why"] not in CHARTER_WHY:
+                r["why"] = "left"
     for t in out["tasks"]:
         t["deps"] = [tokens.get(d, d) for d in t.get("deps") or []]
         t["blockers"] = [_tokened(b, tokens) for b in t.get("blockers") or []]
@@ -1368,3 +1479,295 @@ def newest_per_item(rows):
             best[k] = r
     keep = {id(r) for r in best.values()}
     return [r for r in rows if id(r) in keep]
+
+
+# ---------------------------------------------------------------------------- a decision's own section
+# helm-board-ux S2 (docs/helm-board-ux-2026-10-26.md): the board expands a question in place, first to
+# its own section as keel parses it — the heading it sits under, the prose above it (the hard trade-off),
+# its options table, the item itself — so ask poll carries that much per open item, with the doc's
+# Summary, the S-steps that wait on it and a content hash. Read with keel's own parse, headings and table
+# rule (the board keeps no second parser): `m` is keel's module. The caps bound what a card carries, never
+# what the hash reads. Measured 2026-11-02 on the laptop's real night: asks.json 19.8 KB → 113 KB for 40
+# rows, the board's state.json 76.5 KB from main's code → about 171 KB on the same inputs (the S2 line's
+# reference, 2026-10-26: 65,044 bytes); the item's own text is most of it.
+SECTION_ABOVE_CAP = 1600    # characters of prose kept above an item (its last paragraphs)
+SECTION_ITEM_CAP = 4000     # characters of the item's own markdown
+SUMMARY_CAP = 900           # characters of the doc's Summary
+TABLE_ROWS_CAP = 12
+TABLE_CELL_CAP = 400
+_SUMMARY_RE = re.compile(r"^(?:\d+(?:\.\d+)*\.?\s+)?[*_]*summary\b", re.I)
+_TABLE_SEP_CELL = re.compile(r"^\s*:?-+:?\s*$")
+
+
+def _cells(line):
+    """A table row's cells as keel's Course page splits them (its `|` rule)."""
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _cap_tail(text, cap):
+    """The last `cap` characters of `text`, cut at a paragraph or line start when one is near."""
+    if len(text) <= cap:
+        return text
+    tail = text[-cap:]
+    for sep in ("\n\n", "\n"):
+        k = tail.find(sep)
+        if 0 <= k < cap // 2:
+            return "…" + tail[k + len(sep):]
+    return "…" + tail
+
+
+def item_hash(crumb, above, table_lines, item):
+    """The item's content hash over its whole section, before any cap: the heading, the prose above, every
+    table row, the item up to its answer box — whitespace folded, sha256's first 16 hex. An edit to any of it
+    reads "changed — look again"; the owner's answer, and a reply under the item before it, never move it
+    (the drainer, S4, compares it as keel's answer_at compares a Save's commit with git's answer)."""
+    import hashlib
+    parts = [crumb or "", above or "", "\n".join(table_lines or ()), item or ""]
+    norm = "\n".join(" ".join(p.split()) for p in parts)
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def doc_decisions(m, text):
+    """(doc, {item id: fields}) for the open items of a doc, read with keel's parse (`m`).
+    doc: {title, summary}. Each item's fields: `section` {crumb, above, table: {head, rows} | None, item},
+    capped for the card, `options` [[letter, text]], `line` (1-based, the item's first line), `step_waits`
+    (the S-steps of this doc's Action plan, not done, whose `after:` names the item), `hash` (item_hash over
+    the uncapped section). An answered item is left out; a doc keel cannot parse raises keel's Stop."""
+    lines, items, _ = m.parse(text)
+    fence = m.fenced(lines)
+    title = m.title_of(text, "")
+    summary = ""
+    try:
+        found = m.sections(lines, lambda t: bool(_SUMMARY_RE.match(t)))
+    except Exception:
+        found = []
+    if found:
+        s, e = found[0]
+        summary = "\n".join(lines[s + 1:e]).strip()
+        if len(summary) > SUMMARY_CAP:
+            summary = summary[:SUMMARY_CAP].rsplit(" ", 1)[0] + " …"
+    waits = {}
+    try:
+        steps = m.keel_parse(lines)["steps"]
+    except Exception:
+        steps = []
+    for st in steps:
+        if st.get("status") in ("done", "superseded"):
+            continue
+        for t in st.get("after") or ():
+            if re.match(r"^D\d+$", t.strip()):
+                waits.setdefault(t.strip(), []).append(st["id"])
+    out = {}
+    prev_end = 0
+    # a run of items under one heading shares the prose and table above the first (the architects' D-list):
+    # each later item of the run carries that section, and its hash reads it (an edit of the shared table
+    # moves every item's hash), answered items of the run included in passing it on
+    shared, prev_k = None, None
+    for it in items:
+        start = it["start"]
+        lo = prev_lo = prev_end
+        prev_end = it["end"]
+        crumb, k = "", start - 1
+        while k >= 0:
+            h = m.heading_at(lines, fence, k)
+            if h:
+                crumb = re.sub(r"[*`]", "", h.group(2)).strip()
+                break
+            k -= 1
+        lo = max(lo, k + 1)
+        if lo > prev_lo:   # a heading between the two items: nothing under it belongs to the item before
+            prev_lo = len(lines)
+        # the item before may end at its answer with quotes under it (a `> **Done.** …` reply, an owner's
+        # note): they are that item's, never this one's prose (only those right after it: a heading resets lo)
+        while lo < start and lo >= prev_lo and (not lines[lo].strip() or (not fence[lo] and lines[lo].lstrip().startswith(">"))):
+            lo += 1
+        while lo < start and not fence[lo] and (not lines[lo].strip() or re.match(r"^\s*([-*_])(\s*\1){2,}\s*$", lines[lo])):
+            lo += 1   # a thematic break (`---`) or blanks before the prose: no one's trade-off
+        region = lines[lo:start]
+        # the table nearest the item, and the prose above it: a table under the prose is the item's
+        # options table (the architects' shape); prose after a table stays prose
+        tb_end = len(region)
+        while tb_end and not region[tb_end - 1].strip():
+            tb_end -= 1
+        tb_start = tb_end
+        while tb_start and region[tb_start - 1].strip().startswith("|") and not fence[lo + tb_start - 1]:
+            tb_start -= 1
+        rows = region[tb_start:tb_end]
+        table, table_lines = None, []
+        if len(rows) >= 2 and all(_TABLE_SEP_CELL.match(c) for c in _cells(rows[1])):
+            table_lines = [r.strip() for r in rows]
+            body = [[c[:TABLE_CELL_CAP] for c in _cells(r)] for r in rows[2:2 + TABLE_ROWS_CAP]]
+            table = {"head": _cells(rows[0]), "rows": body}
+            if len(rows) - 2 > TABLE_ROWS_CAP:
+                table["more"] = len(rows) - 2 - TABLE_ROWS_CAP
+            prose = region[:tb_start]
+        else:
+            prose = region
+        above = "\n".join(prose).strip()
+        if k != prev_k:   # a new heading: a new run, whose first item's prose and table are the run's
+            shared = (above, table, table_lines) if (above or table is not None) else None
+        elif not above and table is None and shared:
+            above, table, table_lines = shared   # a later item's own prose stays its own, never the next one's
+        prev_k = k
+        if (it.get("answer") or "").strip():
+            continue
+        own_end = it["answer_line"] if it.get("answer_line") is not None else it["end"]
+        if own_end <= start:   # the old shape: `➤ Answer:` on the item's own line — the line up to it
+            cut = m.split_answer(lines[start])
+            body_lines = [cut[0].rstrip() if cut else lines[start]]
+        else:
+            body_lines = lines[start:own_end]
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+        item_md = "\n".join(body_lines)
+        section = {"crumb": crumb, "above": _cap_tail(above, SECTION_ABOVE_CAP), "table": table,
+                   "item": item_md if len(item_md) <= SECTION_ITEM_CAP else item_md[:SECTION_ITEM_CAP] + " …"}
+        out[it["id"]] = {"section": section, "options": [[a, b] for a, b in it.get("options") or []],
+                         "line": start + 1, "step_waits": waits.get(it["id"], []),
+                         "hash": item_hash(crumb, above, table_lines, item_md)}
+    return {"title": title, "summary": summary}, out
+
+
+def branch_worktrees(top):
+    """{branch: worktree path relative to HOME} of the repo's checkouts on this host — the VS Code link's
+    `<worktree>` (queue: `vscode://file/<root>/<worktree>/<rel>:<line>`, `root` set once per browser), so
+    no path with a login in it leaves the Mac. A checkout outside HOME is left out."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(top), "worktree", "list", "--porcelain"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    home = Path(os.environ.get("HOME") or Path.home()).resolve()
+    out, path = {}, None
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/") and path:
+            try:
+                out[line[len("branch refs/heads/"):]] = str(Path(path).resolve().relative_to(home))
+            except ValueError:
+                pass
+    return out
+
+
+# ---------------------------------------------------------------------------- the ship ladder's data
+# helm-board-ux S2 (the old S10, R2.6: the live state had no `due`, no ship ETA, four of six ships at cost 0):
+# per ship, its due date (`helm ship --due`), a projected ETA with its slip against due, the hill's counts
+# (answered of all decisions uphill, built of all steps downhill, R2.13: never hand-placed) and where its cost
+# and estimate to go come from. Read from state() or public()'s copy alone, plus the docs' decision counts the
+# caller reads (helm_render.doc_decision_counts): a pure function, so the board, the ship's page and
+# `helm show` say the same.
+STEP_LEN_DEFAULT = 3 * 3600   # a step's length when the ship has no built step to measure: one build's run
+
+
+def _median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return None if not n else xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+
+
+def task_ends(st, at=None):
+    """({task id: (end epoch, how)}, step length, its source) — each step's end along the dependency order.
+    A built step (DONE) ends at its first DONE event (`built_at`; an older copy, its last update). Any other step — a failed one owes a fix round — starts
+    no earlier than now and than its dependencies' ends: with the skipper's ETA it ends there ("eta"), or at
+    now when that ETA has passed ("overrun"), or one step length after a dependency that ends past its ETA
+    ("pushed"); with no ETA it ends one step length after it may start ("projected"; a running step from this round's start, `run_started`, and "overrun" once a step's
+    length has passed). The step length is the median of the ship's built steps (started to done), else
+    STEP_LEN_DEFAULT; a built step's time is its first DONE event (`built_at`), never its landing. A
+    dependency the ship does not hold adds nothing, a cycle is cut where it closes, a superseded step never
+    ends anything."""
+    at = now() if at is None else at
+    tasks = [t for t in st.get("tasks") or () if not t.get("superseded")]
+    by_id = {t["id"]: t for t in tasks}
+    def built_at(t):   # when it was built: state()'s first DONE event, else (an older copy) its last update
+        return t.get("built_at") or t.get("updated")
+
+    def began(t):      # this round's start: a retry or a fix round counts from itself, never the first run
+        return t.get("run_started") or t.get("started")
+    built = [float(built_at(t)) - float(began(t)) for t in tasks
+             if t.get("status") in DONE and began(t) and built_at(t) and float(built_at(t)) > float(began(t))]
+    step = _median(built)
+    src = "the median of %d built step%s" % (len(built), "" if len(built) == 1 else "s") if step else "the default"
+    step = step or STEP_LEN_DEFAULT
+    ends = {}
+
+    def end_of(tid, stack):
+        if tid in ends:
+            return ends[tid][0]
+        t = by_id.get(tid)
+        if t is None or tid in stack:
+            return None
+        if t.get("status") in DONE:
+            ends[tid] = (float(built_at(t) or at), "built")
+            return ends[tid][0]
+        deps = [e for e in (end_of(d, stack | {tid}) for d in t.get("deps") or ()) if e is not None]
+        dep_end = max(deps) if deps else None
+        eta = None
+        if t.get("eta") not in (None, "") and t.get("status") != "failed":
+            try:   # a hand-edited plan.json: an ETA that will not read is no ETA (state() never reads a failed one's)
+                eta = float(t["eta"])
+            except (TypeError, ValueError):
+                eta = None
+        if eta is not None:
+            if dep_end is not None and dep_end >= eta and dep_end > at:   # a dependency still to end, past the ETA
+                ends[tid] = (dep_end + step, "pushed")
+            elif eta < at:
+                ends[tid] = (at, "overrun")
+            else:
+                ends[tid] = (eta, "eta")
+        else:
+            begin = max(at, dep_end or at)
+            how = "projected"
+            if t.get("status") == "running" and began(t) and (dep_end is None or dep_end <= at):
+                if float(began(t)) + step < at:
+                    how = "overrun"   # under way past a step's length: at least now, as a passed ETA reads
+                begin = max(at, float(began(t)) + step) - step   # under way: one step from this round's start
+            ends[tid] = (begin + step, how)
+        return ends[tid][0]
+
+    for t in tasks:
+        end_of(t["id"], frozenset())
+    return ends, step, src
+
+
+def ladder(st, at=None, decisions=None):
+    """The ship's row of the ladder: start, due, the projected ETA and its slip in days (+ late, − early),
+    shipped (every step built: when the last was), the hill and the money, each with where it comes from.
+    `decisions` is (answered, all) over the ship's docs, or None when no doc of it reads here."""
+    at = now() if at is None else at
+    tasks = [t for t in st.get("tasks") or () if not t.get("superseded")]
+    ends, step, step_src = task_ends(st, at)
+    open_ = [t for t in tasks if t.get("status") not in DONE]
+    due = float(st["due"]) if st.get("due") not in (None, "") else None
+    eta = shipped = None
+    hows = {}
+    if open_:
+        eta = max(ends[t["id"]][0] for t in open_)
+        for t in open_:
+            h = ends[t["id"]][1]
+            hows[h] = hows.get(h, 0) + 1
+    elif tasks:
+        shipped = max(float(t.get("built_at") or t.get("updated") or 0) for t in tasks) or None
+    land = eta if eta is not None else shipped
+    slip = round((land - due) / 86400.0, 1) if land is not None and due is not None else None
+    tot = st.get("totals") or {}
+    spent = float(tot.get("cost") or 0)
+    to_go = float(tot.get("est_to_go") or 0)
+    kinds = {}
+    for t in open_:
+        k = {"manager": "skipper", "est.": "burn rate"}.get(t.get("est_kind"), "none")
+        kinds[k] = kinds.get(k, 0) + 1
+    reported = sum(1 for t in tasks if t.get("cost") is not None)
+    begun = sum(1 for t in tasks if t.get("started") or t.get("status") in ENDED or t.get("status") == "running")
+    est = float(st["cost"]) if st.get("cost") not in (None, "") else spent + to_go
+    # the open decisions the projection takes as answered now: each open ask's item, never a guarded one's ref
+    waits = sorted({a["ref"].rpartition("#")[2] for t in open_ for a in t.get("asks") or ()
+                    if a.get("open") and "#" in str(a.get("ref") or "")})
+    return {"start": st.get("started") or st.get("created"), "due": due, "eta": eta, "slip_days": slip,
+            "shipped": shipped, "late": bool(due is not None and land is not None and land > due),
+            "eta_from": dict(sorted(hows.items())), "step_len": int(step), "step_len_from": step_src, "assumes_answered": waits,
+            "hill": {"decisions": list(decisions) if decisions else None,
+                     "steps": [sum(1 for t in tasks if t.get("status") in DONE), len(tasks)]},
+            "spent": round(spent, 4), "est_to_go": round(to_go, 4), "est": round(est, 4),
+            "est_from": "the ship (helm ship --cost)" if st.get("cost") not in (None, "") else "its steps",
+            "to_go_from": dict(sorted(kinds.items())), "cost_from": {"reported": reported, "unreported": max(0, begun - reported)}}

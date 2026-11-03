@@ -28,6 +28,7 @@ import copy
 import datetime
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -114,6 +115,7 @@ DEFAULTS = {
         "retired": [],              # [[phrase, why]]: corrected claims that must not come back anywhere
         "retired_scan": ["**/*.md", "**/*.html"],
         "require_pins": True,       # a render whose stem has no entry is a finding, not a silent pass
+        "require_retired": False,   # opt-in (the owner, 2026-11-02): true makes an empty `retired` a finding
     },
     "builder": {"require_content_file": True, "extra_interpreters": []},
     "publish": {                    # how the skill publishes; no check reads these bar asset_host
@@ -189,7 +191,7 @@ class Config:
         # measurement has no file yet, and a face just changed has one for the old family.
         self.glyphs = self._load_glyphs(f["glyphs"]) if load_glyphs else {}
         self.captain, self.furniture, self.naming = d["captain"], d["furniture"], d["naming"]
-        self.claims, self.builder, self.layout = d["claims"], d["builder"], d["layout"]
+        self.claims, self.builder, self.layout = _claims(d["claims"]), d["builder"], d["layout"]
         self.memo = d["memo"]
         self.publish = _publish(d["publish"])
         suffix = self.naming.get("sidecar_suffix")
@@ -252,6 +254,17 @@ class Config:
             raise ConfigError(f"{path}: {e}") from None
         cfg.path, cfg.glyphs_from = path, inherited
         return cfg
+
+
+def _claims(c):
+    """The `claims` section: its two guard switches refused unless true or false, since a string such as
+    "false" is truthy and would keep a guard on that its owner meant to turn off."""
+    if not isinstance(c, dict):
+        raise ConfigError(f"claims is {c!r}, not an object")
+    bad = [k for k in ("require_pins", "require_retired") if not isinstance(c.get(k), bool)]
+    if bad:
+        raise ConfigError(f"claims: {', '.join(bad)} must be true or false")
+    return c
 
 
 def _publish(p):
@@ -1674,6 +1687,14 @@ def check_single_deck(path, cfg):
 # Claims: every render carries the pinned phrases, no retired claim comes back
 # ------------------------------------------------------------------------------------------------
 
+def first_part(p, root):
+    """P's first part under ROOT, read lexically; None when it lies outside."""
+    try:
+        return Path(os.path.normpath(os.path.abspath(p))).relative_to(root).parts[0]
+    except ValueError:
+        return None
+
+
 def check_claims(root, cfg, only=None):
     out = []
     # Each deck its own short list: a sent deck carries more than a spoken one, never the page's all.
@@ -1705,17 +1726,59 @@ def check_claims(root, cfg, only=None):
     for kind, name in tables.items():
         have = {s for s, kinds in by_stem.items() if kind in kinds}
         out += [("claims.table", f"{name} names {s}, which has no {kind} render") for s in sorted(set(pins[name]) - have)]
-    files = sorted({p for pattern in cfg.claims["retired_scan"] for p in Path(root).glob(pattern) if p.is_file()})
+    # Normalised (lexically, never through a link) before any filter: a glob that climbs (`../notes/*.md`)
+    # yields `<root>/../notes/…`, whose first part as written is `..`, so the one-document filter below
+    # dropped it and a planted retired claim passed `pitch check <doc>` while the root's check caught it.
+    # resolve() would judge a link by its target's folder, and crash on a document linked from outside.
+    root_n = Path(os.path.abspath(root))
+    retired, scan = cfg.claims["retired"], cfg.claims["retired_scan"]
+    # (normalised path, the path the glob gave): the first names and owns it, the second is the one read
+    # (through a linked folder `shared/../x.md` normalises to a file that is not there). Keyed by both
+    # names, one entry per (normalised name, real file): two files that normalise alike are both read,
+    # and each spelling keeps its own owner, whatever the glob order
+    real = {}
+    for pattern in scan:
+        for p in root_n.glob(pattern):
+            if p.is_file():
+                real.setdefault((Path(os.path.normpath(p)), os.path.realpath(p)), p)
+    entries = sorted((norm, src) for (norm, _), src in real.items())
     if only is not None:
-        # One document's files: itself and its renders, a deck folder whole.
-        owned = {p.relative_to(root).parts[0] for p in documents(root, cfg, only)}
-        owned |= {p.relative_to(root).parts[0] for _, p, _ in found}
-        files = [p for p in files if p.relative_to(root).parts[0] in owned]
-    for path in files:
-        text = normalise(render_text(path) if path.is_dir() else path.read_text(encoding="utf-8"))
-        for claim, why in cfg.claims["retired"]:
+        # One document's files are every top-level entry under the root named from its stem (itself, its
+        # renders, a deck folder with no project/ yet, a draft or an assets folder beside it), the longest
+        # stem winning; a file outside the root, or under it but named from no document's stem, is no
+        # document's, and every document's check reads it, as the root's check does.
+        # A stem owns a name only up to a separator (`plan` never owns `planning-notes.md`), and this
+        # document's own file and renders stay its own whatever longer stem shares their start.
+        stems = sorted((md.stem for md in documents(root_n, cfg)), key=len, reverse=True)
+        mine = {first_part(p, root_n) for p in documents(root_n, cfg, only)}
+        mine |= {first_part(p, root_n) for _, p, _ in found}
+
+        def owner(top):
+            return next((st for st in stems if top == st or (top.startswith(st) and top[len(st)] in "-._")), None)
+
+        def keep(p):
+            top = first_part(p, root_n)
+            return top is None or top in mine or owner(top) in (None, only)
+        entries = [(p, src) for p, src in entries if keep(p)]
+    # A guard that compares nothing is a finding, never a silent pass (as `claims.table` is for pins):
+    # no retired claim at all, where `require_retired` is true (opt-in, the owner 2026-11-02: an adopter
+    # that retired nothing stays green); claims to keep out but a scan that reads no file, always.
+    if not retired:
+        if cfg.claims["require_retired"]:
+            out.append(("claims.retired", "the retired list is empty, so no corrected claim is kept out: "
+                                          "retire one, or set require_retired false"))
+    elif not entries:
+        what = f"none of {only}'s files" if only is not None else "no file"
+        out.append(("claims.retired", f"retired_scan {scan!r} reads {what}, so {len(retired)} retired "
+                                      f"claim(s) are compared with nothing"))
+    for path, src in entries:
+        text = normalise(render_text(src) if src.is_dir() else src.read_text(encoding="utf-8"))
+        for claim, why in retired:
             if normalise(claim) in text:
-                out.append(("claims.retired", f"{path.relative_to(root)}: {claim!r} - {why}"))
+                # the file read: through a linked folder its normalised name is another file
+                name = (os.path.relpath(path, root_n) if os.path.realpath(path) == os.path.realpath(src)
+                        else str(src.relative_to(root_n)))
+                out.append(("claims.retired", f"{name}: {claim!r} - {why}"))
     return out
 
 

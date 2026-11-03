@@ -444,6 +444,27 @@ case("L15", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exist
 b = "claude/x/2026-10-27-unfiltered"; st = branch(b)
 gh = GH([dict(MERGED, head={"ref": "claude/x/someone-else"})]); cp.publish(st, b, "sess")
 case("L16", tip(b) == git("rev-parse", "HEAD") and not (st / "spent.json").exists())
+
+# settle_landed (TODO.md [arm-yard]): a stop whose PR merged after it gets its `launched` line, once
+af = Path(repo, ".git", "claude", common.AUTOFINISHED); af.parent.mkdir(exist_ok=True)
+for b in ("claude/x/2026-10-20-landed-later", "claude/x/2026-10-30-landed-before"):
+    branch(b)
+branch("claude/x/2026-10-20-still-open", upstream=True)
+git("checkout", "-q", "main")
+af.write_text("2026-10-20T00:00:00-07:00 stopped claude/x/2026-10-20-landed-later G4 ⚠ step 4\n"
+              "2026-10-30T00:00:00-07:00 stopped claude/x/2026-10-30-landed-before no-landing API Error: x\n"
+              "2026-10-20T00:00:00-07:00 stopped claude/x/2026-10-20-still-open G1 ⚠ x\n")
+gh = GH([MERGED]); got = sync.settle_landed(Path(repo), "main")
+asked = [p for m, p in gh.calls if m == "GET"]
+case("L17", got == ["claude/x/2026-10-20-landed-later"]
+     and af.read_text().splitlines()[-1].endswith(" launched claude/x/2026-10-20-landed-later #169"))
+case("L18", len(asked) == 2 and not any("still-open" in p for p in asked))
+gh = GH([MERGED]); again = sync.settle_landed(Path(repo), "main")
+case("L19", again == [] and not any("landed-later" in p for _, p in gh.calls)
+     and af.read_text().count(" launched ") == 1)
+os.environ["CLAUDE_HOOK_NO_GITHUB"] = "1"; gh = GH([MERGED]); quiet = sync.settle_landed(Path(repo), "main")
+os.environ.pop("CLAUDE_HOOK_NO_GITHUB")
+case("L20", quiet == [] and gh.calls == [])
 PY
 python3 "$T/landed.py" "$MOD/hooks" "$L" "$L-origin.git" "$T/landed-states" > "$T/landed.out" 2>&1
 lcase() { lc=$1; ok "$2" 'grep -qx "$lc pass" "$T/landed.out"'; }
@@ -463,6 +484,10 @@ lcase L13 "  a merge commit HEAD already holds (a reused name, forked after): pu
 lcase L14 "  a kept yes whose origin ref moved since (pushed by hand, PR reopened): asked again, pushed"
 lcase L15 "  merged into another branch, not main: pushed"
 lcase L16 "  a PR from another head (GitHub ignoring the filter): pushed"
+lcase L17 "sync's settle_landed: a stop whose PR merged after it gets its launched line"
+lcase L18 "  only a stop whose GitHub copy is gone is asked; an open one costs no request"
+lcase L19 "  once: a settled branch is not asked again, no second line"
+lcase L20 "  CLAUDE_HOOK_NO_GITHUB: nothing asked, nothing written"
 grep -q "Traceback" "$T/landed.out" && { echo "  FAIL landed.py raised:"; sed 's/^/    /' "$T/landed.out"; fails=$((fails+1)); }
 
 echo "checkpoints (continued)"
@@ -1882,6 +1907,8 @@ PY
 else
   echo "note: wharf-runs' dispatch is not in this tree — its list is not read here"
 fi
+ok "  \`dispatch-queue kicked\` (the receiver): denied too, as Claude's substring rule \`*dispatch-queue kick*\` denies it" \
+  '[ "$(vtool codex Bash "{\"command\":\"python3 dispatch-queue kicked --from h --full x\"}" "$VW" CLAUDE_UNATTENDED=1)" = deny ]'
 ok "  \`git -C x push\` and a script inside \`bash -lc '…'\`: denied too" \
   '[ "$(vtool codex Bash "{\"command\":\"git -C . push origin claude/laptop/2026-10-29-vendor\"}" "$VW" CLAUDE_UNATTENDED=1)" = deny ] && [ "$(vtool codex Bash "{\"command\":\"bash -lc '"'"'ssh h ls'"'"'\"}" "$VW" REGATTA_UNATTENDED=1)" = deny ]'
 ok "  attended, \`gh api\`: allowed (the list is the unattended run's)" \

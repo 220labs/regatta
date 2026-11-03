@@ -3,7 +3,7 @@ name: captain
 description: Write a captain review — one document for the person who decides (a founder, an owner, a client's executive), in plain words, with the options, what each gets them, costs them and needs from them, the best three and a D-list — then render it for them with /pitch, the page and the deck from that one text. Use for "a captain review of <topic>", "an executive review for <client>", "brief the founders on <topic>", or "turn this into something they can decide from".
 argument-hint: <topic | document.md> [--for <reader>]
 effort: high
-allowed-tools: Bash(pitch:*), Bash(*sextant/*bin/pitch *)
+allowed-tools: Bash(pitch:*), Bash(*sextant/*bin/pitch *), Bash(realpath *)
 ---
 
 Captain review: $ARGUMENTS
@@ -14,10 +14,14 @@ run that instead and stop here: the project's version wins.
 A **captain review** is a document for the person who decides: the captain, in Regatta's words;
 "executive review" in a client's. It is written first, in the template beside this file
 ([TEMPLATE.md](TEMPLATE.md)), and only then rendered, by `/pitch`, as the captain page and the
-admiral deck. The tool is `pitch` (on the Bash PATH while the sextant plugin is enabled; else
-`../../bin/pitch` from this skill's base directory): `pitch review <document.md>` holds the document
-to the template before any render exists, and `pitch check` holds the same rules once there are
-renders.
+admiral deck. The tool is `pitch` (on the Bash PATH while the sextant plugin is enabled; where
+this skill is linked in by hand, `<module>/bin/pitch` by its absolute path, bare, with no `python3`,
+`~`, `..`, `cd` or `$(…)` before it, `<module>` printed first, in a call of its own, by
+`realpath "<base directory>/../.."` (before macOS 13, `(cd -P "<base directory>/../.." && pwd)`), as
+`/pitch` says; no `bin/pitch` there means the skill was copied, not linked: stop and say so):
+`pitch review <document.md>`
+holds the document to the template before any render exists, and `pitch check` holds the same
+rules once there are renders.
 
 **The writing rule.** Every term is replaced by ordinary words or explained in the same sentence. The
 test for a line: could the captain repeat it to their own investor? That is a judgement, not a lint:

@@ -21,7 +21,10 @@ or a listener (AGENTS.md's Drive trap).
 
 Which roads reach a peer: its line in `wharf-runs/kick-roads` (`<host>:<road>[,<road>…]`, or `none`), else
 what exists — `orca` where `wharf-runs/orca-pairs` names this host's pair with it, `ssh` where `wharf-runs/ssh`
-has its alias. `sheep` only where a line names it: a kicker cannot see another host's listener, and a press
+or `wharf-runs/kick-ssh` has its alias. `wharf-runs/kick-ssh` (`<host>:<alias>`) is read by the kick alone: a host
+this road may reach that every other reader of `wharf-runs/ssh` must not, a scope's node above all (the overlay's
+table keeps such a node off that key: berth would probe it and place one-shots there, pickup, stalls and `account
+doctor` would read it). `sheep` only where a line names it: a kicker cannot see another host's listener, and a press
 from a script is unprobed until the probe lands one (docs/dispatch-queue-2026-10-25/kick_probe.py). The kick is
 on only where the `kick-roads` file exists, the switch as `queue-repo` is the queue's: a fleet that set no line
 kicks nobody, and no suite with an ssh fixture reaches a real alias. Python 3.9, stdlib.
@@ -46,6 +49,7 @@ import common  # noqa: E402
 HOST_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
 ROADS = ("sheep", "orca", "ssh")
 ROADS_KEY = "wharf-runs/kick-roads"
+KICK_SSH_KEY = "wharf-runs/kick-ssh"   # the kick's own aliases: this file reads it, nothing else may
 TIMEOUT = 15             # one road's call, at most: each returns well under it (the receiver only notes and kickstarts)
 ORCA_WAIT_MS = 10000     # `terminal wait --for exit`, as the component names it
 PROVE_S = float(os.environ.get("DISPATCH_KICK_PROVE_S") or 8)   # kick-listen's one bounded proving run (the suites shorten it)
@@ -104,11 +108,19 @@ def parse_payload(text):
 
 
 def _pairs(key):
-    out = []
+    """(host lower-cased, value) per line of KEY. A note after `#` or `(` is no text, as in `road_lines`, and a word after
+    a bare `<host>:` is its value: the overlay writes a value one word per line (AGENTS.md's trap)."""
+    out, bare = [], None
     for ln in common.config_lines(key) or []:
+        ln = re.split(r"[#(]", ln, maxsplit=1)[0].strip()
+        if not ln:
+            continue
         a, sep, b = ln.partition(":")
-        if sep and a.strip() and b.strip():
+        if bare and not sep:
+            out.append((bare, ln))
+        elif sep and a.strip() and b.strip():
             out.append((a.strip().lower(), b.strip()))
+        bare = a.strip().lower() if sep and a.strip() and not b.strip() else None
     return out
 
 
@@ -118,7 +130,8 @@ def kicks_on():
 
 
 def ssh_alias(peer):
-    return next((b for a, b in _pairs("wharf-runs/ssh") if a == peer), None)
+    """How the ssh road reaches PEER: `wharf-runs/ssh`, whose hosts every peer reader shares, then the kick's own key."""
+    return next((b for a, b in _pairs("wharf-runs/ssh") + _pairs(KICK_SSH_KEY) if a == peer), None)
 
 
 def orca_paired(me, peer):
@@ -137,7 +150,7 @@ def road_lines():
     text, order = {}, []
     last = None
     for ln in common.config_lines(ROADS_KEY) or []:
-        ln = re.split(r"[#(]", ln, 1)[0].strip()
+        ln = re.split(r"[#(]", ln, maxsplit=1)[0].strip()
         if not ln:
             continue
         name, sep, rest = ln.partition(":")
@@ -180,8 +193,8 @@ def roads_for(peer, me):
 def reached(h):
     """A kick road reaches host H (item 12 of the S2a review, stated here): the kick is on (the roads file
     exists), and H's line names a road, or H has no line and a road exists to it from some host — a pairing
-    naming H as the peer, or an alias for H in `wharf-runs/ssh` (the overlay writes one table for every
-    host). `none`, or no file, is not reached: the pending poll is then H's way to hear of room."""
+    naming H as the peer, or an alias for H in `wharf-runs/ssh` or `wharf-runs/kick-ssh` (the overlay writes one
+    table for every host). `none`, or no file, is not reached: the pending poll is then H's way to hear of room."""
     if not kicks_on():
         return False
     named = line_of(h)
@@ -199,7 +212,7 @@ def receiver_args(pl):
 def road_ssh(peer, pl):
     alias = ssh_alias(peer)
     if not alias:
-        return False, "no wharf-runs/ssh alias for %s" % peer
+        return False, "no ssh alias for %s (wharf-runs/ssh, %s)" % (peer, KICK_SSH_KEY)
     ssh = os.environ.get("DISPATCH_SSH") or "ssh"
     cmd = " ".join([PEER_DISPATCH] + [shlex.quote(a) for a in receiver_args(pl)])
     try:
@@ -671,8 +684,8 @@ def roads_lines(me, launchctl):
     copied into the file reads as written; the S8 review: a trailing note swallowed the last road): each peer this
     host reaches, and this host's own sheep listener where launchd holds it. One line per host: the overlay merges
     the hosts' words before writing, and a reader takes a host's first line."""
-    peers = sorted({a for a, _ in _pairs("wharf-runs/ssh")} | {b.lower() for a, b in _pairs("wharf-runs/orca-pairs") if a == me}
-                   | set(road_lines()))
+    peers = sorted({a for a, _ in _pairs("wharf-runs/ssh") + _pairs(KICK_SSH_KEY)}
+                   | {b.lower() for a, b in _pairs("wharf-runs/orca-pairs") if a == me} | set(road_lines()))
     out = []
     for p in peers:
         if p == me:

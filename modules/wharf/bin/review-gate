@@ -4,8 +4,17 @@
     review-gate plan  [--base main] [--principal] [--json]
         Which two reviews this branch gets: counts inserted lines in `git diff base...HEAD` and
         reads the week's plan usage, then names the agents and the `/code-review` level.
-    review-gate merge --reviewer FILE --code-review FILE [--repo DIR] [--base main] [--no-model] [--no-shadow]
-        One de-duplicated, severity-sorted list from the two reports. Prints Markdown.
+    review-gate merge --reviewer FILE --code-review FILE [--repo DIR] [--base main] [--phase build|finish] [--no-model] [--no-shadow]
+        One de-duplicated, severity-sorted list from the two reports. Prints Markdown. --phase marks the
+        log line as a build round's (dispatch's build prompt) or the landing's (/finish), so a reader of
+        review-gate.jsonl tells them apart without guessing from times (docs/finish-second-review-2026-11-02.md, 2026-11-02).
+    review-gate skipped --why TEXT [--repo DIR] [--base origin/main]
+        The landing's line when /finish skipped its review on a tip the build's own loop reviewed
+        clean (`build-review covers`; docs/finish-second-review-2026-11-02.md's D1-B, 2026-11-02): `phase` finish, `skipped` the
+        reason, no agents, no `diff` or `models`, so `usage-report numbers` leaves it out and
+        `build-review compare` still counts the landing. It runs `build-review covers` first and
+        refuses, logging nothing, unless that exits 0. plumb's trimlib reads this log too and skips
+        a `skipped` line.
 
 Design: docs/record/review-gate-2026-10-02.md (the owner's D1–D7), from the bench in
 docs/record/review-codereview-bench-2026-09-30.md. The proposal called the merge `bin/review-merge`;
@@ -22,8 +31,8 @@ plan — the size rule (D7), counted in INSERTED lines (deletions moved C11 to t
   a hook land without a person's tap. The week lowers it as it lowers the top tier.
   The week, from hooks/tier_check.py (the same reading and threshold the session's tier line
   uses): "tight" (10 points over pace, or 80% used) turns the top tier into xhigh + CR high;
-  "lowest" (LOWEST% used, a threshold set here, not measured) puts every tier on high + CR high
-  (TODO 12's wording). The reviewer's effort lives in agent frontmatter and the Agent tool cannot
+  "lowest" (LOWEST% used, a threshold set here, not measured) puts every tier on high + CR high.
+  The reviewer's effort lives in agent frontmatter and the Agent tool cannot
   set it, so each level is its own agent file: reviewer (xhigh) / reviewer-high, bodies kept
   identical by bin/test_review_gate.sh. A project with its own `reviewer` and no `reviewer-high`
   (the home repo) keeps its own at its own effort: its read-only probe list matters more than the
@@ -34,7 +43,18 @@ plan — the size rule (D7), counted in INSERTED lines (deletions moved C11 to t
   branch's own brief (docs/handoff/<date>-<topic>.md on HEAD) naming a principal tier on its Tier: line,
   read by wharf-runs' blueprintlib — gets the top tier at any size, and the week never lowers it: a
   tight or lowest week holds it and says so, and the review is routed to a login with room or waits
-  for the reset. A lower tier would be the principal build reviewed as any other.
+  for the reset. A lower tier would be the principal build reviewed as any other. The route is
+  lighthouse's `account pick --repo <repo>` (S6; $REVIEW_GATE_ACCOUNT names another `account`, for
+  tests): this session's own login (spawn here), another (run the review there), or none with room
+  (the review waits, each login's reason said); no answer (no lighthouse, no registry) keeps the plain
+  advice. The room is pick's own (week, 5-hour window, cooldown), never `--room fable`: there is no
+  principal reviewer and /finish spawns both reviews on Opus, so a login whose plan lacks Fable, or whose
+  Fable week is full, is a route, and an unread primary or tenant login runs as for any pick, said as
+  unread (principal-s6-close, 2026-11-02, the skipper's call). A reviewer a project's rules put on Fable
+  is outside this route (no project does today; /finish stops on it); dispatch keeps `--room fable` for
+  its Fable tiers, which run Fable. A login pick could not read, a tenancy file or the registry that does
+  not read yet, is read once more, a minute on; still unread, it needs its own fix (`account check`;
+  `account refresh --force` or `account setup` for a tenancy file; the registry's write to end).
   The week reading is dropped when sampled before the current week began (a stale cache keeps
   last week's percent while the reset rolls forward).
   Each review's provider is a row in settings/models.json (review-gate.reviewer,
@@ -240,6 +260,69 @@ def principal_brief(repo, base="main"):
         return None
 
 
+def principal_route(repo):
+    """Where a held principal review runs (header, the principal rule): {"account", "here", "reason", "unread",
+    "skipped", "waits", "reread", "closed", "torn"} from `account pick` (pick's own room, as for any review: /finish spawns both
+    on Opus). account None when no login has room: reread when some login could not be read (read it once
+    more first), waits when some refusal lifts at a reset; unread when the login named is pick's last resort
+    with its limits unread. None when account gave no answer (absent, no registry, a crash), so the plain
+    advice stands."""
+    acct = os.environ.get("REVIEW_GATE_ACCOUNT") or common.tool("account")
+    if not acct:
+        return None
+    try:
+        # its own process group: a timeout kills account's in-flight `claude -p` probe too (common.run_group)
+        r = common.run_group([sys.executable, str(acct), "pick", "--repo", repo, "--json"], 120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print("review-gate: account pick did not run (%s)" % e, file=sys.stderr)
+        return None
+    if r.returncode not in (0, 3):   # 4: no registry here; anything else: could not tell
+        print("review-gate: account pick gave no route (exit %d)" % r.returncode, file=sys.stderr)
+        return None
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        d = None
+    if not isinstance(d, dict):
+        print("review-gate: account pick answered no JSON", file=sys.stderr)
+        return None
+    # a shape account never writes (a reason that is no string, a skipped or env of another type) reads as
+    # text or as absent: a crash here would lose the whole plan
+    sk = d.get("skipped")
+    skipped = [[str(x[0]), "" if x[1] is None else str(x[1])]
+               for x in (sk if isinstance(sk, list) else []) if isinstance(x, (list, tuple)) and len(x) == 2]
+    if r.returncode == 3 or not d.get("account"):
+        # reread: some login could not be read ("limits unknown (…)": no probe answered, or a reading with no
+        # window figures, which account groups alike and caches for a minute; or a tenancy file that does not
+        # read yet) — read once more, a minute on, never in a loop, as an unknown Fable room was under --room;
+        # still unread, it needs `account check`. It goes first: a login that may have room beats a reset days
+        # off. waits: some refusal lifts at a reset (a week, a window, a cooldown). Anything else (a scope's
+        # login missing, a deny list, extra usage on) is a refusal no reset lifts. dispatch's resets() matches
+        # the reset forms and its Fable ones and reads a plain "limits unknown" as FAILED (a run would requeue
+        # forever, while a review's read costs one plan); its Fable forms never lead without --room
+        resets = any(re.match(r"(week \d|5h \d|cooling down until|locked by)", w or "") for _, w in skipped)
+        # closed: the tenancy file does not read (account's closed_fix: `account refresh --force` once its drive
+        # is mounted, or `account setup`; the usage tick reopens it within 15 min) — read again too, its own fix
+        closed = any("(closed until it reads)" in w for _, w in skipped)
+        # torn: the registry does not read (account's scope_login_of, while `scopes set` writes it or repos.json
+        # is mid-merge) — a passing state, read again, never a refusal for good
+        torn = any(w.startswith("the registry does not read") for _, w in skipped)
+        reread = closed or torn or any(w.startswith("limits unknown (") for _, w in skipped)
+        return {"account": None, "here": False, "reason": None, "unread": False, "skipped": skipped,
+                "waits": resets, "reread": reread, "closed": closed, "torn": torn}
+    dflt = os.path.join(os.path.expanduser("~"), ".claude")
+    env = d.get("env") if isinstance(d.get("env"), dict) else {}
+    cfg = env.get("CLAUDE_CONFIG_DIR")
+    there = os.path.realpath(cfg if isinstance(cfg, str) and cfg else dflt)
+    here = os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or dflt)
+    # an unread primary or tenant login is pick's last resort ("limits unknown — … rather than nothing"),
+    # never a login read to have room
+    reason = d.get("reason") if isinstance(d.get("reason"), str) else None
+    unread = (reason or "").startswith("limits unknown")
+    return {"account": d["account"], "here": there == here, "reason": reason,
+            "unread": unread, "skipped": skipped, "waits": False, "reread": False, "closed": False, "torn": False}
+
+
 def plan(repo, base, principal=False):
     rp, cp = review_provider("review-gate.reviewer"), review_provider("review-gate.code-review")
     by = "--principal" if principal else principal_brief(repo, base)
@@ -276,9 +359,10 @@ def plan(repo, base, principal=False):
     for x, on in ((rev, rp), (cr, cp)):
         if not on:
             x["agent"] = None
+    held = budget if by and budget != "normal" else None
     return {
         "inserted": n, "tier": tier, "budget": budget, "warning": warn, "gated": gated,
-        "principal": {"by": by, "held": budget if budget != "normal" else None} if by else None,
+        "principal": {"by": by, "held": held, "route": principal_route(repo) if held else None} if by else None,
         "week": {"percent": w[0], "pace": w[1], "age_h": round(w[4], 1)} if w else None,
         "reviewer": rev,
         "code_review": cr,
@@ -299,9 +383,41 @@ def print_plan(p):
     if pr:
         print("principal: %s → the top tier at any size" % ("--principal" if pr["by"] == "--principal" else "the brief %s names a principal tier" % pr["by"]))
         if pr["held"]:
-            print("principal: the week is %s, and the top tier holds — never lowered: run this review from a login with "
-                  "room (`account pick --repo <repo>` names one; autofinish-run starts the finish there), or wait for the "
-                  "week's reset" % pr["held"])
+            held = "principal: the week is %s, and the top tier holds — never lowered: " % pr["held"]
+            rt = pr.get("route")
+            if rt is None:
+                print(held + "run this review from a login with room (`account pick --repo <repo>` "
+                      "names one; autofinish-run starts the finish there), or wait for the reset")
+            else:
+                has = "runs it unread" if rt.get("unread") else "has room"
+                said = rt["reason"] or "no reason given"
+                why = "; ".join("%s: %s" % (l, w) for l, w in rt["skipped"]) or "account pick: none"
+                if rt["here"]:
+                    print(held + "this session's login %s %s (%s) — spawn the reviews here" % (rt["account"], has, said))
+                elif rt["account"]:
+                    # the session starts the finish there itself (rule: git-workflow, a finish this session cannot
+                    # run), never a profile switch for the owner; autofinish-run picks with the same `account pick --repo`
+                    print(held + "routed to %s, a login that %s (%s) — start the finish there: `env -u CLAUDE_CONFIG_DIR "
+                              "-u CLAUDE_CODE_OAUTH_TOKEN autofinish-run <worktree> --session \"$CLAUDE_CODE_SESSION_ID\"` "
+                              "(it picks that login); unattended, stop, naming it: the owner's /finish there lands it, "
+                              "as nothing retries this tip; never from this login"
+                              % (rt["account"], has, said))
+                elif rt.get("reread"):
+                    fix = "; ".join(f for f, on in (
+                        ("the tenancy file needs `account refresh --force` once its drive is mounted, or `account setup`",
+                         rt.get("closed")),
+                        ("the registry still does not read: settle its write or merge", rt.get("torn")),
+                        ("a login still unread needs `account check`",
+                         any(w.startswith("limits unknown (") for _, w in rt["skipped"]))) if on)
+                    print(held + "no login could be read with room (%s) — run `review-gate plan` once more, a minute on; "
+                          "if that run prints this line again, stop: %s%s; spawn nothing"
+                          % (why, fix, ", and the rest wait for their reset (`account limits` names one a reason does not)"
+                             if rt.get("waits") else ""))
+                elif rt.get("waits"):
+                    print(held + "no login has room (%s) — the review waits for the reset each reason names (`account limits` "
+                          "names one a reason does not); spawn nothing" % why)
+                else:
+                    print(held + "no login can take it (%s), and no reset lifts that — fix what it names; spawn nothing" % why)
     off = "off in settings/models.json — not spawned"
     r, c = p["reviewer"], p["code_review"]
     print("reviewer:    " + ("subagent_type %s (effort: %s), provider %s, model opus" % (r["agent"], r["effort"], r["provider"])
@@ -450,7 +566,7 @@ def ask_merge(findings, pairs, repo, row):
     return ans.get("severity") or {}, ans.get("same") or {}, float(res.get("total_cost_usd") or 0)
 
 
-# bench/b2.py's question and criteria, word for word; the request shape is bin/gate's, not B2's (TODO 10).
+# bench/b2.py's question and criteria, word for word; the request shape is bin/gate's, not B2's.
 SHADOW = "review-gate.same-shadow"
 ASK_SAME = "Do `a` and `b`, two code-review findings on the same change, describe the same underlying defect?"
 LABELS_SAME = {
@@ -660,7 +776,7 @@ def exists_note(repo, f):
     return None
 
 
-def merge(rev_text, cr_text, repo, use_model=True, use_shadow=True, base="main"):
+def merge(rev_text, cr_text, repo, use_model=True, use_shadow=True, base="main", phase=None):
     t0 = time.time()
     notes = []
     R, seen = parse_reviewer(rev_text)
@@ -773,7 +889,7 @@ def merge(rev_text, cr_text, repo, use_model=True, use_shadow=True, base="main")
         if both == "code-review":
             out.append("     (no evidence line: check it against the code before fixing)")
     groups = [(-t[0], t[-1]) for t in items]
-    _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, time.time() - t0, groups, base, taken)
+    _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, time.time() - t0, groups, base, taken, phase)
     return "\n".join(out)
 
 
@@ -787,7 +903,7 @@ def took(jev):
     return out
 
 
-def _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, secs, groups=(), base="main", taken=None):
+def _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, secs, groups=(), base="main", taken=None, phase=None):
     taken = taken or {}
     try:
         branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() if repo else None
@@ -810,12 +926,56 @@ def _log(repo, R, C, pairs, same, jev, cost, model_ok, byid, secs, groups=(), ba
                           "jev_label": jev.get(p["id"], {}).get("label"),
                           "jev_model": jev.get(p["id"], {}).get("model"), "jev_error": jev.get(p["id"], {}).get("error"),
                           "a": claim(byid[p["a"]])[:300], "b": claim(byid[p["b"]])[:300]} for p in pairs]}
+        if phase:  # absent on a line written without --phase (before 2026-11-02): its reader falls back to times
+            rec["phase"] = phase
+        # the commit this review read: build-review covers compares the finish's HEAD with it, never with the
+        # tip a loop ended at, which may hold a check fix no review saw (the landing review, 2026-11-02)
+        rec["head"] = (git(repo, "rev-parse", "HEAD") or "").strip() or None if repo else None
         log = log_path()
         os.makedirs(os.path.dirname(log), exist_ok=True)
         with open(log, "a") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001
         print("review-gate: log not written (%s)" % e, file=sys.stderr)
+
+
+def skipped(repo, why, base="origin/main"):
+    """One log line for a landing whose review was skipped (the header); 0 written, 1 not. It asks wharf-runs'
+    `build-review covers` itself and refuses (1, nothing logged) unless that says covered, so no line claims a
+    skip covers never granted (the landing review, 2026-11-02)."""
+    br = os.environ.get("REVIEW_GATE_COVERS")   # the tests' stand-in for wharf-runs' build-review
+    if not br:
+        try:
+            br = common.tool("build-review")
+        except Exception:  # noqa: BLE001
+            br = None
+    if not br:
+        here = os.path.dirname(os.path.realpath(__file__))
+        br = os.path.join(here, "..", "..", "wharf-runs", "bin", "build-review")
+    try:
+        r = subprocess.run([br, "covers", repo, "--base", base], capture_output=True, text=True)
+    except OSError as e:
+        print("review-gate: skipped refused — build-review covers did not run (%s)" % e, file=sys.stderr)
+        return 1
+    if r.returncode != 0:
+        print("review-gate: skipped refused — build-review covers says no: %s" % (r.stdout + r.stderr).strip(),
+              file=sys.stderr)
+        return 1
+    try:
+        branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        git_common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "repo": repo, "branch": branch,
+               "project": os.path.basename(git_common.rstrip("/").rsplit("/.git", 1)[0]) if git_common else None,
+               "phase": "finish", "skipped": why, "reviewer": 0, "code_review": 0}
+        log = log_path()
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        with open(log, "a") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print("review-gate: log not written (%s)" % e, file=sys.stderr)
+        return 1
+    print("review-gate: logged the landing's review as skipped (%s)" % why)
+    return 0
 
 
 def main():
@@ -833,6 +993,11 @@ def main():
     m.add_argument("--no-model", action="store_true")
     m.add_argument("--no-shadow", action="store_true")
     m.add_argument("--base", default="main")
+    m.add_argument("--phase", choices=("build", "finish"))
+    k = sub.add_parser("skipped")
+    k.add_argument("--why", required=True)
+    k.add_argument("--repo", default=os.getcwd())
+    k.add_argument("--base", default="origin/main")
     a = ap.parse_args()
     repo = git(a.repo, "rev-parse", "--show-toplevel").strip() or a.repo
     if a.cmd == "plan":
@@ -843,6 +1008,8 @@ def main():
             return 1
         print(json.dumps(r)) if a.json else print_plan(r)
         return 0
+    if a.cmd == "skipped":
+        return skipped(repo, a.why, a.base)
     texts = []
     for f in (a.reviewer, a.code_review):
         try:
@@ -850,7 +1017,7 @@ def main():
         except OSError as e:
             print("⚠ cannot read %s (%s): nothing merged; read both reports in full" % (f, e.strerror))
             return 0
-    print(merge(texts[0], texts[1], repo, not a.no_model, not a.no_shadow, a.base))
+    print(merge(texts[0], texts[1], repo, not a.no_model, not a.no_shadow, a.base, a.phase))
     return 0
 
 

@@ -261,7 +261,7 @@ if [ -f "$B/../lib/trimlib.py" ]; then has "$R" "- **Trim:** no verdict on this 
 else lacks "$R" "**Trim:**" "no plumb trim here (the public twin): no trim line"; fi
 cmp -s "$R" "$RP/latest.md" && echo "  ok   latest.md is the same report" || { echo "  FAIL latest.md"; fails=$((fails+1)); }
 
-echo "render — published through bin/publish, to Drive only (TODO 1 (2), 2026-10-19)"
+echo "render — published through bin/publish, to Drive only (2026-10-19)"
 for f in 2026-09-19.md latest.md latest-line.txt; do
   cmp -s "$RP/$f" "$T/drive/project_data/$SH/$f" && ! test -e "$T/nas/project_data/$SH/$f" \
     && echo "  ok   $f in Drive at its place under ~/projects, not on the NAS" || { echo "  FAIL $f not published to Drive alone"; fails=$((fails+1)); }
@@ -480,6 +480,7 @@ L = [{"ts": "2026-10-04T10:00:00-0700", "repo": "/r/proj", "branch": "claude/old
      rec("2026-10-05T11:00:00-0700", "claude/a", 150, 50, {"S1": 0, "S2": 1, "S3": 0, "S?": 0}, w),
      rec("2026-10-05T12:00:00-0700", "claude/b", 300, 100, {"S1": 0, "S2": 1, "S3": 0, "S?": 0}, r),
      rec("2026-10-05T13:00:00-0700", "claude/c", 100, 0, {"S1": 0, "S2": 0, "S3": 0, "S?": 0}, []),
+     dict(rec("2026-10-05T13:30:00-0700", "claude/c", 100, 0, {"S1": 3, "S2": 0, "S3": 0, "S?": 0}, []), phase="build"),  # a build round's, later: skipped
      rec("2026-10-05T14:00:00-0700", "claude/d", 0, 0, {"S1": 0, "S2": 2, "S3": 0, "S?": 0}, w),  # skills-only: 0 non-doc lines
      dict(rec("2026-10-05T15:00:00-0700", "claude/e", 50, 0, {"S1": 0, "S2": 1, "S3": 0, "S?": 0}, []), models={"error": "x"})]
 open(sys.argv[1], "w").write("\n".join(json.dumps(x) for x in L) + "\n")
@@ -490,7 +491,7 @@ check "$(nj 'print(sorted(t["tier"] for t in d["tier_mix"]["tiers"]))')" "['main
 check "$(nj 'print(round(sum(t["share"] for t in d["tier_mix"]["tiers"])))')" "100" "the shares add up"
 check "$(nj 'f=d["tier_mix"]["fable_main"]; print(f["usd"] > 0, f["usd"] == f["outside_weekly_usd"])')" "True True" "Fable in main: no weekly skill ran, so all of it is outside"
 check "$(nj 'q=d["branch_quality"]; print(q["with_worker"])')" "{'n': 1, 'doc_only': 1, 'changed_lines': 200, 'wrong': 1, 'wrong_per_100': 0.5}" "worker-built: the later run of a branch counts, the pre-S-E line is skipped, a 0-line branch stays out of the rate"
-check "$(nj 'q=d["branch_quality"]; print(q["without_worker"])')" "{'n': 2, 'doc_only': 0, 'changed_lines': 500, 'wrong': 1, 'wrong_per_100': 0.2}" "without a worker: pooled over branches, with n; an unreadable-transcripts line joins neither"
+check "$(nj 'q=d["branch_quality"]; print(q["without_worker"])')" "{'n': 2, 'doc_only': 0, 'changed_lines': 500, 'wrong': 1, 'wrong_per_100': 0.2}" "without a worker: pooled over branches, with n; an unreadable-transcripts line and a build round's line join neither"
 USAGE_NOW=2026-09-20T09:00:00-07:00 "$B/usage-report" numbers > "$T/n.txt"
 has "$T/n.txt" "| main · fable-5-1 |" "the text form prints the tier table"
 has "$T/n.txt" "Fable in main sessions:" "…the Fable line"
@@ -552,7 +553,7 @@ lacks "$R3" "Plan now, Max 20x" "a day-old account is not shown as current"
 has "$R3" "**Plan now, Claude app** (09-27 09:00): 5-hour 3%, weekly 100% (the app's own login)." "the app on another login gets its own line"
 has "$R3" "**Plan now, Pro** (09-27 09:00): 5-hour 0%, weekly 33%" "…beside the Pro account"
 
-echo "a stale cache beside the app's fresh sample of the same organisation (TODO 2, 2026-09-29)"
+echo "a stale cache beside the app's fresh sample of the same organisation (2026-09-29)"
 mkdir -p "$T/app3" "$T/rp3"
 python3 - "$T" <<'PY'
 import json, sys, datetime
@@ -1111,6 +1112,14 @@ printf '{"at": "2026-09-19T06:00+00:00", "refused": [], "jobs": [], "alarms": []
 fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null
 has "$FR/2026-09-19.md" "; 1 not named (a confidential scope's, or the registry unreadable)." "  another Mac's absolute path, no key: counted, not named"
 check "$(grep '^- \*\*Trim' "$FR/2026-09-19.md" | grep -c 'vault')" "0" "    its repo nowhere in the line"
+rm -rf "$FD/nighthost"
+# the same from that Mac's worktree (S6's sixth landing review): the core's repo_key keys a worktree outside the
+# projects folder as its checkout, so `repo_key(key) == key` no longer told "outside this Mac's projects folder"
+mkdir -p "$FD/nighthost/trim/vault/coding"
+printf '{"at": "2026-09-19T06:00+00:00", "refused": [], "jobs": [], "alarms": [], "repo": "/elsewhere/projects/lab/vault/.claude/worktrees/w", "vertical": "coding"}\n' > "$FD/nighthost/trim/vault/coding/verdict.json"
+fu "$T/no-repos.json" render --day 2026-09-19 > /dev/null
+has "$FR/2026-09-19.md" "- **Trim:** 1 not named (a confidential scope's, or the registry unreadable)." "  another Mac's worktree path, no key: counted, not named"
+check "$(grep '^- \*\*Trim' "$FR/2026-09-19.md" | grep -cE 'vault|[: ]w coding')" "0" "    its repo nowhere in the line"
 rm -rf "$FD/nighthost" "$T/logdir/testmac"
 else echo "  skip  plumb's trim is not here (the public twin, until trim S8)"; fi
 

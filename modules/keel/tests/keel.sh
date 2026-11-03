@@ -4603,7 +4603,7 @@ has "$T/gn.out" "G6 | 2 of 3 (age from the file name)" "G6: open rows with a fil
 has "$T/gn.out" "G7 | not measured — no measure for G7 in bin/knowledge-numbers yet" "a goal the tool has no measure for says so"
 has "$T/gn.out" "missing: ['G1–G6']" "no entry doc on the checkout: one row saying so"
 
-echo "knowledge-numbers: projects with a transcript this week and no memory link (TODO item 5, 2026-10-19)"
+echo "knowledge-numbers: projects with a transcript this week and no memory link (2026-10-19)"
 MU="$T/mu"; mkdir -p "$MU/projects/linked" "$MU/projects/plain" "$MU/projects/old" "$MU/vault/memory/linked" "$MU/cfg/projects"
 python3 - "$(dirname "$(peer knowledge-numbers)")" "$MU" > "$T/mu.out" <<'PYX'
 import os, sys, time
@@ -5266,5 +5266,38 @@ EOF
 else
   echo "  skip render in Chrome: no Chrome on this machine, a CI run, or no $MJS (the first page with a diagram fetches it)"
 fi
+echo "inline — a local file link becomes its GitHub address (Evolve S2: every course page's file links were dead text)"
+LK="$T/lk/projects/demo"; mkdir -p "$LK/docs"; git -C "$LK" init -q -b main
+printf 'a\n' > "$LK/docs/a.md"; printf 'b\n' > "$LK/docs/b c.md"
+gitc "$LK" add -A; gitc "$LK" commit -qm init
+git -C "$LK" remote add origin https://github.com/acme/demo.git
+git -C "$LK" update-ref refs/remotes/origin/main HEAD   # origin as last fetched, no network
+git -C "$LK" checkout -q -b claude/h/2026-10-31-x; printf 'n\n' > "$LK/docs/new.md"; gitc "$LK" add -A; gitc "$LK" commit -qm new
+mkdir -p "$REGATTA_CONFIG/regatta"; printf '%s\n' "$T/lk/projects" > "$REGATTA_CONFIG/regatta/projects"   # common.PROJECTS, read at load
+il() { python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("m", sys.argv[1]).load_module(); print(m.inline(sys.argv[2]))' "$B/keel" "$1"; }
+check "$(il "see [a]($LK/docs/a.md#L1)")" 'see <a href="https://github.com/acme/demo/blob/main/docs/a.md#L1" rel="noopener">a</a>' "a path origin/main holds: its blob on main, the line anchor kept"
+check "$(il "[b](<$LK/docs/b c.md>)")" '<a href="https://github.com/acme/demo/blob/main/docs/b%20c.md" rel="noopener">b</a>' "  an angle-bracket path with a space (md_target's form)"
+check "$(il "[n]($LK/docs/new.md)")" "[n]($LK/docs/new.md)" "  a file origin holds nowhere: the link stays text, never a 404"
+git -C "$LK" update-ref refs/remotes/origin/claude/h/2026-10-31-x HEAD
+check "$(il "[n]($LK/docs/new.md)")" '<a href="https://github.com/acme/demo/blob/claude/h/2026-10-31-x/docs/new.md" rel="noopener">n</a>' "  one origin holds on the checkout's branch: there"
+check "$(il "[x](/elsewhere/mac2/projects/demo/docs/a.md)")" '<a href="https://github.com/acme/demo/blob/main/docs/a.md" rel="noopener">x</a>' "  a path another Mac's home wrote: the same path under this Mac's projects root"
+check "$(il '`[c]('"$LK"'/docs/a.md)` and [z](/no/such/file.md)')" "<code>[c]($LK/docs/a.md)</code> and [z](/no/such/file.md)" "  a link in code, or to nothing on this Mac: left as written"
+# S2's landing review, finding 8: a line anchor written on a branch points at the branch's lines
+printf 'a\nchanged on the branch\n' > "$LK/docs/a.md"; gitc "$LK" commit -qam "a, changed"
+git -C "$LK" update-ref refs/remotes/origin/claude/h/2026-10-31-x HEAD
+check "$(il "[a]($LK/docs/a.md#L2)")" '<a href="https://github.com/acme/demo/blob/claude/h/2026-10-31-x/docs/a.md#L2" rel="noopener">a</a>' "  a file the branch changed: the branch's blob, so its line anchor holds"
+check "$(il "[b](<$LK/docs/b c.md#L1>)")" '<a href="https://github.com/acme/demo/blob/main/docs/b%20c.md#L1" rel="noopener">b</a>' "  one the branch left as main has it: main's, the link that outlives the branch"
+mkdir -p "$LK/.claude"; printf '{"main": "trunk"}\n' > "$LK/.claude/workflow.json"
+git -C "$LK" update-ref refs/remotes/origin/trunk refs/remotes/origin/main; git -C "$LK" update-ref -d refs/remotes/origin/main
+check "$(il "[b](<$LK/docs/b c.md>)")" '<a href="https://github.com/acme/demo/blob/trunk/docs/b%20c.md" rel="noopener">b</a>' "  the repo's own main (workflow.json), not a hard-coded main"
+check "$(python3 -c 'import sys, time; from importlib.machinery import SourceFileLoader as L; m = L("m", sys.argv[1]).load_module(); p = sys.argv[2]
+n = [0]; real = m._local_git
+def count(*a, **k):
+    n[0] += 1; return real(*a, **k)
+m._local_git = count
+for k in range(1, 21): m.inline("[a](%s#L%d)" % (p, k))
+print(n[0])' "$B/keel" "$LK/docs/a.md")" 3 "  twenty anchors into one file: three git calls, not five each (finding 7)"
+rm -f "$LK/.claude/workflow.json"
+rm -f "$REGATTA_CONFIG/regatta/projects"
 echo
 if [ "$fails" = 0 ]; then echo "all green"; else echo "$fails failing"; exit 1; fi

@@ -1,9 +1,9 @@
 ---
 name: pitch
-description: Render one Markdown document — a proposal, a strategy, a captain review — for the people it is for, from that one text: the captain page, read in full, generated from the document (`pitch memo`); the commodore deck, sent and read alone, and the admiral deck, spoken over, both built from the deck fence at the document's end (`pitch build`); all held to the document by `pitch check` and published as private Artifacts, the page first, their links kept in a sidecar. Use for "make a memo of this", "turn this into a deck", "send them the deck", "pitch this to <reader>", or when a document changed and its renders must follow.
+description: 'Render one Markdown document — a proposal, a strategy, a captain review — for the people it is for, from that one text: the captain page, read in full, generated from the document (`pitch memo`); the commodore deck, sent and read alone, and the admiral deck, spoken over, both built from the deck fence at the document''s end (`pitch build`); all held to the document by `pitch check` and published as private Artifacts, the page first, their links kept in a sidecar. Use for "make a memo of this", "turn this into a deck", "send them the deck", "pitch this to <reader>", or when a document changed and its renders must follow.'
 argument-hint: <document.md> [captain|admiral|commodore|all]
 effort: high
-allowed-tools: Bash(pitch:*), Bash(*sextant/*bin/pitch *)
+allowed-tools: Bash(pitch:*), Bash(*sextant/*bin/pitch *), Bash(realpath *)
 ---
 
 Pitch it: $ARGUMENTS
@@ -11,8 +11,13 @@ Pitch it: $ARGUMENTS
 If this project has its own `/pitch` (`.claude/skills/pitch` or `.claude/commands/pitch.md`), run
 that instead and stop here: the project's version wins.
 
-The tool is `pitch`: on the Bash PATH while the sextant plugin is enabled; where this skill is
-linked in by hand, `../../bin/pitch` from this skill's base directory. The method behind every rule
+The tool is `pitch`: on the Bash PATH while the sextant plugin is enabled. Where this skill is
+linked in by hand, the link's own path leads elsewhere. Print the module's real folder,
+`realpath "<base directory>/../.."` (resolved as the allow rule's own path is; where `realpath` is
+missing, as before macOS 13, `(cd -P "<base directory>/../.." && pwd)`), and then, in calls of their
+own, type the printed path followed by `/bin/pitch`, bare: no `python3`, `~`, `..`, `cd` or `$(…)`
+before it, since an allow rule names that one spelling. No `bin/pitch` there means the skill was
+copied, not linked: stop and say so. The method behind every rule
 is [method.md](method.md), beside this file; every key of the project's `pitch.json` is in
 [config.md](config.md). The renders reach a reader through the Artifact tool; this skill writes no
 PPTX or PDF of its own.
@@ -145,7 +150,10 @@ route that is not set up says so in one line; the render goes on without the ima
   no URL yet. Say once beside them: "private until shared from the page's Share menu; the deck
   downloads as PPTX or PDF from its page". Name what was not verified: a layout at phone width you did
   not look at, an image route that was skipped.
-- Wire the check where the project's own check runs: `pitch check <docs-root>` (a project whose check
-  is pytest: config.md, section 13).
+- Wire the check where the project's own check runs, naming the module as config.md section 13 does,
+  through `PITCH` with that section's home-folder default: in a shell check line, `"$PITCH" check
+  <docs-root>` with `PITCH` defaulted the same way; a project whose check is pytest takes that
+  section's template. Never one machine's absolute path, and never a bare `pitch`,
+  which is on PATH only in a session's Bash.
 - When the document changes later: correct the document, `pitch memo`, the fence, `pitch build` (both
   decks), `pitch check`, publish again to the sidecar's URLs, the page first, one commit.

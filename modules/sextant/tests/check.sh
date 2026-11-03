@@ -3,7 +3,8 @@
 # fake TypeSafe server; no network, no model), the redaction bench's --help (it loads the core
 # through common.tool(), G37), the launcher template compiled once with its two defines, and
 # install.sh's syntax. The suite needs macOS (`say`, `afconvert`): elsewhere it is skipped with one
-# printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish). The
+# printed line and the rest still runs (the design's C5: a macOS-only check stays in /finish on a Mac; off one,
+# the pull request's macOS check). The
 # sounding queue's suite (tests/soundings.sh) and the weekly job's (tests/schedule.sh: install.sh's
 # plist with and without aurora, the module's own runner) run everywhere, and so does pitch's
 # (tests/pitch.sh: the renders' checker and builder against their fixtures).
@@ -17,7 +18,7 @@ rc=0
 echo "== sparks"
 if [ "${SPARKS_SUITE:-1}" = 0 ]; then echo "  skipped: SPARKS_SUITE=0"
 elif [ "$(uname)" = Darwin ]; then bash "$D/tests/sparks.sh" || rc=1
-else echo "  skipped: the suite needs macOS (say, afconvert)"; fi
+else echo "  skipped: the suite needs macOS (say, afconvert), not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"; fi
 echo "== the rest"
 ok() { if [ "$1" = 0 ]; then echo "  ok   $2"; else echo "  FAIL $2"; rc=1; fi; }
 python3 "$D/bench/redaction/run.py" --help >/dev/null; ok $? "bench/redaction/run.py --help finds the core"
@@ -54,7 +55,8 @@ if [ "$(uname)" = Darwin ] && command -v cc >/dev/null 2>&1; then
   cc -O2 -Wall -Werror -x c -DSPARKS_SCRIPT='"/x/sparks"' -DSPARKS_CONFIG_PATH='"/x/c.json"' -o "$T/l" "$D/launcher.c.in" 2>"$T/cc.err"
   ok $? "launcher.c.in compiles with its two defines"
   ! cc -x c -o "$T/l2" "$D/launcher.c.in" 2>/dev/null; ok $? "  and refuses to without them"
-else echo "  skipped: launcher.c.in is macOS-only (or no cc)"; fi
+elif [ "$(uname)" = Darwin ]; then echo "  skipped: no cc"
+else echo "  skipped: launcher.c.in is macOS-only, not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"; fi
 # /sounding (the Sounding's S4): its frontmatter, and every `keel <verb> … --flag` it tells a session
 # to run is one keel takes — a renamed flag would otherwise fail only when a sounding reaches it.
 # keel is a peer (its own module): absent, as in an install of sextant alone, those cases are skipped.
@@ -76,6 +78,41 @@ if [ -n "$KEEL" ]; then
   python3 "$KEEL" yolo --help 2>&1 | grep -q -- --dry-run; ok $? "  keel yolo --dry-run, which it runs, is a flag"
   python3 "$KEEL" lint --help 2>&1 | grep -q -- --strict; ok $? "  keel lint --strict, which it runs, is a flag"
 else echo "  skipped: keel is not installed here (an install of sextant alone)"; fi
+# /pitch and /captain (pitch-skill-wording, 2026-11-02): a description that parses (pitch's held an
+# unquoted colon), and a linked skill runs bin/pitch by the module's real path, never `../../bin/pitch`
+# from the link, which no allow rule on that path matches.
+for s in pitch captain; do
+  python3 -c '
+import re, sys
+t = open(sys.argv[1]).read()
+try: import yaml
+except ImportError:
+    # No PyYAML: the text check. A single-quoted description doubles each inner apostrophe, a
+    # double-quoted one closes, and a plain one is not empty and holds no ": " (the old pitch fault)
+    # and no " #" (a comment).
+    v = t.split("\n")[2][13:]
+    ok = (re.fullmatch("\x27(?:[^\x27]|\x27\x27)+\x27", v) if v[:1] == "\x27"
+          else re.fullmatch("\"(?:[^\"\\\\]|\\\\.)+\"", v) if v[:1] == "\""
+          else v.strip() and ": " not in v and " #" not in v)
+    sys.exit(0 if t.startswith("---\nname: " + sys.argv[2] + "\ndescription: ") and ok else 1)
+try: m = yaml.safe_load(t.split("\n---\n")[0][4:])
+except yaml.YAMLError as e: print(e, file=sys.stderr); sys.exit(1)
+d = m.get("description") if isinstance(m, dict) else None
+sys.exit(0 if isinstance(m, dict) and m.get("name") == sys.argv[2] and isinstance(d, str) and d.strip() else 1)' "$D/skills/$s/SKILL.md" "$s"
+  ok $? "skills/$s: its frontmatter parses"
+  ! grep -q '\.\./\.\./bin/pitch' "$D/skills/$s/SKILL.md"; ok $? "  …and never runs ../../bin/pitch from the link"
+  grep -q 'realpath "<base directory>/\.\./\.\."' "$D/skills/$s/SKILL.md" && grep -q '^allowed-tools: .*Bash(realpath \*)' "$D/skills/$s/SKILL.md"
+  ok $? "  …and resolves the module with realpath, which its allowed-tools name"
+  # Both spellings the skill names, run on a link as a login dir holds it: each prints the module, not
+  # the login dir (a plain `cd` drops `..` from the text before following the link, landing in the login dir).
+  mkdir -p "$T/lk/$s/.claude/skills"; ln -s "$D/skills/$s" "$T/lk/$s/.claude/skills/$s"; B="$T/lk/$s/.claude/skills/$s"
+  want=$(cd -P "$D" && pwd)
+  grep -qF '(cd -P "<base directory>/../.." && pwd)' "$D/skills/$s/SKILL.md" && [ "$(cd -P "$B/../.." && pwd)" = "$want" ]
+  ok $? "  …and its pre-macOS-13 fallback, run on a linked skill, prints the module"
+  if command -v realpath >/dev/null; then [ "$(realpath "$B/../..")" = "$want" ] && [ -x "$want/bin/pitch" ]
+    ok $? "  …and realpath, run on a linked skill, prints the module that holds bin/pitch"
+  else echo "  skipped: realpath is not on this host (before macOS 13); the fallback case above stands"; fi
+done
 # the sounding queue (the Sounding's S7): scratch dirs and git only, any OS
 bash "$D/tests/soundings.sh" | tail -1; ok "${PIPESTATUS[0]}" "the sounding queue's suite (tests/soundings.sh)"
 python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings --help prints its usage"

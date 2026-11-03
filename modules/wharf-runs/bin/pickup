@@ -2352,8 +2352,14 @@ def unattended_stop(verb):
 
 
 def cmd_open(data, b, me, args):
-    unattended_stop("open")
     root = data["root"]
+    if args.note:
+        # the note is this session's text, handed to a new session in ROOT by a tab, a window or dispatch:
+        # from inside a confidential scope into an open repo no review read it (the fifth landing review, item 3)
+        why = confined_refusal(root)
+        if why:
+            raise Stop(f"open --note: {why}")
+    unattended_stop("open")
     gave = handed_over(b) if args.fresh else None
     if gave:  # `pickup next` in that session: still running, but it has said it writes nothing more
         b = {**b, "sessions": [{**v, "handed_over": True} if v["id"] == gave else v for v in b["sessions"]]}
@@ -2646,6 +2652,10 @@ def dispatched(root, b):
 # saying "the queue does not read" counts as one too: the readers' rule, an unreadable queue is an entry,
 # and a tab beside an entry nobody can see may run the step twice (S3's landing review, item 5)
 QUEUED_AS = re.compile(r"queued as (\S+?:\S+?)[ ,(]")
+S6_REFUSAL = "(confidential-reach S6)"   # every spawn-gate refusal of dispatch and the queue's route ends so
+# ...on a refusal line of its own (`dispatch: …` or `dispatch-queue: …`): an `==` note carries the tag too while the
+# run goes on, and a later refusal of another kind then read as the gate's (the sixth review's first pass)
+S6_REFUSAL_RE = re.compile(r"^(?:dispatch|dispatch-queue): .*" + re.escape(S6_REFUSAL), re.M)
 QUEUE_HOLDS = re.compile(r"\(queue entry \S+\)|queued as \S+:\S+|the queue does not read")
 
 
@@ -2655,7 +2665,9 @@ def branch_origin(root, b):
     so every start path (`seeds --open`, `open`, a retry) carries --origin and opens no tab, not only
     cmd_seed's (S5's landing re-review)."""
     ref = b["name"] if b.get("local") else f"origin/{b['name']}"
-    for p in sorted(out(root, "ls-tree", "-r", "--name-only", ref, "--", "docs/handoff").splitlines(), reverse=True):
+    # the reviews of the branch's own topic only, the core's one rule (common.spawn_reviews): a seed beside a
+    # spawn keeps its source's review under the source's topic, and is an open run (the fourth landing review)
+    for p in sorted(common.spawn_reviews(str(root), ref, common.branch_topic(b["name"])) or [], reverse=True):
         if p.endswith(REVIEW_SUFFIX):
             try:
                 o = json.loads(out(root, "show", f"{ref}:{p}") or "null")
@@ -2707,6 +2719,12 @@ def dispatch_fresh(root, b, args, origin=None):
     r = run(cmd, timeout=330, env={**os.environ})   # --next blocks up to about 3 min
     said = "\n".join(l for l in (r.stdout + r.stderr).splitlines() if l.strip())
     held = r.returncode == 2 and bool(QUEUE_HOLDS.search(said))   # the queue holds the step: no tab, no retry line
+    if r.returncode == 2 and S6_REFUSAL_RE.search(said):
+        # the spawn gate (confidential-reach S6): a tab or a window would start what it refused, around it
+        # (the fourth landing review, item 2) — never one, whatever the origin; first, before
+        # any other reading of its text (the sixth review's second pass)
+        raise Stop(f"dispatch refused {b['name']} at the spawn gate — no tab or window, which would start it "
+                   f"around the gate:\n{said}" + (f"\n{from_start_line(root, b['name'], origin)}" if origin else ""))
     if r.returncode == 2 and "refused, never queued" in said:
         # dispatch-queue S5: no host meets the run's needs (or may take the repo). A tab here would run it on the
         # Mac the check just said lacks the feature: never a tab, whatever the seed's origin
@@ -2785,6 +2803,12 @@ def seed_next(me, args, where, branch, prompt, primary):
 def cmd_next(me, args):
     if not me["id"]:
         raise Stop("no session id (CLAUDE_CODE_SESSION_ID): `next` runs inside a Claude Code session")
+    # the prompt is this session's text: from inside a confidential scope it goes into an open repo's brief
+    # (seed_next commits it before dispatch judges anything) or a tab's --note, and no review read it. Judged
+    # first, before anything is read or written (the fifth landing review, item 3)
+    why = confined_refusal(repo_root(Path.cwd()) or Path.cwd())
+    if why:
+        raise Stop(f"next: {why}")
     # `-`: the prompt from stdin, so a quoted heredoc carries code spans and `$` untouched — in
     # double quotes on the command line the shell would run them (review 2026-10-05)
     prompt = (sys.stdin.read() if args.prompt == "-" else args.prompt).strip()
@@ -4267,8 +4291,20 @@ def from_scope_judge(root, scope, repo_given, cwd, reg):
         return (f"scope {scope} is not confidential: --from is the way out of a confidential scope, "
                 f"and an open one's seed needs none")
     here = str(Path(cwd or os.getcwd()))
-    if not common.scope_match(scope, reg)(here):
+    # which scopes the caller is in, by the spawn gate's one rule: its directories (common.caller_dirs: the shell's,
+    # its session's record, the folder it started in), each by the core's resolver. The review vouches for one scope:
+    # a caller also in another (a repo two scopes share, a shell in one and its session's folder in another) would
+    # carry that one's text out under this one's review (the sixth landing review)
+    rd, torn = common.read_registry(reg)
+    if torn or rd is None:
+        return f"the registry snapshot {reg} cannot be read, so no scope can be judged (fails closed)"
+    at = common.scope_resolver(rd)
+    cs = frozenset().union(*(at.scopes(c) for c in common.caller_dirs(here, os.environ.get("CLAUDE_CODE_SESSION_ID"))))
+    if scope not in cs and not common.scope_match(scope, reg)(here):
         return f"this session's directory ({here}) is not in scope {scope}: --from names the scope it runs in"
+    if cs != {scope}:
+        return (f"this session is in confidential scopes {', '.join(sorted(cs))}, not {scope} alone: a review out of "
+                f"one scope cannot vouch for what another's session writes")
     if not repo_given:
         return "--from takes --repo: the open repo the seed goes to, named, never the cwd's"
     n = confidential_target(root, reg)
@@ -4306,17 +4342,31 @@ def from_scope_judge(root, scope, repo_given, cwd, reg):
 def confined_refusal(root, cwd=None):
     """Why a plain `seed` or `brief` (no --from) may not write ROOT from CWD, or None: out of a confidential
     scope the only way is `seed --from`, reviewed, whose Seeded-By names a marker, never the repo
-    (S5's landing re-review: a plain seed wrote the node's repo name into an open repo). A torn
-    registry refuses only a session that may be confined: one whose cwd no scope can be judged for."""
+    (S5's landing re-review: a plain seed wrote the node's repo name into an open repo). The caller is
+    judged as dispatch judges it (the fourth landing review, item 7): its shell's directory and its
+    session's own folder by record (common.caller_dirs), each by the core's scope_resolver — the fence's
+    paths, the repo key and its checkout's, every confidential scope's entries and globs — so a node
+    session's `cd <open repo> && pickup brief …` and a caller in an unregistered repo a confidential glob
+    takes are inside; ROOT by its git checkout (common.caller_and_target). A torn registry, or a
+    confidential scope whose `repos` is no list, refuses only a session that may be confined: one whose
+    cwd no scope can be judged for."""
     here = str(Path(cwd or os.getcwd()))
-    with tempfile.TemporaryDirectory() as tmp:
-        reg = registry_snapshot(tmp)
-        if reg is None:
-            return (f"the registry {common.repos_json()} cannot be read, so whether this session is in a "
-                    f"confidential scope cannot be told (fails closed)")
-        for n in common.confidential_scopes(reg):
-            if common.scope_match(n, reg)(here) and not common.scope_match(n, reg)(str(root)):
-                return f"this session runs in a confidential scope: a seed out of it goes by --from, reviewed"
+    reg, torn = common.read_registry()   # torn includes a confidential scope whose `repos` is no list
+    if torn:
+        return (f"the registry {common.repos_json()} cannot be read, so whether this session is in a "
+                f"confidential scope cannot be told (fails closed)")
+    reg = reg or {}
+    if not common.confidential_scopes(reg=reg):
+        return None
+    at = common.scope_resolver(reg)
+    cs, _, rs, split = common.caller_and_target(at, common.caller_dirs(here, os.environ.get("CLAUDE_CODE_SESSION_ID")), str(root))
+    if cs and split:
+        return f"{split} — and this session runs in a confidential scope"
+    if cs and not cs <= rs:
+        # every scope the caller is in must take ROOT: a caller in two scopes (a repo they share, or a shell in
+        # one and its session folder in another) writing a repo of only one sends it out of the other — main
+        # refused that, and so does this (the fifth landing review, item 2)
+        return "this session runs in a confidential scope: a seed out of it goes by --from, reviewed"
     return None
 
 

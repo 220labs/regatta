@@ -2,11 +2,293 @@
 
 ## Unreleased
 
+- finish-as-task (the owner's D3 of node-lands: "The finish should be handled like any other task"): a `/finish` is
+  one fleet entry of kind `finish` under its branch's own key, carrying its tip and its rights (by, rule, merge, hold,
+  from, a ship's digest; `finish_bad()` reads each, never a prompt or an allow list). `autofinish-run` puts it through
+  `dispatch --queue-finish` and writes nothing of the run on the putting host; the build's claim takes it on any host
+  with room (pinned where only that host can judge or run it: `--on here`, the landing ladder, a tip origin lacks), its
+  job `dispatch --finish` execs `autofinish-run queued QID`, which reads the entry under its claim (`mine --json`),
+  finds or makes the worktree from origin at the tip, and starts the run with `dispatch --start --queued QID --job L`
+  (the claim's slot, `mine` again under the start lock, `started`, and `ended` at its end). A finish ranks ahead of a
+  build of the same priority. One run per tip from the queue alone: a live finish is busy to any second put, a run's
+  end leaves a tombstone (`state: ended`, `ran_on`, and the outcome `autofinish-run`'s record() writes with
+  `dispatch-queue finished`) that refuses the same tip (bar a run that died, a person's launch over a cancel, a chain
+  relaunch over a no-landing stop), a cancel leaves one too, and the sweep reads it (`queue_holds.ended()`); ENDED_TTL
+  7 days. `dispatch-queue raise` replaces `land-raise`. Removed: the Mac-local landing queue (`queue-local/_land`,
+  `land`, `land-wait`, `land-raise`, dispatch's `land_queue` and `is_landing`), and autofinish-run's peer road
+  (`peer-start`, `peer-sync`, the ticket and the waiter that held a lock for a run on the peer, `wharf-runs/finish-on`).
+  The sweep moves each old `_land` entry whose waiting dispatch is gone into the fleet, pinned (`drain_land`). Cases:
+  `tests/test_finish_queue.sh` (new), `tests/test_rank.sh`, `tests/test_priority.sh`, `tests/test_after.sh`,
+  `tests/test_autofinish_run.sh`, `tests/test_dispatch.sh`. From its finish review: a skipper's put is no person, a
+  finish needs a Mac or a `finish-queue` feature line, a pinned finish claimed late takes its clean worktree, a
+  `failed` start holds no person's launch, `dispatch-queue finished` is denied to a session, stamps compare as instants.
+
+- `harness` research mode builds the Codex arm's seatbelt with its scratch `config.toml`, `AGENTS.md`, `hooks.json`
+  and `auth.json` read-only (the core's `fence.codex_ro`), as council's `arm_home` names them; it named none.
+- node-road (2026-11-02): orca-host's fence case names helm send as a reader of a node folder (its
+  yard's ssh), beside orca-host and yard-node.
+- `yard-node words --node NAME | --all [--check] [--dry-run]` (node-lands D1, carried by node-lands-base): the publish
+  gate's word list to a named node over its ssh alias, hash-compared, mode 600, never over a copy edited later there;
+  dispatch-queue's sweep runs `words --all` hourly on a host that names a node (`words_tend`), called from
+  `cmd_sweep` so a writes-only host's early return tends it too (the node-lands landing review's finding 9).
+  `cloud apply`'s hand-steps name it. Each ssh call is bounded (60 s); the copy goes live only when its sha256 is the
+  list's; `--check` exits 1 on a `newer there` copy too. Cases: `tests/node.sh` N13, N13b.
+- `yard-node`'s live writes (`apply`, `launch`, `snap`, `cloud apply`, `words`) refuse under `REGATTA_UNATTENDED`
+  as under `CLAUDE_UNATTENDED`. `install.sh --schedule` and `--remove` off a Mac boot out the
+  `<label-prefix-previous>.autofinish` job when the prefix moved. Cases: `tests/node.sh`, `tests/test_autofinish.sh`.
+- Off a Mac (the Linux node; node-lands round 1, carried by node-lands-base): the suite's macOS-only lines say they are
+  not run on the host and, in regatta, run by the pull request's macOS check, which `pr merge` waits for, and its end
+  names every suite so left. `install.sh --schedule` schedules the sweep there through `bin/systemd-launchctl`, beside
+  an overlay too (whose `bootstrap.sh --schedule` writes launchd jobs only), under the overlay's
+  `<wharf-runs/label-prefix>.autofinish` label. `install.sh --check` names what a `/finish` needs on the host: the
+  publish gate's word list and the `finish` skill in each login dir. Cases: `tests/test_autofinish.sh`.
+- A build round's real findings are a verifier's word, never the builder's (verified-rounds): `build-review round`
+  takes `--verdicts FILE`, the report of a fresh `reviewer-high` given only the round's S1, S2 and WRONG items, and
+  counts its `WRONG` blocks that carry evidence (an `[S3]` head left out) as `found`, every block as `raised`;
+  `--found` takes 0 alone. A round past the first is granted only when the round before confirmed a finding or its
+  check was red (exit 4 otherwise). dispatch's build prompt spawns the verifier before any fix, keeps a pre-existing or
+  intended finding out of the loop, and re-runs once a failing case the branch cannot reach before calling the check red.
+  The landing review's round: evidence wrapped onto the next lines counts and one that says there is none does not;
+  a claim that merely names `[S3]` stays counted; a held loop reopened by the answer is granted its round; a round with
+  no `--check` grants none; exit 4 is asked before the cap's 3; an `[S1]` the verifier calls `UNVERIFIABLE` is kept as
+  `open_s1` and `covers` will not vouch past it. The verifier reads the brief, writes a block for every item, keeps an
+  S3's tag and takes a failed merge's S? items as S2. A build already running when this lands keeps its old prompt, and
+  its `round --found N` is refused with the verifier's road named.
+- dispatch-rc: past `DISPATCH_MAX_H`, a run whose own `check` still runs on its worktree is spared up to
+  `DISPATCH_CHECK_GRACE_H` (2) more, unless its last turn hit a usage limit; an end at the cap records what it
+  cut (the check's pid and out folder, the limit line) in the record's `cut` and the log. send-road-start was
+  ended with its check waiting on a slot, which then passed 7/7 with no session to read it (2026-11-02). Once
+  the check exits the run keeps `DISPATCH_CHECK_READ_S` (900) more inside the grace to read its summary, and an
+  end after that names the check in `cut.checks_done`. This is the rc road's watcher only; the headless road's
+  watchdog still ends a run at the cap. `last_answer` reads a transcript mid-write without dying on a split
+  character.
+- autofinish: a root `.gitattributes` that only adds `TODO.md` / `CHANGELOG.md merge=union` lines (and blanks or
+  comments) no longer holds a handed landing, and rides with records under rule A: a repo's first `/todo` writes
+  one (todo-driver, 2026-11-02). Any other added line, or a removed one, holds as before.
+- The hand-over for mode `default` (task-shape S3, docs/task-shape-2026-10-29.md, D1-C): this Mac's landing switch,
+  `autofinish arm --landings` (`~/.local/state/autofinish/landings`; off by default, refused unattended, a plain
+  `disarm` turns it off with `armed`), read once at a `default` build's prompt. On, the prompt names the hand-over line
+  for a done last step and the run's record says `handed=1`; dispatch-rc ends it a minute after a reply of the
+  `handed` kind and leaves its slot to the landing (`idle_limit`, `lands_after`), while a WAITING line keeps its hour
+  and claims at parking; `yolo_launch` starts `autofinish-run --by handed --rule C` (rule L for a deployed branch),
+  needing the switch at the launch, not `armed`, and tries a cap refusal once more after `NEXT_IDLE`. Off, nothing
+  changes. dispatch-rc's `last_answer` (the watcher, `ask_guard`, dispatch-queue's requeue quote) and the harness's
+  `last_reply` (helm) read past Claude Code's unflagged `<synthetic>` "No response requested.", as `yolo_launch` did;
+  any other synthetic entry (an API error, a limit) is the reply they read, its words kept, so a turn that ended on one
+  never reads as the turn before's closing line; `yolo_launch` declines on it, naming it. Cases: `tests/test_dispatch.sh`, `tests/test_autofinish.sh`.
+- Builders on the coin (S6 of the Trim design, its D2-A): while `wharf-runs/builder-rotation` says `until YYYY-MM-DD`,
+  `dispatch` draws the builder of a specced brief (a `Tier:` line naming `worker` and no other model, or Sonnet
+  alone; a blueprint block's `tier: worker` only through that line, which `wharf check` warns on when they differ) once where it enqueues or schedules the run, 1 in 5 Sonnet 5.5 `high`, else Opus 5.5 `high`, by
+  full id. The draw rides every road as `DISPATCH_ARM` (the queue's entry, which `dispatch-queue` now accepts, the
+  peer's ssh line, the one-shot's plist), never into the run's session; the fire path re-reads the brief and runs
+  the arm only while it is still specced and no `--model` or `--effort` was given, records it as the run's `arm`
+  and `arm_source`, and writes one row to the log dir's `builder-rotation.jsonl`. A typed model or effort, a
+  principal tier, `sr-worker`, any other tier, a confidential scope, a repo in no scope and a registry that does
+  not read draw nothing; a fence closed at fire time writes no row. No key, a passed day or a garbled line: dispatch
+  as before, said nothing. A requeued coin run carries its arm on, not a typed model. `DISPATCH_COIN=0|1` forces the
+  coin (the tests). New `bin/buildercoin.py`; `blueprintlib.brief_specced`; cases: `tests/test_builder_coin.sh`
+  (portable, on the Linux list).
+- `build-review covers <worktree> [--base REF]`: exit 0 when the build's loop ended clean (kept by another session)
+  and the commit its last build-phase review read carries the same code change as HEAD (a hash of the diff text,
+  whitespace kept; docs/, TODO.md and CHANGELOGs left out), on a clean tree and no principal build, so `/finish` may
+  skip its review; never in an `in_place` repo, read at the base. `autofinish-run` allows that verb alone, and
+  dispatch gives `round` and `end` to build runs only (TODO.md [second-review]'s D1-B and its landing review).
+- `build-review compare` counts a held loop that was reopened once, and keeps a finish's unsorted `S?` findings.
+- The build loop's round cap is `build-review cap`: the config key `wharf-runs/build-review-rounds`, 1 to 20, read at
+  each round, default 3 (was a fixed 5; D2-B). dispatch's build prompt states the cap it reads.
+- `build-review compare [--json]`: per branch, the build loop's rounds and outcomes beside the finish's review lines and
+  the review agents' spend, split at the build's end (TODO.md [second-review], `docs/finish-second-review-2026-11-02.md`). dispatch's
+  build prompt passes `--phase build` to `review-gate merge`.
+- tests: the lanes make stdout and stderr blocking before they print, so a pipe left O_NONBLOCK (CI's, by the claude CLI)
+  no longer cuts each lane's printout near 64 KiB; test_queue's stale-retry stand-in fires the other host's write
+  when the put enters the outbox, not on the 4th sleep, which a held clone lock moved (runner-interference, 2026-11-02).
+
+- Live limits (live-limits, 2026-11-01): the `limits` file names the run cap, check slots, headroom and the load
+  rule for `regatta limit`; `check --slots`, `headroom limits` and `berth --load-key` are their trial reads; `check`
+  reads the live layer before the config, as the core's readers do. `dispatch` reads the cap again at each
+  judgement (`refresh_cap`): a landing waiting in the queue recounts at the cap of now, never its start's.
+- dispatch: a principal tier that runs Fable (principal-architect) takes a login with Fable room (the principal
+  tier's S6). The first pick is the plain one; once the fire-time brief read names a Fable tier, auto and bound
+  pick again with `--room fable` and refuse when that names no login (no registry, or no `account` tool at all, runs as before). A full
+  Fable week, or an unknown Fable room, queues as a full week does. A dry run names the room pick's login.
+  `--account bound` scheduled for a Fable tier is refused at once when the primary's cached reading has no Fable
+  room (a plan without Fable: no reset lifts it). The `== tier` line names what ran: the login and its Fable room;
+  for a named `--account`, its Fable as its cached limits read it ("asked, not what ran" where it has none).
+- `wharf apply` starts a claude-code block whose branch is already on origin with its brief — a sent ship's
+  pinned branch, or one the block names, whose topic is the block's id — by a plain `dispatch <branch>`, never
+  `pickup seed` (send-road-start; the first `helm send --text` ships after the cutover never started on their
+  yard, 2026-11-01: pickup refused the topic already open on the sender's branch). Plain, not `--next`: helm
+  send commits the blueprint after the seed's brief. The ship's env and the `seed` ledger line as the seed road
+  writes them, `seeded_branch` the sent branch, a line a crash cut off judged by dispatch's own mark; a refusal
+  that only waits (the cap's words, a queue that does not read) is marked `waited` and spends none of the
+  block's starts and keeps one ledger line however long it lasts; a branch there with no brief, or holding
+  work past it, is raised to the skipper and never dispatched, no start spent. The lookup and the call fit inside the start's
+  400 s, so the yard's tick (at most about 545 s left for wharf) starts it. `WHARF_DISPATCH` and `WHARF_PICKUP` name stand-ins for the suite.
+  The block's own `model:` and `effort:` go to dispatch; a brief or a tree that did not read waits a pass, never
+  read as absent; a branch this ship dispatched before that a run has since committed on is recorded started, not
+  raised; the old road's seeds pickup refused for the open topic spend no start, so a ship they stalled starts.
+- `harness`'s research mode (the isolation design's S3): the copy rules (`council_copy_why`, the ~, home-repo,
+  other-repo and dot rules) give way to the core's `fence.box_why`, the box a council arm's; the adapter's
+  `config_why`, `CODEX_SAFE_KEYS` and `_toml_key` to `managed_why`, which refuses while an `/etc/codex/*.toml` or a
+  managed-config key of `com.openai.codex` is set. `--timeout` must be finite; `--deadline` takes the caller's
+  clock; the per-council and per-day counts (`research_counts`) read the records by mtime before dispatch's start
+  lock; the deadline timer's `ending` is written only while the record has no end. `autofinish-run`'s
+  `unattended_caller` is the core's rule. Both headers name the fences F1–F7.
+- `harness`'s research mode keeps codex's shell whatever the account holds: the plugin gate and `--text-only`
+  are gone. Its proxy withdraws the box's `auth.json` at codex's first request to its vendor (F7), its record's
+  `credential` says when and what was on disk at the first command, and `files` names what the turn wrote
+  outside the arm's dir, for council's scan.
+- `harness`'s research mode starts codex under the core's fence (the council isolation design's S1): the
+  seatbelt, a proxy for the turn, the box's scratch CODEX_HOME and an allowlisted environment, its own sandbox
+  off (`--dangerously-bypass-approvals-and-sandbox`, which its help reserves for an external sandbox) and every
+  feature judged off turned off; refused while a feature on is unjudged, and its shell while the account holds
+  a plugin of the owner's. `--text-only` (shell and code mode off too) and `--web` (the proxy opens to the web).
+  The permissions profile, its deny roots and the macOS-only probe list are gone with it.
+- `harness run --harness codex --mode research` (principal tier S3): one read-only Codex turn over a
+  scratch copy, in the foreground with a `--timeout`, under a permissions profile that extends
+  `:read-only`, denies ~, the login's own home, every account's home (`/Users`; `/home` and `/root` on
+  Linux), `/private/tmp`, macOS's per-user temp folders and `/Volumes` and reads the copy back in (probe 7,
+  re-run with `/Users` denied); macOS only, where it was probed. `--ephemeral`, never `--approve-for-me`;
+  `--review BASE` runs `codex exec review`. Judged by `--repo` (the contract, the public-repo refusal) and
+  by the copy (the confidential rule on both; outside ~, outside the repo and inside no other repo, under a
+  0700 run dir the council marked, never a clone); the guarded-source rule on `--repo` and the prompt file
+  (`--approved`, the owner's quote for OpenAI, never from an unattended caller); Codex's `config.toml`
+  holding only keys known to open nothing (no MCP server, sandbox or approval setting); `--timeout` at most
+  a day.
+  Unattended (CLAUDE_UNATTENDED or AUTOFINISH_CALLER_UNATTENDED) only with `--timeout` (at most 1800 s),
+  `--council RUN:VERB`, at most two Codex runs per council run and twelve a day on the Mac (their counts
+  and the cap read from the defaults, bar beside a stand-in codex), and a free slot under `dispatch --cap`,
+  the queue's reservations counted, under dispatch's start lock until codex runs; `dispatch-rc`'s cap
+  counts a running one (`research_live()`, through `running()`, from the last day's records). A Codex
+  run's record now sums `usage` over every `turn.completed` and keeps each `command_execution` it ran; the
+  wrapper's deadline thread and its loop write the record under one lock, each with a temp file of its
+  own, and a turn that ends as its deadline fires is recorded completed (the landing reviews, 2026-10-28).
+- `autofinish-run` never starts a `/finish` on a tip origin's branch has moved past (finish-stale-tip; a run on a
+  seed went on though its build sat five commits ahead on origin). An origin gate on both roads, after what no tree
+  moves under and before the refusals that read the tip: the branch's warm run is ended, a clean worktree behind
+  origin is fast-forwarded, one line, and a person's launch lands that tip and sends it; a dirty one, or a tip apart
+  from origin, is refused with the new exit 6, nothing started, where the send used to say "stays on this Mac" and go
+  on. Every other caller's gates judged the old tip, so it moves the tree and stops: its next start judges the new
+  one, on either road. The commits a fast-forward took in head the run's bundle (the next start's too, after a stop),
+  since /finish's own step then finds nothing to take in, with the diff that shows a memo's answers.
+  The peer's job, and the send's inline fallback after a peer could not take the run, refuse rather than move the tip
+  the sending Mac recorded; so does a re-read once a warm run ended. Origin that cannot be read stays a start, with a
+  line, unless a warm run was ended or a push refused first. `cold_prompt` blocks a typed `/finish` on exit 6, and sends a warm session on such a tip to the runner rather
+  than ask for a summary commit on it.
+- `autofinish-run --by chain` relaunches a landing stopped at `no-landing` on a login's usage limit ("You've
+  hit your 5-hour limit · resets …"), as it does a network or sleep stop: `S4_RE` gains the limit's form,
+  anchored as before, and only for the windows `account pick` judges (5-hour, weekly; a per-model, credit or
+  spend limit stays S5). The relaunch picks its login afresh, a pick no row passes refuses before any session
+  and spends none of the tip's two relaunches; a relaunch the peer could not take gives its counted id back
+  (`uncount_chain`), so a peer whose own run on the tip had ended (adopt) leaves no relaunch spent
+  (queue-followthrough; landings stopped so on 2026-10-31, seven in one Mac's records alone). The bare
+  "You've hit your limit", Claude Code's extra-usage-rejected form of any window, stays S5.
+- The block rule in `wharf check` (trim S4, 2026-11-02; docs/self-tuning-2026-10-26.md, "Granularity"): a block's
+  optional `lines:` key, its expected code lines, shown on its graph line; a warning (never a refusal) for a block past
+  1,000 and for two or more work blocks none of which waits on another (by `depends_on`, directly or through a decision). `wharf check <doc.md>` reads a Course doc's Action
+  plan: each step's `· lines: <n>`, a warning past 1,000, a step with no size listed and never an error. The window is
+  `BLOCK_LINES = (300, 1000)` in `bin/blueprintlib.py`, the pin trim re-reads. Cases: `tests/test_wharf.sh`.
+- hail's mailbox road (the charterer design's S2, docs/charterer-2026-11-01.md): `hail REF --host PEER` that no
+  ssh reaches writes a row in this Mac's `hail-mailbox.jsonl`; PEER's bell pulls it with `hail mail --pull` over
+  its own alias (`--take`, recorded on the sender before any post, then `--settle`), posts it by the socket road
+  under its idle and read-back rules, and reads `ended` back for a session gone on PEER. The roads and their
+  order follow helm's surfaces.json row `hail.roads`. Cases: `tests/test_hail.sh` (two hosts through a stand-in
+  ssh, two logins on one Mac).
+- A host's run cap can differ from the default: `wharf-runs/run-cap`, `<host>:<n>`, read by `dispatch` under
+  `DISPATCH_MAX_RUNS` and over its default of 3, which stays dispatch's alone (the owner, 2026-10-31: the Linux node
+  at 4; 2026-11-01: a Mac at 5 by its own line, which this landing makes live, from 3). The node's 4 was a variable only its user manager held, so a peer's `--slots` over ssh read 3.
+  Cases: `tests/test_systemd.sh` (runs on Linux), `tests/test_dispatch.sh`.
+- The kick's ssh road can reach a host `wharf-runs/ssh` must not name: `wharf-runs/kick-ssh`, `<host>:<alias>`, read
+  by kicklib alone, so a scope's node gets the kick without joining berth's probes, pickup, stalls or `account doctor`
+  (docs/node-cap-kick-2026-10-31.md has the reader-by-reader audit). Cases: `tests/test_systemd.sh`, `tests/test_queue.sh`.
+- A kick heard on Linux starts the sweep through `systemd-launchctl kickstart`, as on a Mac through launchctl: it no longer
+  waits on the unit, and `tests/test_systemd.sh` runs it. kicklib's `<host>:<value>` keys read a value split one word per
+  line, and a note after `#` is no text.
+- task-shape S2, `--by handed` — the landing side (docs/task-shape-2026-10-29.md, D1-C): `autofinish-run` takes
+  `--by handed` (and `peer-start` too) for a done build dispatch hands over; `landing()` judges it by `bin/autofinish`'s
+  new `handed_held`, whose slice `HANDED_SLICE` is empty under D1-C (`"exclude"` is D1-A, `"brief"` D1-B), so it
+  lands what a typed `/finish` lands, bar a diff or config that will not read, a binary, a `.gitattributes` change,
+  the launcher's own gates and a mode that will not read; it reads paths only. Never in `PERSON_BY` or `MERGE_BY`: mode `ask` holds it, `--merge` exits 2, and
+  rule M makes it a mode launch, held as one. `CHAIN_KEEPS` keeps it on a chain relaunch; `ladder_stay` keeps it on
+  this Mac. dispatch's side is S3.
+- Session names (the owner, 2026-11-01): dispatch names a run `build-<topic>`, `design-<topic>` (a brief at an
+  architect tier), `probe-<topic>`, or a `--start`'s NAME with its own verb (`finish-<topic>`, else `work-<topic>`),
+  never `run-<topic>`; every landing read `run-finish` before. Remote Control is that name plus ` · <machine>`; the
+  window keeps `run · <topic> · <repo>`, which dispatch-rc matches. autofinish-run quotes the session name, read by
+  dispatch's own call; its NAME to dispatch is unchanged. pickup's `<repo>: <topic>` names stay whole.
+- The Engine room's S2 (docs/fleet-page-2026-11-01.md): `dispatch-queue hosts put|get` on `refs/regatta/hosts`, the
+  queue ref's lease and tries with `REF` a `Fleet` parameter; a put rewrites its own host's row only, and only when it
+  changed or its copy is 9 min old; the sweep's sample puts it whatever it says (`--refresh`). Every claim starts lighthouse's `hosts sample --put` detached, at most once in
+  30 s, and the sweep after its claims whatever the gap (`wharf-runs/hosts-sample` off: never; the suites' fixture sets it).
+  A run's record gains `login`, the label `account pick` gave it, the default login's included (`config_dir` is
+  written only for another login), so the row names every run's login; the harness's Claude adapter reads it as `account`. `queue_live.sh` refuses the hosts ref too.
+- task-shape S1, the ledger reads a landing (docs/task-shape-2026-10-29.md): `autofinish-run` writes a
+  finisher-rotation row for every finish run, `arm` null when none was drawn (the model and effort dispatch ran),
+  counted apart by `rotation`; the record and the row gain `pushed` (the sha the run's own push sent, read from
+  the transcript and checked against origin at the end), `base` and `base_tip`. `rotation --settle` settles a
+  `no-landing` row to `launched (settled)` only on nine conditions against the PR (a case each); a row from
+  before S1 never settles; condition 9 also counts a peer Mac's run by its `autofinished` line and compares repos
+  by real path. A push that found origin "Everything up-to-date" still records `pushed` (the worktree at origin's
+  head); an arm-less row records the finish skill's effort. `gate_of` reads step 1 as G1r only when the review is
+  the stop it names, else G1, and the gate words as words with their forms: "checkpoint" is no check, "alive" no
+  live system, while "deployment", "unmerged", "automerge", "redeploy" and "deadlocked" still read. A later run
+  that never started is no later run (condition 9).
+- The dispatch host's run cap is 3, from 6, the same as every other Mac (the owner, 2026-10-31: "drop dispatch to 3
+  actually, the default"). `dispatch --cap` still answers it for wharf and helm, and `--slots` for berth, harness and ops.
+- A named node's clone unit links the modules' skills and agents into every login dir (the default `.claude` and
+  each `.claude-*` beside it), one link per entry into the core its home file names, on every start of the unit: the first scope
+  node had none, so every dispatched `/finish` there ended "Unknown command: /finish" and the review gate found no
+  reviewer agents (2026-10-31). A `.claude-*` dir counts only with a `.claude.json`; its missing `skills/` or `agents/`
+  becomes a link to the default dir's, as `account add` makes it, and one that is a link already is left alone, as is
+  any entry already there bar a dangling link into a core's modules, which is removed (and linked again where a module
+  still has the name). A home file naming no core says so in the unit's log. A named node's printed hands say to run
+  `yard-node-clone` after a `claude login` made later. Cases: `tests/node.sh`.
+- The queue's rank holds on every claim road (queue-rank, 2026-10-31): a live run's own `--next` (a re-dispatch of
+  a busy branch, `replaced`) is no longer claimed past an entry ranked ahead of it that found no room. Claimed, it
+  was reserved `waiting` and took its run's slot the moment that run parked, ahead of landings queued for hours;
+  now it waits like any entry, and the slot goes to the best one. An entry ahead that is itself own (a landing
+  whose build run still has a record) now stops the entries behind it too, and so does an `--after` entry the room
+  filter sets aside on a full host once its predecessor has landed (judged only when a live run's own `--next` is
+  behind it; one still waiting on its predecessor
+  stops nothing); judged landed, it takes the locked count like any entry, and its stop names it in `no_room`. Cases: `tests/test_rank.sh`, one per
+  road (enqueue --claim, claim, claim --event-at, sweep, poll), and the label a claim through dispatch builds.
+- dispatch-queue S12, pins only where required (the owner, 2026-10-31: "making dispatches drop host pin, unless it's
+  required"): `dispatch --on HOST|here` is a preference with a queue home — the entry's `prefer`; the preferred host
+  claims it first, and any eligible host with room once `PREFER_GRACE` (one sweep) has passed since its put, or at
+  once when the preferred host's claim found no room (it marks the entry `prefer_off`, once) or it refused it at fire
+  time. `dispatch --pin HOST|here` keeps the hard pin, for a run only that host can do; `--on` with `--pin` is
+  refused. An unattended run's `--next` prefers its host instead of pinning it: `running_on` holds the step there
+  while the run lives, which is all `after()` needs; a put that replaces a live entry keeps its own pin, or the
+  run's own typed `--pin` (`pin_kind`). A
+  named login (`--account LABEL`) stays pinned, and an entry pinned before S12 is honoured. One-shots carry
+  `DISPATCH_HOST_PREFER` or `DISPATCH_HOST_PIN`; `--queue` and `--status` say `prefers HOST`.
+  `dispatch-queue enqueue --prefer HOST`. The run's end pins the next step to its host only when that worktree
+  holds what the step needs (commits origin lacks, uncommitted work, pending answers: `held_here`; the sweep's free of a
+  dead run's branch alike, and a put preferring this host, so helm's stall retry keeps `--on`), and restarts
+  the grace (`freed_at`); a `--pin` run's `--next` keeps the pin; a put beside a live run with no entry is held
+  by `running_on`; a preferred host that will not take an entry for its own state releases it; a release kicks
+  the peers. The harness adapter's `--on`, `/later`'s named host and a blueprint block's named `host:` pass
+  `--pin`; a held pin outlives a re-dispatch and each sweep of its host judges it again.
+- An attended dispatch reaches the fleet queue unpinned unless a host or a login is typed (the owner, 2026-10-31:
+  "all dispatches go to a shared queue unless there is a strong reason to pin to a specific host"): the login label
+  `--next` inherits (`account which`) rides on a queue entry only when this host pins or prefers the entry
+  already (an unattended run's `--next`, a typed `--on here` or `--pin here`; the label keeps such a preference a pin, as on main), since enqueue pins any named label to its host, or when the primary
+  row may not run the repo (`account limits --all --repo`'s `denied`: a deny list, a scope's login, a tenant's repos;
+  a registry that cannot tell, torn, absent or with no primary, counts as may not), which keeps main's pin: another
+  host's auto pick there may have no row it may run. On a host whose registry has no primary row (the yard node's)
+  the label and its pin stay. Dropped, the fired
+  run's pick is `auto`; the one-shot a refusing queue falls back to keeps the label. A typed `--account LABEL` still
+  pins, `bound` and `auto` ride as before, and an unattended chain's `--next` is unchanged. A plain dispatch never
+  inherited the login. Cases: `tests/test_dispatch.sh` ("an inherited login pins nothing").
 - A requeued run goes back to the queue at `force`, whatever its rank was (the owner, 2026-10-30: "we want to get them
   as soon as possible, so they don't block other work"): the verb's `requeue` op (`force`) sets the entry's priority and
   its `--priority` arg, while the sweep's D8-B op keeps the rank (force as high), and a run with no entry gets its put at force (`entry_of_record`). Force's own rules apply at the
   claim (one slot over the cap, a second force entry first in line, the force floor); an unattended caller's own
   `--priority force` stays refused. Cases: `tests/test_dispatch.sh` (S10), `tests/test_priority.sh`.
+- confidential-reach S6's seventh review (the landing's, 2026-10-31): dispatch fetches a branch it has not seen into
+  its own remote ref and judges that, never `FETCH_HEAD` (two dispatches at once judged each other's tip); every
+  launch drops `DISPATCH_SPAWN_HELD`; the queue's claim drops a host-local entry whose branch this host has not got,
+  `--origin` or not, rather than hand it back hourly.
 - build-review (the owner, 2026-10-30: "Review inside the build"): dispatch's build prompt has every run loop
   review, fix and check in its own session before its last line: merge `origin/<main>` in once (a merge, never a rebase:
   the branch is on origin and the checkpoint push never forces), run the reviewers `/finish` step 1 runs as
@@ -16,9 +298,34 @@
   in every mode. The new `bin/build-review` keeps the record (`<git dir>/claude/build-review.json`, per session: each
   round's tip, reviewers, found, fixed, left, check), refuses a sixth round (exit 3) and logs the ended loop to
   `build-review.jsonl` beside review-gate.jsonl (project and branch keys), for the later decision on `/finish`'s
-  second review (docs/task-shape-2026-10-29.md phase 2, TODO 36). A brief's `Review: finish only` line opts its run
+  second review (docs/task-shape-2026-10-29.md phase 2, TODO.md [second-review]). A brief's `Review: finish only` line opts its run
   out. `/finish` keeps its own review. On `autofinish_exclude`. Cases: test_dispatch (the loop's text, the opt-out),
   test_build_review (the record, a dead run's rounds, the cap, a clean end borne out, a held one reopened, the log).
+- force_mark (the fourth landing review, 2026-10-31): VS Code's `<ide_*>` blocks are cut as not the owner's words,
+  a dash before force is the flag named, a determiner beyond the/a, a compound noun ("task force", "in force") or
+  code (`force=True`, `force.py`) is talk, and dispatch-queue's refusal and checkpoint's deny no longer grant
+  the mark when pasted back.
+- confidential-reach S6's sixth landing review (2026-10-31): dispatch refuses for now a branch whose fetch fails
+  because origin does not answer, and reads the tip again on the fire path (`spawn_tip`, `spawn_verdict`); a node
+  session that dispatches a reviewed spawn is not made its skipper; a torn registry's `--origin` refusal says the
+  waiting words; the spawn re-arm uses `dateat`. harness refuses for now a named branch this host has not got.
+  The queue's `route()` refuses a caller in two scopes for an open repo; `--kick` and `--requeue --why` judge the
+  caller by the core's resolver and `caller_dirs` (`caller_scopes`; `toplevel` and `confidential_scope` gone).
+  pickup's `seed --from` refuses a session in more than one scope, and reads the gate's refusal only on a
+  `dispatch:` line, before any other reading of dispatch's text, with the `--origin` retry line.
+  The loop's later passes: a spawn asked from inside a scope gets no skipper, an inherited one included (a
+  node's own run keeps its own); a held `--origin` marker rides into the queue as given; route's final
+  refusals say "refused for good"; a `_spawn` entry whose branch this host has not got is dropped with a card;
+  wharf judges an Orca block's own branch (refused for now when origin has it and this host has not).
+- confidential-reach S6's fifth landing review, on the owner's accident standard (2026-10-30): every ordinary
+  road asks the gate. `pickup next` and `pickup open --note` ask `confined_refusal` first, before anything is
+  written; `wharf apply`'s Orca block asks the spawn gate; the queue's `route()` refuses a caller in two
+  scopes for a repo of one, and a typed `enqueue` reads its session's folder; a fired one-shot's first final
+  refusal writes `FAILED: refused for good`; dispatch fetches a branch it has not seen whatever its
+  `--origin`; harness judges the worktree's own HEAD, refuses when its core did not import (a peer's stdin
+  copy still judges nothing), and a refusal a wait fixes says the cap's waiting words. `topic_of` is the
+  core's `branch_topic`. The forges (a brief at another date, an edited blueprint, an empty commit's message)
+  are rows 46-48 of the border inventory, for S6b.
 - The S8 review's second pass: `kick-listen install` and `remove` refuse a host whose `kick-stream` names a shared
   listener (use `--shared`); `dispatch --roads` never prints `<host>:none` for this host; the watchdog moves a refused
   plist out of LaunchAgents; `REGATTA_UNATTENDED` joins the refusal marks; the mid-pass flush survives a torn ref;
@@ -53,8 +360,7 @@
   gates them at once with keel's `sheep gate` (a failed install or gate takes them out again). With no key, no sink
   is written: the node's sessions reach spacesheep once the owner puts `SPACESHEEP_SESSIONS_KEY` in the config dir's
   `regatta/.env` and runs `sheep gate` again, now one of the hands `yard-node` names after a launch or an apply.
-
-- A named node's clone unit writes the core's `home` file, best effort (TODO 25 (b)): from a clone the clones list
+- A named node's clone unit writes the core's `home` file, best effort (TODO.md [node-pair] (b)): from a clone the clones list
   carried that holds the core whole, else the marketplace clone `known_marketplaces.json` records; a home that names
   a core is kept, and a node with no core still finishes rather than retrying every minute.
 - dispatch-queue S7's Linux half: `bin/systemd-launchctl`, launchctl's verbs over systemd's user manager, is the
@@ -76,7 +382,18 @@
   road retires each host once empty, a busy one waiting for its last session; `--check` says the key keeps hosts off
   (not "missing"), and `--agents` shows a host plist unwanted only for this as `--` pending while the hourly reaper is
   scheduled (a FAIL without it).
-- `pickup seed --beside`'s wording has its case (routed comments S5, TODO 29 (e)): no "behind origin" for a seed off a
+- `check`'s scope moves to `bin/check_scope.py`, unchanged, so `.circleci/share.sh scope` (the Linux PR check's
+  trigger, docs/circleci-oauth-2026-10-30.md) asks the same rules the Macs' check uses.
+- `force_mark` takes any wording that asks for force (the owner, 2026-10-30): "use the force", or force or forcing
+  as a word ("help force anything", "force it through"). No mark: a refusing word within six words either side, punctuation
+  ignored ("no force, high is enough", "Force? No.", "Don't, under any circumstances, force it"), a flag or rank named (`--force`, `--priority force`), a
+  description ("forced to rebase", "brute force"), a word inside another, and git's or the OS's force verbs with
+  any spacing (force push, force-delete, force restart, force-with-lease…). dispatch-queue's refusal says so.
+  The third review: a force verb as a prefix (force-pushed, force quits), the feature's own nouns (the force mark,
+  floor, rank, force-ok), a question ("why did you force it?"), a contraction without its apostrophe ("dont force it"),
+  "rather than"/"instead of" force, any spelling of `--priority`, and a refusal just before any mention vetoes the
+  whole message. checkpoint's deny says any wording.
+- `pickup seed --beside`'s wording has its case (routed comments S5, TODO.md [routed-s4] (e)): no "behind origin" for a seed off a
   branch's tip, and a blueprint already on that branch is said to be on it.
 - dispatch-queue S10, the requeue (docs/dispatch-queue-requeue-2026-10-25.md): `dispatch --requeue TOPIC|--all
   [--why] [--dry-run]` hands this Mac's busy runs back to the queue with their work saved — each op in the outbox
@@ -148,7 +465,7 @@
   unattended refusal runs in dispatch's own bash before any queue verb. An attended session's `--priority force` needs the force mark, which
   the new UserPromptSubmit hook `hooks/force_mark.py` writes when the owner's typed message says "use the
   force" (a quoted, pasted, framed or subagent prompt never does) and dispatch spends on use; outside any
-  session the flag is the owner's typing. The hook is to be wired by one line in the overlay's `bootstrap.sh --hooks` (TODO.md, item 26).
+  session the flag is the owner's typing. The hook is to be wired by one line in the overlay's `bootstrap.sh --hooks` (TODO.md [queue-s4]).
 - One reader of "does the queue hold this branch", `bin/queue_holds.py`, for autofinish, helm's stalls and
   sextant's soundings (one `list --all --json` each; soundings asked `has` per entry); `list --json` names the
   stores that did not read (`bad_stores`), and a torn store holds only the branches routed to it.
@@ -170,6 +487,50 @@
 - `pickup seed --beside BRANCH`, routed comments S3's base off a branch's tip, was `--from BRANCH` until
   confidential-reach S5 took `--from SCOPE`; the two refuse together (scope-pass reviews the brief alone, never
   the commits a base off another branch would carry out). Routed S3's fix round 3.
+- `dispatch` refuses the unreviewed (confidential-reach S6): a spawn — an `--origin`, a branch carrying
+  `docs/handoff/*.review`, or a caller's directory in a confidential scope the repo is not in — exits 2, in
+  its own words (never the cap's waiting words), unless its seed's review vouches for the brief: before
+  any write, and again on the tree the run launches. A branch's review supplies its origin, so a `--next`
+  or a re-dispatch of a spawn (helm's included) carries it unasked. The run is not confined: it starts
+  with no inward `--settings`, for the outward fence's D5 was answered A (the rules file, the sandbox and
+  the fence), not E (the seeded run sandboxed inward, which would cost it the ssh its own `dispatch
+  --next` pushes over). A torn registry refuses whatever may be a spawn. dispatch-queue's claim judges a
+  spawn again on the claiming host (`claim_refusal`) and hands a failing entry back `refused`; an entry
+  asked from inside a node for an open repo is `confined` too, a routing flag (node-local) and no more.
+- S6's landing review (2026-10-28): a caller inside a confidential scope — by the core's `scope_resolver`,
+  so one in an unregistered repo a confidential glob takes counts — is refused unless the newest brief
+  dispatch hands the run is the reviewed one, and refused any `--note` or `--start` prompt; an open
+  caller is judged by the seed commit's own brief, so a spawned run's same-day `--next`, a re-dispatch and
+  the lander's `--start` go on after the run writes its next brief over the reviewed path. A refusal no wait
+  fixes fails a queued entry (dropped, with a `queue-failed` card) rather than hand it back for an hourly
+  retry; one this host cannot judge yet (a torn registry, a marker its registry lacks, a branch not
+  fetched) is handed back. dispatch-queue's `claim_refusal` judges every entry with an `--origin` or a
+  `.review` whatever its stored `confined` (entries from before S6), every entry of a node's own queue
+  (its `--note` too), and a `_spawn` entry left with neither; `route()` reads scopes through the same
+  resolver. One registry read per judgement (the origin's scope comes back with the verdict). The
+  `dispatch` header's torn-registry line says what a torn registry refuses and what it lets go on.
+- S6's fourth landing review (2026-10-30): a fired one-shot the spawn check cannot judge yet, which the queue
+  cannot take back either (its `route()` refuses a torn registry too), is re-armed ten minutes on under a new
+  label (`spawn_rearm`: its flags and `DISPATCH_ORIGIN` kept, `DISPATCH_SPAWN_HELD` counted, at most six),
+  said `rescheduled`, never FAILED; a final refusal says "refused for good" (helm counts it a spent retry), a
+  temporary one the cap's waiting words; `--dry-run` fetches nothing; a typed caller becomes a run's skipper
+  only once the spawn gate passed. dispatch-queue's `has_review` reads the run's own topic's review (the
+  core's rule), an unknown marker on a `local=` store's entry drops it once, a bad `repos` type is refused at
+  enqueue, and a claim never stays claimed on a crash of the check. pickup opens no tab or window on a
+  spawn-gate refusal, reads `branch_origin` by the topic rule, and judges a plain `seed` or `brief` caller as
+  dispatch does (its session's folder, a confidential glob). harness asks the gate before an Orca worker, a
+  Codex run, an Orca retry and a resume's next turn (`spawn_refusal`); claude-code runs go by dispatch's own.
+- S6's third landing review (2026-10-29): dispatch judges a claimed job of a node's queue (`local=<scope>:…`)
+  as asked from inside that scope, at both judgements, never launchd's `/`; the caller is inside a scope by
+  the shell's folder or its session's own (`CLAUDE_CODE_SESSION_ID`'s record, so a node session's `cd <open
+  repo> && dispatch …` stays inside), and that folder becomes `DISPATCH_ORIGIN` for the queue and a
+  one-shot's plist. A refusal this host cannot judge yet says `queued again` without a `FAILED` beside it
+  (`spawn_back`), and a fired one-shot's is handed back through the queue rather than its plist booted out;
+  the refusal's words say whether dispatching again helps. dispatch-queue's `route()` reads the caller
+  first — a caller in one scope for another scope's repo is refused, a repo in two scopes queues in the
+  caller's — and the repo by its checkout, refusing a split; the claim's final drop checks its remove,
+  catches a store that does not answer, and cards the entry as the claim holds it. `pickup seed --from
+  … --note` is refused at its arguments (a case; seed takes no `--note`).
 - S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a `--next` put back in the queue at
   its start says queued and the closing line, never `started`; only a login refused for a limit that resets
   (the week, the 5-hour window, a cooldown, a lock) stays in the queue at fire time — extra usage on, same login
@@ -815,6 +1176,29 @@
   `bin/check`'s slot, every case kept (4493 ok lines both ways): sequential 1680 s (28.0 min, load
   12–18) → lanes 869 s (14.5 min, load 11–12; lanes 466, 653, 868 s before test_harness moved to
   lane 2) → 830 s (13.8 min, load 8–12; lanes 413, 669, 830 s).
+- force-any (the owner, 2026-10-30: "force should also increase priority of a finish if needed. let's not
+  discriminate on the kind of task"): a landing takes `--priority` as a build does. `autofinish-run --priority
+  high|force` passes it to `dispatch --start --priority` (and through `peer-start` to the peer's job); force is
+  judged in autofinish-run's own process (never an unattended caller, else `dispatch-queue force-ok`, the mark
+  spent once the run started, queued or was sent), since the detached waiter drops the caller's session.
+  `dispatch-queue land --priority`: force ranks the landing above every landing, takes force's one slot over the
+  cap and passes on the force's memory floor; high ranks it first among landings. `dispatch-queue land-raise`
+  raises a landing already queued in place (one entry, its place and waiter kept, never lowered), reached by
+  `dispatch BRANCH --priority high|force` on the Mac the landing waits on and by `autofinish-run --priority`;
+  the waiting `--start` recounts at the rank claimed (`land-wait` names it). `dispatch --status` shows a run's
+  priority above normal. Cases: `tests/test_priority.sh`, `tests/test_autofinish_run.sh`.
+- `dispatch --end` past a loaded Mac's `ps`: an empty start-time read is no evidence, so `end_session` reads
+  again while the pid lives (dispatch-rc's `proc_start_settled`: 1 s apart within 4 s, each re-read 2 s at least,
+  a mismatch or a timed-out read never again), as `dispatch-queue land` does for its waiter's pid and `pstart` before a record is written.
+  regatta#324's CI failed `--end` on a watched, busy run at load 12-35 (inferred: a blank `ps` read makes
+  `end_session` refuse; the CI log was not read). force-any's fix rounds also: the
+  waiter's no-account fallback keeps an attended high and drops force (re-judged there, it was always refused); a
+  peer's raise over ssh is not refused for the sender's defaulted `--at` (`DISPATCH_AT_DEFAULT`), nor any raise for
+  the brief's own `After:` predecessors; a raise refuses every flag it would drop (`--account`, `--if-room`,
+  `--background`, `--wait`, `--origin`, `--fallback`, `--headless`, `--force`, `--yolo`); a "kept" raise spends no
+  force mark, nor a waiting `--start` raised by another; `REGATTA_UNATTENDED` is read beside `CLAUDE_UNATTENDED` at
+  autofinish-run's four other marker sites. Cases: `tests/test_dispatch.sh`, `tests/test_priority.sh`,
+  `tests/test_autofinish_run.sh`.
 
 ## 0.2.0 — 2026-10-20
 

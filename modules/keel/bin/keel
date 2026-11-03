@@ -200,6 +200,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1688,17 +1689,127 @@ def landing(where, base=None):
 
 # ----------------------------------------------------------------------------- markdown subset
 
+# a local file link as html.escape left it: `[x](/abs/path#L3)`, `[x](~/…)` or `[x](<…>)` (md_target)
+LOCAL_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((&lt;[^\n]+?&gt;|(?:/|~/)[^)\s]*)\)")
+_LOCAL_HREF = {}   # path -> (when, base URL or None); the line anchor is appended per link
+_LOCAL_REPO = {}   # folder -> (when, (top, owner/repo, branch, main) or None)
+_LOCAL_TTL = 300   # s: a long-lived reader (the board) sees a file that reached origin since
+_LOCAL_GIT_TIMEOUT = 5   # s per git call: a page renders inside checkpoint's 30-second sheep budget
+
+
+def _local_git(top, *args, stdin=None):
+    try:
+        return subprocess.run(["git", "-C", str(top), *args], capture_output=True, text=True, input=stdin,
+                              timeout=_LOCAL_GIT_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(args, 124, "", "")
+
+
+def _cached(cache, key, make):
+    hit = cache.get(key)
+    if hit and time.time() - hit[0] < _LOCAL_TTL:
+        return hit[1]
+    v = make()
+    cache[key] = (time.time(), v)
+    return v
+
+
+def _local_repo(d):
+    """(top, owner/repo, branch, main) of the checkout holding folder D, or None: two git calls a folder,
+    cached. main is the repo's .claude/workflow.json `main`, else main."""
+    def make():
+        r = _local_git(d, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD")
+        out = r.stdout.split("\n")
+        if r.returncode or not out[0].strip():
+            return None
+        top = Path(out[0].strip()).resolve()
+        m = GITHUB_RE.match(_local_git(top, "config", "--get", "remote.origin.url").stdout.strip())
+        if not m:
+            return None
+        try:
+            main = json.loads((top / ".claude" / "workflow.json").read_text()).get("main") or "main"
+        except (OSError, ValueError, AttributeError):
+            main = "main"
+        b = out[1].strip() if len(out) > 1 else ""
+        return top, m.group(1), ("" if b == "HEAD" else b), main
+    return _cached(_LOCAL_REPO, str(d), make)
+
+
+def local_href(target):
+    """A local file link's address on GitHub, or None (Evolve S2). Every file link the owner is handed
+    is a local absolute path (the rule: a clickable link by absolute path), and a course page is read on
+    a phone, on the site and on a Mac whose home differs — where a path opens nothing; inline() printed
+    `[x](/path)` as text until 2026-10-31, so every file link on every course page was dead (`evolve
+    probes`' render stage). The path as written, else the same path under this Mac's projects root (a
+    path another Mac's home wrote); the nearest folder of it that exists names the repo; that repo's
+    GitHub origin, at the checkout's branch when origin holds the file there and its blob differs from
+    main's (a line anchor written on a branch points at the branch's lines: S2's landing review, finding
+    8), else at the repo's main when origin holds it there, else at the branch. No fetch: origin as last
+    fetched. None — the link stays text — when no repo with a GitHub origin holds the file. Cached per
+    path and per folder for _LOCAL_TTL, one batched `cat-file` a file, each git call under
+    _LOCAL_GIT_TIMEOUT (finding 7: a doc set renders inside the Stop hook's sheep budget)."""
+    path, _, frag = target.partition("#")
+    base = _cached(_LOCAL_HREF, path, lambda: _local_base(path))
+    return base + ("#" + frag if frag else "") if base else None
+
+
+def local_candidates(path):
+    """[Path] a local link's file may be on this Mac: the path as written, else the same path under this
+    Mac's projects root (a path another Mac's home wrote). aurora's `evolve probes` reads the same rule."""
+    cands = [Path(path).expanduser()]
+    if "/projects/" in path:
+        try:
+            cands.append(Path(_common().PROJECTS) / path.split("/projects/", 1)[1])
+        except ImportError:
+            pass
+    return cands
+
+
+def _local_base(path):
+    for c in local_candidates(path):
+        d = c
+        while not d.exists() and d != d.parent:
+            d = d.parent
+        if not d.exists() or d == d.parent:
+            continue
+        repo = _local_repo(d if d.is_dir() else d.parent)
+        if not repo:
+            continue
+        top, slug, b, main = repo
+        try:
+            rel = c.resolve().relative_to(top).as_posix() if c.exists() else c.relative_to(top).as_posix()
+        except ValueError:
+            continue
+        refs = [main] + ([b] if b and b != main else [])
+        r = _local_git(top, "cat-file", "--batch-check=%(objectname)",
+                       stdin="".join("refs/remotes/origin/%s:%s\n" % (ref, rel) for ref in refs))
+        shas = [l.strip() for l in r.stdout.split("\n")[:len(refs)]] if r.returncode == 0 else []
+        held = {ref: s for ref, s in zip(refs, shas) if s and not s.endswith("missing")}
+        if not held:
+            continue
+        pick = b if b in held and held.get(b) != held.get(main) else main if main in held else b
+        return urls(slug, pick, rel)[0]
+    return None
+
+
 def inline(s):
-    """Escape, then bold / code / links / strike. Nothing in the memo is ever raw HTML."""
+    """Escape, then bold / code / links / strike. Nothing in the memo is ever raw HTML. A local file link
+    becomes its GitHub address where one holds it (local_href)."""
     s = html.escape(s, quote=False)
     codes = []
 
     def keep(m):
         codes.append(m.group(1))
         return "\x00%d\x00" % (len(codes) - 1)
+
+    def local(m):
+        t = html.unescape(m.group(2))
+        u = local_href(t[1:-1] if t.startswith("<") else t)
+        return '<a href="%s" rel="noopener">%s</a>' % (html.escape(u, quote=True), m.group(1)) if u else m.group(0)
     s = re.sub(r"`([^`]+)`", keep, s)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"~~(.+?)~~", r"<s>\1</s>", s)
+    s = LOCAL_LINK_RE.sub(local, s)
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2" rel="noopener">\1</a>', s)
     s = re.sub(r"\x00(\d+)\x00", lambda m: "<code>%s</code>" % codes[int(m.group(1))], s)
     return s
@@ -2631,11 +2742,11 @@ def chrome_run(chrome, args, timeout=90):
     return r.stdout.decode("utf-8", errors="replace")
 
 
-def chrome_results(chrome, page_html, work, name, timeout=90):
+def chrome_results(chrome, page_html, work, name, timeout=90, flags=()):
     """Load a page that leaves a JSON list in <pre id="out">, and return the list."""
     p = Path(work) / (name + ".html")
     p.write_text(page_html, encoding="utf-8")
-    dom = chrome_run(chrome, ["--virtual-time-budget=20000", "--dump-dom", p.as_uri()], timeout=timeout)
+    dom = chrome_run(chrome, list(flags) + ["--virtual-time-budget=20000", "--dump-dom", p.as_uri()], timeout=timeout)
     m = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S)
     try:
         return json.loads(html.unescape(m.group(1))) if m else None
@@ -2865,6 +2976,296 @@ def render(doc, out=None, style=None, force=False, palette=None):
     print("look at each PNG before the hand-over (Read the file)" if not bad else
           "keel render: %d of %d not drawn" % (bad, len(fences) + len(sources)))
     return 1 if bad else 0
+
+# helm-ui S10 (docs/helm-board-ux-2026-10-26.md): the shared foundation — the helm council's round-6 tokens
+# (tokens.css), its hand-drawn art (art.js, art/) and the fx layer (fx.js, fx.css: the press light, settling buoys, the
+# save strip's motion, ticking counts, the fireworks, reduced motion, `?fx=<show>&t=<ms>` frozen frames), kept in
+# keel's ui/ and served from here to the Course page (render_form) and, from S3, to helm's board (helm_render loads keel
+# as a module, `_keel()`, and S3 calls foundation_head there). A page here is one file, so the foundation is inlined, never linked; `keel ui
+# write <dir>` hands the files to a page that links them. theme.js runs first: tokens.css's dark set is keyed on
+# data-theme alone. `keel ui check` is the step's check: the files, every text pair's contrast in both themes, the
+# drawings against art.js, and under headless Chrome a frame per effect at 1440 and the still sheet at 720 and a true
+# 390, both themes and under reduced motion.
+UI_DIR = Path(os.environ.get("KEEL_UI_DIR") or Path(__file__).resolve().parent.parent / "ui")
+UI_FILES = ("tokens.css", "fx.css", "theme.js", "art.js", "fx.js")
+UI_ART_RE = r"art/[a-z][a-z0-9-]*\.svg"
+FX_SHOWS = {"press": 300, "fireworks": 1200, "settle": 250, "save": 150, "tick": 200}   # each frozen at its instant
+UI_PAIRS = ([("ink", "ground"), ("ink-2", "ground"), ("graphite", "ground"), ("graphite", "wash"), ("graphite", "wash-2"),
+             ("graphite", "surface"), ("ink", "surface"), ("ink", "wash"), ("flag", "ground"), ("flag", "flag-wash"),
+             ("flag-ink", "flag"), ("graphite", "flag-wash"), ("ink-2", "flag-wash")]
+            + [(t, g) for t in ("safe", "irr", "held", "yours", "ok", "run", "wait", "bad", "park")
+               for g in ("ground", "surface", t + "-wash")]
+            + [("hue-" + h, "ground") for h in ("violet", "teal", "rose", "orange", "green", "blue", "gold", "magenta")]
+            + [(a, b) for a in ("band-text", "band-dim") for b in ("sky-top", "sky-bottom")])   # the council's tools/contrast.py
+
+
+def ui_names():
+    return list(UI_FILES) + sorted(n for n in ("art/" + p.name for p in (UI_DIR / "art").glob("*.svg"))
+                                   if re.fullmatch(UI_ART_RE, n))
+
+
+def ui_asset(name):
+    """One foundation file's text; Stop for a name off ui/'s list or a file that will not read."""
+    if name not in UI_FILES and not re.fullmatch(UI_ART_RE, name):
+        raise Stop("no foundation file %s (keel ui list)" % name)
+    try:
+        return (UI_DIR / name).read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        raise Stop("foundation file %s will not read (%s)" % (name, getattr(e, "strerror", None) or e))
+
+
+def foundation_css(layer=None):
+    """tokens.css and fx.css; with `layer`, inside `@layer <layer>` so a page's own unlayered CSS wins every rule both
+    set (the Course page's until S9), its @property lifted out ahead of the layer."""
+    css = ui_asset("tokens.css") + "\n" + ui_asset("fx.css")
+    if layer:
+        props = re.findall(r"@property [^{]+\{[^}]*\}", css)
+        for p in props:
+            css = css.replace(p, "")
+        css = "\n".join(props) + "\n@layer %s {\n%s\n}" % (layer, css)
+    return css.replace("</", "<\\/")
+
+
+def foundation_js():
+    """art.js then fx.js: window.ART and window.FX."""
+    return (ui_asset("art.js") + "\n" + ui_asset("fx.js")).replace("</script", "<\\/script")
+
+
+def foundation_head(layer=None):
+    """What a page's head carries: the theme before first paint, the tokens and the fx CSS, the drawings and fx."""
+    return "<script>%s</script>\n<style>%s</style>\n<script>%s</script>" % (
+        ui_asset("theme.js").replace("</script", "<\\/script"), foundation_css(layer), foundation_js())
+
+
+def ui_tokens():
+    """{theme: {token: #hex}} from tokens.css's two blocks, dark over light."""
+    css = ui_asset("tokens.css")
+
+    def block(sel):
+        m = re.search(re.escape(sel) + r"\s*\{(.*?)\n\}", css, re.S)
+        return dict(re.findall(r"--([\w-]+):\s*(#[0-9A-Fa-f]{6})\b", m.group(1) if m else ""))
+    light = block(":root")
+    return {"light": light, "dark": dict(light, **block(':root[data-theme="dark"]'))}
+
+
+def contrast(a, b):
+    def lum(h):
+        c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        c = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    hi, lo = sorted([lum(a), lum(b)], reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+UI_SHEET_JS = r"""
+(function () {
+  var q = new URLSearchParams(location.search), post = function (out) { parent.postMessage({ keelui: q.get('label'), out: out }, '*'); };
+  try { draw(); } catch (e) { post([{ name: 'the sheet draws', ok: false, got: e.message }]); }
+  function draw() {
+  var A = ART, $ = function (id) { return document.getElementById(id); };
+  $('tiers').innerHTML = A.TIERS.map(function (t) { return '<span class="tier ' + t + '">' + A.buoy(t, t, 18) + t + '</span>'; }).join('') +
+    '<span class="tier bare">' + A.buoy('safe', 'taken', 18) + 'taken</span><span class="tier bare">' + A.buoy('safe', 'picked', 18) + 'picked</span>';
+  $('sts').innerHTML = ['ok', 'run', 'wait', 'bad', 'park', 'held', 'irr', 'flag'].map(function (s) { return '<span class="st ' + s + '">' + s + '</span>'; }).join('');
+  var st = ['safe', 'irreversible', 'held', 'yours'];
+  $('sea').innerHTML = A.waves() + '<div class="finish" style="left:92%"><i></i></div>' +
+    '<div class="course-line" style="left:46%;width:36%"></div>' + st.map(function (t, i) { return '<a class="sbuoy" style="left:' + (46 + i * 12) + '%" href="#" data-goq="' + (i + 1) + '">' + A.buoy(t, i === 1 ? 'picked' : i === 3 ? 'taken' : t, 26) + '<b>D' + (i + 1) + '</b></a>'; }).join('') +
+    ['teal', 'violet', 'rose'].map(function (h, i) { return '<a class="boat" data-hue="' + h + '" style="left:' + (8 + i * 13) + '%;--bobt:' + (3.2 + i * .7) + 's">' + A.sloop(22) + '</a>'; }).join('');
+  $('art').innerHTML = A.sheet().map(function (r) { return '<div class="row"><code>' + r[0] + '</code><span class="row">' + r.slice(1).join('') + '</span><span class="row ink">' + r.slice(1).join('') + '</span></div>'; }).join('');
+  $('fw').innerHTML = A.fireworks('var(--hue-teal)', 720, 280);
+  $('press').onclick = function () { FX.light($('press')); };
+  $('again').onclick = function () { FX.fireworks({ id: 'sheet', hue: 'teal' }, { force: true }); };
+  FX.runFrozen({ ship: { id: 'sheet', hue: 'teal' } });
+  if (!q.has('selftest')) return;
+  setTimeout(function () {
+    var out = [], ok = function (name, pass, got) { out.push({ name: name, ok: !!pass, got: String(got) }); }, root = document.documentElement;
+    var rgb = function (s) { var m = s.match(/[\d.]+/g).map(Number); return '#' + m.slice(0, 3).map(function (x) { return ('0' + Math.round(x).toString(16)).slice(-2); }).join(''); };
+    var lum = function (h) { return [1, 3, 5].map(function (i) { var x = parseInt(h.slice(i, i + 2), 16) / 255; return x <= .04045 ? x / 12.92 : Math.pow((x + .055) / 1.055, 2.4); }).reduce(function (s, x, i) { return s + x * [.2126, .7152, .0722][i]; }, 0); };
+    var ratio = function (a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
+    ok('theme ' + q.get('theme'), root.dataset.theme === q.get('theme'), root.dataset.theme);
+    ok('reduced motion ' + (q.has('reduced') ? 'on' : 'off'), matchMedia('(prefers-reduced-motion: reduce)').matches === q.has('reduced'), matchMedia('(prefers-reduced-motion: reduce)').matches);
+    ok('no sideways scroll', root.scrollWidth <= innerWidth + 1, root.scrollWidth + ' in ' + innerWidth);
+    document.querySelectorAll('.tier:not(.bare), .st').forEach(function (p) { var cs = getComputedStyle(p), r = ratio(rgb(cs.color), rgb(cs.backgroundColor)); ok('contrast ' + p.className, r >= 4.5, r.toFixed(2)); });
+    var show = q.get('fx'), reduced = matchMedia('(prefers-reduced-motion: reduce)').matches, x, cs, before = out.length;
+    if (show === 'press') { x = document.querySelector('.lit'); cs = x && getComputedStyle(x, '::after'); ok('press lit', reduced ? cs && cs.display === 'none' : cs && +cs.opacity > .5, cs ? cs.display + ' ' + cs.opacity : 'no .lit'); }
+    if (show === 'fireworks') { x = document.querySelector('#fxlayer .shape'); ok('fireworks', reduced ? !$('fxlayer') && FX.fireworks({ id: 'r' }, { force: true }) === 'still' : x && +getComputedStyle(x).opacity > .5, x ? getComputedStyle(x).opacity : 'no layer'); }
+    if (show === 'settle') { x = document.querySelector('.buoy.settle'); cs = x && getComputedStyle(x).transform; ok('settle', x && (reduced ? cs === 'none' : cs !== 'none'), x ? cs : 'none settling'); }
+    if (show === 'save') { cs = getComputedStyle($('savebar')); ok('save rises', reduced ? +cs.opacity === 1 : +cs.opacity > .02 && +cs.opacity < .98, cs.opacity); }
+    if (show === 'tick') { x = document.querySelector('.n.tick'); cs = x && getComputedStyle(x); x = cs && (cs.transform !== 'none' || +cs.opacity < 1); ok('tick', cs && (reduced ? !x : x), cs ? cs.transform + ' ' + cs.opacity : 'no .n.tick'); }
+    if (show && out.length === before) ok('a read for ' + show, false, 'no read for this show');   // a show FX_SHOWS names with no branch here
+    post(out);
+  }, 400);
+  }
+})();
+"""
+
+
+def ui_sheet():
+    """The foundation on one page: the strip with its course, tiers, statuses, buttons, counts, every drawing at three
+    sizes on paper and on ink, the fireworks; `?fx=` freezes a show, `?selftest=1` posts what it reads to its parent."""
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>keel — the foundation</title>
+%s
+<style>.sh{padding:24px 24px 40px;max-width:1100px;margin:0 auto}.sh h2{font:var(--t-title);margin:28px 0 10px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0}.row code{font:var(--t-mono);color:var(--graphite);width:120px}
+.ink{background:var(--ink);color:var(--ground);border-radius:12px;padding:6px 12px;margin:0}
+.fwbox{position:relative;height:280px;border:1px solid var(--rule);border-radius:16px;overflow:hidden}
+.fwbox .fw{position:absolute;left:50%%;top:0;transform:translateX(-50%%);max-width:100%%;height:auto}</style></head><body>
+<header class="strip"><div class="strip-in"><span class="mark">keel</span><div class="sea" id="sea"></div>
+<span class="stat"><span class="long">the <b>foundation</b></span><span class="short">ui</span></span></div></header>
+<div class="horizon"></div><main class="sh">
+<h2>Tiers and statuses</h2><div class="row" id="tiers"></div><div class="row" id="sts"></div>
+<h2>Buttons</h2><div class="row"><button class="btn primary" id="press">Save 2 docs <span class="k">⌘↩</span></button>
+<button class="btn">Copy answers</button><button class="btn ghost">Later</button><button class="btn" disabled>Stop</button>
+<span class="modes"><button>ask</button><button class="on" data-mode="auto">auto</button><button>dnd</button><button>yolo</button></span></div>
+<h2>Counts</h2><div class="row">landed <b class="n" data-key="landed">3</b> decided <b class="n" data-key="decided">7</b></div>
+<h2>Drawings</h2><div id="art"></div>
+<h2>Fireworks</h2><div class="row"><button class="btn" id="again">Fireworks again</button></div><div class="fwbox" id="fw"></div>
+<div class="savebar on dirty" id="savebar"><span class="sb-n">2 picks · not saved</span><span class="sp"></span>
+<span class="sb-acts"><button class="btn primary">Save</button></span></div></main>
+<script>%s</script></body></html>
+""" % (foundation_head(), UI_SHEET_JS)
+
+
+def ui_frames(chrome, work, reduced=False, shots=None):
+    """One headless Chrome run over the sheet in iframes — a frame per effect at 1440 and the plain sheet at 720 and a
+    true 390 (headless Chrome lays a narrower window out at 500), both themes — and (every read the frames posted, or
+    None, and a read per PNG `shots` asked for)."""
+    work = Path(work)
+    (work / "sheet.html").write_text(ui_sheet(), encoding="utf-8")
+    runs = [(w, th, show) for th in ("light", "dark") for w, show in
+            [(1440, s) for s in FX_SHOWS] + [(720, None), (390, None)]]
+    frames = "".join('<iframe style="width:%dpx;height:844px;border:0" src="sheet.html?selftest=1&label=%s&theme=%s%s%s"></iframe>'
+                     % (w, "%d-%s-%s" % (w, th, s or "still"), th, "&fx=%s&t=%d" % (s, FX_SHOWS[s]) if s else "",
+                        "&reduced=1" if reduced else "") for w, th, s in runs)
+    labels = ["%d-%s-%s" % (w, th, s or "still") for w, th, s in runs]
+    page = ('<!doctype html><meta charset="utf-8"><pre id="out"></pre>%s<script>var got = [], want = %s, end = false;'
+            'function done() { if (end) return; end = true; want.forEach(function (l) { got.push({ name: l + ": posted nothing",'
+            ' ok: false, got: "a script error or a frame that never loaded" }); });'
+            ' document.getElementById("out").textContent = JSON.stringify(got); }'
+            'addEventListener("message", function (e) { var i = e.data ? want.indexOf(e.data.keelui) : -1; if (i < 0) return;'
+            ' want.splice(i, 1); e.data.out.forEach(function (r) { r.name = e.data.keelui + ": " + r.name; got.push(r); });'
+            ' if (!want.length) done(); }); setTimeout(done, 8000);</script>' % (frames, json.dumps(labels)))
+    got = chrome_results(chrome, page, work, "frames", timeout=180,
+                         flags=["--window-size=1500,900"] + (["--force-prefers-reduced-motion"] if reduced else []))
+    shot_reads = []
+    for w, th, s in runs if shots and not reduced else ():
+        shot = Path(shots) / ("ui-%d-%s-%s.png" % (w, th, s or "still"))
+        (work / "one.html").write_text('<!doctype html><style>body{margin:0}</style><iframe style="width:%dpx;height:1400px;'
+                                       'border:0" src="sheet.html?theme=%s%s"></iframe>' % (w, th, "&fx=%s&t=%d" % (s, FX_SHOWS[s]) if s else ""))
+        try:
+            Path(shots).mkdir(parents=True, exist_ok=True)
+            shot.unlink(missing_ok=True)   # a PNG left by an earlier run must not pass as this one's
+            chrome_run(chrome, ["--window-size=%d,1400" % max(w, 500), "--screenshot=%s" % shot, "--virtual-time-budget=5000",
+                                (work / "one.html").as_uri()])
+            shot_reads.append(("shot " + shot.name, shot.is_file() and shot.stat().st_size > 0, str(shot)))
+        except (Stop, OSError) as e:
+            shot_reads.append(("shot " + shot.name, False, str(e)))
+    return got, shot_reads
+
+
+def ui_check(shots=None, verbose=False):
+    """The step's check: 0 when every read passes. Prints each failed read (every read with
+    `verbose`) and a count by kind; the frames skip, said, without Chrome, the drawings without node."""
+    import shutil
+    import tempfile
+    reads = []
+    for n in ui_names():
+        try:
+            reads.append(("file " + n, bool(ui_asset(n).strip()), "present"))
+        except Stop as e:
+            reads.append(("file " + n, False, str(e)))
+    try:
+        tokens = ui_tokens()
+    except Stop as e:
+        tokens = {}
+        reads.append(("contrast tokens.css", False, str(e)))
+    for th, t in tokens.items():
+        for a, b in UI_PAIRS:
+            r = contrast(t[a], t[b]) if a in t and b in t else 0
+            reads.append(("contrast %s %s on %s" % (th, a, b), r >= 4.5, "%.2f:1" % r if r else "missing"))
+    node, skipped = shutil.which("node"), []
+    with tempfile.TemporaryDirectory() as work:
+        if node:
+            try:
+                r = subprocess.run([node, str(UI_DIR / "make_art.js"), work], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                   text=True, timeout=120)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                r = subprocess.CompletedProcess([], 1, stderr="node did not draw them: %s" % e)
+            made = sorted(p.name for p in Path(work).glob("*.svg"))
+            reads.append(("art: make_art.js runs", r.returncode == 0, (r.stderr.strip().splitlines() or ["ok"])[-1]))
+            reads.append(("art: the same drawings", made == sorted(p.name for p in (UI_DIR / "art").glob("*.svg")), ", ".join(made)))
+            for n in made:
+                kept = UI_DIR / "art" / n
+                same = kept.is_file() and (Path(work) / n).read_bytes() == kept.read_bytes()
+                reads.append(("art: %s as art.js draws it" % n, same,
+                              "same" if same else "differs — node %s %s" % (UI_DIR / "make_art.js", UI_DIR / "art")))
+        else:
+            skipped.append("the drawings (no node)")
+        chrome = chrome_path()
+        if chrome:
+            for reduced in (False, True):
+                tag = "reduced " if reduced else "frame "
+                try:
+                    got, shot_reads = ui_frames(chrome, work, reduced=reduced, shots=shots)
+                except Stop as e:   # a Chrome that never finishes is skipped, said, as keel.sh's Chrome cases are
+                    if "did not finish in" in str(e):
+                        skipped.append("the %sframes (%s)" % ("reduced " if reduced else "", e))
+                        if not reduced:   # a Chrome that hung once would hang again: one wait, not two
+                            skipped.append("the reduced frames (the frames hung)")
+                            break
+                    else:
+                        reads.append((tag + "all", False, str(e)))
+                    continue
+                except OSError as e:
+                    reads.append((tag + "all", False, "Chrome will not run: %s" % e))
+                    continue
+                reads.extend(shot_reads)
+                if got is None:
+                    reads.append((tag + "all", False, "headless Chrome posted nothing"))
+                for g in got or ():
+                    reads.append((tag + g["name"], g["ok"], g["got"]))
+        else:
+            skipped.append("the frames (no Chrome: KEEL_CHROME, Google Chrome, chromium)")
+    bad = [r for r in reads if not r[1]]
+    for name, good, got in reads if verbose else bad:
+        print("  %s %s — %s" % ("ok  " if good else "FAIL", name, got))
+    kinds = {}
+    for name, _, _ in reads:
+        k = name.split(" ")[0].rstrip(":")
+        kinds[k] = kinds.get(k, 0) + 1
+    print("ui check: %d passed, %d failed (%s)%s" % (len(reads) - len(bad), len(bad), ", ".join(
+        "%s %d" % kv for kv in kinds.items()), "".join("; skipped %s" % s for s in skipped)))
+    return 1 if bad else 0
+
+
+def ui_main(a):
+    if a.verb == "list":
+        print("\n".join(ui_names()))
+    elif a.verb == "cat":
+        sys.stdout.write(ui_asset(a.name or ""))
+    elif a.verb == "write":
+        if not a.name:
+            raise Stop("keel ui write <dir>")
+        try:
+            for n in ui_names():
+                (Path(a.name) / n).parent.mkdir(parents=True, exist_ok=True)
+                (Path(a.name) / n).write_text(ui_asset(n), encoding="utf-8")
+        except OSError as e:
+            raise Stop("keel ui write: cannot write to %s: %s" % (a.name, e))
+        print("%d foundation files written to %s" % (len(ui_names()), a.name))
+    elif a.verb == "sheet":
+        if a.name:
+            try:
+                Path(a.name).write_text(ui_sheet(), encoding="utf-8")
+            except OSError as e:
+                raise Stop("keel ui sheet: cannot write %s: %s" % (a.name, e))
+            print(a.name)
+        else:
+            sys.stdout.write(ui_sheet())
+    else:
+        return ui_check(shots=a.shots, verbose=a.verbose)
+    return 0
+
 
 CSS = """
 :root{--paper:#FAFAF7;--ink:#1E2528;--muted:#66706F;--line:#DCDDD6;--card:#FFFFFF;--accent:#1F6F78;--accent-ink:#FFFFFF;--soft:#EDF3F2;--warn:#8A5A1B;--warn-bg:#FBF3E3;--code:#F1F1EC;--ok:#2D7A4F;--bad:#B3261E}
@@ -3628,8 +4029,14 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
             html.escape(sheep["branch"], quote=False),
             (' · <a href="%s" rel="noopener">read on GitHub</a> · <a href="%s" rel="noopener">edit</a>'
              % (html.escape(sheep["read"], quote=True), html.escape(sheep["edit"], quote=True))) if sheep.get("edit") else "")
+    try:  # the shared foundation (helm-ui S10), layered under the page's own CSS until S9 builds the page on it
+        foundation = foundation_head(layer="foundation")
+    except Stop as e:
+        print("keel: the page goes without the foundation — %s" % e, file=sys.stderr)
+        foundation = ""
     page = [
         "<title>%s</title>" % html.escape(title, quote=False),
+        foundation,
         "<style>%s%s</style>" % (CSS, SHEEP_CSS if sheep else ""),
         "<main>",
         '<p class="meta">%s</p>' % " ".join(say),
@@ -6913,7 +7320,7 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
         # only a thread newer than that write: an older one kept open (git changed after it) would else
         # overwrite a later Save or GitHub edit with the owner's oldest word (finish review, 2026-10-25)
         if pulled.get(d) and " ".join((now.get(d) or "").split()) == pulled[d] and (
-                epoch(t["at"]) or 0) >= int(float((pin.get("applied_at") or {}).get(d) or 0)):  # comment times are whole seconds
+                epoch(t["at"]) or 0) >= int(float((pin.get("applied_at") or {}).get(d) or 0)):  # int(): a second's slack; the stand-in stamps whole seconds, the real page milliseconds
             continue
         if d in answers["items"] and git_answer_since(top, rel, t["at"], pin.get("sha"), d, now, ref="HEAD" if p else "refs/heads/" + branch):
             skipped.append((t, "%s changed in git after it (git's answer kept)" % d, False))
@@ -7388,7 +7795,7 @@ ROUTED_ASK = ("Label each comment left on a design document's page. writer: owne
 HELD_VERBS_RE = re.compile(r"\b(?:merg(?:e|es|ed|ing)|land(?:s|ed|ing)?|revert\w*|force-push\w*|rename (?:the |a |this |that )?repo\w*"
                            r"|revok\w*|publish\w*|buy\w*|bought|send\w*|sent to|delet\w*|deploy\w*)\b", re.I)
 # what the `would start` mark tells the owner to do: go starts it here; in a repo whose contract is not
-# `physical: none` a go would be refused at the start (lookout_gone), so it is the skipper's (TODO 29 (c), S5)
+# `physical: none` a go would be refused at the start (lookout_gone), so it is the skipper's (TODO.md's routed-s4 item as of 2026-11-02, its (c), S5)
 OFFER_HOW = "reply go to start, no to close"
 OFFER_HOW_SKIPPER = "not started here: the repo is not `physical: none`, its skipper starts it — reply no to close"
 LANDED = "main"   # a landed doc's branch (routed comments S5): the key a landed routing is read under, as adopt_page's
@@ -7751,7 +8158,7 @@ def judge_threads(ts, repo, writer="owner", call=True):
     words never reach a provider, and its page cannot exist), or any failure leaves the thread held
     (`act-unclear`, by `held`) — the gate holds what it cannot judge; a model outage makes every
     free-text thread T2 (the row's `when_off: skip`). A thread's own `writer` field names who wrote it
-    over `writer` (the bench: every writer's comments in the one call, TODO 29 (d)). `call` False (a dry
+    over `writer` (the bench: every writer's comments in the one call, TODO.md's routed-s4 item as of 2026-11-02, its (d)). `call` False (a dry
     pass): the rules alone, and what they leave held as with the row off (T2: a dry pass previews the safe
     side, and spends no call)."""
     out, items = {}, {}
@@ -8143,7 +8550,7 @@ def routed_bench(fixture=None, as_json=False):
             t = comment(n, r["text"])
             t["anchor"] = "D1" if r.get("anchor") == "D-card" else None
         ts.append(dict(t, writer=r.get("writer") or "owner"))
-    got = judge_threads(ts, "regatta")   # one call for every writer's comments the rules leave (TODO 29 (d))
+    got = judge_threads(ts, "regatta")   # one call for every writer's comments the rules leave (TODO.md's routed-s4 item as of 2026-11-02, its (d))
     out = [dict(r, label=got[str(r["n"])][0], by=got[str(r["n"])][1], why=got[str(r["n"])][2]) for r in rows]
     right = sum(1 for r in out if r["label"] == r["intended"])
     if as_json:
@@ -8927,6 +9334,12 @@ def now_ts():
     return iso_ts(v)
 
 
+def mins_ago(ts):
+    """Whole minutes since `ts`, never below 0: floor division reads a clock that stepped back by a moment
+    as -1, a card's `-1m ago`."""
+    return max(0, (now_ts() - float(ts or 0)) // 60)
+
+
 def iso_ts(s):
     """An ISO-8601 time as epoch seconds; `Z` read as UTC (3.9's fromisoformat refuses it), a
     time without a zone read as local."""
@@ -9470,7 +9883,7 @@ def held_by(wt, h=None, at=False):
     if not h:
         return None
     return h["unknown"] if "unknown" in h else "held by session %s%s, seen %dm ago" % (
-        h["session"][:8], " at %s" % wt if at else "", h["age"] // 60)
+        h["session"][:8], " at %s" % wt if at else "", max(0, h["age"] // 60))
 
 
 def git_busy(wt):
@@ -9513,7 +9926,7 @@ def stand_sweep(root, force=False, dry=False):
     except (OSError, ValueError, AttributeError):
         last = 0
     if not force and not dry and t - last < SWEEP_EVERY:
-        print("stand sweep: ran %dm ago; next after %dm" % ((t - last) // 60, SWEEP_EVERY // 60))
+        print("stand sweep: ran %dm ago; next after %dm" % (max(0, (t - last) // 60), SWEEP_EVERY // 60))
         return []
     rows, seen_repos = [], set()
     for root_dir in repo_roots(root):
@@ -11310,7 +11723,7 @@ def run_where(top, branch, here, runs=None):
     seen = pushed_unseen(top, branch, runs, recs if isinstance(recs, list) else []) if top else None
     if seen:
         return "unseen", "session %s pushed %s %dm ago, and no host this one reads names it" % (
-            seen[0], branch, seen[1] // 60), None
+            seen[0], branch, max(0, seen[1] // 60)), None   # a commit's time is another host's clock
     return "none", None, None
 
 
@@ -11798,16 +12211,16 @@ def lookout_gone(ev, kind, row, dry):
                       and now_ts() - float(r.get("ts") or 0) < ttl), key=lambda r: float(r.get("ts") or 0))
     if started and (talk or request):   # that run's session, once live, is hailed for the thread: tried again each pass
         return lookout_card(ev, "a run started on its branch %dm ago; its session hears of the thread once it shows"
-                            % ((now_ts() - float(started[-1]["ts"])) // 60), action=GATED)
+                            % mins_ago(started[-1]["ts"]), action=GATED)
     if started and started[-1].get("event") == "talk":   # a talk run only replies: the answers wait for it to end
         return lookout_card(ev, "a talk run started on its branch %dm ago; it pulls no answers, so a run for %s "
-                            "starts once it ends, at most 2 h after its start" % ((now_ts() - float(started[-1]["ts"])) // 60, ", ".join(steps) or ev["doc"]),
+                            "starts once it ends, at most 2 h after its start" % (mins_ago(started[-1]["ts"]), ", ".join(steps) or ev["doc"]),
                             action=GATED)
     if started:
         # that run is on a seed cut from B's tip at its start (rule 3: B is never written), so it holds this
         # answer only when the seed has its commit; a Save, or an answer pushed since, it never sees (the S3
         # second landing review's item 8: the card said "it pulls these answers too")
-        seed, mins = started[-1].get("seeded"), (now_ts() - float(started[-1]["ts"])) // 60
+        seed, mins = started[-1].get("seeded"), mins_ago(started[-1]["ts"])
         sv = seed and (origin_view(top, seed, fetch_first=False) or (top, "refs/heads/" + seed))
         if kind == "answer" and sv and git(sv[0], "merge-base", "--is-ancestor", sha, sv[1], check=False).returncode == 0:
             return lookout_card(ev, "a run started on its branch %dm ago (%s); its seed %s holds these answers, but it was "
@@ -11835,8 +12248,9 @@ def lookout_gone(ev, kind, row, dry):
         # read back by the pass once every claim is posted and CLAIM_WAIT has passed (claim_readback)
         return {"action": CLAIMED, "why": "no run in sight: claimed for %s; the seed %s waits one full pass for a run to show"
                 % (row["host"], topic), "steps": steps, "readback": tids}
-    if now_ts() - float(claimed.get("ts") or 0) < float(os.environ.get("LOOKOUT_CLAIM_PASS", CLAIM_PASS)):
-        return {"action": CLAIMED, "why": "claimed %dm ago; the seed waits one full pass" % ((now_ts() - float(claimed.get("ts") or 0)) // 60),
+    # max(0, …): a clock that stepped back reads as no time passed, never as less than a pass of 0 (the suite's)
+    if max(0, now_ts() - float(claimed.get("ts") or 0)) < float(os.environ.get("LOOKOUT_CLAIM_PASS", CLAIM_PASS)):
+        return {"action": CLAIMED, "why": "claimed %dm ago; the seed waits one full pass" % mins_ago(claimed.get("ts")),
                 "steps": steps}
     if tids:   # a claim naming a run, or a session's take-in, beat ours meanwhile: withdrawn
         try:
@@ -11852,7 +12266,7 @@ def lookout_gone(ev, kind, row, dry):
                  % (ev["doc"], ", ".join(ev["items"]) or kind, base, topic))
     lookout_log(start)
     # the threads and Saves this start routes: the seed's gate passes them (pickup seed --routing); an offer
-    # still open on the page is the owner's to answer, never this start's blocker (TODO 29 (b))
+    # still open on the page is the owner's to answer, never this start's blocker (TODO.md's routed-s4 item as of 2026-11-02, its (b))
     routing = tids + list(ev.get("offers") or []) + ([ev["id"]] if kind == "save" else [])   # `save:<space8>:<seq>`: its own page's Saves alone
     why = lookout_spawn({"row": start, "branch": branch, "top": str(top), "seed": topic, "routing": routing, "landed": landed,
                          "text": run_brief(ev, steps, sha, plan=plan), "pending": pending_of(ev, row)})
@@ -12457,7 +12871,7 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
         if stop_asked(t):
             at = max(epoch(c["at"]) or 0 for c in t["replies"] if c.get("owner"))
             # the `starting:` reply the stop answers: its run is the one stopped, never a later one on the
-            # branch (TODO 29 (a): lookout_stop ties the two by this time)
+            # branch (TODO.md's routed-s4 item as of 2026-11-02, its (a): lookout_stop ties the two by this time)
             said_at = max(epoch(c["at"]) or 0 for c in t["replies"] if c.get("own") and c["text"].strip().lower().startswith(STARTING))
             out.append(dict(common, kind="stop", id="stop:%s:%s" % (tid, sig(tid, at)), threads=[tid], starting_at=said_at))
             done.add(tid)
@@ -12465,7 +12879,7 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
             judge.append(t)
     shared = any(c.get("shared") for c in threads)
     physical = bool(top) and (contract_physical(top) or "").startswith("- physical: none")
-    # a dry pass spends no call: what the rules leave is held, T2, as with the row off (TODO 29 (d))
+    # a dry pass spends no call: what the rules leave is held, T2, as with the row off (TODO.md's routed-s4 item as of 2026-11-02, its (d))
     got, _n = judged_cached(judge, key, pin["space"], name, log=not dry, call=not dry) if judge else ({}, 0)
     asked, questions = [], []   # the T1 threads and go's of this turn: ONE request, so one seed's gate never refuses on its sibling
     for t in judge:
@@ -12487,14 +12901,14 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
             words = " ".join(" ".join(c["text"].split()) for c in said)
             ev.update(kind="offer", id="offer:%s:%s" % (t["id"], sig(t["id"], at)),
                       act='"%s"' % (words[:77] + "…" if len(words) > 80 else words).replace('"', "'"), cls=why)
-            if top and not physical:   # a go would be refused at the start: the offer says whose it is (TODO 29 (c))
+            if top and not physical:   # a go would be refused at the start: the offer says whose it is (TODO.md's routed-s4 item as of 2026-11-02, its (c))
                 ev["how"] = OFFER_HOW_SKIPPER
         out.append(ev)
         done.add(t["id"])
     if asked:
         ids = [t["id"] for t, *_ in asked]
         # an offer still open on the page (our `would start`, neither go nor no) is the owner's to answer:
-        # it never holds this start at the seed's gate (TODO 29 (b)); passed as --routing, never marked
+        # it never holds this start at the seed's gate (TODO.md's routed-s4 item as of 2026-11-02, its (b)); passed as --routing, never marked
         offers = sorted(x["id"] for x in threads if x["id"] not in ids and not x["resolved"] and open_offer(x))
         out.append(dict(common, kind="request", threads=ids, label=asked[0][2], offers=offers,
                         why_tier="; ".join(dict.fromkeys(w or l for _, _, l, w in asked)),
@@ -12639,7 +13053,7 @@ def lookout_stop(ev, rec, here, dry):
     queued = rec is None and ev.get("_queued")
     if rec is None and not queued:
         return lookout_card(ev, "%s said stop under [%s], but no run of it is live here: it has ended" % (WHO, tid))
-    # the run stopped is the one whose `starting:` reply was answered (TODO 29 (a)): its first act, so it was
+    # the run stopped is the one whose `starting:` reply was answered (TODO.md's routed-s4 item as of 2026-11-02, its (a)): its first act, so it was
     # live before that reply; a queued run, or one that started after it, is another run on the branch
     said = float(ev.get("starting_at") or 0)
     began = float((rec or {}).get("started_at") or 0)
@@ -13243,6 +13657,11 @@ def main(argv=None):
     se.add_argument("memo")
     se.add_argument("thread", help="a thread or reply id, or Dn")
     se.add_argument("--why", required=True)
+    ui = sub.add_parser("ui", help="the shared foundation (helm-ui S10): list | cat <file> | write <dir> | sheet [<file>] | check [--shots <dir>]")
+    ui.add_argument("verb", choices=("list", "cat", "write", "sheet", "check"))
+    ui.add_argument("name", nargs="?")
+    ui.add_argument("-v", "--verbose", action="store_true", help="check: every read, not only the failed ones")
+    ui.add_argument("--shots", help="check: a PNG per width, theme and frozen effect into this folder (needs Chrome)")
     m = sub.add_parser("merge", help="--form: write the page's answers back into the memo")
     m.add_argument("memo")
     m.add_argument("answers", help="JSON from the page's store (or the copied text); - for stdin")
@@ -13292,6 +13711,8 @@ def main(argv=None):
                         r["title"], r["what"], r["path"]))
                 print(OPEN_LEGEND)
             return 0
+        if a.cmd == "ui":
+            return ui_main(a)
         if a.cmd == "embark":
             rows = embark_list(a.root, a.hours)
             if a.json:

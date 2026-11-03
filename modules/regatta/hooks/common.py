@@ -8,6 +8,7 @@ Nothing here raises to a caller but write_owner: a missing token is None, a fail
 Hooks must never cost a turn over GitHub being unreachable.
 """
 import base64
+import collections
 import fnmatch
 import glob
 import hashlib
@@ -31,15 +32,17 @@ from pathlib import Path
 CONFIG = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
 MARKETPLACE = Path(".claude-plugin") / "marketplace.json"
 
+# ---- the council's marker, one home ---------------------------------------------------------------
+# Read by wharf's council and (the marker) keel's sheep_gate: a copy in each made a rename four edits, and a
+# missed one reopened a fence with no case to see it (the council's third landing review, finding 24). Who is
+# unattended is unattended_caller(), below, beside the vendor-neutral marker it extends.
+COUNCIL_MARKER = ".council-run"   # in every council run dir (council's fence_root); a box sits two folders under
 
-def config_read(name):
-    """(lines, why) for `<config>/<name>`: its non-blank lines, stripped, a UTF-8 BOM dropped, and
-    None; (None, None) when there is no such file (ENOENT, nothing else); (None, why) when it
-    exists and cannot be read as UTF-8 text — no Full Disk Access, Drive not downloaded, a stray
-    encoding. The one reader of the config dir: config_line, config_lines, bin/jev and the check
-    below all go through it, so they never disagree on a file."""
+
+def _config_file(path):
+    """(lines, why) for one file, as config_read describes them."""
     try:
-        text = (CONFIG / name).read_text(encoding="utf-8-sig")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None, None
     except UnicodeDecodeError:
@@ -47,6 +50,141 @@ def config_read(name):
     except OSError as e:
         return None, e.strerror or type(e).__name__
     return [l.strip() for l in text.splitlines() if l.strip()], None
+
+
+# The live layer (live-limits, 2026-11-01): `<config>/live/<name>`, which `regatta limit` writes and
+# nothing else does, so the overlay's `--config` never overwrites it and a value changes on its next
+# read, with no build and no landing. A layer line `<word>:<value>` (a host, a login, `*`) stands in
+# front of the base file's lines, so a reader taking the first line for that word reads the layer's,
+# and the base's entry for the same word, on whatever line, is dropped; a layer line with no `<word>:`
+# replaces every base line with none (load-max's plain value). An unreadable layer is no layer: the base as ever.
+LIVE = "live"
+_WORD_RE = re.compile(r"^([^\s:#(]+):")
+
+
+def live_merge(layer, base):
+    """The lines a reader sees: `layer` over `base` (both lists of stripped lines, None for none)."""
+    if not layer:
+        return base
+    words = {m.group(1).lower() for m in map(_WORD_RE.match, layer) if m}
+    plain = any(not _WORD_RE.match(l) for l in layer)
+    kept, owner = [], None
+    for l in base or []:
+        # an entry runs on across lines (the overlay writes one word per line: `buildbox:` then `5`), as
+        # config_entries and dispatch's parse read it; a plain layer judges each line alone (round 5)
+        k, owner = _merge_line(l, words, plain, None if plain else owner)
+        if k:
+            kept.append(k)
+    return list(layer) + kept
+
+
+def _split_note(l):
+    """(tokens before a note, the note's tokens): a note starts at a token opening with `#` or `(`, as dispatch's
+    run-cap parse reads it."""
+    toks = l.split()
+    cut = next((i for i, t in enumerate(toks) if t.startswith(("#", "("))), len(toks))
+    return toks[:cut], toks[cut:]
+
+
+def _merge_line(l, words, plain, owner=None):
+    """One config line with the layer's words taken out, entry by entry: a word token and the value tokens after it
+    up to the next word (a hand-written `a: 5 b: 6`, or `a:avail=10, rate=40`, which the readers accept). Kept: the
+    other words' entries; a value no word stands before unless the layer is plain; the note only beside something
+    kept (alone, headroom would read it as a line without `<host>:`; rounds 3 and 4 of the live-limits review).
+    OWNER is the entry the line before ended in ("drop", "keep" or None); returned with the line, for the next."""
+    head, note = _split_note(l)
+    out = []
+    for t in head:
+        m = _WORD_RE.match(t)
+        if m:
+            owner = "drop" if m.group(1).lower() in words else "keep"
+        if owner == "keep" or (owner is None and not plain):
+            out.append(t)
+    if out:
+        out += note
+    # a dropped entry runs on past a note: the overlay splits a note one word per line too (`host-a:`, `5`, `#`,
+    # `was`, `4`), and config_entries reads the words after the `#` line as the entry's value (the landing review)
+    return " ".join(out), (owner if owner == "drop" or not note else None)
+
+
+def config_entries(lines):
+    """[(word or None, value)] in the lines' order: `host:5`, `host: 5` and `host:avail=10, rate=40` each one entry;
+    a value no word stands before is (None, value); notes dropped. What a reader of `<word>:<value>` keys takes."""
+    out = []
+    for l in lines or []:
+        head, _ = _split_note(l)
+        for t in head:
+            m = _WORD_RE.match(t)
+            if m:
+                out.append([m.group(1).lower(), t[m.end():]])
+            elif out and out[-1][0] is not None:
+                out[-1][1] = (out[-1][1] + " " + t).strip()
+            else:
+                out.append([None, t])
+    return [(w, v.strip()) for w, v in out]
+
+
+def config_read(name):
+    """(lines, why) for `<config>/<name>`: its non-blank lines, stripped, a UTF-8 BOM dropped, and
+    None; (None, None) when there is no such file (ENOENT, nothing else); (None, why) when it
+    exists and cannot be read as UTF-8 text — no Full Disk Access, Drive not downloaded, a stray
+    encoding. The one reader of the config dir: config_line, config_lines, bin/jev and the check
+    below all go through it, so they never disagree on a file. The live layer (above) is merged
+    in front: a key with a layer and an unreadable base reads as the layer's lines with the base's why, so a reader
+    that refuses an unreadable file still does, and one that reads on takes the layer."""
+    lines, why = _config_file(CONFIG / name)
+    # a stat first: the declared keys are read only for a key that has a layer file; never `home`, which
+    # live_keys' own root lookup reads
+    try:
+        has_layer = "/" in name and (CONFIG / LIVE / name).is_file()
+    except OSError:   # a folder on the way it may not search: no layer, never a raise at the core's import
+        has_layer = False
+    if has_layer and name in live_keys():
+        layer, lwhy = _config_file(CONFIG / LIVE / name)
+        if layer and not lwhy:
+            # the base's own trouble stays said (a Drive link not downloaded): a reader that raises on it still does
+            return live_merge(layer, lines), why
+    return lines, why
+
+
+_LIVE_KEYS = None
+
+
+def live_keys():
+    """The keys the live layer may stand over: those a module's `limits` file declares (regatta limit's table),
+    read once per process once live/ exists. Any other key ignores a file under live/, so a stray file there never replaces what
+    the overlay owns (a deny list, a guarded set; the live-limits review). The live/ folder absent: none, one stat."""
+    global _LIVE_KEYS
+    if _LIVE_KEYS is None:
+        try:
+            there = (CONFIG / LIVE).is_dir()
+        except OSError:
+            there = False
+        if not there:
+            return frozenset()   # not kept: a layer written later in a long process is still seen
+        keys, whole = set(), True
+        # the modules beside this core first: it is read at import (config_problems), before regatta_root and
+        # _installed_roots are defined, so those join only once they are, and a set read without them is not kept
+        bases = list(Path(__file__).resolve().parent.parent.parent.glob("*"))
+        try:
+            bases += [p for p in ((regatta_root() or Path("/nonexistent")) / "modules").glob("*")]
+            bases += [b for _, b in _installed_roots()]
+        except NameError:
+            whole = False
+        except Exception:
+            pass
+        for b in bases:
+            try:
+                text = (b / "limits").read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            # never the core's own private values (regatta/*: the deny lists, the guarded set), whatever a file declares
+            keys |= {l.split()[0] for l in text.splitlines()
+                     if l.strip() and not l.lstrip().startswith("#") and not l.split()[0].startswith("regatta/")}
+        if not whole:
+            return keys
+        _LIVE_KEYS = keys
+    return _LIVE_KEYS
 
 
 def config_line(name):
@@ -392,12 +530,14 @@ def read_registry(path=None):
     except (OSError, ValueError):
         return None, True
     ok = isinstance(d, dict) and isinstance(d.get("repos") or {}, dict) and isinstance(d.get("scopes") or {}, dict)
-    return (d, False) if ok else (None, True)
+    # a confidential scope whose `repos` is no list reads as no members, which is open: torn, here, so every
+    # fence that asks registry_unreadable() fails closed on it, not only S6's gates (the fifth landing review)
+    return (d, False) if ok and not registry_malformed(d) else (None, True)
 
 
 def registry_unreadable(path=None):
     """True when a registry file is there but its repos or scopes cannot be read — a torn write,
-    conflict markers, a non-object. scope_registry() reads that as no scopes at all, which is open;
+    conflict markers, a non-object, a confidential scope whose `repos` is no list. scope_registry() reads that as no scopes at all, which is open;
     a fence asks this first and fails closed on it. False with no registry file. Never raises."""
     return read_registry(path)[1]
 
@@ -449,6 +589,530 @@ def scope_of_marker(marker, path=None, reg=None):
     rather than guessed). Never raises."""
     hits = [n for n in confidential_scopes(path, reg=reg) if isinstance(marker, str) and scope_marker(n) == marker]
     return hits[0] if len(hits) == 1 else None
+
+
+# The spawn (confidential-reach S6): the one write out of a confidential scope is a seed whose brief
+# `pickup seed --from` reviewed, with docs/handoff/<date>-<topic>.review beside it (S5). dispatch asks
+# spawn_gate() before it writes anything, and again on the tree it launches; the queue asks it again at
+# claim, on whichever host claims (docs/dispatch-queue-confidential-2026-10-26.md, item 3). Its refusals
+# never use the cap's waiting words (ASK_EXEMPT_RE, helm's CAP_RE): a missing review is not fixed by
+# waiting, and those words read as "queued" to stalls and to autofinish.
+#
+# Whose brief needs the review (the skipper's settlement of the landing review, 2026-10-28): what leaves
+# a confidential scope is what a confidential session writes, and pickup's confined_refusal already
+# refuses a plain `seed` or `brief` from one, so a spawned branch's later briefs come from open sessions
+# (its own --next, a re-dispatch, the lander). So a caller inside a confidential scope needs the brief
+# dispatch will hand the run reviewed — the newest, at the tree judged — and may send no --note or
+# --start prompt with it (neither is reviewed); an open caller on a branch whose seed carries a review
+# needs the seed's own brief reviewed: the blob the seed commit brought, judged against its .review,
+# never the tip's file of that path (the spawned run's next brief overwrites it the same day).
+#
+# Which `.review` counts (the fourth landing review): its run's own — docs/handoff/<date>-<topic>.review,
+# the topic its branch names (branch_topic) — for spawn_gate, the queue's has_review and pickup's
+# branch_origin alike. A seed made beside a spawn (`pickup seed --beside`) carries its source's review under
+# the source's topic: that review vouches for the source's brief, already in the open repo, while the new
+# seed's own brief is its maker's, an open session (pickup refuses a plain seed from inside a node), so its
+# run is an open run. Any topic would split the readers (the gate refused what the queue routed as a
+# spawn), and a `.review` that reached main would make every branch of the repo a spawn.
+#
+# The `.review` is unsigned JSON: a guard against accidents, not intent — whoever can commit to the open
+# branch can write one (the review left this for the owner, 2026-10-30; a signature by config agents
+# cannot touch is S6b's, later).
+
+REVIEW_DIR = "docs/handoff/"
+BLUEPRINT_DIR = "docs/blueprints/"
+
+
+def branch_topic(branch):
+    """A run's topic from its branch name: the last part, its date dropped (dispatch's topic, the queue's
+    topic_of), or None."""
+    t = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-", "", str(branch or "").rsplit("/", 1)[-1])
+    return t or None
+
+
+def _git_out(repo, *a, binary=False):
+    """git's stdout in REPO (bytes with BINARY, else stripped text), or None on any failure. Never raises."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode:
+        return None
+    return r.stdout if binary else r.stdout.decode("utf-8", "replace").strip()
+
+
+def _handoff_re(topic, ext):
+    """A handoff file's name pattern: <date>-<TOPIC>.<EXT> (the date optional for a review, as the queue's
+    has_review reads it), or any <name>.<EXT> directly in REVIEW_DIR without TOPIC."""
+    if not topic:
+        return re.compile(r"%s[^/]+\.%s" % (re.escape(REVIEW_DIR), ext))
+    date = r"[0-9]{4}-[0-9]{2}-[0-9]{2}-"
+    return re.compile(r"%s%s%s\.%s" % (re.escape(REVIEW_DIR), date if ext == "md" else "(?:%s)?" % date, re.escape(topic), ext))
+
+
+def spawn_reviews(repo, commit, topic=None):
+    """[path] of each REVIEW_DIR/*.review in COMMIT's tree (directly in it, as pickup writes them; TOPIC's
+    alone when given), or None when COMMIT does not read as a commit in REPO."""
+    sha = _git_out(repo, "rev-parse", "--verify", "--quiet", "%s^{commit}" % commit) if commit else None
+    if not sha:
+        return None
+    pat = _handoff_re(topic, "review")
+    names = _git_out(repo, "ls-tree", "--name-only", sha, "--", REVIEW_DIR) or ""
+    return [n for n in names.splitlines() if pat.fullmatch(n)]
+
+
+def newest_brief(repo, commit, topic=None):
+    """The brief dispatch hands a run of COMMIT: the last by name of REVIEW_DIR/<date>-<TOPIC>.md in its
+    tree (dispatch's brief_re, `sort | tail -1`), or None."""
+    pat = _handoff_re(topic, "md") if topic else re.compile(r"%s[0-9]{4}-[0-9]{2}-[0-9]{2}-[^/]+\.md" % re.escape(REVIEW_DIR))
+    names = _git_out(repo, "ls-tree", "--name-only", commit, "--", REVIEW_DIR) or ""
+    hits = sorted(n for n in names.splitlines() if pat.fullmatch(n))
+    return hits[-1] if hits else None
+
+
+def seed_commit(repo, commit, topic=None):
+    """The commit that brought the oldest of COMMIT's reviews (TOPIC's), by path and with no rename read as
+    a carry: the seed whose brief was reviewed on its way out. None when COMMIT carries no review."""
+    revs = spawn_reviews(repo, commit, topic)
+    if not revs:
+        return None
+    out = _git_out(repo, "log", "--no-renames", "--diff-filter=A", "--format=%H", "--reverse", commit, "--", *revs)
+    return (out or "").split("\n")[0] or None
+
+
+def primary_branch(repo):
+    """The repo's primary branch: its `.claude/workflow.json` "main" in its git checkout, as checkpoint and sync.py
+    read it, else origin's HEAD, else `main`. Never raises."""
+    try:
+        top = git_checkout(repo) or str(repo)
+        v = json.loads((Path(top) / ".claude" / "workflow.json").read_text(encoding="utf-8")).get("main")
+        if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", v):
+            return v
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    h = _git_out(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")   # origin's default, else main
+    return h.split("/", 1)[1] if h and "/" in h else "main"
+
+
+def unpushed_beyond(repo, commit, topic, also=()):
+    """The paths COMMIT brings that origin has not got (every commit of it no `origin/*` ref holds) other
+    than its topic's own seed files — REVIEW_DIR/<date>-<TOPIC>.md and .review, BLUEPRINT_DIR/<date>-<TOPIC>.md,
+    what `pickup seed --from` commits — sorted; None when git cannot say (no origin refs, a bad commit). A
+    caller inside a node pushes its local branch with `--next`: anything else on it no review read (the
+    fourth landing review, item 4). Never raises."""
+    if not _git_out(repo, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/"):
+        return None
+    # --cc: a merge lists only the paths that differ from every parent, so dispatch's after_merge of origin/main
+    # (a local merge commit) brings nothing main already has, and an evil merge's own text is still listed
+    # (the fifth landing review, item 11); every other unpushed commit lists its paths as before
+    out = _git_out(repo, "log", "--format=", "--name-only", "--no-renames", "--cc", commit, "--not", "--remotes=origin", *also)
+    if out is None:
+        return None
+    own = [_handoff_re(topic, "md"), _handoff_re(topic, "review"),
+           re.compile(r"%s[0-9]{4}-[0-9]{2}-[0-9]{2}-%s\.md" % (re.escape(BLUEPRINT_DIR), re.escape(topic or "")))]
+    return sorted({p for p in out.splitlines() if p and not (topic and any(r.fullmatch(p) for r in own))})
+
+
+def _review_verdict(repo, sha, revs, origin, reg, here_only=False):
+    """(ok, why, marker, final) for reviews REVS in commit SHA: each beside its brief (<same name>.md) with
+    that brief's sha256, `scan` and `judge` clean, one confidential `origin` marker for all, equal to ORIGIN
+    when given, read back by REG. FINAL: no wait fixes it — every refusal but a marker this host's registry
+    does not know (another host's may), which is final too with HERE_ONLY: a host-local queue's entry no
+    other host can claim (the fourth landing review)."""
+    marks = set()
+    for rp in revs:
+        try:
+            rec = json.loads((_git_out(repo, "cat-file", "blob", "%s:%s" % (sha, rp), binary=True) or b"null").decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            rec = None
+        if not isinstance(rec, dict):
+            return False, "%s does not read as a review" % rp, None, True
+        brief = rp[:-len(".review")] + ".md"
+        body = _git_out(repo, "cat-file", "blob", "%s:%s" % (sha, brief), binary=True)
+        if body is None:
+            return False, "%s vouches for %s, which the seed does not carry" % (rp, brief), None, True
+        if rec.get("sha256") != hashlib.sha256(body).hexdigest():
+            return False, "%s is not the text %s reviewed (its sha256 differs)" % (brief, rp), None, True
+        if rec.get("scan") != "clean" or rec.get("judge") != "clean":
+            return False, "%s does not say clean by both the scan and the judge" % rp, None, True
+        m = rec.get("origin")
+        if not (isinstance(m, str) and m.startswith(SCOPE_MARK)):
+            return False, "%s names no confidential origin" % rp, None, True
+        marks.add(m)
+    if len(marks) != 1:
+        return False, "its reviews name more than one origin", None, True
+    m = marks.pop()
+    if origin and origin != m:
+        return False, "its review's origin %s is not the origin given (%s)" % (m, origin), None, True
+    if not scope_of_marker(m, reg=reg):
+        return False, "its origin %s names no confidential scope in this host's registry" % m, None, bool(here_only)
+    return True, "", m, False
+
+
+def spawn_review_ok(seed_commit, repo=".", origin=None, path=None, reg=None, topic=None):
+    """(ok, why, marker): does SEED_COMMIT in REPO carry a review that vouches for the brief it carries?
+    Every docs/handoff/*.review in its tree (TOPIC's alone when given) must: sit beside a brief (<same
+    name>.md) whose sha256 is its `sha256`, say `scan` and `judge` clean, and name an `origin` marker; one
+    marker for all of them, equal to ORIGIN when given, which this host's registry reads back to a
+    confidential scope. WHY says what failed (never a scope's name: a refusal is pushed with a fleet
+    entry); MARKER is the origin on ok. The registry is read once (REG: a read_registry() parse already
+    made); a torn one refuses. Never raises."""
+    if reg is None:
+        reg, torn = read_registry(path)
+        if torn:
+            return False, "the scope registry cannot be read here, so no origin can be read back (fails closed)", None
+    revs = spawn_reviews(repo, seed_commit, topic)
+    if revs is None:
+        return False, "no seed commit to judge here (%s)" % (seed_commit or "none named"), None
+    if not revs:
+        return False, "its seed carries no %s*.review of its own topic: the brief was never reviewed on its way out" % REVIEW_DIR, None
+    return _review_verdict(repo, _git_out(repo, "rev-parse", "%s^{commit}" % seed_commit), revs, origin, reg)[:3]
+
+
+def entry_takes(entry, key):
+    """True when a scope's `repos` entry ENTRY — a key, or a glob — takes repo key KEY: the one rule of
+    scope_members' globs, scope_of_repo and scope_resolver. An absolute entry takes the key by its real path
+    too: a symlinked spelling is the same repo (the fourth landing review)."""
+    if not (isinstance(entry, str) and bool(key)):
+        return False
+    if entry == key or (is_glob(entry) and fnmatch.fnmatchcase(key, entry)):
+        return True
+    if not entry.startswith("/"):
+        return False
+    if key.startswith("/"):
+        return os.path.realpath(entry) == os.path.realpath(key)
+    # an absolute entry under the projects folder names the repo whose key is relative (repo_key makes every path
+    # there relative): without this a scope listing its repo by path read its own checkout as split from its
+    # folder, and every run of it was refused for good (the sixth landing review)
+    if is_glob(entry):
+        return fnmatch.fnmatchcase(str(PROJECTS / key), entry) or fnmatch.fnmatchcase(str(PROJECTS.resolve() / key), entry)
+    return repo_key(entry) == key
+
+
+def registry_malformed(reg):
+    """True when a confidential scope's `repos` in REG is there but not a list of strings: read as no
+    entries it would fail open, so a gate reads it as torn (the fourth landing review: `"repos": 5`
+    crashed the claim after its CAS). Never raises."""
+    for sc in confidential_scopes(reg=reg if isinstance(reg, dict) else {}).values():
+        ms = sc.get("repos")
+        if ms is not None and not (isinstance(ms, list) and all(isinstance(m, str) for m in ms)):
+            return True
+    return False
+
+
+def git_checkout(p):
+    """The main checkout git names for path P — its common dir's folder: a worktree's is its repo's, a
+    clone's its own — or None outside git or in a bare repo. Never raises."""
+    g = _git_out(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return str(Path(g).parent) if g and g.endswith("/.git") else None
+
+
+def scope_resolver(reg, home=None):
+    """p -> the confidential scope a path is in, by REG (one read_registry() parse), or None — the one
+    resolver of spawn_gate and dispatch-queue's route() (S6's landing review). `scopes(p)` gives every
+    such scope (a repo may be in two); `target(p)` judges a run's repo, by its git checkout.
+
+    A caller's directory (the resolver, `scopes`) reaches far, the safe side: by the fence's paths
+    (scope_match: the scope's registered checkouts and worktrees, a slug in any path part), by the path's
+    repo key and by its git checkout's, as given and resolved, against every confidential scope's entries
+    and globs — a repo the registry does not list that a confidential glob takes is in that scope. A run's
+    repo is what its git names: `target(p)` is (scopes, why), the scopes of its checkout's key alone, and
+    WHY when its folder places it in other scopes — a worktree or a clone of an open repo inside a
+    confidential folder reads as the node's by its path while it pushes to the open repo (the third
+    landing review), and the reverse; spawn_gate refuses that target. Every confidential scope is walked,
+    so a scope listed before (an umbrella `*`) hides none (the fence trap). Never raises."""
+    scopes = confidential_scopes(reg=reg)
+    if not scopes:
+        resolve = lambda p: None
+        resolve.scopes, resolve.target = (lambda p: frozenset()), (lambda p: (frozenset(), None))
+        return resolve
+    matchers = [(n, scope_match(n, home=home, reg=reg)) for n in scopes]
+
+    def norm(p):
+        try:
+            return os.path.normpath(os.path.expanduser(str(p))) if p else None
+        except (TypeError, ValueError):
+            return None
+
+    def by_keys(*ps):
+        ks = {repo_key(y) for x in ps if x for y in (x, os.path.realpath(x))} - {None}
+        return frozenset(n for n, sc in scopes.items() for e in (sc.get("repos") if isinstance(sc.get("repos"), list) else [])
+                         if any(entry_takes(e, k) for k in ks))
+
+    def by_path(p):
+        return frozenset(n for n, m in matchers if m(p)) | by_keys(p)
+
+    def every(p):
+        p = norm(p)
+        return by_path(p) | by_keys(git_checkout(p)) if p else frozenset()
+
+    def target(p):
+        p = norm(p)
+        top = git_checkout(p) if p else None
+        if not top:
+            return (by_path(p) if p else frozenset()), None   # no git here: the run's own fetch refuses it
+        mine, here = by_keys(top), by_path(p)
+        # split when the folder names a scope the checkout is not in (an open repo's worktree or clone inside a
+        # node's folder). A checkout in more scopes than its folder shows (a glob's member the registry does not
+        # list, its worktree outside the projects folder) is its checkout's: its scopes judge it, the stricter
+        # side, and refusing it for good refused a scope's own Orca run (the sixth review, second pass)
+        if here - mine:
+            return mine, ("its folder and its git checkout are not in the same confidential scopes (a worktree or a "
+                          "clone of one repo inside another's folder), so which repo the run pushes to cannot be told "
+                          "by its path")
+        return mine, None
+
+    def resolve(p):
+        s = every(p)
+        return next((n for n in scopes if n in s), None)
+    resolve.scopes, resolve.target = every, target
+    return resolve
+
+
+def _same_repo(cwd, repo):
+    """True when CWD is no caller's directory (none, or launchd's `/`) or one of REPO's own checkouts (its
+    git common dir). Never raises."""
+    if not cwd or os.path.realpath(str(cwd)) == "/":
+        return True
+    a, b = git_checkout(cwd), git_checkout(repo)   # one rule of which checkout a path is (the fifth review)
+    # both must be checkouts: realpath("") is the process's cwd, so a repo with none read as the caller's own
+    # when the caller stood at its checkout's root (the sixth landing review)
+    return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+
+
+def session_dirs(home=None):
+    """Every sessions/ folder a Claude Code session's record may sit in, each once by its real path: each
+    login dir's (login_dirs), then every Orca profile's own (a session registry is not one folder: AGENTS.md's
+    trap). Never raises."""
+    home = Path(home or Path.home())
+    own = os.environ.get("CLAUDE_CONFIG_DIR")
+    cands = [Path(own) / "sessions"] if own else []   # the caller's own login first, listed in accounts or not
+    try:
+        cands += [d / "sessions" for d in login_dirs(home)]
+    except Exception:  # noqa: BLE001 — a broken accounts file costs only those dirs
+        cands += [home / ".claude" / "sessions"]
+    cands += [Path(p) for p in sorted(glob.glob(str(home / "Library" / "Application Support" / "orca" / "claude-profiles" / "*" / "home" / "sessions")))]
+    out, seen = [], set()
+    for d in cands:
+        r = os.path.realpath(d)
+        if r not in seen and d.is_dir():
+            seen.add(r)
+            out.append(d)
+    return out
+
+
+def session_dir(sid, home=None):
+    """The folder session SID runs in by its newest record (`cwd`; `updatedAt`, as asklib.registry and
+    rc-hosts pick: a session picked up again keeps its old record beside the new one) in any sessions/
+    folder here, or None when no record names it — a headless run may keep none. Never raises."""
+    if not sid:
+        return None
+    best, key = None, None
+    for d in session_dirs(home):
+        for f in sorted(d.glob("*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                k = (float(rec.get("updatedAt") or 0), f.stat().st_mtime)
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+            if isinstance(rec, dict) and rec.get("sessionId") == sid and isinstance(rec.get("cwd"), str) and rec["cwd"] \
+                    and (key is None or k > key):
+                best, key = rec["cwd"], k
+    return best
+
+
+def session_start_dirs(sid, home=None):
+    """[dir] the folders session SID started in: each transcript of it — <login>/projects/<slug>/<SID>.jsonl,
+    beside each sessions/ folder here (session_dirs), one per folder a resume began it in — read for its first
+    entry's `cwd`, a real path. A `cd` does not move it: Claude Code writes a moved cwd into later entries (probed
+    on a typed session, the sixth landing review) and may into the session's record. The slug folder itself is
+    never judged: scope_match's slug prefix read an open `<name>-x` as confidential `<name>` (its first review
+    pass). Never raises."""
+    if not sid or "/" in str(sid):
+        return []
+    out = []
+    for d in session_dirs(home):
+        try:
+            hits = sorted(glob.glob(str(d.parent / "projects" / "*" / ("%s.jsonl" % glob.escape(str(sid))))))
+        except (OSError, ValueError, TypeError):
+            continue
+        for h in hits:
+            try:
+                with open(h, encoding="utf-8", errors="replace") as f:
+                    for n, line in enumerate(f):
+                        if n >= 200:
+                            break
+                        try:
+                            c = json.loads(line).get("cwd")
+                        except (ValueError, AttributeError):
+                            continue
+                        if isinstance(c, str) and c.startswith("/"):
+                            if c not in out:
+                                out.append(c)
+                            break
+            except OSError:
+                continue
+    return out
+
+
+def caller_dirs(here, sid=None, home=None):
+    """[dir] a caller asks from: HERE (its shell's), its session SID's own folder by record (session_dir), and
+    the folder it started in by its transcript (session_start_dirs), each when it differs — a
+    session inside a node that runs `cd <open repo> && …`, or that moved its cwd for good, is still inside it.
+    One list for dispatch, pickup and harness (the fourth landing review, item 7). Never raises."""
+    out = [here]
+    for extra in (([session_dir(sid, home)] + session_start_dirs(sid, home)) if sid else ()):
+        try:
+            if extra and all(os.path.realpath(extra) != os.path.realpath(str(x)) for x in out if x):
+                out.append(extra)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def caller_and_target(at, cwds, repo):
+    """(cs, inside, rs, split) by resolver AT (scope_resolver): the confidential scopes the caller's
+    directories CWDS are in, the first of them inside one, REPO's scopes by its git checkout, and why its
+    folder and checkout disagree (or None). A caller in a scope REPO is not in sends a spawn: spawn_gate
+    judges it, pickup's confined_refusal refuses its plain seed or brief — one rule (item 7). Never raises."""
+    per = [(c, at.scopes(c)) for c in cwds if c]
+    cs = frozenset().union(*(x for _, x in per)) if per else frozenset()
+    inside = next((c for c, x in per if x), None)
+    rs, split = at.target(repo)
+    return cs, inside, rs, split
+
+
+Spawn = collections.namedtuple("Spawn", "why mark scope final caller", defaults=(None, None, None, False, None))
+Spawn.__doc__ = """spawn_gate's verdict: (why, mark, scope, final, caller). WHY None lets the run start; MARK is the
+origin it carries (None for an open run), SCOPE that origin's name by this host's registry (local state, never
+pushed); FINAL says no wait fixes the refusal, so a queue drops the entry rather than retry it; CALLER, on a
+start, the first caller's directory inside a confidential scope (None: an open caller), for the queue's route."""
+
+
+def spawn_gate(repo, commit, cwd, origin=None, path=None, topic=None, node=None, note=False, start=False, here_only=False):
+    """Spawn(why, mark, scope, final): why a run of COMMIT in REPO, asked from CWD (the caller's directory,
+    or several: a shell's and its session's start folder, any one inside a scope placing the caller there)
+    or from the queue of confidential scope NODE (its folder's name), may not start — or None — and the
+    origin it carries. A run is a spawn when ORIGIN (a marker) is given, when its tree carries a review
+    (TOPIC's, the run's: the one rule of which review counts, above), or when its caller is in a
+    confidential scope that REPO is not in: a spawn starts only in an open repo. REPO is judged by its git
+    checkout (scope_resolver's target), and refused when its folder says other scopes. A caller inside a
+    confidential scope needs the newest brief at COMMIT reviewed, out of that scope, nothing else on COMMIT
+    that origin lacks (unpushed_beyond: its --next pushes it), and may send no NOTE or START prompt (neither
+    was reviewed); an open caller needs the seed's own brief reviewed (seed_commit), and the newest brief
+    the seed carries to be that one, whatever later briefs say. A confidential scope's own run (its caller
+    in a scope REPO is in, no review, no origin) is no spawn. A target in a confidential scope refuses
+    every spawn (no bridge waives it: S8's was removed). One read_registry() judges everything.
+    A torn one — or a confidential scope whose `repos` is no list (registry_malformed) — refuses whatever
+    may be a spawn: an ORIGIN, a review, a NODE, a CWD outside REPO's own checkouts; and lets a run asked
+    from inside its own repo (or with no caller's directory: launchd's `/`) go on, as the mode's torn read
+    does (dispatch's mode_unread). HERE_ONLY: the entry is a host-local queue's, so a marker this host does
+    not know is final. Never raises."""
+    cwds = [c for c in ((cwd,) if cwd is None or isinstance(cwd, (str, os.PathLike)) else cwd)
+            if c and os.path.realpath(str(c)) != "/"]
+    reg, torn = read_registry(path)   # torn includes a confidential scope whose `repos` is no list
+    reg = reg or {}   # no registry file: judged as no scopes from this one read, never re-read (the fourth review)
+    revs = spawn_reviews(repo, commit, topic) if commit else None
+    if torn:
+        if origin or revs or node or not all(_same_repo(c, repo) for c in cwds):
+            return Spawn("the scope registry cannot be read here, so whether this run leaves a confidential scope "
+                         "cannot be told (fails closed)")
+        return Spawn()
+    scopes = confidential_scopes(reg=reg)
+    if not scopes and not origin and not revs and not node:
+        return Spawn()   # nothing confidential here, nothing claimed: an open run (a node queue's entry is judged below)
+    at = scope_resolver(reg)
+    cs, inside, rs, split = caller_and_target(at, cwds, repo)
+    if not cs and node:
+        cs = frozenset(n for n in scopes if re.sub(r"[^A-Za-z0-9._-]", "_", n) == node)
+        if not cs:
+            # a node queue's entry was asked from inside that scope; one this host's registry no longer names as
+            # confidential (renamed, opened) cannot say which scope it left, and judged as an open caller it went
+            # out unjudged. Its queue is this host's alone, so no wait fixes it (the sixth landing review)
+            return Spawn("its node queue names no confidential scope in this host's registry (renamed or opened "
+                         "since it was queued), so what it carries out cannot be judged", final=True)
+    if split:   # judged for every run here, as the queue's route() judges it: an open run in such a folder too
+        return Spawn(split, final=True)
+    if not (origin or revs or (cs and not cs <= rs)):
+        # an open run, or a scope's own: every scope its caller is in takes its repo. A caller in two scopes
+        # (a repo they share, or a shell in one and its session folder in another) asking for a repo of only
+        # one is a spawn out of the other, refused below as main's confined_refusal refused it (the fifth
+        # landing review, item 2; AGENTS.md's narrowed-guard trap)
+        return Spawn(caller=inside)
+    sha = _git_out(repo, "rev-parse", "--verify", "--quiet", "%s^{commit}" % commit) if commit else None
+    if rs:
+        return Spawn("its repo is in a confidential scope: a spawn out of one goes to an open repo, and no bridge "
+                     "waives that", final=True)
+    if cs:
+        # the caller is inside a node (rs is empty here): what it hands the run must all be reviewed
+        if start:
+            return Spawn("a --start from inside a confidential scope hands the run a prompt no review read", final=True)
+        if note:
+            return Spawn("a --note from inside a confidential scope rides with the run, and no review read it", final=True)
+        here = spawn_reviews(repo, sha, topic) if sha else None
+        if here is None:   # a branch this host has not fetched yet: waited out, never final
+            return Spawn("no seed commit to judge here (%s)" % (commit or "none named"))
+        if not here:
+            return Spawn("its seed carries no %s*.review of its own topic: the brief was never reviewed on its way out" % REVIEW_DIR, final=True)
+        brief = newest_brief(repo, sha, topic)
+        if not brief:
+            return Spawn("no brief of its own beside its review, for the review to vouch for", final=True)
+        rev = brief[:-len(".md")] + ".review"
+        if rev not in here:
+            return Spawn("its newest brief %s carries no %s beside it: a brief written after the seed's review "
+                         "was never reviewed on its way out" % (brief, rev.rsplit("/", 1)[-1]), final=True)
+        ok, why, mark, final = _review_verdict(repo, sha, [rev], origin, reg, here_only)
+        if ok and {scope_of_marker(mark, reg=reg)} != set(cs):
+            # a brief reviewed out of another scope: the run would record that scope as its origin. And a caller in
+            # two scopes (a repo they share, a shell in one and its session folder in another) with a review out of
+            # one: what it hands the run may hold the other's text, which no review read (the sixth landing review)
+            return Spawn("its review names another confidential scope as its origin than the one it is asked from, "
+                         "or the caller is in more than one confidential scope and the review vouches for one",
+                         final=True)
+        if ok and (inside or node):
+            # what a push would send beyond the seed's own files: no review read it (item 4). A node queue's
+            # claim too (the fifth landing review, item 5): its entry was asked from inside the node, and the
+            # fired run reuses this host's local branch, which its checkpoint hook then pushes
+            extra = unpushed_beyond(repo, sha, topic or branch_topic(brief[:-len(".md")]))
+            if extra is None:
+                return Spawn("what its branch would push to origin cannot be told here (no origin refs to judge against)")
+            if extra:
+                # all of it the repo's own local main, ahead of origin (sync.py leaves such a main alone; `pickup seed
+                # --from` bases the seed on it): the refusal says so and what fixes it (the sixth review's first pass).
+                # Final still: a main whose commits landed on origin under other shas (a rebase-merge) never matches,
+                # so a refusal for now was handed back each hour for ever (its third pass); the card names the fix
+                prim = "refs/heads/%s" % primary_branch(repo)
+                mine = unpushed_beyond(repo, sha, topic or branch_topic(brief[:-len(".md")]), also=(prim,)) \
+                    if _git_out(repo, "rev-parse", "--verify", "--quiet", prim) else extra
+                mine = extra if mine is None else mine   # git could not say: never read as "all of it main's"
+                return Spawn("its branch holds %d path(s) origin has not got beyond its seed's brief and review (%s): "
+                             "a push from inside a confidential scope would carry them, and no review read them%s"
+                             % (len(extra), ", ".join(extra[:3]) + (", …" if len(extra) > 3 else ""),
+                                "" if mine else "; they are all this repo's local %s, ahead of origin: the owner pushes it, or resets it to "
+                                "origin's, then dispatches it again" % prim[len("refs/heads/"):]), final=True)
+    else:
+        seed = seed_commit(repo, sha, topic) if sha else None
+        if not seed and sha and revs:
+            # the tip carries the topic's review, yet no commit adds it by path (a merge brought it, which a
+            # plain log does not show as an add): the tip is the seed, judged with the newest-brief rule
+            # below, never the plain spawn_review_ok that skips it (the fifth landing review, item 8)
+            seed = sha
+        if not seed:
+            # no review of its topic on it (or no commit here): spawn_review_ok says which, and never passes
+            ok, why, mark = spawn_review_ok(commit, repo, origin=origin, reg=reg, topic=topic)
+            final = bool(sha)
+        else:
+            sha = _git_out(repo, "rev-parse", "%s^{commit}" % seed)
+            here = spawn_reviews(repo, sha, topic)
+            ok, why, mark, final = _review_verdict(repo, sha, here, origin, reg, here_only)
+            # the brief dispatch hands a run is the newest: the seed's must be the reviewed one (item 3)
+            brief = newest_brief(repo, sha, topic) if ok else None
+            if brief and brief[:-len(".md")] + ".review" not in here:
+                return Spawn("its seed carries %s, newer than the brief its review vouches for, which no review read: "
+                             "dispatch would hand the run that one" % brief, final=True)
+    if not ok:
+        return Spawn(why, final=final)
+    return Spawn(None, mark, scope_of_marker(mark, reg=reg), caller=inside)
 
 
 def scope_login(name, path=None):
@@ -504,15 +1168,17 @@ def project_slug(path):
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def scope_paths(name, path=None, home=None):
+def scope_paths(name, path=None, home=None, reg=None):
     """[Path] — what a scope's sessions leave on this Mac, the paths the fence keeps out: per repo
     of the scope (its anchor, the knowledge repo, first) its checkout and every `git worktree list`
     entry, PROJECTS/transcripts/<repo>/, and each login dir's projects/<slug>/ for each of those
     checkouts — the transcripts and the memory both (week-digest reads the .jsonl files there). A
     worktree already removed left a folder whose slug starts with its checkout's slug and a `-`:
     a reader matches that prefix, as sheep_gate's transcript test does. A copy outside a
-    registered repo is not found. [] for a scope the registry lacks. Never raises."""
-    repos, scopes = scope_registry(path)
+    registered repo is not found. [] for a scope the registry lacks. REG: one read_registry() parse, so a
+    caller judging several scopes reads one file (the "a fence walks every scope" trap; S6's scope_resolver).
+    Never raises."""
+    repos, scopes = scope_registry(path) if reg is None else (reg.get("repos") or {}, reg.get("scopes") or {})
     if name not in scopes:
         return []
     logins = login_dirs(home)
@@ -524,9 +1190,17 @@ def scope_paths(name, path=None, home=None):
             seen.add(r)
             out.append(p)
     for key in scope_members(scopes[name], repos):
-        if key not in repos:
+        if key.startswith("/"):
+            # a member named by its absolute path, as `repos` entries may be (entry_takes): its checkout as given,
+            # when it is there, with its worktrees — without them a sibling worktree of such a repo read as split
+            # from its checkout, and S6's gate refused the scope's own run (S6's fifth round, main's vendor fence)
+            top = Path(key)
+            if not top.is_dir():
+                continue
+        elif key not in repos:
             continue
-        top = PROJECTS / key
+        else:
+            top = PROJECTS / key
         trees = [top]
         try:
             r = subprocess.run(["git", "-C", str(top), "worktree", "list", "--porcelain"],
@@ -544,7 +1218,7 @@ def scope_paths(name, path=None, home=None):
     return out
 
 
-def scope_match(name, path=None, home=None):
+def scope_match(name, path=None, home=None, reg=None):
     """A test path -> bool: is it one of scope `name`'s (scope_paths)? Under one of its folders by
     the path as given or its real path, or any path part that is one of its slugs or starts with one
     and a `-`, whatever folder holds it — a login dir scope_paths did not list, a worktree already
@@ -552,7 +1226,7 @@ def scope_match(name, path=None, home=None):
     `projects/`: 11 of a scope's rows were quoted for it, trim-cross-host D2,
     2026-10-28). The prefix over-reaches (a repo `<name>-x` beside `<name>`): for a fence that is the
     safe side. Never raises."""
-    ps = scope_paths(name, path, home)
+    ps = scope_paths(name, path, home, reg)
     roots = {os.path.normpath(str(p)) for p in ps} | {os.path.realpath(p) for p in ps}
     slugs = {project_slug(r) for r in roots}
 
@@ -608,23 +1282,27 @@ def repo_key(repo):
     if not s.startswith("/"):
         return s
     # as written first (a checkout linked into the projects folder keeps its key), then both resolved
+    given = None
     for p, base in ((Path(os.path.normpath(s)), PROJECTS), (Path(s).resolve(), PROJECTS.resolve())):
         wt = p.parts.index(".claude") if ".claude" in p.parts else None
         if wt is not None and p.parts[wt + 1:wt + 2] == ("worktrees",):
             p = Path(*p.parts[:wt])
+            given = given or p
         try:
             return str(p.relative_to(base))
         except ValueError:
             continue
-    return s
+    # outside the projects folder: as given, a worktree as its checkout — a scope that lists a repo by its
+    # absolute path holds that repo's worktrees too (S6's fifth round: the launch judged one as split)
+    return str(given) if given else s
 
 
 def scope_of_repo(repo, path=None, reg=None):
     """(name, scope) of the registry's first scope whose `repos` list REPO — a key, or a path under
     PROJECTS — each entry a key or a glob, as `scopes` reads them; (None, {}) when none does or the
-    registry does not read. What a scope carries beyond its repos (`mode`, `berths`: skipper-modes
+    registry does not read; a TypeError on a confidential scope whose `repos` is there but no list in a REG handed in
+    (read from the file here, as an open scope's always, it is no member: a fence asks read_registry first). What a scope carries beyond its repos (`mode`, `berths`: skipper-modes
     S1, S6) is data, read here once for every module. REG: a registry read_registry() parsed already."""
-    import fnmatch
     key = repo_key(repo)
     p = path or repos_json()
     try:
@@ -635,8 +1313,18 @@ def scope_of_repo(repo, path=None, reg=None):
     except (OSError, ValueError, AttributeError):
         return None, {}
     for name, sc in (scopes or {}).items() if isinstance(scopes, dict) else ():
-        if isinstance(sc, dict) and any(isinstance(m, str) and (m == key or (any(c in m for c in "*?[") and fnmatch.fnmatchcase(key, m)))
-                                        for m in sc.get("repos") or []):
+        ms = sc.get("repos") if isinstance(sc, dict) else None
+        if ms is not None and not isinstance(ms, list):
+            if reg is not None and isinstance(sc, dict) and sc.get("confidential") is True:
+                # a string would iterate as characters and read as no member, which is open: raise, so a fence
+                # that relies on the raise (autofinish-run's rotation fence) fails closed. Only with a REG handed in:
+                # read from the file here, it is no member, as on main — read_registry calls such a file torn, and
+                # a reader that read it so and passed reg=None (crew-report) crashed (the sixth review, second pass)
+                raise TypeError("scope %r: `repos` is %s, not a list" % (name, type(ms).__name__))
+            # an open scope's odd value is no member, as on main: raising crashed every reader that walks the
+            # scopes (berth, usage-report, crew-report, ops) on a scope no fence depends on (the sixth landing review)
+            continue
+        if any(entry_takes(m, key) for m in ms or []):
             return name, sc
     return None, {}
 
@@ -661,6 +1349,19 @@ def unattended_label(env=None):
     return next(("%s=%s" % (n, env[n]) for n in UNATTENDED_NAMES if env.get(n)), None)
 
 
+def unattended_caller(env=None):
+    """`NAME=value` of what makes the caller an unattended run, or None: the marker (unattended_label), else
+    AUTOFINISH_CALLER_UNATTENDED, which peer-start sets in a peer's job, whose environment holds only what its
+    plist names, so an unattended caller on the sending Mac stays one there. A flag that stands for a person's
+    yes refuses such a caller (AGENTS.md's trap); council, harness and autofinish-run read this one rule (the
+    council's fourth landing review, finding 5: a second unattended() here, merged with no conflict, shadowed
+    the marker's and dropped REGATTA_UNATTENDED)."""
+    env = os.environ if env is None else env
+    return unattended_label(env) or (
+        "AUTOFINISH_CALLER_UNATTENDED=%s" % env["AUTOFINISH_CALLER_UNATTENDED"]
+        if env.get("AUTOFINISH_CALLER_UNATTENDED") else None)
+
+
 def unattended_env(value):
     """{name: VALUE} for both of the marker's names: what a launcher puts in its child's environment."""
     return {n: value for n in UNATTENDED_NAMES}
@@ -668,7 +1369,10 @@ def unattended_env(value):
 
 def _checkout_of(path):
     """The main checkout of the git tree at PATH (a worktree's, wherever it lies), or None: repo_key knows a
-    worktree only in the folder the workflow makes them in, and a Codex thread's cwd can be any worktree."""
+    worktree only in the folder the workflow makes them in, and a Codex thread's cwd can be any worktree.
+    Wider than git_checkout on purpose: any common dir's parent, a bare layout's (`<repo>/.bare`) included,
+    for the vendor fence names more forms, the safe side; the spawn gate's target needs a checkout git names
+    exactly (the sixth review's first pass: one rule here dropped a bare-layout repo's checkout from the fence)."""
     try:
         r = subprocess.run(["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                            capture_output=True, text=True, timeout=10)
@@ -1697,7 +2401,7 @@ FINISH_LINES = (ADDRESS + "IT'S FINE — THIS SESSION IS REALLY DONE. YOU HAVEN'
 WAITING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR YOU — "
 PENDING_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR SOMETHING — "
 IDLE_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR NOTHING — "
-# `handed`: a dispatched yolo or dnd run hands its landing to dispatch's launch (wharf-runs' yolo_launch,
+# `handed`: a dispatched yolo or dnd run, or a `default` one started with the landing switch on (task-shape S3), hands its landing to dispatch's launch (wharf-runs' yolo_launch,
 # autofinish-run) — a WAITING FOR SOMETHING line, since the work goes on without the owner, but its own
 # kind, so that dispatch launches on it, dispatch-rc ends the run at once, and helm raises a launch that
 # never started instead of retrying the build (yolo-launch review D1-B, 2026-10-25). Before it, two runs on
@@ -1956,6 +2660,13 @@ def autofinish_armed():
     return _json_object(autofinish_state_dir() / "armed")
 
 
+def autofinish_landings():
+    """{"by", "ts"} when this Mac's done `default` builds hand their landing to dispatch (the landing
+    switch, `autofinish arm --landings`; task-shape S3), else None (off: the default). Apart from
+    `armed`: the sweep's switch, which yolo and dnd launches still need."""
+    return _json_object(autofinish_state_dir() / "landings")
+
+
 # bin/autofinish-run's end line, one per ended run in the dated autofinish log, and the reader
 # bin/autofinish's launch door counts with: one home for both, so neither re-parses the other's
 # prose (widen review, 2026-10-07). Fields: iso, repo, branch, outcome, " gate=<g>" or "",
@@ -2028,11 +2739,89 @@ def autofinish_running(state, owner):
 
 
 def autofinish_window(rec, branch=None):
-    """The runner's window name: the record's, else `finish · <topic>`."""
+    """The runner's name: the record's, else the session name dispatch gives it, `finish-<topic>`."""
     if rec.get("window"):
         return rec["window"]
     topic = re.sub(r"^claude/(?:[^/]+/)?(?:\d{4}-\d{2}-\d{2}-)?", "", branch or "") or "?"
-    return f"finish · {topic}"
+    # the very call dispatch makes of autofinish-run's NAME, so a topic `finish-x` reads finish-x here too
+    return session_name("work", f"finish · {topic}", lead=True)
+
+
+# ---- session names (the owner, 2026-11-01: "easy to follow") ----------------------------------
+# A session a launcher starts is named `<verb>-<topic>`: the verb says which agent runs it or what it
+# is for, the topic what it works on, so a list of runs reads as a list of jobs. Until then every
+# dispatched run was `run-<topic>`, and every landing `run-finish` (dispatch cut "finish · <topic>"
+# at its first ` · `), twelve alike in one repo's last sixty sessions. Fitted to `session_name_max()`, a
+# soft target: whole words go from the end first, so the verb and the topic's head survive. A session the
+# owner typed keeps `<repo>: <topic>` whole (checkpoint's Stop title, pickup): dispatch-rc's window_session
+# ties a pickup window to its session by that name, so it must stay unique in its repo (landing review).
+SESSION_VERBS = {
+    "build": "a build step from a handoff brief: worker, sr-worker, principal-worker, main or no tier",
+    "design": "a brief at an architect tier (architect, sr-architect, principal-architect): a design doc",
+    "finish": "a landing: /finish of the branch its topic names",
+    "steer": "a skipper keeping a scope's ships moving (helm)",
+    "work": "a task sent with a prompt (harness run, helm send) whose name leads with no verb here",
+    "probe": "dispatch --probe: a start that only proves a session can run",
+    "see": "a read-only look: a review, a watch, an audit",
+    "sound": "a sounding: an idea weighed before anything is built",
+    "evolve": "the Evolve loop's pass over the owner's answers",
+}
+# len("Regatta: arm yard remaining"), the owner's yardstick: about what a phone's session list and VS
+# Code's panel show without cutting. <config>/regatta/session-name-max overrides it.
+SESSION_NAME_MAX = 27
+SESSION_NAME_MIN = 12  # below this a name is a verb and a stub; a smaller key reads as unset
+
+
+def session_name_max():
+    """The soft cap on a session name: `regatta/session-name-max` when it reads as a whole number of
+    at least SESSION_NAME_MIN, else SESSION_NAME_MAX. Optional: a bad value is one stderr line and the
+    default, never an error (Traps: an optional key in config_problems() fails every hook)."""
+    raw = config_line("regatta/session-name-max")
+    if not raw:
+        return SESSION_NAME_MAX
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < SESSION_NAME_MIN:
+        import sys
+        print(f"regatta/session-name-max: {raw!r} is no whole number of at least {SESSION_NAME_MIN}; "
+              f"using {SESSION_NAME_MAX}", file=sys.stderr)
+        return SESSION_NAME_MAX
+    return n
+
+
+def _name_words(text):
+    """A topic's words: a branch's `claude/<host>/<date>-` and any date dropped, split on what a
+    topic, a slug or a window name separates words with."""
+    text = re.sub(r"^claude/(?:[^/]+/)?", "", str(text or "").strip())
+    text = re.sub(r"^\d{4}-\d{2}-\d{2}-?", "", text)
+    return [w for w in re.split(r"[\s\-_/·:]+", text.lower()) if w]
+
+
+def _fit(verb, words, cap):
+    """`<verb>-<words>`, whole words dropped from the end until it fits `cap`. The verb and the first word
+    always stay whole, past the cap if need be: the cap is soft, and a cut word names nothing."""
+    words = list(words) or ["?"]
+    while len(words) > 1 and len(verb + "-" + "-".join(words)) > cap:
+        words.pop()
+    return verb + "-" + "-".join(words)
+
+
+def session_name(verb, topic, lead=False, cap=None):
+    """The name a launcher gives a session: `<verb>-<topic>` (`build-queue-rank`, `finish-vendor-hooks`).
+    With `lead`, a NAME of the form `<verb> · <topic>` whose verb is known keeps it (dispatch --start's
+    NAME, "finish · <topic>"); `verb` is the fallback. Only that form: a slug that merely starts with a
+    verb's word (`build-review`, `see-also-links`) is a topic. Fitted to `cap`, else session_name_max()."""
+    cap = cap or session_name_max()
+    m = re.match(r"\s*(\w+)\s+·\s", str(topic or "")) if lead else None
+    words = _name_words(topic[m.end():] if m and m.group(1).lower() in SESSION_VERBS else topic)
+    if m and m.group(1).lower() in SESSION_VERBS:
+        verb = m.group(1).lower()
+        # "finish · finish-stale-tip": a topic that repeats the verb says it once
+        while words and words[0] == verb:
+            words = words[1:]
+    return _fit(verb, words, cap)
 
 
 def iso_clock(iso):

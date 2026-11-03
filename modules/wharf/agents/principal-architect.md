@@ -251,10 +251,17 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
   Every id is defined on a line or table row that starts with it.
 - **Goals:** one row per goal with today's measured value, a target, and the verb or script that
   measures it, and when; a goal with no check it can run is not a goal.
-- **Steps**, one line each, sized for one `sr-worker` session, in build order, a probe a
-  recommendation waits on first: `- **S3 — <what>** · session \`<tier>\` | project \`<name>\` |
-  human (<why>) · after: <S1, D2 | —> [· gate: <file>] · status: not started`. A step whose
-  `after:` names a D waits until it is answered.
+- **Steps**, one line each, in build order, a probe a recommendation waits on first, each sized by
+  the block rule (regatta's `docs/self-tuning-2026-10-26.md`, "Granularity"): a step is the longest
+  run of consecutive work inside 300–999 expected code lines (tests count; docs and data do not),
+  one module's suite and one `sr-worker` run (under 4 h and 200k context), cut at any owner answer,
+  live deploy or `autofinish_exclude` path, each of
+  which ends a step; under 300, merge it with a neighbour; over 1,000, split it. A step that writes
+  no code (a `human` step, a sounding's test) stands alone at `lines: 0`. The window is a pin trim
+  re-reads, moved only by a merge. Each step line carries its expected code lines:
+  `- **S3 — <what>** · session \`<tier>\` | project \`<name>\` | human (<why>) · after: <S1, D2 | —>
+  [· gate: <file>] · lines: <n> · status: not started`. A step whose `after:` names a D waits until
+  it is answered; wharf-runs' `bin/wharf check <doc>` lists each step's size and warns on one past 1,000.
 - **Components:** the options table per decision on the fixed axes (attention per shipped
   outcome, cost in plan usage and money, what breaks, how reversed, hard limits), at least three
   options, one that builds nothing and one that uses what exists, the recommendation marked. The

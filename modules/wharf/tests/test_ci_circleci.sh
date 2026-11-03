@@ -45,19 +45,54 @@ class H(http.server.BaseHTTPRequestHandler):
         self.note(body)
         if self.path.endswith("/pipeline/run"):
             return self.reply(201, {"id": PID, "number": 42, "state": "created"})
+        if self.path == "/api/v2/workflow/wf-1/rerun":
+            post = state().get("post")
+            if post == "no-id":
+                return self.reply(202, {"message": "Accepted."})
+            if post and post != "unlisted":
+                return self.reply(post, {"message": "Busy"})
+            if not post:
+                # listed at once here; "unlisted" keeps it off the list, as the 202 may come before it is
+                st = state(); st["rerun"] = "running"
+                json.dump(st, open(os.path.join(D, "state.json"), "w"))
+            return self.reply(202, {"workflow_id": "wf-2"})
         self.reply(404, {"message": "Not found"})
     def do_GET(self):
         self.note()
         p, s, port = self.path.split("?")[0], state(), self.server.server_address[1]
         if self.headers.get("Circle-Token") is None and p.startswith(("/api/", "/art/", "/raw/")):
             return self.reply(401, {"message": "You must log in first."})
+        if p == "/api/v2/pipeline/%s" % PID:
+            return self.reply(200, {"id": PID, "number": 42, "vcs": {"branch": s.get("branch", "claude/x/2026-10-26-t")}})
+        if p.endswith("/pipeline/%s/workflow" % PID) and s.get("listfail") and s.get("rerun"):
+            return self.reply(404, {"message": "Not found"})
         if p.endswith("/pipeline/42"):
             return self.reply(200, {"id": PID, "number": 42})
         if p.endswith("/pipeline/%s/workflow" % PID):
             if s.get("page2") and "page-token" not in self.path:
                 return self.reply(200, {"items": [], "next_page_token": "p2"})
-            return self.reply(200, {"items": [{"id": "wf-1", "name": "linux", "status": s["wf"]}] if s["wf"] else [],
+            one = {"id": "wf-1", "name": "linux", "status": s["wf"], "created_at": "2026-10-31T10:00:00Z"}
+            two = {"id": "wf-2", "name": "linux", "status": s.get("rerun"),
+                   "created_at": s.get("rerun_at", "2026-10-31T11:00:00Z")}
+            # newest first, as the live list held a rerun beside its original (2026-10-31)
+            return self.reply(200, {"items": ([two] if s.get("rerun") else []) + ([one] if s["wf"] else []),
                                     "next_page_token": None})
+        if p.startswith("/api/v2/project/") and p.endswith("/job/7"):
+            return self.reply(200, {"number": 7, "name": "linux", "status": s["job"],
+                                    "latest_workflow": {"id": "wf-1", "name": "linux"}})
+        if p.startswith("/api/v2/project/") and p.endswith("/job/9"):
+            return self.reply(200, {"number": 9, "name": "linux", "status": s["rerun"],
+                                    "latest_workflow": {"id": "wf-2", "name": "linux"}})
+        if p == "/api/v2/workflow/wf-2":
+            return self.reply(200, {"id": "wf-2", "name": "linux", "status": s["rerun"], "pipeline_id": PID,
+                                    "pipeline_number": 42, "created_at": s.get("rerun_at", "2026-10-31T11:00:00Z")})
+        if p.startswith("/api/v2/project/") and p.endswith("/job/8"):
+            return self.reply(200, {"number": 8, "name": "orphan", "status": "failed"})
+        if p == "/api/v2/workflow/wf-1":
+            return self.reply(200, {"id": "wf-1", "name": "linux", "status": s["wf"], "pipeline_id": PID,
+                                    "pipeline_number": 42, "created_at": "2026-10-31T10:00:00Z"})
+        if p.endswith("/workflow/wf-2/job"):
+            return self.reply(200, {"items": [{"job_number": 9, "name": "linux", "status": s["rerun"]}], "next_page_token": None})
         if p.endswith("/workflow/wf-1/job"):
             return self.reply(200, {"items": [{"job_number": 7, "name": "linux", "status": s["job"]}], "next_page_token": None})
         if p.startswith("/api/v1.1/project/") and p.endswith("/7"):
@@ -204,6 +239,111 @@ out=$("$CC" "$T/wt" run --param linux=true --out "$T/r" --every 0 2>&1); rc=$?
 check "$rc" "0" "run: exit 0 on success"
 check "$(ls "$T/r/7")" "artifacts
 steps" "  each job's steps and artifacts under its number"
+
+echo "== rerun"
+state '{"wf": "failed", "job": "failed"}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "0" "rerun a failed job's workflow: exit 0"
+has "$out" "workflow linux wf-1 rerun from failed: wf-2 (pipeline 42)" "  names the workflow, the new one and the pipeline wait takes"
+has "$(log)" "GET /api/v2/project/circleci/ORG/PROJ/job/7 token=yes" "  the job read by number, under the slug"
+has "$(log)" 'POST /api/v2/workflow/wf-1/rerun token=yes {"from_failed": true}' "  the workflow rerun from failed, with the token"
+check "$(log | grep -c 'POST /api/v2/workflow/wf-1/rerun')" "1" "  POSTed once"
+hasnt "$out" "not listed" "  and read the rerun back on the pipeline's list"
+state '{"wf": "failed", "job": "failed", "post": "unlisted"}'
+: > "$T/api/log"
+out=$(CIRCLECI_LISTED_WAIT=1 "$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "0" "a rerun the list does not show yet: still exit 0, it started"
+has "$out" "wf-2 is not listed in its pipeline yet" "  saying a wait before it is reads the original"
+check "$(log | grep -c 'POST /api/v2/workflow/wf-1/rerun')" "1" "  POSTed once, polled the list only"
+state '{"wf": "failed", "job": "failed", "listfail": true}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "0" "a rerun whose read-back fails: still exit 0, it started"
+has "$out" "could not read the pipeline's list back" "  saying a wait may read the original"
+state '{"wf": "failed", "job": "failed", "branch": "main"}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "2" "a job whose pipeline ran on another branch: refused (job numbers are per project)"
+has "$out" "job 7 in circleci/ORG/PROJ ran on main, not claude/x/2026-10-26-t: pass --branch main" "  naming both and the way through"
+hasnt "$(log)" "POST" "  nothing POSTed"
+out=$("$CC" "$T/wt" rerun 7 --branch main 2>&1); rc=$?
+check "$rc" "0" "  --branch main: rerun"
+for v in nan 30s -1; do
+  : > "$T/api/log"
+  out=$(CIRCLECI_LISTED_WAIT=$v "$CC" "$T/wt" rerun 7 2>&1); rc=$?
+  check "$rc" "2" "CIRCLECI_LISTED_WAIT=$v: refused before any request"
+  check "$(cat "$T/api/log")" "" "  nothing asked of the API"
+done
+state '{"wf": "failed", "job": "failed", "rerun": "failed"}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 9 2>&1); rc=$?
+check "$rc" "2" "the rerun's own job: refused, one rerun per pipeline's workflow"
+has "$out" "workflow linux wf-2 is a rerun of wf-1 already" "  saying so"
+hasnt "$(log)" "POST" "  nothing POSTed"
+state '{"wf": "failed", "job": "failed", "rerun": "success", "rerun_at": "2026-10-31T10:00:00.500Z"}'
+"$CC" "$T/wt" wait 42 --every 1 >/dev/null 2>&1; rc=$?
+check "$rc" "0" "wait: a rerun half a second after its original is newer (times parsed, not compared as text)"
+state '{"wf": "failed", "job": "failed", "rerun": "running"}'
+"$CC" "$T/wt" wait 42 --every 1 --timeout 1 >/dev/null 2>&1; rc=$?
+check "$rc" "3" "wait: a failed original beside a running rerun keeps waiting"
+state '{"wf": "failed", "job": "failed", "post": 503}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "2" "a rerun POST answered 503: refused"
+has "$out" "503" "  saying so"
+has "$out" "it may have started: read \`jobs 42\` before any retry" "  and that it may have started"
+check "$(log | grep -c 'POST /api/v2/workflow/wf-1/rerun')" "1" "  and not retried: a transient failure may have started it"
+state '{"wf": "failed", "job": "failed", "post": "no-id"}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "2" "a rerun answered without a workflow id: refused"
+has "$out" "the rerun answered without a workflow id" "  saying so"
+for st in running success; do
+  state "{\"wf\": \"failed\", \"job\": \"failed\", \"rerun\": \"$st\"}"
+  : > "$T/api/log"
+  out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+  check "$rc" "2" "a rerun already there, $st: refused"
+  has "$out" "workflow linux wf-1 was rerun already: wf-2 is $st" "  naming it"
+  hasnt "$(log)" "POST" "  nothing POSTed"
+done
+for st in canceled not_run unauthorized; do
+  state "{\"wf\": \"$st\", \"job\": \"failed\"}"
+  : > "$T/api/log"
+  out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+  check "$rc" "2" "a workflow that ended $st: refused"
+  has "$out" "workflow linux is $st: nothing failed to rerun" "  saying so"
+  hasnt "$(log)" "POST" "  nothing POSTed"
+done
+state '{"wf": "error", "job": "failed"}'
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "0" "a workflow that ended in error: rerun"
+state '{"wf": "failed", "job": "failed", "rerun": "success"}'
+out=$("$CC" "$T/wt" wait 42 --every 1 2>&1); rc=$?
+check "$rc" "0" "wait: a failed original beside its green rerun exits 0"
+has "$out" "workflow linux: failed (replaced by its rerun)" "  the original marked as replaced"
+has "$out" "workflow linux: success
+" "  the rerun not"
+state '{"wf": "failed", "job": "failed", "rerun": "failed"}'
+"$CC" "$T/wt" wait 42 --every 1 >/dev/null 2>&1; rc=$?
+check "$rc" "1" "wait: a rerun that failed too exits 1"
+state '{"wf": "running", "job": "failed"}'
+: > "$T/api/log"
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "2" "a workflow still running: refused"
+has "$out" "workflow linux is running: a rerun waits until it ends" "  saying so"
+hasnt "$(log)" "POST" "  nothing POSTed"
+state '{"wf": "success", "job": "success"}'
+out=$("$CC" "$T/wt" rerun 7 2>&1); rc=$?
+check "$rc" "2" "a workflow that succeeded: refused, nothing failed to rerun"
+out=$("$CC" "$T/wt" rerun 8 2>&1); rc=$?
+check "$rc" "2" "a job with no workflow in the answer: refused"
+has "$out" "job 8: CircleCI's answer names no workflow" "  saying so"
+out=$("$CC" "$T/wt" rerun 2>&1); rc=$?
+check "$rc" "2" "rerun without a job: exit 2"
+out=$("$CC" "$T/wt" rerun latest 2>&1); rc=$?
+check "$rc" "2" "rerun of a job that is no number: exit 2"
+hasnt "$(log)" "POST" "  and none of the refusals POSTed"
 
 echo "== refusals"
 out=$("$CC" "$T/wt" steps 7 2>&1); rc=$?

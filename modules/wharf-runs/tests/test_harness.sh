@@ -6,28 +6,37 @@
 # V1 run, V2 (the next turn) and V5 stop (B5 part 2) of all three adapters against stand-ins on PATH: a
 # `dispatch` that writes run records, an `orca` that answers in the shapes Orca 1.4.225 printed on
 # 2026-10-14 and makes real git worktrees, a `codex` that prints `exec --json` events. No real
-# agent is started. Last, on a Mac with `claude`: the real list against `claude agents --json`.
+# agent is started. Codex's research mode (principal tier S3): its profile, --review, the timeout, the
+# refusals judged by --repo, the unattended bound and dispatch-rc's count of a running one. Last, on a Mac with `claude`: the real list against `claude agents --json`.
 #   bash modules/wharf-runs/tests/test_harness.sh
 set -u
-unset CLAUDE_UNATTENDED REGATTA_UNATTENDED   # an unattended /finish runs this check: the cases are an attended caller unless they say
+# an unattended /finish runs this check: the cases are an attended caller unless they say — and harness's
+# unattended() reads every marker (the core's unattended_caller; the council's second landing review, finding 12)
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED AUTOFINISH_CALLER_UNATTENDED DISPATCH_DEPTH DISPATCH_MAX_DEPTH
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 T=$(mktemp -d); T=$(cd "$T" && pwd -P)
+# F4's start probe reads every process of this user (finding 1): a stand-in names none (fence.sh has the live cases)
+: > "$T/holders-none"; export REGATTA_FENCE_HOLDERS="$T/holders-none"
 PIDS=()
 trap 'kill ${PIDS[@]+"${PIDS[@]}"} $(cat "$T/stub.pids" 2>/dev/null) 2>/dev/null; rm -rf "$T"' EXIT
 fails=0
+# a recursive delete under HOME goes through here: only under the suite's own $T (the core's home_rm lint)
+rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; fails=$((fails+1)); fi; }
+hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: has [$2]"; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 
 REAL_HOME=$HOME
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
 export HOME="$T/home" HARNESS_HOST=laptop
+HD="$T/home"   # the suite's HOME, by a name the publish gate reads as no home path (finding 6: never a bare HOME)
 unset HARNESS_PEER_BUILDBOX HARNESS_SSH HARNESS_LAUNCHER CLAUDE_CONFIG_DIR CODEX_HOME
-mkdir -p "$HOME/.claude/sessions" "$HOME/.claude/projects" "$HOME/Library/Logs/claude-weekly/run-seed-runs"
+mkdir -p "$HD/.claude/sessions" "$HD/.claude/projects" "$HD/Library/Logs/claude-weekly/run-seed-runs"
 # the stand-ins (written below) answer every orca, codex and dispatch call, from the first list on:
 # the real Orca app is never asked, and ELECTRON_RUN_AS_NODE=1, as a VS Code session has it, must be
 # cleared before each orca call (lessons/claude-code.md)
 export HARNESS_ORCA="$T/orca" STUB_ORCA_STATE="$T/orca.state" STUB_ORCA_CALLS="$T/orca.calls" STUB_ORCA_WS="$T/orca-ws" \
-       HARNESS_CODEX="$T/codex" STUB_CODEX_CALLS="$T/codex.calls" HARNESS_DISPATCH="$T/dispatch" \
+       HARNESS_CODEX="$T/cbin/codex" STUB_CODEX_CALLS="$T/codex.calls" HARNESS_DISPATCH="$T/dispatch" \
        STUB_DISPATCH_CALLS="$T/dispatch.calls" STUB_PIDS="$T/stub.pids" HARNESS_RUNS_DIR="$T/hruns" \
        HARNESS_LOG_DIR="$T/hlogs" HARNESS_START_WAIT=8 ELECTRON_RUN_AS_NODE=1
 mkdir -p "$STUB_ORCA_WS"
@@ -127,13 +136,29 @@ if cmd == "terminal send":
     out({"code": "terminal_unsupported_for_agent_session", "message": "is an agent session, not a terminal"}, ok=False)
 out({"code": "stub", "message": "the stub has no %s" % cmd}, ok=False)
 PY
-cat > "$T/codex" <<'SH'
+# in a folder of its own: research mode's seatbelt reads the CLI's install folder, and $T holds the suite's HOME
+mkdir -p "$T/cbin"; cat > "$T/cbin/codex" <<'SH'
 #!/bin/sh
-# codex exec --json, as OpenAI documents its events; the prompt arrives on stdin ("-")
-echo "codex $*" >> "$STUB_CODEX_CALLS"
-echo "stdin: $(cat)" >> "$STUB_CODEX_CALLS"
+# codex exec --json, as OpenAI documents its events; the prompt arrives on stdin ("-"). Research mode starts it
+# under the seatbelt, where $STUB_CODEX_CALLS (outside its box) is refused: what it was given goes into its own
+# events as a {"type": "stub"} line too. The listing research mode reads first: the features (a `plugin list` is
+# no longer asked; one would be written down). STUB_CODEX_VENDOR: its first request to chatgpt.com through the proxy,
+# as codex makes it (F7 withdraws the box's auth.json there); STUB_CODEX_CMD: a command item, codex's first tool call.
+case "$1 $2" in
+  "plugin list") echo "codex plugin list" >> "$STUB_CODEX_CALLS"; exit 0;;
+  "features list") [ -n "${STUB_LOCKDIR:-}" ] && { [ -d "$STUB_LOCKDIR" ] && echo held || echo free; } >> "$STUB_LOCKLOG"
+                   cat "$STUB_FEATURES"; exit 0;;
+esac
+in=$(cat)
+[ -n "${STUB_CODEX_VENDOR:-}" ] && python3 -c 'import os, socket
+h, p = os.environ["HTTPS_PROXY"].split("//")[1].rsplit(":", 1)
+s = socket.create_connection((h, int(p)), timeout=5); s.sendall(b"CONNECT chatgpt.com:443 HTTP/1.1\r\n\r\n"); s.recv(200); s.close()' 2>/dev/null
 # what the child was handed (vendor-fence): the marker, no Claude session, its own TMPDIR
-echo "env: RU=${REGATTA_UNATTENDED:-unset} CU=${CLAUDE_UNATTENDED:-unset} SID=${CLAUDE_CODE_SESSION_ID:-unset} PH=${PLAN_HARNESS:-unset} TMP=${TMPDIR:-unset}" >> "$STUB_CODEX_CALLS"
+[ -n "${STUB_CODEX_KID:-}" ] && { sleep 60 & echo $! > kid.pid; }   # left running by the arm's shell (round 3)
+( echo "codex $*" >> "$STUB_CODEX_CALLS"; echo "stdin: $in" >> "$STUB_CODEX_CALLS"
+  echo "env: RU=${REGATTA_UNATTENDED:-unset} CU=${CLAUDE_UNATTENDED:-unset} SID=${CLAUDE_CODE_SESSION_ID:-unset} PH=${PLAN_HARNESS:-unset} TMP=${TMPDIR:-unset}" >> "$STUB_CODEX_CALLS" ) 2>/dev/null
+python3 -c 'import json, os, sys; print(json.dumps({"type": "stub", "argv": sys.argv[1], "stdin": sys.argv[2], "cwd": os.getcwd(),
+  "env": {k: os.environ.get(k) for k in ("CODEX_HOME", "HOME", "HTTPS_PROXY")}, "names": sorted(os.environ)}))' "$*" "$in"
 echo '{"type":"thread.started","thread_id":"'"${STUB_CODEX_THREAD:-th-000001}"'"}'
 echo '{"type":"turn.started"}'
 if [ -n "${STUB_CODEX_RATE:-}" ]; then
@@ -141,6 +166,7 @@ if [ -n "${STUB_CODEX_RATE:-}" ]; then
 fi
 # a TERM waits for the sleep in hand before its trap runs: 0.2 s steps, not 1 s, as test_dispatch's stub
 if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; while :; do sleep 0.2; done; fi
+[ -n "${STUB_CODEX_CMD:-}" ] && echo '{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","exit_code":0}}'
 echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"DONE"}}'
 echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 SH
@@ -156,6 +182,8 @@ if a[0] == "--slots":   # the run cap a non-Claude start asks (vendor-fence): ST
 runs =os.path.join(os.environ["HOME"], "Library", "Logs", "claude-weekly", "run-seed-runs")
 lstart = lambda pid: " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                                              env=dict(os.environ, TZ="UTC", LC_ALL="C")).stdout.split())
+if a and a[0] == "--cap":   # bin/dispatch's cap alone (research mode asks it unattended)
+    print(os.environ.get("STUB_DISPATCH_CAP") or "99"); sys.exit(0)
 if os.environ.get("STUB_DISPATCH_FAIL"):
     print("FAILED: %s" % os.environ["STUB_DISPATCH_FAIL"]); sys.exit(1)
 if a[0] == "--start":
@@ -187,7 +215,7 @@ if a[0] == "--end":
     print("no live run of %s" % a[1]); sys.exit(1)
 print("dispatch: through launchd, in about 2 min — run here, it would die with this shell"); sys.exit(0)
 PY
-chmod +x "$T/orca" "$T/codex" "$T/dispatch"
+chmod +x "$T/orca" "$T/cbin/codex" "$T/dispatch"
 
 # one live process per registry entry and live run: `sleep`s, so pid and start time are real
 sleeper() { sleep 600 & PIDS+=($!); disown $!; }   # disowned: no "Terminated" lines at the end
@@ -197,7 +225,7 @@ P=$(printf '%s,' "${PIDS[@]}")
 REPO="$T/repo"; git init -q "$REPO"; git -C "$REPO" checkout -q -b claude/laptop/2026-10-14-fixture
 printf -- '- physical: none\n' > "$REPO/AGENTS.md"   # bin/harness run's rule, as dispatch's
 
-python3 - "$HOME" "$P" "$DEAD" "$REPO" <<'PY'
+python3 - "$HD" "$P" "$DEAD" "$REPO" <<'PY'
 import json, os, re, subprocess, sys, time
 home, pids, dead, repo = sys.argv[1], [int(p) for p in sys.argv[2].split(",") if p], int(sys.argv[3]), sys.argv[4]
 def lstart(pid):
@@ -343,6 +371,24 @@ PY
 }
 check "$(b1 s-busy 1)" "working True True True False float" "status(): live, its transcript read, times as numbers"
 check "$(b1 s-limit 0)" "idle True False False False float" "status(read_reply=False): the transcript never opened"
+
+echo "last_reply: Claude Code's unflagged No response requested. read past (task-shape S3)"
+lr() { python3 - "$B/harness_adapters/claude_code.py" "$1" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("ad", sys.argv[1])
+ad = importlib.util.module_from_spec(importlib.util.spec_from_loader("ad", loader)); loader.exec_module(ad)
+say = lambda t, model="claude-opus-5-5", **kw: dict(type="assistant", message={"model": model, "content": [{"type": "text", "text": t}]}, **kw)
+nrr = say("No response requested.", model="<synthetic>")
+err = say("API Error: Connection dropped", model="<synthetic>", isApiErrorMessage=True)
+rows = {"plain": [say("hand over"), nrr], "error": [say("hand over"), err, nrr],
+        "nulltext": [say("hand over"), dict(type="assistant", message={"model": "x", "content": [{"type": "text", "text": None}]})]}[sys.argv[2]]
+r = ad.last_reply("s-x", records=rows)
+print("%s|%s" % (r["text"], r["api_error"]))
+PY
+}
+check "$(lr plain)" "hand over|False" "a reply then that entry: the reply, no API error"
+check "$(lr error)" "API Error: Connection dropped|True" "an API error then that entry: the error's words, still flagged (the S3 landing review)"
+check "$(lr nulltext)" "hand over|False" "a text block whose text is null: read as empty, the reply before kept"
 check "$(b1 s-e-idle 1)" "completed False False False False float" "status() of an ended run: its end, no process"
 check "$(b1 s-unknown 1)" "completed False False False False NoneType" "status() of an unknown id: completed, nothing read (B1's)"
 check "$(cd / && HARNESS_LAUNCHER=/nonexistent b1 stdin)" "14 working" "as source over stdin with no dispatch-rc: the registry alone answers (alive only, so the reused pid too)"
@@ -429,7 +475,7 @@ STUB_DISPATCH_FAIL="3 other runs are busy" H run --prompt x --cwd "$T/projects/s
 check "$?" 1 "dispatch says FAILED: exit 1"
 has "$T/err" "3 other runs are busy" "  with dispatch's own line"
 H run --branch claude/laptop/2026-10-14-seeded --repo "$REPO" --on buildbox --json > "$T/seed.json" 2>"$T/err"; check "$?" 0 "--branch: a seeded run"
-has "$STUB_DISPATCH_CALLS" "claude/laptop/2026-10-14-seeded --repo $(cd "$REPO" && pwd -P) --on buildbox" "  is dispatch BRANCH --repo --on, as a person types it"
+has "$STUB_DISPATCH_CALLS" "claude/laptop/2026-10-14-seeded --repo $(cd "$REPO" && pwd -P) --pin buildbox" "  is dispatch BRANCH --repo --pin: the record names that machine, so a pin (dispatch-queue S12: --on is a preference)"
 check "$(jget "$T/seed.json" '(d["state"], d["session_id"], d["title"], d["machine"])')" "('submitted', None, 'seeded', 'buildbox')" \
       "  submitted, no id until it fires (status finds it by topic), on the host named"
 H run --branch claude/laptop/2026-10-14-seeded --repo "$REPO" --on here --json > "$T/seedh.json" 2>/dev/null
@@ -493,7 +539,7 @@ H status "$DID" --json > "$T/os.json"; check "$(jget "$T/os.json" '(d["state"], 
   "('working', '$TODAY-probe', 'claude', 'opus')" "status by dispatch id: working, the agent and model from worker-show"
 check "$(H status "$TODAY-probe" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')" "$DID" "status by the branch's last part"
 # its claude, as Claude Code's registry showed the probe's: parked on a permission prompt
-sleeper; python3 - "$HOME" "${PIDS[${#PIDS[@]}-1]}" "$OWT" <<'PY'
+sleeper; python3 - "$HD" "${PIDS[${#PIDS[@]}-1]}" "$OWT" <<'PY'
 import json, os, subprocess, sys
 home, pid, cwd = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 ps = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=dict(os.environ, TZ="UTC", LC_ALL="C")).stdout.split())
@@ -699,7 +745,7 @@ export HARNESS_ORCA_SETTINGS="$T/orca-settings.json"
 HC run --harness codex --runner orca --repo "$T/scratch" --name cxo --prompt x --json > "$T/cxo.json" 2>"$T/err"; check "$?" 0 "run --harness codex --runner orca (another agent's bypass flag refuses no codex worker)"
 has "$STUB_ORCA_CALLS" "terminal create --worktree id:repo-1::$STUB_ORCA_WS/$TODAY-cxo --title $TODAY-cxo --command env -u CLAUDE_CODE_SESSION_ID -u CLAUDECODE PLAN_HARNESS=codex TMPDIR=$HARNESS_CODEX_SCRATCH/codex-worker-" \
     "  a terminal of ours in the worktree: no Claude session in its env, its own TMPDIR"
-has "$STUB_ORCA_CALLS" "$T/codex --approve-for-me -C $STUB_ORCA_WS/$TODAY-cxo -c 'default_permissions=\"regatta-fence\"'" \
+has "$STUB_ORCA_CALLS" "$HARNESS_CODEX --approve-for-me -C $STUB_ORCA_WS/$TODAY-cxo -c 'default_permissions=\"regatta-fence\"'" \
     "  running codex behind the fence's permissions profile, never Orca's own launch"
 check "$(grep 'worker-start' "$STUB_ORCA_CALLS" | grep -c -- '--agent')/$(grep -c 'worker-start.*--terminal term_own_' "$STUB_ORCA_CALLS")" "0/2" \
     "  worker-start --terminal (refused once while Orca learns the agent), never --agent codex"
@@ -787,6 +833,87 @@ check "$(guarded REGATTA_UNATTENDED)" "2 ok 2 ok ok" \
   "unattended: an Orca Claude worker still refused (no cap counts it); a Codex run and an Orca codex worker pass, counted by the cap (vendor-fence, F6)"
 check "$(guarded CLAUDE_UNATTENDED)" "2 ok 2 ok ok" "  the old marker name alone: judged the same"
 
+echo "the spawn gate (confidential-reach S6's fourth landing review, item 6): a start around dispatch asks it"
+# an open repo, and a confidential scope's checkout under the projects folder the core reads (common.PROJECTS)
+S6P=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.PROJECTS)' "$B/../lib")
+git init -q "$S6P/s6node"; git init -q -b main "$T/s6open"; printf -- '- physical: none\n' > "$T/s6open/AGENTS.md"
+git -C "$T/s6open" add -A; git -C "$T/s6open" -c user.email=t@t -c user.name=t commit -qm init
+printf '{"repos": {"s6node": {}}, "scopes": {"node": {"repos": ["s6node"], "confidential": true}}}\n' > "$T/s6-reg.json"
+cat > "$T/s6guard.py" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("harness", sys.argv[1])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness", loader)); loader.exec_module(h)
+out = []
+# run --harness orca, run --harness codex, an Orca-run claude worker, retry (an Orca worker), resume of a Codex
+# run, and a claude-code run, which bin/dispatch judges itself
+for harness, req in (("orca", {}), ("codex", {}), ("claude-code", {"runner": "orca"}), ("orca", {"agent": "claude"}),
+                     ("codex", {"prompt": "next turn"}), ("claude-code", {})):
+    try:
+        h.guard(dict(req, cwd=sys.argv[2]), harness); out.append("ok")
+    except h.Failed as e:
+        out.append(str(e.code)); print(e, file=sys.stderr)
+print(" ".join(out))
+PY
+# attended callers: this suite may run inside a dispatched session, whose CLAUDE_UNATTENDED refuses every Orca start
+S6ENV=(env -u CLAUDE_UNATTENDED -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS -u CLAUDE_CODE_SESSION_ID)
+(cd "$S6P/s6node" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6guard.py" "$B/harness" "$T/s6open") > "$T/out" 2> "$T/err"
+check "$(cat "$T/out")" "2 2 2 2 2 ok" "item 6: from inside a confidential scope into an open repo, orca, codex, an Orca claude worker, a retry and a resume: refused; claude-code goes by dispatch's own gate"
+has "$T/err" "refused for good, a run out of a confidential scope with no review that vouches for what it is handed" "  in the gate's words"
+has "$T/err" "a --start from inside a confidential scope hands the run a prompt no review read" "  saying why: its prompt is unreviewed"
+(cd "$T/s6open" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6guard.py" "$B/harness" "$T/s6open") > "$T/out" 2> "$T/err"
+check "$(cat "$T/out")" "ok ok ok ok ok ok" "  the same starts from an open caller: let through"
+# the sessions folder of the suite's own login dir, as the core names it (the publish gate)
+S6SD=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.Path.home() / ".claude" / "sessions")' "$B/../lib")
+mkdir -p "$S6SD"; printf '{"pid": 99996, "sessionId": "s6-harness", "cwd": "%s", "updatedAt": 9}\n' "$S6P/s6node" > "$S6SD/99996.json"
+(cd "$T/s6open" && "${S6ENV[@]}" CLAUDE_CODE_SESSION_ID=s6-harness CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6guard.py" "$B/harness" "$T/s6open") > "$T/out" 2> "$T/err"
+check "$(cat "$T/out")" "2 2 2 2 2 ok" "  a node session's \`cd <open repo> && harness …\`: refused by its session's folder, as dispatch judges it"
+rm -f "$S6SD/99996.json"
+for v in run resume retry; do
+  check "$(sed -n "/^def cmd_$v(/,/^def /p" "$B/harness" | grep -c 'guard(')" "1" "  cmd_$v goes through guard, the gate with it"
+done
+# S6's fifth landing review, item 12: the tree judged is the one the run reads — the worktree's own HEAD, so a
+# reviewed seed with a newer unreviewed brief that origin never got is refused, where origin's ref (none) passed
+S6M="confidential:$(printf node | shasum -a 256 | cut -c1-8)"
+git -C "$T/s6open" checkout -q -b claude/laptop/2026-10-30-hx; mkdir -p "$T/s6open/docs/handoff"
+echo "# hx brief" > "$T/s6open/docs/handoff/2026-10-30-hx.md"
+printf '{"origin": "%s", "sha256": "%s", "scan": "clean", "judge": "clean"}\n' "$S6M" "$(shasum -a 256 "$T/s6open/docs/handoff/2026-10-30-hx.md" | cut -d' ' -f1)" > "$T/s6open/docs/handoff/2026-10-30-hx.review"
+echo "# a later brief, never reviewed" > "$T/s6open/docs/handoff/2026-10-31-hx.md"
+git -C "$T/s6open" add docs; git -C "$T/s6open" -c user.email=t@t -c user.name=t commit -qm "seed: hx, and a newer brief"
+cat > "$T/s6one.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("harness", sys.argv[1])
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness", loader)); loader.exec_module(h)
+print(h.spawn_refusal({"branch": sys.argv[3]} if len(sys.argv) > 3 else {}, "orca", sys.argv[2]))
+PY
+(cd "$T/s6open" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6one.py" "$B/harness" "$T/s6open" claude/laptop/2026-10-30-hx) > "$T/out" 2>&1
+has "$T/out" "its seed carries docs/handoff/2026-10-31-hx.md, newer than the brief its review vouches for" \
+  "item 12: an Orca start on its branch's worktree judges the worktree's HEAD (unpushed), not origin's ref: refused"
+git -C "$T/s6open" checkout -q main
+# the sixth landing review: a branch named that this host has neither made nor fetched judged no tree, so an open
+# caller's spawn passed (the fallback named a remote ref that is not there). Refused for now, in the waiting words
+(cd "$T/s6open" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6one.py" "$B/harness" "$T/s6open" claude/laptop/2026-10-30-nothere) > "$T/out" 2>&1
+has "$T/out" "is refused for now" "sixth review: an Orca start naming a branch this host has not got: refused for now"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words"
+printf '{"repos": {"s6node": {}}, "scopes": {"node": {"repos": ["s6node"]}}}\n' > "$T/s6-open-reg.json"
+(cd "$T/s6open" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-open-reg.json" python3 "$T/s6one.py" "$B/harness" "$T/s6open" claude/laptop/2026-10-30-nothere) > "$T/out" 2>&1
+check "$(cat "$T/out")" "None" "  with no confidential scope in the registry: nothing to judge, let through as before"
+# a copy run from its file whose core does not import refuses (dispatch does); a peer's stdin copy judges nothing
+mkdir -p "$T/hcopy/bin" "$T/hcopy/lib"; cp "$B/harness" "$T/hcopy/bin/harness"; echo 'raise ImportError("no core here")' > "$T/hcopy/lib/core_path.py"
+(cd "$S6P/s6node" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-reg.json" python3 "$T/s6one.py" "$T/hcopy/bin/harness" "$T/s6open") > "$T/out" 2>&1
+has "$T/out" "the regatta core did not load here" "  a harness whose core did not import: refused, never an ungated start (fails closed)"
+cat > "$T/s6peer.py" <<'PY'
+import sys
+g = {"__name__": "harness_peer"}
+exec(compile(open(sys.argv[1]).read(), "<stdin>", "exec"), g)   # as a peer runs it from stdin: no __file__, no core
+print(g["spawn_refusal"]({}, "orca", sys.argv[2]))
+PY
+check "$(python3 "$T/s6peer.py" "$B/harness" "$T/s6open")" "None" "  a peer's stdin copy: no core by design, nothing judged (its caller was judged on its own Mac)"
+# a refusal a wait fixes (a torn registry) says the cap's waiting words, as dispatch's does (AGENTS.md's trap)
+printf '{"repos": ' > "$T/s6-torn.json"
+(cd "$S6P/s6node" && "${S6ENV[@]}" CLAUDE_REPOS_JSON="$T/s6-torn.json" python3 "$T/s6one.py" "$B/harness" "$T/s6open") > "$T/out" 2>&1
+has "$T/out" "is refused for now" "  a torn registry from inside the node: refused for now"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words, so a managed run ending on it is no unrelayed ask"
+
 echo "orca --account: a Claude worker on a login Orca cannot select, in a terminal of ours (docs/orca-accounts-2026-10-16.md)"
 # a stand-in bin/account: pick → acct-b on its own dir; limits → the row asked for; every call logged
 cat > "$T/account" <<'PY'
@@ -849,12 +976,507 @@ check "$(tail -1 "$STUB_ORCA_CALLS" | cut -d' ' -f1-2)" "terminal close" "  and 
 # bin/harness loads an adapter with a bare __file__, so orca.py's own path resolves against the cwd:
 # a checkout whose bin/account is the stub, run from / with no HARNESS_ACCOUNT, finds it through ctx.coding
 mkdir -p "$T/copy/bin" && cp -R "$B/harness" "$B/harness_adapters" "$T/copy/bin/" && cp "$T/account" "$T/copy/bin/account"
+# with its lib/ and the core named (REGATTA_HOME): a copy whose core does not import refuses every Orca start
+# (the spawn gate fails closed, S6's fifth landing review), which is not what this case is about
+cp -R "$B/../lib" "$T/copy/lib"
 : > "$STUB_ACCOUNT_CALLS"
-(cd / && env -u HARNESS_ACCOUNT python3 "$T/copy/bin/harness" run --harness orca --repo "$T/scratch" --name acct11 --prompt x \
+(cd / && env -u HARNESS_ACCOUNT REGATTA_HOME="$(cd "$B/../../.." && pwd)" python3 "$T/copy/bin/harness" run --harness orca --repo "$T/scratch" --name acct11 --prompt x \
   --account auto > /dev/null 2>"$T/err")
 check "$?" 0 "--account auto from another cwd, bin/account by the checkout ctx names"
 has "$STUB_ACCOUNT_CALLS" "pick --repo $T/scratch --json" "  the checkout's own bin/account answered"
 unset HARNESS_ACCOUNT STUB_ACCOUNT_CALLS HARNESS_ORCA_START_WAIT HARNESS_ORCA_OWN
+
+check "$(python3 - "$B/harness" "$T" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+l = importlib.machinery.SourceFileLoader("hx", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hx", l)); l.exec_module(m)
+open(sys.argv[2] + "/cx-bin", "wb").write(b"\xcf\xfa\xed\xfe")
+os.environ["HARNESS_CODEX"] = sys.argv[2] + "/cx-bin"; a = m.stand_in_codex()
+os.environ["HARNESS_CODEX"] = sys.argv[2] + "/cbin/codex"; b = m.stand_in_codex()
+open(sys.argv[2] + "/cx-node", "w").write("#!/usr/bin/env node\n")
+os.environ["HARNESS_CODEX"] = sys.argv[2] + "/cx-node"; print(a, b, m.stand_in_codex())
+PY
+)" "False True False" "stand_in_codex(): a copy of a compiled codex is the real one, as is npm's node launcher; the suite's script is a stand-in (rounds 2, 5)"
+env -i PATH="$PATH" HOME="$HOME" REGATTA_FENCE_CLEAN=1 OPENAI_API_KEY=x python3 "$B/harness" run --harness codex --mode research --prompt x \
+  > /dev/null 2>"$T/rx.err"
+check "$?/$(grep -c '^harness: refused: .*OPENAI_API_KEY' "$T/rx.err")/$(grep -c Traceback "$T/rx.err")" "2/1/0" \
+  "research mode whose one clean re-exec still holds a credential-named variable: refused, exit 2, never a traceback (round 5b)"
+env -i PATH="$PATH" HOME="$HOME" REGATTA_FENCE_CLEAN=1 OPENAI_API_KEY=x python3 "$B/harness" --mode x research > /dev/null 2>"$T/rx2.err"
+check "$(grep -c -e '^harness: refused' -e Traceback "$T/rx2.err")" 0 "  'research' as another flag's word: no re-exec judged (round 5b)"
+env -i PATH="$PATH" HOME="$HOME" REGATTA_FENCE_CLEAN=1 OPENAI_API_KEY=x python3 "$B/harness" run --harness codex --mode x --mode research --prompt x \
+  > /dev/null 2>"$T/rx3.err"
+check "$?/$(grep -c '^harness: refused: .*OPENAI_API_KEY' "$T/rx3.err")" "2/1" \
+  "  --mode given twice, research last: judged as parse() reads it, the re-exec's refusal included (round 6)"
+check "$(python3 - "$B/harness_adapters/codex.py" "$T/detach.out" <<'PY'
+import importlib.machinery, importlib.util, os, socket, stat, sys, time
+l = importlib.machinery.SourceFileLoader("cx", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cx", l)); l.exec_module(m)
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1); fd = srv.fileno()
+def fn():
+    try:
+        r = "socket" if stat.S_ISSOCK(os.fstat(fd).st_mode) else "none"
+    except OSError:
+        r = "none"
+    open(sys.argv[2], "w").write(r)
+m._detach(fn, close=[fd])
+for _ in range(50):
+    if os.path.exists(sys.argv[2]) and open(sys.argv[2]).read():
+        break
+    time.sleep(0.1)
+print(open(sys.argv[2]).read())
+PY
+)" "none" "_detach(close=…): the detached wrapper holds no copy of the proxy's socket (round 6)"
+echo "exit_report: no git in a research run's copy (round 2: a planted core.fsmonitor ran as the owner)"
+git init -q "$T/fsm" && git -C "$T/fsm" config core.fsmonitor "touch $T/fsm-ran; false"
+check "$(python3 - "$B/harness" "$T/fsm" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("hx", sys.argv[1]); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hx", l)); l.exec_module(m)
+r = m.exit_report({"cwd": sys.argv[2], "native": {"mode": "research"}})
+m.git_out(sys.argv[2], "status", "--porcelain")
+print(r["files_changed"])
+PY
+)/$([ -e "$T/fsm-ran" ] && echo ran || echo never)" "None/never" "  a research record's cwd is never read by git, and no repo's fsmonitor runs from git_out"
+echo "codex research mode: one fenced, read-only turn over a copy, judged by --repo and the copy (principal tier S3)"
+# a dot-free scratch root of its own: the copy's path is a key of codex's profile, split at dots
+RS=$(mktemp -d "${TMPDIR:-/tmp}/harness-research-XXXXXX"); RS=$(cd "$RS" && pwd -P)
+# a stand-in bin/account for the vendor fence research mode asks since the fourth landing review (finding 2): the
+# login it names owns the repo, unless STUB_RESEARCH_FOREIGN
+cat > "$RS/account" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1] == "pick":
+    print(json.dumps({"account": "codex-r", "provider": "codex", "env": {}, "skipped": [],
+                      "owns": not os.environ.get("STUB_RESEARCH_FOREIGN")}))
+PY
+chmod +x "$RS/account"; export HARNESS_ACCOUNT="$RS/account"
+# a copy as wharf's council lays one out: <run>/arms/<arm>/copy, the run dir 0700 and marked
+RR="$RS/run"; CP="$RR/arms/a/box/copy"; mkdir -p "$CP"; chmod 700 "$RR"; : > "$RR/.council-run"
+# the box's scratch CODEX_HOME, as council's fence.arm_home makes it: auth.json alone
+mkhome() { mkdir -p "$1/home"/.codex && printf '{}' > "$1/home"/.codex/auth.json; }
+BH=box/home   # an arm's scratch HOME, by a name the publish gate reads as no home path
+mkhome "$RR/arms/a/box"
+export STUB_FEATURES="$RS/features.txt"
+python3 -c 'import sys
+from importlib.machinery import SourceFileLoader
+f = SourceFileLoader("fence", sys.argv[1]).load_module()
+open(sys.argv[2], "w").write("".join("%-40s stable             true\n" % n for n in sorted(f.CODEX_FEATURES)))' \
+  "$B/../../regatta/hooks/fence.py" "$STUB_FEATURES"
+nrec() { ls "$HARNESS_RUNS_DIR"/codex-*.json 2>/dev/null | wc -l | tr -d ' '; }
+lastev() { ls -t "$HARNESS_RUNS_DIR"/codex-*.jsonl | head -1; }
+stubev() { python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    try: e = json.loads(l)
+    except ValueError: continue
+    if isinstance(e, dict) and e.get("type") == "stub": print(eval(sys.argv[2], {"d": e})); break' "$(lastev)" "$1"; }
+HC="$HD/copy"; mkdir -p "$RS/dot.ted" "$HC"; echo x > "$CP/AGENTS.md"
+CXA="$B/harness_adapters/codex.py"
+cxa() {   # cxa <python using module m> [arg…]: the codex adapter loaded as a module, the args from sys.argv[3]
+  python3 - "$CXA" "$@" <<'PY'
+import sys, types
+m = types.ModuleType("codex_adapter"); m.__file__ = sys.argv[1]
+exec(compile(open(sys.argv[1]).read(), sys.argv[1], "exec"), m.__dict__)
+exec(sys.argv[2])
+PY
+}
+: > "$STUB_CODEX_CALLS"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt "a paper" --name rs1 --json > "$T/rs.json" 2>"$T/err"
+check "$?" 0 "a research run in a copy outside ~ and the repo: exit 0, in the foreground"
+check "$(jget "$T/rs.json" '(d["state"], d["last_message"], d["native"]["mode"], d["native"]["usage"], d["cwd"])')" \
+  "('completed', 'DONE', 'research', {'input_tokens': 1, 'output_tokens': 1}, '$CP')" "  ended when it returns: the reply, the mode, the usage, the copy as cwd"
+check "$(stubev 'd["argv"].split(" --disable ")[0]')" "exec --json --ephemeral --skip-git-repo-check -C $CP" \
+  "  codex exec in the copy, ephemeral"
+check "$(stubev '[x for x in ("--disable apps", "--disable plugins", "--disable multi_agent", "--disable hooks", "--disable shell_tool", "--dangerously-bypass-approvals-and-sandbox", "shell_environment_policy.inherit=\"core\"", "--approve-for-me", "permissions.research") if x in d["argv"]]')" \
+  "['--disable apps', '--disable plugins', '--disable multi_agent', '--disable hooks', '--dangerously-bypass-approvals-and-sandbox', 'shell_environment_policy.inherit=\"core\"']" \
+  "  the connectors, sub-agents and hooks off, its shell on, its own sandbox off (the seatbelt holds it); never --approve-for-me"
+check "$(stubev '(d["argv"].endswith(" -"), d["stdin"], d["cwd"], d["env"]["CODEX_HOME"], d["env"]["HTTPS_PROXY"].startswith("http://127.0.0.1:"))')" \
+  "(True, 'a paper', '$CP', '$RR/arms/a/$BH/.codex', True)" "  the prompt on stdin; the box's scratch CODEX_HOME; the proxy its door"
+check "$(stubev '[n for n in ("STUB_CODEX_CALLS", "HARNESS_RUNS_DIR", "GIT_CONFIG_GLOBAL", "REGATTA_CONFIG") if n in d["names"]]')" "['STUB_CODEX_CALLS', 'GIT_CONFIG_GLOBAL']" \
+  "  an allowlisted environment: the stand-in's own variables and git's pointed-away config, none of the caller's"
+check "$(wc -c < "$STUB_CODEX_CALLS" | tr -d ' ')/$([ -s "$RR/arms/a/arm.sb" ] && echo profile)" "0/profile" \
+  "  under the seatbelt: no write outside its box; the profile beside the box, the caller's"
+check "$(cxa '
+import types
+m._fence = lambda: types.SimpleNamespace(available=lambda: False)
+class Ctx:
+    def fail(self, msg, code=1): raise SystemExit("%d %s" % (code, msg))
+try:
+    m.research(Ctx(), {"cwd": "/nowhere", "prompt": "p", "timeout": 5}); print("ran")
+except SystemExit as e:
+    print(str(e)[:20])')" "2 no seatbelt here (" "  no seatbelt (off macOS): refused"
+H resume "$(jget "$T/rs.json" 'd["session_id"]')" --prompt more > /dev/null 2>"$T/err"; check "$?" 2 "  a research run is never continued"
+: > "$STUB_CODEX_CALLS"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --review main --json > "$T/rv.json" 2>"$T/err"; check "$?" 0 "--review BASE: codex exec review, no prompt needed"
+check "$(stubev 'd["argv"].endswith(" review --base main") and "--dangerously-bypass-approvals-and-sandbox" in d["argv"]')" "True" \
+  "  the fence's flags, then review --base main, no stdin dash"
+hasnt "$STUB_CODEX_CALLS" "codex plugin list" "no \`codex plugin list\` gate: the shell is the arm's, whatever the account holds (F7 fences its connectors)"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --text-only > /dev/null 2>"$T/err"; check "$?" 1 "--text-only is no flag now: no text-only road"
+has "$T/err" "unexpected '--text-only'" "  saying so"
+echo "codex research mode: F7, the login withdrawn at codex's first request to chatgpt.com"
+STUB_CODEX_VENDOR=1 STUB_CODEX_CMD=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --json > "$T/r7.json" 2>"$T/err"
+check "$?" 0 "a turn whose codex asks chatgpt.com first, then runs a command"
+check "$(jget "$T/r7.json" '(d["native"]["credential"]["withdrawn"]["ok"], d["native"]["credential"]["withdrawn"]["host"], d["native"]["credential"]["at_first_tool"])')/$([ -e "$RR/arms/a/$BH/.codex/auth.json" ] && echo there || echo gone)" \
+  "(True, 'chatgpt.com', [])/gone" "  its auth.json withdrawn at that request, before the reply; nothing of it on disk at the first command"
+check "$(jget "$T/r7.json" '([x == d["native"]["events"] for x in d["native"]["files"]].count(True), len(d["native"]["files"]))')" "(1, 4)" \
+  "  the files the turn wrote outside the arm's dir (its record, events, log, reply) named for council's scan"
+check "$(python3 -c 'import json,sys; print(["withdraw" in e for e in map(json.loads, open(sys.argv[1]))].count(True))' "$RR/arms/a/proxy.jsonl")" "1" \
+  "  the withdrawal a line of the proxy's log, beside the box"
+mkhome "$RR/arms/a/box"
+STUB_CODEX_CMD=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --json > "$T/r8.json" 2>"$T/err"
+check "$(jget "$T/r8.json" '(d["native"]["credential"]["withdrawn"], d["native"]["credential"]["at_first_tool"])')" "(None, ['auth.json'])" \
+  "  a codex that ran a command with no request to its vendor first: never withdrawn, auth.json on disk at it (council fails that arm)"
+STUB_CODEX_THREAD=th-rs-hold STUB_CODEX_HOLD=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 2 --json > "$T/rh.json" 2>"$T/err"
+check "$?" 1 "a turn past --timeout: stopped, exit 1"
+check "$(jget "$T/rh.json" '(d["state"], d["native"]["end_reason"])')/$(kill -0 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid"))' "$(jget "$T/rh.json" 'd["native"]["run"]')")" 2>/dev/null && echo alive || echo gone)" \
+  "('canceled', 'timeout after 2 s')/gone" "  canceled, saying so, its codex gone"
+check "$(cxa '
+import threading
+path = sys.argv[3]; m._save(path, {}); errs = []
+def go(i):
+    for j in range(300):
+        try:
+            m._update(path, **{"k%d" % i: j})
+        except Exception as e:
+            errs.append(repr(e)); return
+ts = [threading.Thread(target=go, args=(i,)) for i in range(4)]
+[t.start() for t in ts]; [t.join() for t in ts]
+print(len(errs), sorted(m._load(path).items()) == [("k%d" % i, 299) for i in range(4)])' "$RS/race.json")" "0 True" \
+  "  the deadline thread and the loop write one record: no shared temp file, no update lost (the landing review)"
+: > "$STUB_CODEX_CALLS"
+for c in "--mode research --cwd $CP --prompt x" \
+         "--mode research --repo $T/scratch --prompt x" \
+         "--mode research --repo $T/scratch --cwd $HC --prompt x" \
+         "--mode research --repo $T/scratch --cwd $T/scratch-wt --prompt x" \
+         "--mode research --repo $T/scratch --cwd $RS/dot.ted --prompt x" \
+         "--mode research --repo $T/projects/site --cwd $CP --prompt x" \
+         "--mode research --repo $T/live --cwd $CP --prompt x" \
+         "--mode research --repo $T/scratch --cwd $CP --prompt x --runner orca" \
+         "--mode research --repo $T/scratch --cwd $CP --prompt x --timeout 0" \
+         "--mode other --repo $T/scratch --cwd $CP --prompt x"; do
+  H run --harness codex $c > /dev/null 2>"$T/err"; check "$?" 2 "refused: $(echo "$c" | sed "s|$RS|RS|g; s|$T|T|g; s|$HOME|~|g")"
+done
+n0=$(nrec); mkdir -p "$RR/arms/b/box/copy"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/arms/b/box/copy" --prompt x > /dev/null 2>"$T/err"
+check "$?/$(nrec)" "2/$n0" "refused: a box with no scratch CODEX_HOME (codex never starts from the login's own)"; has "$T/err" "no scratch CODEX_HOME" "  saying why"
+# a folder under ~, in the home repo or in another repo is no council arm's box: the one rule over --cwd since S3 (the
+# core's fence.box_why; the ~, home-repo, other-repo and dot rules it replaced read what the seatbelt holds now)
+mkdir -p "$RS/h/copy"; git init -q -b main "$RS/homerepo"; printf -- '- physical: none\n' > "$RS/homerepo/AGENTS.md"; mkdir -p "$RS/homerepo/sub"
+git init -q -b main "$RS/other"; mkdir -p "$RS/other/sub"
+for c in "$RS/h/copy" "$RS/homerepo/sub" "$RS/other/sub"; do
+  H run --harness codex --mode research --repo "$T/scratch" --cwd "$c" --prompt x > /dev/null 2>"$T/err"
+  check "$?" 2 "refused: $(echo "$c" | sed "s|$RS|RS|g") is no council arm's box"; has "$T/err" "no council arm's copy" "  by the box rule"
+done
+git init -q -b main "$RS/conf-co"
+printf '{"repos": {"scratch": {}, "conf-co": {}}, "scopes": {"open": {"file": "o.code-workspace", "repos": ["scratch"]}, "w": {"file": "w.code-workspace", "repos": ["conf-co"], "confidential": true}}}\n' > "$RS/conf-cwd.json"
+CLAUDE_REPOS_JSON="$RS/conf-cwd.json" H run --harness codex --mode research --repo "$T/scratch" --cwd "$RS/conf-co" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a confidential checkout named as --cwd, whatever --repo says"; has "$T/err" "confidential" "  by the confidential rule, on the copy too"
+H run --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>&1; check "$?" 2 "refused: research mode with claude-code (Codex's only)"
+H run --harness codex --mode research --repo "$T/scratch" --cwd /tmp --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "refused: a shared scratch root as --cwd (no council arm's box)"
+printf '{"repos": {"scratch": {}}, "scopes": {"w": {"file": "w.code-workspace", "repos": ["scratch"], "confidential": true}}}\n' > "$RS/conf.json"
+CLAUDE_REPOS_JSON="$RS/conf.json" H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a confidential scope's repo, whoever calls"
+printf '{"repos": {' > "$RS/torn.json"
+CLAUDE_REPOS_JSON="$RS/torn.json" H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>&1
+check "$?" 2 "refused: any repo while the registry cannot be read"
+check "$(nrec)" "$n0" "  codex never ran for any of them"
+: > "$STUB_CODEX_CALLS"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "unattended, unbounded: refused"
+has "$T/err" "bounded" "  saying it must be bounded"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 3600 --council c1:arms > /dev/null 2>&1
+check "$?" 2 "  a timeout past 1800 s: refused"
+AUTOFINISH_CALLER_UNATTENDED=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c1 > /dev/null 2>"$T/err"
+check "$?" 2 "  a --council that is not RUN:VERB: refused (a peer's unattended caller too)"
+# every other Codex mode: an unattended caller may start one since vendor-fence (main's cases, below, hold the cap)
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c1:arms > /dev/null 2>&1
+check "$?" 0 "unattended with --timeout, --council RUN:VERB and a free slot: runs"
+has "$STUB_DISPATCH_CALLS" "--cap" "  this Mac's cap asked before codex starts"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c1:arms > /dev/null 2>"$T/err"
+check "$?" 2 "  the same council verb's second Codex run: refused"
+has "$T/err" "one per council verb" "  saying why"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c1:examine > /dev/null 2>&1
+check "$?" 0 "  its examine: runs (two per council run)"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c1:examine-2 > /dev/null 2>"$T/err"
+check "$?" 2 "  a third, under a fresh verb name: refused"
+has "$T/err" "its arms and one examine" "  saying why"
+n0=$(nrec)
+STUB_DISPATCH_CAP=0 CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c4:arms > /dev/null 2>"$T/err"
+check "$?" 2 "unattended with this Mac's cap full: refused before codex starts"
+has "$T/err" "the next step waits for a run to end" "  in the cap's own waiting words"
+check "$(nrec)" "$n0" "  codex never ran"
+cxa '
+import json, os, time
+d = os.environ["HARNESS_RUNS_DIR"]
+for i in range(m.UNATTENDED_PER_DAY):
+    json.dump({"mode": "research", "unattended": True, "started": time.time() - 60, "ended": time.time(), "council": "day%d:arms" % i},
+              open(os.path.join(d, "codex-20000101-000000-dd%04d-day.json" % i), "w"))'
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council c5:arms > /dev/null 2>"$T/err"
+check "$?" 2 "unattended, the day's cap of research runs reached: refused"
+has "$T/err" "in the last 24 h" "  saying why"
+has "$T/err" "the next step waits for a run to end" "  in the cap's waiting words (AGENTS.md: a new refusal a wait fixes)"
+rm -f "$HARNESS_RUNS_DIR"/codex-20000101-000000-dd*-day.json
+STUB_CODEX_THREAD=th-rs-cap STUB_CODEX_HOLD=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 8 --council c2:arms > /dev/null 2>&1 &
+RSP=$!
+n=""; for i in $(seq 1 40); do
+  n=$(python3 - "$B/dispatch-rc" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("dispatch_rc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dispatch_rc", loader)); loader.exec_module(m)
+print("%d %d %d" % (len(m.research_live()), m.counted([]), m.vendor_slots()))
+PY
+); [ "$n" = "1 1 0" ] && break; sleep 0.25; done
+check "$n" "1 1 0" "dispatch-rc's cap counts a running research run: one slot, once (vendor_slots leaves it to research_live: round 1)"
+H stop th-rs-cap > /dev/null 2>&1; wait "$RSP" 2>/dev/null
+check "$(python3 - "$B/dispatch-rc" "$HARNESS_RUNS_DIR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("dispatch_rc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dispatch_rc", loader)); loader.exec_module(m)
+m.proc_start = lambda pid: ""   # `ps -o lstart=` printing nothing for a live pid (the docstring of running())
+p = os.path.join(sys.argv[2], "codex-20000101-000000-ee0000-empty-ps.json")
+json.dump({"mode": "research", "pid": os.getpid(), "proc_start": "Thu Jan  1 00:00:00 1970"}, open(p, "w"))
+print(len([x for x in m.research_live() if x == p])); os.remove(p)
+PY
+)" "1" "  a live run whose ps prints nothing still holds its slot (running(), as a run's)"
+check "$(DISPATCH_RC_VENDORS=0 python3 - "$B/dispatch-rc" "$HARNESS_RUNS_DIR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("dispatch_rc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dispatch_rc", loader)); loader.exec_module(m)
+p = os.path.join(sys.argv[2], "codex-20000101-000000-ee0001-off.json")
+json.dump({"mode": "research", "pid": os.getpid()}, open(p, "w"))
+print(len(m.research_live())); os.remove(p)
+PY
+)" "0" "  DISPATCH_RC_VENDORS=0 counts no research run either, as vendor_slots() (the landing review)"
+check "$(REGATTA_UNATTENDED=1 DISPATCH_RC_VENDORS=0 python3 - "$B/dispatch-rc" "$HARNESS_RUNS_DIR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("dispatch_rc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dispatch_rc", loader)); loader.exec_module(m)
+p = os.path.join(sys.argv[2], "codex-20000101-000000-ee0002-off-unattended.json")
+json.dump({"mode": "research", "pid": os.getpid()}, open(p, "w"))
+print(len([x for x in m.research_live() if x == p])); os.remove(p)
+PY
+)" "1" "  but never for an unattended caller, which may inherit the switch: its run is the spend (the fix round)"
+STUB_CODEX_THREAD=th-rs-orphan STUB_CODEX_HOLD=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 2 --name orphan > /dev/null 2>&1 &
+# killed once codex runs: the gates and the probe come first (S1), so wait for its record's pid
+RSP=$!; for i in $(seq 1 60); do ls "$HARNESS_RUNS_DIR"/codex-*-orphan.json > /dev/null 2>&1 && \
+  [ -n "$(jget "$(ls -t "$HARNESS_RUNS_DIR"/codex-*-orphan.json | head -1)" 'd.get("pid") or ""')" ] && break; sleep 0.25; done
+kill -9 "$RSP" 2>/dev/null; wait "$RSP" 2>/dev/null
+OR=$(ls -t "$HARNESS_RUNS_DIR"/codex-*-orphan.json | head -1); OP=$(jget "$OR" 'd.get("pid")')
+st=alive; for i in $(seq 1 60); do kill -0 "$OP" 2>/dev/null || { st=gone; break; }; sleep 0.25; done
+check "$st/$(jget "$OR" 'd.get("end_reason")')" "gone/timeout after 2 s" "the deadline holds with its waiter killed: the wrapper ends codex itself"
+
+echo "research mode: the council's S3 one-liners (the third landing review)"
+# finding 12: a --timeout that is no finite number passes no bound
+for v in nan inf -inf; do
+  H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout "$v" > /dev/null 2>"$T/err"
+  check "$?" 2 "refused: --timeout $v"; has "$T/err" "finite" "  saying it must be finite"
+done
+# finding 11: the caller's deadline is the turn's, so the start's waits come out of the caller's bound
+DL=$(python3 -c 'import time; print("%.3f" % (time.time() + 40))')
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --deadline "$DL" --json > "$T/rd.json" 2>"$T/err"
+check "$?/$(jget "$(jget "$T/rd.json" 'd["native"]["run"]')" '"%.3f" % d["deadline"]')" "0/$DL" "--deadline: the turn's deadline is the caller's, not --timeout from harness's start"
+for v in "$(python3 -c 'import time; print(time.time() - 5)')" "$(python3 -c 'import time; print(time.time() + 600)')" nan; do
+  H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --deadline "$v" > /dev/null 2>"$T/err"
+  check "$?" 2 "  refused: a deadline passed, past --timeout, or no number"
+done
+H run --harness codex --cwd "$CW" --prompt x --deadline "$DL" > /dev/null 2>&1; check "$?" 2 "  --deadline outside research mode: refused"
+H run --harness codex --cwd "$CW" --prompt x --review main > /dev/null 2>&1; check "$?" 2 "  --review outside research mode: refused, never dropped (round 6)"
+H run --harness codex --cwd "$CW" --prompt x --council r:run > /dev/null 2>&1; check "$?" 2 "  --council too"
+# finding 8: the counts read the records by mtime, before dispatch's start lock: an old run's record never blocks
+cxa '
+import json, os, time
+p = os.path.join(os.environ["HARNESS_RUNS_DIR"], "codex-20000101-000000-ff0000-old.json")
+json.dump({"mode": "research", "council": "old1:arms", "started": time.time() - 8 * 86400}, open(p, "w"))
+os.utime(p, (time.time() - 8 * 86400,) * 2)'
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --council old1:arms > /dev/null 2>"$T/err"
+check "$?" 0 "a record older than the counts' horizon (8 days by mtime) is never read: its council verb runs"
+check "$(cxa 'print(len(m._recent(m.COUNCIL_HORIZON)) == len([1 for p, r in m._records() if r.get("mode") == "research"]) - 1, m.research_counts({"council": "old1:arms"}, False) is not None)')" "True True" \
+  "  _recent leaves it out, and the fresh run of that verb now counts"
+rm -f "$HARNESS_RUNS_DIR"/codex-20000101-000000-ff0000-old.json
+# finding 14: the deadline's mark is written only while the record has no end, under the record's lock
+check "$(cxa '
+import os
+class P:
+    def poll(self): return None
+d = sys.argv[3]; os.makedirs(d, exist_ok=True); path = os.path.join(d, "r14.json")
+m._save(path, {"ended": 1.0, "exit": 0})
+a = m._mark_ending(path, P(), "timeout after 5 s")
+m._save(path, {})
+b = m._mark_ending(path, P(), "timeout after 5 s")
+print(a, m._load(path).get("ending"), b)' "$RS/r14")" "False timeout after 5 s True" \
+  "_kill's mark: none once the wrapper wrote the end (a finished turn never reads canceled); written while codex runs"
+# finding 6: a fixture is spelled under $HD (the suite's $T/home), never a bare HOME — a block run outside the suite has the real one
+check "$(grep -c '"\$HOME"\{0,1\}/' "$0")" 0 "finding 6: no fixture path in this suite starts at a bare HOME"
+
+echo "research mode: the council's second landing review (2026-10-28)"
+# finding 5: a copy the council made, never some folder or a clone
+mkdir -p "$RS/bare/x/box/copy"; echo x > "$RS/bare/x/box/copy/AGENTS.md"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RS/bare/x/box/copy" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a copy in no council run dir (no .council-run two or three folders above its box)"; has "$T/err" "no run dir holding .council-run" "  saying why"
+mkdir -p "$RR/arms/c/copy"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/arms/c/copy" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a copy under the run dir but in no box"; has "$T/err" "no council arm's copy" "  saying why"
+mkdir -p "$RS/open/arms/a/box/copy"; : > "$RS/open/.council-run"; chmod 755 "$RS/open"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RS/open/arms/a/box/copy" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a marked run dir others can read"; has "$T/err" "not this account's alone" "  saying why"
+mkdir -p "$RR/review/box"; git clone -q "$T/scratch" "$RR/review/box/clone" 2>/dev/null
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/review/box/clone" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a folder in the review's box that is neither its copy nor its repo"; has "$T/err" "no council arm's copy" "  saying why"
+git init -q -b base "$RR/review/box/repo"; mkhome "$RR/review/box"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/review/box/repo" --prompt x > /dev/null 2>&1
+check "$?" 0 "  the review's own scratch repo runs"
+# S3: the rules box_why replaced are gone — a remote in the review's repo (F4 denies every object outside the box, and
+# no login to fetch with is in it) and a dot in the run dir's path (the old Codex profile's keys; the seatbelt quotes it)
+git -C "$RR/review/box/repo" remote add origin "$T/scratch"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/review/box/repo" --prompt x > /dev/null 2>&1
+check "$?" 0 "  with a remote too: runs (S3: no .git rule; the seatbelt holds the box)"
+DR="$RS/dot.run"; mkdir -p "$DR/arms/a/box/copy"; chmod 700 "$DR"; : > "$DR/.council-run"; mkhome "$DR/arms/a/box"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$DR/arms/a/box/copy" --prompt x > /dev/null 2>&1
+check "$?" 0 "  a run dir with a dot in its path: runs (S3: no dot rule)"
+# finding 4: the guarded-source rule, on --repo and on the prompt file
+echo scratch > "$REGATTA_CONFIG/regatta/guarded"; n0=$(nrec)
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a guarded --repo without the owner's quote (bin/gate's vet)"; has "$T/err" "--approved" "  naming --approved"
+check "$(nrec)" "$n0" "  codex never ran"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --approved "Sam, 2026-10-28: yes" > /dev/null 2>&1
+check "$?" 0 "  with --approved: runs"
+STUB_RESEARCH_FOREIGN=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --approved "Sam, 2026-10-28: yes" > /dev/null 2>"$T/err"
+check "$?" 2 "  on a login the guarded repo's tenant does not own: refused, quote or not (the vendor fence; the fourth landing review, finding 2)"
+has "$T/err" "goes only to a login its tenant owns" "  in the vendor fence's words"
+DISPATCH_DEPTH=5 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --approved "Sam, 2026-10-28: yes" > /dev/null 2>"$T/err"
+check "$?" 2 "  a caller at DISPATCH_MAX_DEPTH: refused, as every other Codex start (finding 2)"; has "$T/err" "depth 5" "  saying why"
+CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council g1:arms \
+  --approved "Sam, 2026-10-28: yes" > /dev/null 2>"$T/err"
+check "$?" 2 "  --approved from an unattended caller: refused (the quote is the owner's yes)"; has "$T/err" "unattended" "  saying why"
+git init -q -b main "$RS/gnotes"; printf 'a guarded note\n' > "$RS/gnotes/brief.md"; echo gnotes > "$REGATTA_CONFIG/regatta/guarded"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt-file "$RS/gnotes/brief.md" > /dev/null 2>"$T/err"
+check "$?" 2 "refused: a prompt file from a guarded repo, whatever --repo says"
+rm -f "$REGATTA_CONFIG/regatta/guarded"
+H run --harness codex --cwd "$CW" --prompt x --approved q > /dev/null 2>&1; check "$?" 2 "--approved outside research mode: refused"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 90000 > /dev/null 2>&1
+check "$?" 2 "refused: a --timeout past a day (dispatch-rc reads only the last day's records)"
+# finding 9: the bounds' variables move them only beside a stand-in codex
+mkdir -p "$RS/pathbin"; ln -s "$HARNESS_CODEX" "$RS/pathbin/codex"
+PATH="$RS/pathbin:$PATH" CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x \
+  --timeout 60 --council m1:arms > /dev/null 2>"$T/err"
+check "$?" 2 "unattended, HARNESS_RUNS_DIR and HARNESS_DISPATCH set and HARNESS_CODEX the codex on PATH: refused"
+has "$T/err" "would move them" "  saying why"
+# finding 2 (S3): no config parser; Codex's administrator layers refuse the turn — any /etc/codex/*.toml, a managed
+# preferences plist or the com.openai.codex domain holding config_toml_base64 or requirements_toml_base64. A login's own
+# config.toml is not codex's here (the box's scratch home is), and the copy's own .codex/ is stripped by council (S2)
+mkdir -p "$HD/.codex"; printf '[mcp_servers.files]\ncommand = "x"\n' > "$HD/.codex/config.toml"
+H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>&1
+check "$?" 0 "the login's own config.toml with an MCP server: not codex's here (the scratch home is), runs"
+rm_own "$HD/.codex"
+mkdir -p "$RS/etc" "$RS/mdm"
+printf '#!/bin/sh\n[ "$3" = "%s" ] && exit 0; exit 1\n' requirements_toml_base64 > "$RS/defaults-yes"; chmod +x "$RS/defaults-yes"
+printf '#!/bin/sh\nexit 1\n' > "$RS/defaults-no"; chmod +x "$RS/defaults-no"
+mw() { cxa '
+m.CODEX_ETC, m.CODEX_DEFAULTS = sys.argv[3], (sys.argv[4], "read", "com.openai.codex")
+m.CODEX_MDM_PLISTS = (sys.argv[5],)
+print(m.managed_why())' "$RS/etc" "$1" "$RS/mdm/com.openai.codex.plist"; }
+check "$(mw "$RS/defaults-no")" "None" "managed_why: no administrator layer, None"
+: > "$RS/etc/requirements.toml"
+mw "$RS/defaults-no" > "$T/mw"; has "$T/mw" "Codex's administrator config $RS/etc/requirements.toml is here" "  an /etc/codex/*.toml: refused, named"
+rm -f "$RS/etc/requirements.toml"
+python3 -c 'import plistlib,sys; plistlib.dump({"config_toml_base64": "eA==", "other": 1}, open(sys.argv[1], "wb"))' "$RS/mdm/com.openai.codex.plist"
+mw "$RS/defaults-no" > "$T/mw"; has "$T/mw" "set config_toml_base64" "  a managed plist setting config_toml_base64: refused"
+hasnt "$T/mw" "eA==" "  its value never read out"
+python3 -c 'import plistlib,sys; plistlib.dump({"other": 1}, open(sys.argv[1], "wb"))' "$RS/mdm/com.openai.codex.plist"
+check "$(mw "$RS/defaults-no")" "None" "  the Codex app's own keys in the domain: no refusal (only the two keys count)"
+printf 'torn' > "$RS/mdm/com.openai.codex.plist"
+mw "$RS/defaults-no" > "$T/mw"; has "$T/mw" "do not read" "  a managed plist that does not read: refused"
+rm -f "$RS/mdm/com.openai.codex.plist"
+mw "$RS/defaults-yes" > "$T/mw"; has "$T/mw" "the com.openai.codex domain sets requirements_toml_base64" "  cfprefsd answering requirements_toml_base64: refused"
+echo "a research turn's leftovers die with it (round 3: its own process group)"
+if [ "$(uname)" = Darwin ]; then
+  rm -f "$CP/kid.pid"
+  STUB_CODEX_KID=1 H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x > /dev/null 2>&1; rc=$?
+  sleep 0.5; KP=$(cat "$CP/kid.pid" 2>/dev/null)
+  check "$rc/$([ -n "$KP" ] && { kill -0 "$KP" 2>/dev/null && echo alive || echo gone; } || echo no-kid)" "0/gone" \
+    "  a process the stub codex left running in its copy is gone once the turn ends"
+  rm -f "$CP/kid.pid"; t0=$(date +%s)
+  STUB_CODEX_KID=pipe H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 120 > /dev/null 2>&1; rc=$?
+  t1=$(date +%s); sleep 0.5; KP=$(cat "$CP/kid.pid" 2>/dev/null)
+  check "$rc/$([ $((t1 - t0)) -lt 30 ] && echo prompt || echo "waited $((t1 - t0)) s")/$([ -n "$KP" ] && { kill -0 "$KP" 2>/dev/null && echo alive || echo gone; } || echo no-kid)" "0/prompt/gone" \
+    "  one that holds codex's stdout: the turn still ends when codex does, the process gone (round 5b)"
+fi
+# finding 6: the queue's reservations count, under dispatch's start lock
+qb() { python3 - "$B/dispatch-queue" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+print(SourceFileLoader("dq", sys.argv[1]).load_module().busy("launchctl"))
+PY
+}
+CAP=$(( $(qb) + 1 )); CL="$HD/Library/Caches/run-seed/queue/claims"; mkdir -p "$CL"
+printf '{"qid": "q-test", "at": %d, "pid": %d}\n' "$(date +%s)" "$$" > "$CL/q-test.t1.json"
+STUB_DISPATCH_CAP=$CAP CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x \
+  --timeout 60 --council q1:arms > /dev/null 2>"$T/err"
+check "$?" 2 "unattended, the last slot held by a queue claim: refused (its reservation counts)"
+has "$T/err" "the next step waits for a run to end" "  in the cap's own waiting words"
+rm -f "$CL/q-test.t1.json"
+LK="$HD/Library/Caches/run-seed/start.lock"; mkdir -p "$LK"
+( sleep 3 & echo $! > "$LK/pid" )   # an orphan: launchd reaps it, so it reads as gone once it ends
+t0=$(date +%s)
+STUB_DISPATCH_CAP=$CAP CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research --repo "$T/scratch" --cwd "$CP" --prompt x \
+  --timeout 60 --council q2:arms > /dev/null 2>&1; rc=$?
+check "$rc/$(( $(date +%s) - t0 >= 2 ))" "0/1" "  dispatch's start lock held by a live start: waited for, then the run"
+check "$([ -d "$LK" ] && echo held || echo free)" "free" "  and given back once codex runs"
+: > "$T/locklog"
+STUB_LOCKDIR="$LK" STUB_LOCKLOG="$T/locklog" STUB_DISPATCH_CAP=$CAP CLAUDE_UNATTENDED=dispatch H run --harness codex --mode research \
+  --repo "$T/scratch" --cwd "$CP" --prompt x --timeout 60 --council q3:arms > /dev/null 2>&1; rc=$?
+check "$rc/$(cat "$T/locklog")/$([ -d "$LK" ] && echo held || echo free)" "0/free/free" \
+  "  the lock is not held while codex's features are listed and the seatbelt probed: taken right before codex starts (the fourth landing review, finding 9)"
+# finding 7: a turn that ends as its deadline fires is completed, never a timeout
+for lie in "" 1; do
+  check "$(cxa '
+import json, os, subprocess as sp, threading, types, time
+d = sys.argv[3]; lie = sys.argv[4]; os.makedirs(d, exist_ok=True)
+path = os.path.join(d, "r7%s.json" % lie)
+m._save(path, {"events": path + ".jsonl", "log": path + ".log", "deadline": time.time() + 60, "timeout": 60,
+               "mode": "research", "reply": path + ".reply"})
+fired = []
+class T:
+    def __init__(self, delay, fn):
+        fired.append(fn)
+    def start(self):
+        pass
+    def cancel(self):
+        pass
+real = sp.Popen
+class P(real):
+    lying = False
+    def poll(self):
+        if self.lying:
+            self.lying = False
+            return None
+        return real.poll(self)
+    def wait(self, *a, **k):
+        code = real.wait(self, *a, **k)
+        self.lying = bool(lie)   # with lie: the timer reads codex as running once, then it is gone
+        fired[0]()               # the deadline lands as the turn ends
+        return code
+m.threading = types.SimpleNamespace(Timer=T, Event=threading.Event, RLock=threading.RLock, get_ident=threading.get_ident,
+                                    Thread=threading.Thread)
+m.subprocess = types.SimpleNamespace(**{k: getattr(sp, k) for k in dir(sp) if not k.startswith("__")})
+m.subprocess.Popen = P
+m._wrap(path, ["/bin/sh", "-c", "cat > /dev/null; echo done"], "p", d)
+r = m._load(path)
+print(m._end_state(r), r.get("end_reason"))' "$RS/k7" "$lie")" "completed exit 0" \
+    "a turn that ends as its deadline fires: completed, not recorded a timeout$([ -n "$lie" ] && echo ' (the timer saw it running once, sent nothing)')"
+done
+# finding 11: dispatch-rc reads the last day's records only
+check "$(python3 - "$B/dispatch-rc" "$HARNESS_RUNS_DIR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys, time
+loader = importlib.machinery.SourceFileLoader("dispatch_rc", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("dispatch_rc", loader)); loader.exec_module(m)
+m.proc_start = lambda pid: ""
+p = os.path.join(sys.argv[2], "codex-20000101-000000-ff0000-old.json")
+json.dump({"mode": "research", "pid": os.getpid(), "proc_start": "x"}, open(p, "w"))
+fresh = len([x for x in m.research_live() if x == p])
+os.utime(p, (time.time() - 3 * 86400, time.time() - 3 * 86400))
+old = len([x for x in m.research_live() if x == p])
+os.remove(p)
+print(fresh, old)
+PY
+)" "1 0" "dispatch-rc's research count skips a record older than a research turn lives (none is pruned)"
+rm -rf "$RS"
 
 echo "the vendor fence: a confidential or guarded repo only on a login its tenant owns (vendor-fence, F1)"
 mkrepo "$T/projects/conf" "- physical: none"

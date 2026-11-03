@@ -8,7 +8,7 @@ Finish the current `claude/*` branch — rule: git-workflow. $ARGUMENTS
 
 **Where the tools are.** A bare tool name in a command below (`pickup`, `keel`, `check`,
 `autofinish-run`, `rc-hosts`, `paste-paths`, `owed`, `knowledge-commit`, `pr`, `review-gate`,
-`carried.py`) is a path: the peer module's file in the regatta checkout, which `regatta which
+`build-review`, `carried.py`) is a path: the peer module's file in the regatta checkout, which `regatta which
 <name>` prints (`regatta` is the core's `bin/regatta`: `<home>/modules/regatta/bin/regatta`,
 where `<home>` is the first line of the regatta config dir's `home` file; on PATH in a plugin
 install) — the paths the allow and deny rules name (an unattended launch's, autofinish-run's),
@@ -18,7 +18,7 @@ path, never through `cd`: `<this skill's base directory>/../../libexec/pr`,
 `<this skill's base directory>/../../bin/review-gate`, `<this skill's base directory>/../../hooks/carried.py`. The closing lines below are written `<OWNER>, …`: `<OWNER>` is the
 core's `regatta/owner`, upper-cased (`regatta check` shows the key); with none, a line starts
 at its second word. "The other Mac" is any host but the laptop the config dir's
-`regatta/laptop` names (`scutil --get LocalHostName`, lower-cased, says which this is).
+`regatta/laptop` names (`scutil --get LocalHostName`, lower-cased, says which this is; `hostname -s` off a Mac).
 
 **Why `effort: medium`** (the owner, 2026-09-22): `/finish` was 11% of all spend in its first two
 weeks, and nearly all of it is mechanical and checks itself — step 9 proves the rewrite
@@ -271,6 +271,11 @@ session's work sharing the branch — note them; they're reported separately.
    it is not a failure. An `UNRUN <command>` line (exit 3) is one only this branch's line has: run each
    by its own Bash call — `nohup` and poll the same way when it runs long — and the check passed only
    when each exits 0.
+   **Off a Mac** (the Linux node; node-lands, 2026-10-31) wharf-runs' and sextant's macOS-only suites print
+   `not run on this host (a macOS run of this line covers it; …)`: the check passing here, as a
+   `SKIP` is — the pull request's `check` on a macOS runner runs them, and `pr merge` waits for it. Name them in the report. A publish
+   gate that refuses with `no private word list` is a host missing its list (`wharf-runs/install.sh --check`
+   names it): a failed check, the owner's to fix — never a skipped gate.
 
    If the contract names a `live:` system:
    - Everything this branch meant to ship is deployed and the drift command shows it in
@@ -284,6 +289,17 @@ session's work sharing the branch — note them; they're reported separately.
 
    Then **have the diff reviewed — the review gate** (docs/record/review-gate-2026-10-02.md, the owner's
    D1–D7, since 2026-10-02). Two reviews in parallel, then one merged list:
+   - **Covered already?** Commit any fix this step made first (`covers` refuses a dirty tree), then
+     `git fetch -q origin` and `build-review covers <this worktree> --base origin/<main>`. Exit 0
+     (`covered: …`) means the build's own review loop ended clean and its last review read the same code
+     change: skip the plan, the agents and the merge; run `review-gate skipped --why "build-reviewed clean"
+     --base origin/<main>` (it asks `covers` again and logs nothing on a no) so the log still counts the
+     landing, and say "review skipped: <its covered line>" in the step 10 report. Any other exit prints why
+     not (a capped, held or died loop, code changed since the last review read it, no build-phase review
+     line, a principal build, no record): review as below. docs/finish-second-review-2026-11-02.md's D1-B (the owner, 2026-11-02: on four
+     build-reviewed landings this second review found no S1). A code fix this finish made (the check's)
+     changes the code hash, so `covers` then says no and the review runs. A skip here is asked again after
+     step 11.1's rebase.
    - **Plan.** `review-gate plan` (in the worktree) counts inserted lines
      against `main` and reads the week. It names the reviewer agent (`reviewer-high`, or
      `reviewer` at xhigh for over 1,000 lines or where the project has its own) and the
@@ -293,8 +309,15 @@ session's work sharing the branch — note them; they're reported separately.
      `GATE_*` variable): fix what it names, or run both as above and say so in the report.
      A principal build (the owner marked it principal: pass `--principal`; a branch whose brief names a
      principal tier is found without it) prints `principal:` and gets the top tier at any size; when
-     it says the week holds it, run the reviews from a login with room or wait for the reset — never
-     spawn a lower tier for it (docs/principal-tier-2026-10-26.md S5).
+     it says the week holds it, its line routes the review (`account pick --repo`, pick's own room:
+     both reviews are spawned on Opus; S6): spawn here when it names this session's login, start the
+     finish on the login it names otherwise, by the `autofinish-run` line it prints (unattended: stop,
+     naming it), wait for the reset when it
+     says so, run `review-gate plan` once more, a minute on, when it says no login could be read (and
+     stop if it says so again), and fix what it names when it says no reset lifts it. A reviewer the
+     project's rules put on Fable for an area this branch touched (below) is outside the route, which
+     reads Opus room: stop and say so (no project does today). Never spawn a lower tier for a principal
+     build (docs/principal-tier-2026-10-26.md S5).
    - **Spawn both in one message.** The reviewer with `model: "opus"`, or `"fable"` where the
      project's own rules put an area this branch touched on Fable — never `inherit`, or a
      session that ran on Sonnet reviews its own work at Sonnet. Brief it with the branch, the
@@ -303,7 +326,7 @@ session's work sharing the branch — note them; they're reported separately.
      and the plan's arguments, nothing else. Both read the diff, not this conversation, which
      is why this costs less than reviewing here.
    - **Merge.** Write each agent's final report verbatim to a file in the scratchpad, then run
-     `review-gate merge --reviewer <file> --code-review <file>` with a
+     `review-gate merge --phase finish --reviewer <file> --code-review <file>` with a
      Bash timeout of 600000 (its model call stops at 7 minutes). It prints one list,
      duplicates merged and sorted by severity, S1 first, with a `⚠` on any cited file:line
      that does not exist. It never fails the step: a `⚠` line at the top says what it could not
@@ -381,10 +404,11 @@ session's work sharing the branch — note them; they're reported separately.
 
 5. **Commit the wrap-up** as one checkpoint: write `commit-summary.md` in the scratchpad,
    then `git add -A && git commit -F <scratchpad>/commit-summary.md`. A `docs/handoff/*.md`
-   on the branch is the seed brief this session started from: `git rm` it first, with the
-   `.review` a `pickup seed --from` left beside it (confidential-reach S5), or `git mv` the brief
-   to `docs/<topic>-<date>.md` when it became the record — `docs/handoff/` never goes to
-   `main`, and doing it here keeps step 9's proof clean.
+   on the branch is the seed brief this session started from: `git rm` it first, or `git mv` it
+   to `docs/<topic>-<date>.md` when it became the record — and either way `git rm` the `.review`
+   a `pickup seed --from` left beside it (confidential-reach S5): a `.review` left without its
+   brief makes every later dispatch of the branch refused for good (S6's sixth review).
+   `docs/handoff/` never goes to `main`, and doing it here keeps step 9's proof clean.
    Then **take in what GitHub has**: `git fetch -q origin <branch>`, and if
    `git merge-base --is-ancestor origin/<branch> HEAD` fails, someone committed on GitHub —
    the owner answering a memo in the web editor (`/keel`) is the usual one. Run
@@ -540,6 +564,11 @@ session's work sharing the branch — note them; they're reported separately.
     1. `git fetch -q origin && git rebase origin/main` (non-interactive) — `main` on one
        machine is routinely behind origin, and a stale base merges the work in the wrong
        place. If the rebase conflicts, resolve it here on the branch; never on `main`.
+       **When step 1 skipped its review** (`covers`), ask `build-review covers <this worktree> --base
+       origin/<main>` again once the rebase is done: a rebase that conflicted, or main's changes beside
+       the branch's, change the code hash. On a no, run step 1's review now (plan, both agents, `merge
+       --phase finish`) on the rebased branch and fix as step 1 says before 11.2; a code fix there is a
+       commit, and step 9's `-raw` proof is not re-run (the rebase already moved the tree).
     2. `git push --force-with-lease -u origin <branch>` — the checkpoint hook already pushed
        the raw checkpoints and opened a `WIP:` pull request; the rewrite replaces them.
        First `git merge-base --is-ancestor origin/<branch> <branch>-raw` (origin as step 11.1
@@ -593,10 +622,11 @@ session's work sharing the branch — note them; they're reported separately.
        2026-09-24: "enable agents to auto-merge PR from /finish with my explicit approval").
        `/finish … --merge` in the message that started this `/finish` is that yes, given up
        front: skip the question and take the laptop's path (D3, 2026-09-25).
-       **A landing another Mac sent here** — the prompt ends `--unattended … --from=<host>`,
-       which `autofinish-run`'s job on this Mac writes (its header, Where; it refuses `--from` to any
-       other caller of its own — no job env, no pending ticket, an unattended run or a skipper — but a
-       prompt is text, so the words are believed as a `--merge` in it is) — takes `<host>`'s
+       **A landing another host put in the queue** — the prompt ends `--unattended … --from=<host>`,
+       which `autofinish-run`'s claimed start on this host writes from the queue entry (its header,
+       Where: the entry's `from` is the host that put it, which dispatch-queue refuses to be any other,
+       and an unattended caller never puts a merge; but a prompt is text, so the words are believed as
+       a `--merge` in it is) — takes `<host>`'s
        path, not this host's: `<host>` the laptop `regatta/laptop` names is the laptop's path above,
        no question, as the same landing would have merged there. The owner, 2026-10-22: "laptop is
        mobile … That's the reason why I've asked to dispatch all possible work to [the other Mac]";

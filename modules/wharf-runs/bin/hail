@@ -15,6 +15,16 @@ Hail design, its section "Hail" and S2 (docs/crosstalk-2026-10-20.md on its bran
         The `--when idle` subscriptions, state_dir()/hail-subs.jsonl. --fulfil (the tick's) hails each
         row whose target is now idle, or has ended, and drops it; a row older than SUB_TTL_H is dropped
         unsent. Exit 0; 3 when a fulfilled row found no road.
+    hail mail [--pull] [--dry-run] [--json]
+        The mailbox, state_dir()/hail-mailbox.jsonl: the rows this Mac holds for sessions on other
+        Macs. --pull (the bell's, `ask poll`, every host) fetches this Mac's own rows from each peer it
+        has an ssh alias for, posts each by the socket road and settles it on the peer. A peer that does
+        not answer is one line when it goes quiet and one when it answers again. Exit 0; 3 when a
+        settle did not reach the peer (its rows settle from this Mac's ledger at their next take).
+    hail mail --take HOST | --settle HOST --results JSON
+        The sender's half of a pull, run on it over ssh: --take marks HOST's rows taken and prints
+        them; --settle records what HOST did with each (a JSON list of {id, token, verdict, why};
+        a pull sends it over stdin, ahead of this code).
 
 The roads, in this order, the first whose preconditions hold:
     socket    a Claude Code session live on this Mac: the adapter's send() posts to its inbox, but only
@@ -33,15 +43,37 @@ The roads, in this order, the first whose preconditions hold:
               the HAIL_SPACE it was made under, so the tick's fulfil posts to that page, not to
               whatever its own environment names (skipper-resilience S6: wharf hails a scope's
               skipper on the page its record names). Sender unverified
+    mailbox   --host PEER only, when no ssh reaches PEER from here (no alias, or ssh itself failed;
+              never after PEER was reached, whose own roads ran there, nor after a timeout, which may
+              come after its post) and PEER's pull was seen here within MAIL_SEEN_H (else
+              `unreachable`, said: a typo, a cloud session or a Mac off for a day never pulls): a row
+              in this Mac's mailbox addressed to the session on PEER, which PEER's bell pulls over its
+              own alias to this Mac (`hail mail --pull`). Claude Code sessions only: the pull posts by
+              the socket road there, under its idle and read-back rules, so a row waits at most one
+              bell (5 minutes) and the next idle moment. The take is recorded here before PEER posts,
+              so two pulls never take one row at once; a take not settled in HAIL_MAIL_TAKE_S (900 s) is taken
+              again, and PEER's ledger of what it posted settles it then without a second post.
+              A row whose session has ended on PEER (its transcript is there, no registry holds a
+              live process for it) comes back `ended`: this Mac's hail.jsonl gets a line with road
+              mailbox and verdict ended, which is how a sender learns its target exited without a
+              renewal. A session PEER never ran is not ended, only unknown: the row waits, and
+              expires unsent after SUB_TTL_H. Known limitation: a receiver with no ssh alias to the
+              sender's host (a claude.ai/code cloud session) never pulls (the charterer design's S2)
     file      helm's asklib: a line its next prompt prints; this Mac, a live process; wakes nobody
               (--no-file skips it: for a target that never reads that queue, a scope's skipper)
 A refused road stops the hail (a busy session is waited for, never routed around); a held or
 unreachable one falls through to the next. Claude Code's SendMessage is never a road: it is a model's
 tool, and only within one login.
 
+Which roads, in which order: helm's surfaces.json, its `hail.roads` row (SURFACES_FILE, else the
+config dir's helm/surfaces.json, the file helm's bin/surfaces.py reads and validates); a missing
+file or row reads as ROADS. A road left out is never taken. The target's own road (socket, codex or
+orca: one applies to a session) always goes first whatever its place, since its refusal of a busy
+session must stop the hail; talk, mailbox and file follow in the row's order.
+
 --host PEER: the adapter roads run on PEER over ssh (bin/harness's peers and alias; this code and the
 adapters go over stdin, as `harness status --host` does), then Talk from here. ssh runs one way: a
-peer this Mac has no alias for gets Talk only.
+peer this Mac has no alias for gets Talk, or the mailbox, which that peer pulls over its own alias.
 
 The frame is fixed text; the caller's words are a pointer, not content:
     HAIL <kind> from <sender> — <text> — about <repo>:<branch>:<doc>#<Dn> @<sha>
@@ -55,8 +87,10 @@ state_dir()/hail-subs.jsonl, which `hail subs --fulfil` sends once the target go
 Every hail, sent, refused or subscribed, is a line in state_dir()/hail.jsonl (cost: none — no model
 call is made here). state_dir() is keel's: MEMO_STATE_DIR, else ~/.local/state/memo.
 
-Tests stand in: HAIL_ASKLIB (asklib's path), HAIL_READBACK_S, HARNESS_SSH, HARNESS_CODEX,
-HARNESS_ORCA, HARNESS_HOST, HARNESS_PEER_<HOST>, ASK_SESSIONS_DIR. Python 3.9, stdlib only.
+Tests stand in: HAIL_ASKLIB (asklib's path), HAIL_READBACK_S, HAIL_MAIL_TAKE_S, HAIL_MAIL_SEEN_S, HARNESS_SSH,
+HARNESS_CODEX, HARNESS_ORCA, HARNESS_HOST, HARNESS_PEER_<HOST>, ASK_SESSIONS_DIR, SURFACES_FILE;
+`hail mail --pull` reads ASK_POLL_DEADLINE, which `ask poll` gives each job.
+Python 3.9, stdlib only.
 """
 import fcntl
 import glob
@@ -92,6 +126,15 @@ ANSWER_RE = re.compile(r"➤\s*Answer|Relayed from .*\): ", re.I)
 FRAME_MAX = TEXT_MAX + 400   # the fixed prefix, the sender's name and an --about: a peer half refuses more
 FRAME_RE = re.compile(r"^HAIL (event|report|ask) from .+ — ")
 EXIT = {"delivered": 0, "queued": 0, "held": 0, "dry-run": 0, "refused": 2, "unreachable": 3}
+# every road, in the order a missing surfaces.json row reads as (the charterer design's S2: mailbox
+# after talk); helm's surfaces.KNOWN["hail.roads"] holds the same names
+ROADS = ("socket", "codex", "orca", "talk", "mailbox", "file")
+RELAY = ("talk", "mailbox", "file")   # the roads after the target's own, in the row's order
+HOST_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+# a frame is one line: a newline (or any control or line-separator character) would carry a second
+# line that does not read as a HAIL line (the S2 landing review: a forged mailbox row)
+CTRL_RE = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
+MAIL_SEEN_H = 24     # a host whose pull this Mac has not seen in a day gets no row: `unreachable`, said
 
 
 def warn(msg):
@@ -160,6 +203,76 @@ def asklib():
 def state_dir():
     """keel's per-Mac state dir (MEMO_STATE_DIR moves it), where the lookout keeps its memory too."""
     return os.environ.get("MEMO_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".local", "state", "memo")
+
+
+def env_float(name, default):
+    """A number of seconds from NAME, else DEFAULT (a value that is no number reads as the default)."""
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return float(default)
+
+
+def mail_take_s():
+    """How long a take stands unsettled before another pull may take the row: a pull posts each row
+    with a read-back of HAIL_READBACK_S, so a quarter hour is far past any live one."""
+    return env_float("HAIL_MAIL_TAKE_S", 900)
+
+
+def surfaces_file():
+    """helm's surfaces.json, as its bin/surfaces.py names it: SURFACES_FILE, else the config dir's."""
+    if os.environ.get("SURFACES_FILE"):
+        return os.environ["SURFACES_FILE"]
+    cfg = os.environ.get("REGATTA_CONFIG") or os.path.join(os.path.expanduser("~"), ".config", "regatta")
+    return os.path.join(os.path.expanduser(cfg), "helm", "surfaces.json")
+
+
+ROADS_UNREAD = []   # set by roads(): the row was there and did not read (no road until it does)
+SID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,}$")   # a session id: no glob character reaches a path pattern
+
+
+def roads():
+    """The roads this hail may take, in order: surfaces.json's hail.roads, else ROADS (no file, no
+    `hail` seam, no `roads` row). The row only narrows, so a shape that does not read narrows to no
+    road, said, never to every road (AGENTS.md's trap); a bare name reads as a list of one (surfaces.py's
+    validate refuses it on a write). A name hail does not know is named and skipped."""
+    try:
+        with open(surfaces_file()) as f:
+            data = json.load(f)
+    except OSError as e:
+        if isinstance(e, FileNotFoundError) and not os.path.lexists(surfaces_file()):
+            return list(ROADS)   # no file at all: the only shape that widens
+        warn("%s cannot be read (%s): no hail road is taken" % (surfaces_file(), e.strerror or e))
+        ROADS_UNREAD.append(True)
+        return []
+    except ValueError:
+        warn("%s does not parse: no hail road is taken" % surfaces_file())
+        ROADS_UNREAD.append(True)
+        return []
+    if not isinstance(data, dict):
+        warn("%s is no object: no hail road is taken" % surfaces_file())
+        ROADS_UNREAD.append(True)
+        return []
+    if "hail" not in data:
+        return list(ROADS)
+    seam = data["hail"]
+    if not isinstance(seam, dict):
+        warn("%s: hail is no object: no hail road is taken" % surfaces_file())
+        ROADS_UNREAD.append(True)
+        return []
+    if "roads" not in seam:
+        return list(ROADS)
+    row = seam["roads"]
+    if isinstance(row, str):
+        row = [row]
+    if not isinstance(row, list) or not all(isinstance(x, str) for x in row):
+        warn("%s: hail.roads is no list of road names: no hail road is taken" % surfaces_file())
+        ROADS_UNREAD.append(True)
+        return []
+    bad = [x for x in row if x not in ROADS]
+    if bad:
+        warn("%s: hail.roads names %s, which hail does not know: skipped" % (surfaces_file(), ", ".join(bad)))
+    return [x for x in row if x in ROADS]
 
 
 def log(rec):
@@ -308,7 +421,8 @@ def adapter_road(rec, msg):
     try:
         return ROAD.get(rec.get("harness"), rec.get("harness")), mod.send(ctx, rec, msg)
     except Exception as e:   # noqa: BLE001 — an adapter's failure is that road's, the next is tried
-        return ROAD.get(rec.get("harness"), rec.get("harness")), {"verdict": "unreachable", "why": "%s" % e}
+        # raised: whether a post went out before it is not known (the mailbox keeps its provisional mark)
+        return ROAD.get(rec.get("harness"), rec.get("harness")), {"verdict": "unreachable", "why": "%s" % e, "raised": True}
 
 
 def talk_space(sid, space=None):
@@ -331,12 +445,10 @@ def relay_roads(sid, msg, tried, roads=("talk", "file")):
     """The asklib roads, Talk then file: (road, result) of the first that takes it, or (None, None)."""
     ask = asklib()
     if ask is None:
-        tried.append(["talk", "helm's asklib is not installed"])
-        tried.append(["file", "helm's asklib is not installed"])
+        tried.extend([name, "helm's asklib is not installed"] for name in roads)
         return None, None
     if not sid:
-        tried.append(["talk", "no session id to address"])
-        tried.append(["file", "no session id to address"])
+        tried.extend([name, "no session id to address"] for name in roads)
         return None, None
     ctx = {"manager": sid, "space": talk_space(sid, msg.get("space")), "session": os.environ.get("CLAUDE_CODE_SESSION_ID")}
     for name in roads:
@@ -371,23 +483,41 @@ def bundle():
     return "HAIL_EMBEDDED = %s\n%s" % (ascii({"harness": hsrc, "adapters": H.adapter_sources()}), me)
 
 
-def on_peer(host, alias, argv):
-    """The adapter roads run on HOST: (record, None) or (None, why)."""
-    H = harness()
+PEER_MARK = "hail: the peer half runs"   # its first stderr line: proof the code ran there, whatever ssh exits
+
+
+def on_peer(host, alias, argv, src=None, want=dict, quiet=False, timeout=90):
+    """This code runs on HOST with ARGV: (its JSON answer, None, True) or (None, why, connected).
+    SRC is what goes over stdin (bundle(), the adapter roads'; mail_bundle(), the mailbox's halves);
+    WANT the answer's type; TIMEOUT the call's whole time; QUIET keeps a failed call's stderr off this run's (the pull's take, every
+    bell: its last line goes into WHY, which the pull says once). CONNECTED is False only when ssh itself failed (it could not start, or
+    exited 255 with nothing on stdout and no PEER_MARK on stderr): a timeout or a garbled answer may come after the code ran
+    there, so the mailbox never writes a second copy of what the peer may have posted."""
     cmd = "python3 - " + " ".join(shlex.quote(a) for a in argv)
     try:
-        r = subprocess.run([H.SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", alias, cmd],
-                           input=bundle(), capture_output=True, text=True, timeout=90)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return None, "%s did not answer: %s" % (host, e)
-    for line in (r.stderr or "").splitlines():
-        if line.strip():
-            print("%s: %s" % (host, line), file=sys.stderr)
+        r = subprocess.run([harness().SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", alias, cmd],
+                           input=bundle() if src is None else src, capture_output=True, text=True, timeout=timeout)
+    except OSError as e:
+        return None, "%s did not answer: %s" % (host, e), False
+    except subprocess.TimeoutExpired as e:
+        return None, "%s did not answer in time: %s" % (host, e), True
+    errs = [l for l in (r.stderr or "").splitlines() if l.strip()]
+    ran = PEER_MARK in errs
+    errs = [l for l in errs if l != PEER_MARK]
     try:
         d = json.loads(r.stdout)
-        return (d, None) if isinstance(d, dict) else (None, "%s answered no record" % host)
+        ok = isinstance(d, want)
     except ValueError:
-        return None, "%s did not answer (ssh %s, exit %s)" % (host, alias, r.returncode)
+        d, ok = None, False
+    if ok or not quiet:
+        for line in errs:
+            print("%s: %s" % (host, line), file=sys.stderr)
+    if ok:
+        return d, None, True
+    tail = (": " + errs[-1].strip()[:160]) if quiet and errs else ""
+    if d is not None:
+        return None, "%s answered no record%s" % (host, tail), True
+    return None, "%s did not answer (ssh %s, exit %s)%s" % (host, alias, r.returncode, tail), bool(ran or r.returncode != 255 or r.stdout.strip())
 
 
 def deliver(args, msg):
@@ -398,21 +528,25 @@ def deliver(args, msg):
     rec_out = {"road": None, "verdict": "unreachable", "target": args.get("thread") or args["ref"],
                "host": me if host in ("here", me) else host, "kind": msg["kind"], "frame": msg["frame"], "why": None, "tried": []}
     tried = rec_out["tried"]
-    sid, held = args.get("thread") or args["ref"], None
+    sid, held, answered = args.get("thread") or args["ref"], None, False
+    allowed = list(ROADS) if msg.get("roads") is None else msg["roads"]   # [] is a row that allows no road
 
     if host not in ("here", me):
         alias = H.peers().get(host)
         if alias is None:
-            tried.append(["ssh", "no ssh alias from %s to %s: ssh runs one way; Talk only" % (me, host)])
+            tried.append(["ssh", "no ssh alias from %s to %s: ssh runs one way; Talk or the mailbox only" % (me, host)])
         else:
-            argv = ["--peer-half", args["ref"], "--text", args["text"], "--kind", msg["kind"], "--frame", msg["frame"]]
+            argv = ["--peer-half", args["ref"], "--text", args["text"], "--kind", msg["kind"], "--frame", msg["frame"],
+                    "--roads", ",".join(allowed)]
             argv += (["--thread", args["thread"]] if args.get("thread") else []) + (["--dry-run"] if msg.get("dry") else [])
             # the sender's paths mean nothing on the peer: judged here, and only the verdict goes over
             argv += ["--sender-fenced"] if sender_fenced(msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()]) else []
-            got, why = on_peer(host, alias, argv)
+            got, why, connected = on_peer(host, alias, argv)
             if why:
                 tried.append(["ssh", why])
+                answered = connected   # the peer half may have run: no mailbox copy beside its post
             else:
+                answered = True   # the peer's own roads were tried there: no mailbox row for what it judged
                 tried.extend(got.get("tried") or [])
                 sid = got.get("target") or sid
                 rec_out["target"] = sid
@@ -433,8 +567,11 @@ def deliver(args, msg):
             if sid and sid == os.environ.get("CLAUDE_CODE_SESSION_ID"):
                 rec_out.update(verdict="refused", why="a session does not hail itself")
                 return rec_out
+            own = ROAD.get(rec.get("harness"), rec.get("harness"))
             if rec.get("state") in H.FINAL:
                 tried.append(["adapter", "%s has ended (%s)" % (sid, rec.get("state"))])
+            elif own in ROADS and own not in allowed:
+                tried.append([own, "not in surfaces.json's hail.roads"])
             else:
                 road, res = adapter_road(rec, msg)
                 if road is None:
@@ -457,10 +594,21 @@ def deliver(args, msg):
     # session at its next prompt, beside the socket copy the owner may still release
     # --no-file: a target that never reads the file queue (a scope's skipper, S6) — a line there would
     # read as delivered and wait for a prompt that never comes
-    road, res = relay_roads(sid, msg, tried, ("talk",) if held or msg.get("no_file") else ("talk", "file"))
-    if road:
-        rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
-        return rec_out
+    relay = [r for r in allowed if r in RELAY]
+    if held:
+        relay = [r for r in relay if r == "talk"]   # a held post may still be released: no second copy
+    if msg.get("no_file"):
+        relay = [r for r in relay if r != "file"]
+    for name in relay:
+        if name != "mailbox":
+            road, res = relay_roads(sid, msg, tried, (name,))
+        elif host in ("here", me):
+            continue   # a session on this Mac: its socket road was the mailbox's own, tried above
+        else:
+            road, res = mailbox_road(host, sid, args, dict(msg, roads=allowed), answered, tried)
+        if road:
+            rec_out.update(road=road, verdict=res["verdict"], why=res["why"])
+            return rec_out
     if held:
         held["tried"] = tried
         return held
@@ -475,10 +623,14 @@ def subs_path():
 
 
 class SubsLock:
-    """One writer of hail-subs.jsonl at a time: the tick's fulfil and a session's subscribe."""
+    """One writer of a rows file at a time (hail-subs.jsonl by default: the tick's fulfil and a
+    session's subscribe; the mailbox's: a hail's post, a peer's take and settle)."""
+    def __init__(self, path=None):
+        self.path = path
+
     def __enter__(self):
         os.makedirs(state_dir(), exist_ok=True)
-        self.fd = os.open(subs_path() + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        self.fd = os.open((self.path or subs_path()) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(self.fd, fcntl.LOCK_EX)
         return self
 
@@ -487,30 +639,31 @@ class SubsLock:
         os.close(self.fd)
 
 
-def read_subs():
+def read_subs(path=None):
     """The rows; a line that does not parse is skipped with a warning, never the whole file, or the
     next write would drop every row."""
-    rows = []
+    rows, path = [], path or subs_path()
     try:
-        with open(subs_path()) as f:
+        with open(path) as f:
             for n, l in enumerate(f, 1):
                 if not l.strip().startswith("{"):
                     continue
                 try:
                     rows.append(json.loads(l))
                 except ValueError:
-                    warn("%s line %d does not parse: skipped" % (subs_path(), n))
+                    warn("%s line %d does not parse: skipped" % (path, n))
     except OSError:
         pass
     return rows
 
 
-def write_subs(rows):
-    tmp = "%s.%d.tmp" % (subs_path(), os.getpid())
+def write_subs(rows, path=None):
+    path = path or subs_path()
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    os.replace(tmp, subs_path())
+    os.replace(tmp, path)
 
 
 def subscribe(args, msg, rec):
@@ -542,7 +695,10 @@ def cmd_subs(args):
                                                r.get("host"), r.get("target") or r.get("ref"), r.get("kind")))
         return 0
     dry = bool(args.get("dry-run"))
-    out, rc, done = [], 0, set()
+    out, rc, done, allowed = [], 0, set(), roads()
+    if ROADS_UNREAD and not allowed:   # no road until the file reads: every row waits, none is dropped
+        print("hail subs: %s does not read: the subscriptions wait for the next pass" % surfaces_file())
+        return 0
     # the rows are read under the lock and delivered outside it: a socket readback or an ssh road can
     # take a minute, and a session's subscribe() would wait on the lock that long
     with SubsLock():
@@ -554,7 +710,7 @@ def cmd_subs(args):
                        "sub": r.get("id"), "tried": []}
             else:
                 a = {"ref": r.get("target") or r.get("ref"), "thread": r.get("thread"), "host": r.get("host"), "text": r.get("text")}
-                msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S,
+                msg = {"kind": r.get("kind") or "event", "frame": r.get("frame"), "dry": dry, "idle_s": IDLE_S, "roads": allowed,
                        "space": r.get("space"), "no_file": bool(r.get("no_file")), "sender_cwd": r.get("sender_cwd"),
                        # a row from before the fence names no paths: judged as unknown (refused), never the tick's cwd
                        "fence_paths": r.get("fence_paths") or [r.get("sender_cwd")]}
@@ -586,10 +742,456 @@ def cmd_subs(args):
     return rc
 
 
+# ---- the mailbox (the charterer design's S2) -----------------------------------------------
+#
+# The sender's side: mailbox_road() writes a row, `hail mail --take` and `--settle` run here over a
+# peer's ssh. The receiver's side: `hail mail --pull`, from its bell, posts each row it took by the
+# socket road. A row: {id, at, host (the receiver), target, kind, frame, from, state waiting|taken,
+# token and taken_at while taken, last: why the latest pull kept it, roads: the sender's hail.roads,
+# which the receiver honours as the peer half honours --roads}.
+# Beside it, on the sender: hail-mailbox-pulls.json, {host: when its pull last took here} (a row is
+# written only for a host seen pulling). On the receiver: hail-mailbox-done.json, {"<sender>:<id>":
+# the final verdict}, marked `held` right before the post and replaced by the verdict after it, so a
+# row whose settle was lost, or whose pull was killed mid-post, is settled from it on its next take and
+# never posted twice (at most once: a pull killed between the mark and the post loses that row); and hail-mailbox-peers.json, each
+# peer's last answer, so an asleep peer is one line when it goes quiet, not one every bell.
+
+FINAL_MAIL = ("delivered", "held", "ended", "unreachable", "refused")   # a settled row leaves the box
+
+
+def mail_path(name="hail-mailbox.jsonl"):
+    return os.path.join(state_dir(), name)
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, type(default)) else default
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data):
+    os.makedirs(state_dir(), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def mail_seen_s():
+    return env_float("HAIL_MAIL_SEEN_S", MAIL_SEEN_H * 3600)
+
+
+def mailbox_road(host, sid, args, msg, answered, tried):
+    """(road, result) when the row is written, or (None, None) with the reason in TRIED. A row is
+    written only for a host whose pull this Mac has seen within mail_seen_s(): one that never pulls
+    (a typo, a cloud session, a Mac asleep for a day) is `unreachable`, so a caller still falls back
+    (keel's lookout card, the stall road), never a `queued` that nothing will fetch."""
+    if answered:
+        tried.append(["mailbox", "%s was reached over ssh: its own roads ran there" % host])
+        return None, None
+    if args.get("thread"):
+        tried.append(["mailbox", "a Codex thread: the mailbox posts to Claude Code sessions only"])
+        return None, None
+    if "socket" not in (msg.get("roads") or []):
+        tried.append(["mailbox", "the receiver posts a row by the socket road, which hail.roads leaves out here"])
+        return None, None
+    peer = (host or "").lower()
+    if not HOST_RE.match(peer):
+        tried.append(["mailbox", "%r is no host name" % host])
+        return None, None
+    me = harness().machine()
+    seen = read_json(mail_path("hail-mailbox-pulls.json"), {}).get(peer)
+    if not isinstance(seen, (int, float)) or time.time() - seen > mail_seen_s():
+        tried.append(["mailbox", "no pull from %s seen on %s in %d h: it has no ssh alias here, or is off" % (peer, me, mail_seen_s() // 3600)])
+        return None, None
+    why = "in %s's mailbox for %s: its bell pulls it within 5 minutes and posts it once the session is idle" % (me, peer)
+    if msg.get("dry"):
+        return "mailbox", {"verdict": "dry-run", "why": why}
+    row = {"id": uuid.uuid4().hex[:12], "at": int(time.time()), "host": peer, "target": sid, "kind": msg["kind"],
+           "frame": msg["frame"], "from": me, "state": "waiting", "roads": list(msg.get("roads") or [])}
+    try:
+        with SubsLock(mail_path()):
+            write_subs(expire(read_subs(mail_path()), time.time()) + [row], mail_path())
+    except OSError as e:
+        tried.append(["mailbox", "the mailbox could not be written: %s" % e])
+        return None, None
+    return "mailbox", {"verdict": "queued", "why": why + " (row %s)" % row["id"]}
+
+
+def expire(rows, now):
+    """Rows past SUB_TTL_H, logged as unsent; the rest returned. A row taken by a pull whose take has
+    not lapsed waits for that pull's settle."""
+    keep = []
+    for r in rows:
+        held = r.get("state") == "taken" and now - (r.get("taken_at") or 0) < mail_take_s()
+        if now - (r.get("at") or 0) > SUB_TTL_H * 3600 and not held:
+            log({"road": "mailbox", "verdict": "unreachable", "target": r.get("target"), "host": r.get("host"),
+                 "kind": r.get("kind"), "frame": r.get("frame"), "mail": r.get("id"),
+                 "why": "expired after %d h unsent" % SUB_TTL_H, "at": int(now)})
+        else:
+            keep.append(r)
+    return keep
+
+
+def mail_take(host, dry=False):
+    """HOST's rows, marked taken here before HOST posts any (two pulls never take one row at once):
+    each waiting row, and each taken one whose take is older than mail_take_s() (a pull that died).
+    A take stamps HOST as seen pulling; a dry one writes nothing."""
+    now, out = time.time(), []
+    with SubsLock(mail_path()):
+        if not dry:
+            pulls = read_json(mail_path("hail-mailbox-pulls.json"), {})
+            if now - (pulls.get(host) or 0) > 3600:   # hourly is fine-grained enough against MAIL_SEEN_H
+                pulls[host] = int(now)
+                write_json(mail_path("hail-mailbox-pulls.json"), pulls)
+        rows = read_subs(mail_path())
+        live = expire(rows, now) if not dry else rows
+        for r in live:
+            if r.get("host") != host:
+                continue
+            if r.get("state") == "taken" and now - (r.get("taken_at") or 0) < mail_take_s():
+                continue
+            if not dry:
+                r.update(state="taken", taken_at=int(now), token=uuid.uuid4().hex[:12])
+            out.append({k: r.get(k) for k in ("id", "token", "target", "kind", "frame", "from", "at", "roads")})
+        if not dry and (out or len(live) != len(rows)):
+            write_subs(live, mail_path())
+    return out
+
+
+def mail_settle(host, results):
+    """What HOST did with the rows it took: a final verdict leaves the box, logged here (road mailbox;
+    `ended` is how this Mac learns the session exited); `kept` puts the row back for the next pull.
+    A result whose token is not the row's current take is a stale pull's: ignored, counted."""
+    now, settled, kept, stale = int(time.time()), 0, 0, 0
+    by_id = {r.get("id"): r for r in results if isinstance(r, dict)}
+    with SubsLock(mail_path()):
+        rows, keep = read_subs(mail_path()), []
+        for r in rows:
+            res = by_id.pop(r.get("id"), None)
+            if res is None or r.get("host") != host or r.get("state") != "taken" or res.get("token") != r.get("token"):
+                if res is not None:
+                    stale += 1
+                keep.append(r)
+                continue
+            if res.get("verdict") in FINAL_MAIL:
+                settled += 1
+                log({"road": "mailbox", "verdict": res["verdict"], "target": r.get("target"), "host": host,
+                     "kind": r.get("kind"), "frame": r.get("frame"), "mail": r.get("id"), "why": res.get("why"), "at": now})
+                continue
+            kept += 1
+            r["state"], r["last"] = "waiting", res.get("why")
+            r.pop("token", None)
+            r.pop("taken_at", None)
+            keep.append(r)
+        stale += len(by_id)
+        write_subs(keep, mail_path())
+    return {"settled": settled, "kept": kept, "stale": stale}
+
+
+def registries():
+    """Every session registry of this login, each once: the core's session_dirs() (each login dir's
+    sessions/, CLAUDE_CONFIG_DIR's, every Orca profile's own), else the home folder's .claude/sessions (or
+    ASK_SESSIONS_DIR) and the Orca profiles' — a registry is not one folder, so "no record" in one is
+    not "ended" (AGENTS.md's trap; helm's PEER_PROBE reads the same)."""
+    home = os.path.expanduser("~")
+    dirs = [sessions_dir()]
+    try:
+        import common
+        dirs += [str(d) for d in common.session_dirs()]
+    except Exception:   # noqa: BLE001 — no core: the folders it would name, read here
+        dirs += glob.glob(os.path.join(home, "Library", "Application Support", "orca", "claude-profiles", "*", "home", "sessions"))
+    # and every login dir by its name, listed in an accounts file or not: the transcript glob that proves a
+    # session ran here reads them all, so the registries that prove it lives must too
+    dirs += sorted(glob.glob(os.path.join(home, ".claude*", "sessions")))
+    out, seen = [], set()
+    for d in dirs:
+        r = os.path.realpath(d)
+        if r not in seen:
+            seen.add(r)
+            out.append(d)
+    return out
+
+
+TORN_S = 120   # a record file that does not parse is doubt for this long (a write in flight); older is debris
+
+
+def registry_doubt(sid):
+    """(verdict, why) when SID may still live though the adapter listed no live record of it, or None:
+    `unreachable` for a live record in a registry the adapter does not post from (an Orca profile's,
+    another login's: the socket road cannot reach it, and waiting would not change that); `kept` for a
+    record file that does not read. In detail: a record of SID
+    in any registry here (the shared one too) whose process lives, judged as the adapter judges it (its
+    pid and recorded start, so a reused pid is no proof), or a record file written in the last TORN_S
+    that does not parse (one caught mid-rewrite may be SID's; an old one is a crash's debris). `ended` is
+    final and stops a sender's updates, so any doubt keeps the row for the next bell (AGENTS.md: "no
+    record" is unknown, never ended)."""
+    ctx = harness().Ctx()
+    mod = ctx.adapter("claude-code")
+    same = getattr(mod, "_same_process", None)
+    own = os.path.realpath(sessions_dir())   # the registry the socket road posts from
+    for reg in registries():
+        for p in glob.glob(os.path.join(reg, "*.json")):
+            try:
+                with open(p) as f:
+                    d = json.load(f)
+            except (OSError, ValueError):
+                try:
+                    if time.time() - os.path.getmtime(p) < TORN_S:
+                        return "kept", "%s does not read (a record mid-rewrite may be %s's)" % (p, sid)
+                except OSError:
+                    pass
+                continue
+            if not isinstance(d, dict) or d.get("sessionId") != sid:
+                continue
+            pid = d.get("pid")
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            try:
+                alive = same(ctx, pid, d.get("procStart")) if same and d.get("procStart") else (mod._alive(pid) if hasattr(mod, "_alive") else True)
+            except Exception:   # noqa: BLE001 — not known dead
+                alive = True
+            if alive and os.path.realpath(reg) == own:   # live where the adapter reads, missed this pass (a record mid-rewrite)
+                return "kept", "%s lives in %s but was not listed this pass" % (sid, reg)
+            if alive:
+                return "unreachable", "%s lives in %s, a registry the socket road does not post from" % (sid, reg)
+    return None
+
+
+def poll_left():
+    """Seconds left before the bell kills this pull (ASK_POLL_DEADLINE, which `ask poll` gives each job),
+    or None outside the bell."""
+    try:
+        return float(os.environ["ASK_POLL_DEADLINE"]) - time.time()
+    except (KeyError, ValueError):
+        return None
+
+
+def readback_s():
+    return env_float("HAIL_READBACK_S", 10)   # the Claude Code adapter's read-back, which a post waits out
+
+
+def mail_deliver(row, dry=False, allowed=None, before_post=None):
+    """One taken row, posted here: {verdict, why}, verdict one of FINAL_MAIL, `kept` (busy, a post
+    that did not go through, a session not known here: the next pull tries again) or dry-run.
+    ALLOWED: this Mac's hail.roads, read once per pull; the row's own `roads` (the sender's) narrow it
+    further. BEFORE_POST runs right before the socket post (the ledger's provisional mark)."""
+    f, ref = row.get("frame") or "", row.get("target") or ""
+    # the frame came from another Mac's file: the peer half's checks, never trusted as written
+    bad = ("the row has no frame" if not f else
+           "the frame is not a HAIL frame" if not FRAME_RE.match(f) else
+           "the frame is more than one line" if CTRL_RE.search(f) else
+           "the frame is %d characters, over %d" % (len(f), FRAME_MAX) if len(f) > FRAME_MAX else
+           "the frame carries an answer (K13)" if ANSWER_RE.search(f) else
+           "the row names no session" if not ref else None)
+    if bad:
+        return {"verdict": "refused", "why": bad}
+    H = harness()
+    rec, why = target_of({"ref": ref})
+    if why:
+        return {"verdict": "refused", "why": why}
+    if rec is not None and rec.get("state") not in H.FINAL:
+        if rec.get("harness") != "claude-code":
+            return {"verdict": "unreachable", "why": "%s is a %s session: the mailbox posts to Claude Code sessions only" % (ref, rec.get("harness"))}
+        if rec.get("session_id") and rec.get("session_id") == os.environ.get("CLAUDE_CODE_SESSION_ID"):
+            # a pull run by hand in the target session: the row is another Mac's, the bell posts it
+            return {"verdict": "kept", "why": "the pull runs in the target session: the bell posts it"}
+        allowed = roads() if allowed is None else allowed
+        if "socket" not in allowed and ROADS_UNREAD:
+            return {"verdict": "kept", "why": "%s does not read: no road until it does" % surfaces_file()}
+        if "socket" not in allowed:
+            return {"verdict": "unreachable", "why": "the socket road is not in this Mac's hail.roads"}
+        # the sender's roads only narrow: a `roads` that is there and no list (a name, an object) is no road, never
+        # all; null is a row from before rows carried roads (the take hands an absent key on as null)
+        if row.get("roads") is not None and not (isinstance(row["roads"], list) and "socket" in row["roads"]):
+            return {"verdict": "unreachable", "why": "the socket road is not in the sender's hail.roads"}
+        left = poll_left()
+        if not dry and left is not None and left < readback_s() + 30:
+            return {"verdict": "kept", "why": "the bell's deadline is %d s out: posted at the next one" % max(left, 0)}
+        if before_post and not dry:
+            before_post()
+        road, res = adapter_road(rec, {"kind": row.get("kind") or "event", "frame": f, "dry": dry, "idle_s": IDLE_S})
+        if res["verdict"] == "unreachable" and res.get("raised"):
+            # the adapter raised mid-send: the post may have gone out, so never again (at most once)
+            return {"verdict": "held", "why": "the post may have gone out: %s" % res["why"]}
+        if res["verdict"] in ("refused", "unreachable"):
+            # at work, or a post that did not go through (its inbox refused one connect, its record mid-rewrite):
+            # the next bell tries again, and a session that has gone by then reads `ended`
+            return {"verdict": "kept", "why": res["why"]}
+        return {"verdict": res["verdict"], "why": res["why"]}
+    sid = (rec or {}).get("session_id") or ref
+    doubt = registry_doubt(sid)
+    if doubt:
+        return {"verdict": doubt[0], "why": doubt[1]}
+    if (rec is not None and rec.get("state") in H.FINAL) or (SID_RE.match(sid) and cc_transcript(sid)):
+        return {"verdict": "ended", "why": "%s has ended on %s" % (sid, H.machine())}
+    return {"verdict": "kept", "why": "no session on %s answers to %r, and none by that id ran here: not known to have ended" % (H.machine(), ref)}
+
+
+def cc_transcript(sid):
+    """SID's transcript under any login's config dir here, or None (the Claude Code adapter's reading)."""
+    mod = harness().Ctx().adapter("claude-code")
+    try:
+        return mod.transcript(sid) if mod is not None and hasattr(mod, "transcript") else None
+    except Exception:   # noqa: BLE001 — unknown, never ended
+        return None
+
+
+def mail_bundle(results=None):
+    """What a peer's `python3 -` runs for --take and --settle: this file alone (no adapters: those
+    halves read and write the mailbox, nothing else). RESULTS, a settle's, ride in front of it on stdin,
+    never in argv, where a long take (hundreds of rows) passes the system's argument limit."""
+    with open(os.path.abspath(__file__)) as f:
+        head = "HAIL_EMBEDDED = {'harness': None, 'adapters': {}}\n"
+        if results is not None:
+            head += "HAIL_RESULTS = %s\n" % ascii(json.dumps(results, ensure_ascii=True))
+        return head + f.read()
+
+
+def done_key(host, row):
+    return "%s:%s" % (host, row.get("id"))
+
+
+def mail_done(update=None):
+    """The receiver's ledger of final verdicts by "<sender>:<row id>", pruned past SUB_TTL_H + a day;
+    UPDATE ({key: verdict record, or None to drop it}) is written under its lock. Returns the ledger."""
+    path, now = mail_path("hail-mailbox-done.json"), time.time()
+    with SubsLock(path):
+        led = read_json(path, {})
+        if update:
+            led.update(update)
+            led = {k: v for k, v in led.items() if isinstance(v, dict) and now - (v.get("at") or 0) < (SUB_TTL_H + 24) * 3600}
+            write_json(path, led)
+    return led
+
+
+def mail_peer_state(host, ok):
+    """True when HOST's answer changed since the last pull (a line is due): one line when a peer goes
+    quiet and one when it answers again, never one every bell for a Mac that sleeps."""
+    path = mail_path("hail-mailbox-peers.json")
+    with SubsLock(path):
+        st = read_json(path, {})
+        was = st.get(host)
+        if was == ok:
+            return False
+        st[host] = ok
+        write_json(path, st)
+    return not (was is None and ok)
+
+
+def mail_pull(dry=False):
+    """This Mac's rows from each peer it has an ssh alias for, posted here and settled there: (results, rc).
+    rc 3 when a settle failed (the rows wait out their take, then settle from the ledger)."""
+    H = harness()
+    me, out, rc, allowed = H.machine(), [], 0, roads()
+    if not dry:   # this Mac's own box ages here too: rows for a host that stopped pulling still expire
+        with SubsLock(mail_path()):
+            rows = read_subs(mail_path())
+            live = expire(rows, time.time())
+            if len(live) != len(rows):
+                write_subs(live, mail_path())
+    for host, alias in sorted(H.peers().items()):
+        rows, why, _ = on_peer(host, alias, ["mail", "--take", me] + (["--dry-run"] if dry else []), src=mail_bundle(), want=list,
+                               quiet=True, timeout=30)
+        if why:
+            if not dry and mail_peer_state(host, False):
+                out.append({"from": host, "verdict": "unreachable", "why": why + " (said once, until it answers again)"})
+            continue
+        if not dry and mail_peer_state(host, True):
+            out.append({"from": host, "verdict": "answered", "why": "%s answers again" % host})
+        led = mail_done() if rows and not dry else {}
+        results = []
+        for row in rows:
+            done = led.get(done_key(host, row))
+            left = poll_left()
+            if not dry and not done and left is not None and left < readback_s() + 60:
+                # room for a post's read-back and the settle's ssh: the rest wait for the next bell, settled now
+                res = {"verdict": "kept", "why": "the bell's deadline is %d s out: posted at the next one" % max(left, 0)}
+            elif done:   # posted by an earlier pull whose settle was lost: settled again, never posted twice
+                res = {"verdict": done.get("verdict"), "why": done.get("why"), "again": True}
+            else:
+                key, marked = done_key(host, row), []
+                mark = lambda key=key, marked=marked: (marked.append(True), mail_done({key: {
+                    "verdict": "held", "why": "posted; the pull ended before its read-back", "at": int(time.time()), "provisional": True}}))
+                try:
+                    res = mail_deliver(row, dry, allowed, before_post=mark)
+                except Exception as e:   # noqa: BLE001 — one bad row never costs the pull: the next one tries it
+                    res = {"verdict": "kept", "why": "the post failed: %s" % e}
+                at = int(time.time())
+                try:   # a ledger that cannot be written costs that write, never the pull (its rows settle all the same)
+                    if not dry and res["verdict"] not in FINAL_MAIL and marked:
+                        mail_done({key: None})   # kept: no post went out (a refused or failed one), the next bell may post it
+                    if not dry and res["verdict"] in FINAL_MAIL:
+                        mail_done({key: {"verdict": res["verdict"], "why": res.get("why"), "at": at}})
+                except OSError as e:
+                    warn("the mailbox ledger could not be written (%s)" % e)
+                if not dry and res["verdict"] in FINAL_MAIL:
+                    log({"road": "mailbox", "verdict": res["verdict"], "target": row.get("target"), "host": me, "from": host,
+                         "kind": row.get("kind"), "frame": row.get("frame"), "mail": row.get("id"), "why": res.get("why"), "at": at})
+            res.update(mail=row.get("id"), token=row.get("token"), target=row.get("target"), kind=row.get("kind"), host=me)
+            results.append(res)
+        if results and not dry:
+            back = [{"id": r["mail"], "token": r["token"], "verdict": r["verdict"], "why": r.get("why")} for r in results]
+            got, why, _ = on_peer(host, alias, ["mail", "--settle", me], src=mail_bundle(back), timeout=30)
+            if why:   # unsettled: the take lapses after mail_take_s(), and the next take settles from the ledger
+                out.append({"from": host, "verdict": "unreachable", "why": "settle: " + why})
+                rc = 3
+        for r in results:
+            r.pop("token", None)
+            r["from"] = host
+            out.append(r)
+    return out, rc
+
+
+def cmd_mail(args):
+    if args.get("take") or args.get("settle"):
+        host = (args.get("take") or args.get("settle") or "").lower()
+        if not HOST_RE.match(host):
+            sys.exit("hail: %r is no host name" % host)
+        if args.get("take"):
+            print(json.dumps(mail_take(host, bool(args.get("dry-run"))), ensure_ascii=False))
+            return 0
+        try:
+            results = json.loads(args.get("results") or globals().get("HAIL_RESULTS") or "")
+        except ValueError:
+            sys.exit("hail: --settle needs --results, a JSON list")
+        if not isinstance(results, list):
+            sys.exit("hail: --settle needs --results, a JSON list")
+        print(json.dumps(mail_settle(host, results), ensure_ascii=False))
+        return 0
+    if args.get("pull"):
+        out, rc = mail_pull(bool(args.get("dry-run")))
+        if args.get("json"):
+            print(json.dumps(out, indent=1, ensure_ascii=False))
+        else:
+            for r in out:
+                if r.get("mail"):
+                    print("%s  %s %s by mail from %s%s" % (r["mail"], r.get("target"), r["verdict"], r["from"],
+                                                          " (kept)" if r["verdict"] == "kept" else ""))
+                else:
+                    print("hail mail: %s: %s" % (r["from"], r.get("why")))
+        return rc
+    rows = read_subs(mail_path())
+    if args.get("json"):
+        print(json.dumps(rows, indent=1, ensure_ascii=False))
+    elif not rows:
+        print("no mailbox rows")
+    else:
+        for r in rows:
+            print("%s  %s  %-10s %s  %s  %s%s" % (r.get("id"), time.strftime("%m-%d %H:%M", time.localtime(r.get("at") or 0)),
+                                                 r.get("host"), r.get("target"), r.get("kind"), r.get("state"),
+                                                 ": " + r["last"] if r.get("last") else ""))
+    return 0
+
+
 # ---- the command line ----------------------------------------------------------------------
 
-VALUED = ("--text", "--file", "--kind", "--about", "--thread", "--host", "--when", "--frame")
-FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half", "--no-file", "--sender-fenced")
+VALUED = ("--text", "--file", "--kind", "--about", "--thread", "--host", "--when", "--frame", "--roads",
+          "--take", "--settle", "--results")
+FLAGS = ("--dry-run", "--json", "--fulfil", "--peer-half", "--no-file", "--sender-fenced", "--pull")
 
 
 def parse(argv):
@@ -626,20 +1228,28 @@ def emit(rec, as_json):
 def main(argv):
     if argv[:1] == ["subs"]:
         return cmd_subs(parse(argv[1:]))
+    if argv[:1] == ["mail"]:
+        return cmd_mail(parse(argv[1:]))
     a = parse(argv)
     if a.get("peer-half"):   # a peer's half of --host: the adapter roads, the frame as sent
+        print(PEER_MARK, file=sys.stderr, flush=True)
         # a public flag on the same binary: the frame it posts must still be one hail's frame
         f = a.get("frame") or ""
         bad = ("--peer-half needs --frame" if not f else
                "the frame is not a HAIL frame" if not FRAME_RE.match(f) else
+               "the frame is more than one line" if CTRL_RE.search(f) else
                "the frame is %d characters, over %d" % (len(f), FRAME_MAX) if len(f) > FRAME_MAX else
                "the frame carries an answer (K13)" if ANSWER_RE.search(f) else None)
         if bad:
             print(json.dumps({"road": None, "verdict": "refused", "target": a.get("thread") or a.get("ref"),
                               "why": bad, "tried": []}, ensure_ascii=False))
             return 2
+        own = roads()
         msg = {"kind": a.get("kind") or "event", "frame": f, "dry": bool(a.get("dry-run")), "idle_s": IDLE_S,
-               "sender_fenced": bool(a.get("sender-fenced"))}
+               "sender_fenced": bool(a.get("sender-fenced")),
+               # the sender's hail.roads: the peer takes only what the sender's row allows
+               # and this Mac's own row, as the mailbox's receiver honours both
+               "roads": [r for r in (",".join(ROADS) if a.get("roads") is None else a["roads"]).split(",") if r in ROADS and r in own]}
         rec = deliver(dict(a, host="here"), msg)
         print(json.dumps(rec, ensure_ascii=False))
         return 0
@@ -668,11 +1278,20 @@ def main(argv):
     if why:
         rec.update(verdict="refused", why=why)
     else:
-        msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S,
+        msg = {"kind": kind, "frame": frame(kind, a["text"], about, sender()), "dry": dry, "idle_s": IDLE_S, "roads": roads(),
                "space": os.environ.get("HAIL_SPACE") or None, "no_file": bool(a.get("no-file")), "sender_cwd": os.getcwd(),
                # what a non-Claude road's vendor fence judges on the sender's side: its cwd and the --about repo
                "fence_paths": [os.getcwd()] + [p for p in ([repo_dir(about["repo"])] if about else []) if p]}
-        rec = deliver(a, msg)
+        if CTRL_RE.search(msg["frame"]):   # a control character in the text, or a line break in the sender's name
+            rec.update(verdict="refused", why="the frame is more than one line: a hail is one line, which every receiver refuses otherwise")
+        # the receiver's other frame checks (mail_deliver, the peer half), judged here first: a mailbox row
+        # would otherwise say `queued` and be refused for good a bell later, seen only in hail.jsonl
+        elif len(msg["frame"]) > FRAME_MAX:
+            rec.update(verdict="refused", why="the frame is %d characters, over %d: a shorter sender name (HAIL_FROM) or --about, which every receiver refuses otherwise" % (len(msg["frame"]), FRAME_MAX))
+        elif ANSWER_RE.search(msg["frame"]):
+            rec.update(verdict="refused", why="the frame carries an answer (K13), in the sender's name: every receiver refuses it")
+        else:
+            rec = deliver(a, msg)
         # --when idle: a target still at work is a subscription, not a refusal
         if when == "idle" and rec["verdict"] == "refused" and (rec.get("road") in ("socket", "orca") or rec.get("busy")):
             rec = subscribe(a, msg, rec)

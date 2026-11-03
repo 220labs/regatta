@@ -1,0 +1,336 @@
+{
+  "name": "regatta",
+  "displayName": "regatta",
+  "description": "Regatta's helm board and the navigator's meetings in a VS Code sidebar: what waits on you, in the order you act on it. Needs the regatta CLI.",
+  "version": "0.1.0",
+  "publisher": "220labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/220labs/regatta.git",
+    "directory": "modules/helm/vscode"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "regatta",
+          "title": "regatta",
+          "icon": "media/regatta.svg"
+        }
+      ]
+    },
+    "views": {
+      "regatta": [
+        {
+          "id": "regatta.board",
+          "name": "Board",
+          "icon": "media/regatta.svg",
+          "when": "regatta.helm || !regatta.navigator"
+        },
+        {
+          "id": "regatta.meetings",
+          "name": "Meetings",
+          "when": "regatta.navigator"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "regatta.board",
+        "contents": "Looking for the regatta CLI…",
+        "when": "regatta.status == 'looking'"
+      },
+      {
+        "view": "regatta.board",
+        "contents": "This view shows Regatta's board: what waits on you, in the order you act on it. The regatta CLI was not found on this machine.\n[Add regatta](command:regatta.add)\nInstalled already? VS Code may not see your shell's PATH: set regatta.cli to its full path.\n[Open setting](command:workbench.action.openSettings?%5B%22regatta.cli%22%5D)",
+        "when": "regatta.status == 'missing'"
+      },
+      {
+        "view": "regatta.board",
+        "contents": "The regatta CLI answers, but neither helm (the board) nor the navigator (meetings) is installed with it.\n[Add regatta](command:regatta.add)",
+        "when": "regatta.status == 'noModules'"
+      },
+      {
+        "view": "regatta.board",
+        "contents": "Reading the board…",
+        "when": "regatta.boardStatus == 'loading'"
+      },
+      {
+        "view": "regatta.board",
+        "contents": "Nothing on the board: no question waits, nothing runs.",
+        "when": "regatta.boardStatus == 'empty'"
+      },
+      {
+        "view": "regatta.board",
+        "contents": "Could not read the board. The reason is shown above.\n[Refresh](command:regatta.board.refresh)",
+        "when": "regatta.boardStatus == 'error'"
+      },
+      {
+        "view": "regatta.meetings",
+        "contents": "No meetings in the next two days.",
+        "when": "regatta.meetingsStatus == 'empty'"
+      },
+      {
+        "view": "regatta.meetings",
+        "contents": "The navigator did not answer. The reason is shown above.\n[Refresh](command:regatta.meetings.refresh)",
+        "when": "regatta.meetingsStatus == 'error'"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "regatta.getStarted",
+        "title": "Get started with Regatta",
+        "description": "The regatta view shows helm's board and, where the navigator is installed, your next meetings.",
+        "steps": [
+          {
+            "id": "regatta",
+            "title": "Add Regatta",
+            "description": "With Regatta's CLI installed, the regatta view shows helm's board: what waits on you, in the order you act on it.\n[Regatta on GitHub](https://github.com/220labs/regatta)",
+            "media": {
+              "markdown": "media/walkthrough/regatta.md"
+            },
+            "completionEvents": [
+              "onContext:regatta.found"
+            ]
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "regatta.add",
+        "title": "Add regatta…",
+        "category": "Regatta"
+      },
+      {
+        "command": "regatta.board.refresh",
+        "title": "Refresh the Board",
+        "category": "Regatta",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "regatta.board.open",
+        "title": "Open",
+        "category": "Regatta"
+      },
+      {
+        "command": "regatta.board.openOnGitHub",
+        "title": "Open on GitHub",
+        "category": "Regatta",
+        "icon": "$(github)"
+      },
+      {
+        "command": "regatta.board.toggleFold",
+        "title": "Show More or Fewer",
+        "category": "Regatta"
+      },
+      {
+        "command": "regatta.meetings.refresh",
+        "title": "Refresh Meetings",
+        "category": "Regatta",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "regatta.meetings.start",
+        "title": "Start the Navigator",
+        "category": "Regatta",
+        "icon": "$(play)"
+      },
+      {
+        "command": "regatta.meetings.stop",
+        "title": "Stop Listening",
+        "category": "Regatta",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "regatta.meetings.openLive",
+        "title": "Open the Live Page",
+        "category": "Regatta",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "regatta.meetings.openBrief",
+        "title": "Open the Brief",
+        "category": "Regatta",
+        "icon": "$(book)"
+      },
+      {
+        "command": "regatta.meetings.prepareBrief",
+        "title": "Prepare the Brief",
+        "category": "Regatta",
+        "icon": "$(sparkle)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "regatta.board.refresh",
+          "when": "view == regatta.board && regatta.helm",
+          "group": "navigation"
+        },
+        {
+          "command": "regatta.meetings.refresh",
+          "when": "view == regatta.meetings",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "regatta.board.openOnGitHub",
+          "when": "view == regatta.board && viewItem =~ /hasGitHub/",
+          "group": "inline"
+        },
+        {
+          "command": "regatta.board.openOnGitHub",
+          "when": "view == regatta.board && viewItem =~ /hasGitHub/",
+          "group": "0_open"
+        },
+        {
+          "command": "regatta.meetings.start",
+          "when": "view == regatta.meetings && viewItem =~ /startable/",
+          "group": "inline"
+        },
+        {
+          "command": "regatta.meetings.start",
+          "when": "view == regatta.meetings && viewItem =~ /startable/",
+          "group": "0_start"
+        },
+        {
+          "command": "regatta.meetings.openBrief",
+          "when": "view == regatta.meetings && viewItem =~ /hasBrief/",
+          "group": "1_brief"
+        },
+        {
+          "command": "regatta.meetings.prepareBrief",
+          "when": "view == regatta.meetings && viewItem =~ /startable/ && viewItem =~ /hasEvent/",
+          "group": "1_brief"
+        },
+        {
+          "command": "regatta.meetings.openLive",
+          "when": "view == regatta.meetings && viewItem == liveMeeting",
+          "group": "inline"
+        },
+        {
+          "command": "regatta.meetings.stop",
+          "when": "view == regatta.meetings && viewItem =~ /liveMeeting|leftoverMeeting/",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "regatta.add",
+          "when": "!regatta.found"
+        },
+        {
+          "command": "regatta.board.refresh",
+          "when": "regatta.helm"
+        },
+        {
+          "command": "regatta.board.open",
+          "when": "false"
+        },
+        {
+          "command": "regatta.board.openOnGitHub",
+          "when": "false"
+        },
+        {
+          "command": "regatta.board.toggleFold",
+          "when": "false"
+        },
+        {
+          "command": "regatta.meetings.refresh",
+          "when": "regatta.navigator"
+        },
+        {
+          "command": "regatta.meetings.start",
+          "when": "regatta.navigator"
+        },
+        {
+          "command": "regatta.meetings.stop",
+          "when": "false"
+        },
+        {
+          "command": "regatta.meetings.openLive",
+          "when": "false"
+        },
+        {
+          "command": "regatta.meetings.openBrief",
+          "when": "false"
+        },
+        {
+          "command": "regatta.meetings.prepareBrief",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "regatta",
+      "properties": {
+        "regatta.cli": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "The regatta CLI to run. Empty: `regatta` on PATH, else the clone $REGATTA_HOME names, else the one in the regatta config dir's `home` file. A leading ~/ is expanded."
+        },
+        "regatta.boardFile": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "The board file helm’s poll writes. Empty: $PLAN_CACHE_DIR/overview/state.json, else Library/Caches/plan/overview/state.json in your home folder (helm’s default). helm board writes only a file named <dir>/overview/state.json (it is given <dir>); any other file only what writes it can fill. Read whatever its age (the view says it once it is over 15 minutes old); the refresh button asks the CLI for a fresh board (over a minute: it reads every repo’s pull requests), as does a missing file, at most every 30 minutes."
+        },
+        "regatta.perSection": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 0,
+          "description": "Rows each section of the board shows before the fold; click \"N more in the fold…\" for the rest. Sessions waiting on you and blocked work always show whole."
+        },
+        "regatta.nudges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a status-bar nudge from five minutes before a meeting until the navigator listens (to ten minutes after its start). A click starts the navigator."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
+    "compile": "tsc -p .",
+    "test": "node --test out/test/*.test.js",
+    "package": "vsce package --no-dependencies",
+    "check": "npm run clean && npm run compile && npm test && npm run package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^7.0.2"
+  },
+  "keywords": [
+    "regatta",
+    "coding agents",
+    "board",
+    "meetings",
+    "sidebar"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Regatta runs the regatta CLI named in its settings."
+    }
+  }
+}

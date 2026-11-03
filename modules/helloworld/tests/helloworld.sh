@@ -1237,6 +1237,281 @@ has "$T/gh.body" "squashed: no private commit has the public main's tree" "  the
 python3 "$B/helloworld" publish "$R2" --squash > "$T/out" 2>&1
 check "$?" 2 "--squash without --pr: a usage error"
 
+echo "the scan cache: per blob, the same findings as without it (twin-nightly)"
+# A third scratch pair: published once, then a span that changes a file (a leak), keeps it (a
+# commit outside the allowlist), reverts it, credits a name a file holds, leaks a second name and
+# credits it after. Every replayed commit is scanned with and without the cache: same plan, same
+# findings, same printed check, masked or not; and the cached run reads fewer blobs one by one.
+R3="$T/nt"; PUB3="$T/nt-public.git"
+git init -q --bare -b main "$T/nt-origin.git"; git init -q --bare -b main "$PUB3"
+git init -q -b main "$R3"; git -C "$R3" config user.name "Film Maker"; git -C "$R3" config user.email maker@example.org
+git -C "$R3" config commit.gpgsign false; git -C "$R3" remote add origin https://github.com/acme/night-private.git
+printf '[url "%s"]\n\tinsteadOf = https://github.com/acme/night.git\n' "$PUB3" >> "$T/gitconfig"
+printf '[url "%s"]\n\tinsteadOf = https://github.com/acme/night-private.git\n' "$T/nt-origin.git" >> "$T/gitconfig"
+mkdir -p "$R3/.helloworld"; printf '# Night\n' > "$R3/README.md"; printf 'print(1)  # /Users/someone\n' > "$R3/tool.py"
+printf 'people:\n' > "$R3/CREDITS.yaml"; printf 'a\n' > "$R3/notes.md"
+printf 'README.md\ntool.py\nCREDITS.yaml\n' > "$R3/.helloworld/allowlist.txt"; echo https://github.com/acme/night.git > "$R3/.helloworld/remote"
+printf 'tool.py:/Users/someone\n' > "$R3/.helloworld/exemptions.txt"
+rc3() { git -C "$R3" add -A; git -C "$R3" commit -q -m "$1"; }
+up3() { GIT_CONFIG_GLOBAL="$T/gitconfig" git -C "$R3" push -q origin main; }
+rc3 "Docs: the first README"; up3
+python3 "$T/answer.py" acme/night env -u CLAUDECODE GIT_CONFIG_GLOBAL="$T/gitconfig" python3 "$B/helloworld" publish "$R3" > "$T/out" 2>&1
+check "$?" 0 "a third twin's first publish"
+printf 'people:\n  - {name: "Zed Quill"}\n' > "$R3/CREDITS.yaml"; printf '# Night\nWith Zed Quill.\n' > "$R3/README.md"; rc3 "Credits: the driver"
+printf 'print(1)  # /Users/someone\nprint(2)  # Harbourview\n' > "$R3/tool.py"; rc3 "Tool: a leak"
+printf 'b\n' >> "$R3/notes.md"; rc3 "Project: notes"
+printf 'print(1)  # /Users/someone\n' > "$R3/tool.py"; rc3 "Tool: the leak taken back"
+printf '# Night\nWith Zed Quill and Ana Bell.\n' > "$R3/README.md"; rc3 "Docs: a second name"
+printf 'people:\n  - {name: "Zed Quill"}\n  - {name: "Ana Bell"}\n' > "$R3/CREDITS.yaml"; rc3 "Credits: the second name"
+printf 'print(1)  # /Users/someone\nprint(3)\n' > "$R3/tool.py"; rc3 "Tool: three"
+up3
+chk3() { GIT_CONFIG_GLOBAL="$T/gitconfig" python3 "$B/helloworld" check "$R3" "$@" 2>&1 | grep -v '^  lists: '; }
+( unset CLAUDECODE; HELLOWORLD_NO_CACHE=1 chk3 > "$T/nocache.out" )
+( unset CLAUDECODE; chk3 > "$T/cache.out" )
+check "$(diff "$T/nocache.out" "$T/cache.out" > /dev/null; echo $?)" 0 "check: the same output, cached or not"
+has "$T/cache.out" "3 commit(s) would go up, 1 folded, 1 private only" "  over a span that leaks, keeps, reverts and credits"
+has "$T/cache.out" 'exemption used: tool.py: "/Users/someone" cleared 1' "  the exemption's count, cached"
+( export CLAUDECODE=1; HELLOWORLD_NO_CACHE=1 chk3 > "$T/nocache.out" )
+( export CLAUDECODE=1; chk3 > "$T/cache.out" )
+check "$(diff "$T/nocache.out" "$T/cache.out" > /dev/null; echo $?)" 0 "  masked, in an agent's shell: the same"
+cat > "$T/cacheunit.py" <<'PY'
+import importlib.machinery as m, importlib.util as u, os, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+calls = []
+real = mod.subprocess.run
+def run(cmd, *a, **k):
+    if "cat-file" in cmd and "blob" in cmd:
+        calls.append(cmd)
+    return real(cmd, *a, **k)
+mod.subprocess.run = run
+def plan(cached):
+    os.environ.pop("HELLOWORLD_NO_CACHE", None) if cached else os.environ.__setitem__("HELLOWORLD_NO_CACHE", "1")
+    for c in (mod._BLOBS, mod._TEXTS, mod._FILE_SCANS, mod._RX):
+        c.clear()
+    del calls[:]
+    b = mod.build(sys.argv[2], "main", check_only=True)
+    parent = mod.git(b["repo"], "rev-parse", "refs/remotes/pub/main").stdout.strip()
+    p = mod.replay_plan(b, parent)
+    scans = [mod.scan(b["repo"], *(lambda t: (t["paths"], t["files"]))(mod.public_tree_at(b["repo"], s["sha"], {})), b["ex"], b["words"])
+             for s in p["steps"]]
+    return repr((p, scans)), len(calls)
+a, na = plan(False)
+c, nc = plan(True)
+print(a == c, nc < na, "private word" in a)
+PY
+git -C "$R3" fetch -q "$PUB3" main:refs/remotes/pub/main
+check "$(GIT_CONFIG_GLOBAL="$T/gitconfig" env -u CLAUDECODE python3 "$T/cacheunit.py" "$B/helloworld" "$R3")" "True True True" \
+      "  in process: the same plan and findings for every step, fewer single blob reads, findings among them"
+
+echo "the nightly: .helloworld/nightly says the mode, the config dir which checkouts this host runs"
+confunit() { python3 -c '
+import importlib.machinery as m, importlib.util as u, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+try:
+    c = mod.nightly_conf(sys.argv[2].replace("|", "\n"), "x")
+    print(c["mode"], ",".join(c["checks"]) or "-")
+except mod.Refused as e:
+    print("refused:", str(e).split(": ", 1)[1])' "$B/helloworld" "$1"; }
+check "$(confunit 'mode: off')" "off -" "mode off"
+check "$(confunit 'mode: pr')" "pr -" "mode pr"
+check "$(confunit '# the twin merges on green|mode: on-green  # the owner, 2026-10-31|main-check: ci/circleci: linux')" \
+      "on-green ci/circleci: linux" "mode on-green, a main-check whose context holds a colon, comments stripped"
+check "$(confunit 'mode: on-green|main-check: a|main-check: b')" "on-green a,b" "  main-check more than once"
+check "$(confunit 'mode: on-green|twin-check: check')" "on-green -" "  twin-check lines"
+check "$(confunit 'mode: merge')" "refused: mode 'merge' is none of off, pr, on-green" "a bad mode: refused"
+check "$(confunit 'mode: On-Green')" "refused: mode 'On-Green' is none of off, pr, on-green" "  its case too"
+check "$(confunit 'mode: pr|mode: on-green')" "refused: mode is given twice" "a mode twice: refused"
+check "$(confunit 'main-check: ci/circleci: linux')" "refused: no \`mode:\` line (off, pr, on-green)" "no mode: refused"
+check "$(confunit 'mode: pr|merge: yes')" "refused: 'merge: yes' is not \`mode: off|pr|on-green\`, \`main-check: <context>\` or \`twin-check: <name>\`" "an unknown key: refused"
+check "$(confunit 'on-green')" "refused: 'on-green' is not \`mode: off|pr|on-green\`, \`main-check: <context>\` or \`twin-check: <name>\`" "  a bare word"
+
+mkdir -p "$T/nbin" "$T/config/helm"
+echo acme/logbook > "$T/config/helm/logbook-repo"
+# The nightly's gh: the PR's checks and main's from variables, a merge that moves the twin's main
+# the way a rebase merge of a branch on top of main does, an issue recorded with its body.
+cat > "$T/nbin/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/ngh.log"
+tip() { git -C "$PUB3" for-each-ref --format='%(objectname)' refs/heads/claude/publish | tail -1; }
+case "\$1 \$2" in
+  "api user") printf '%s\n' "\${FAKE_ACTOR:-acme-bot}"; exit 0 ;;
+  "api repos/acme/night") case "\$*" in *permissions*) echo admin,push ;; *) echo "false false" ;; esac; exit 0 ;;
+  "api -X") exit 0 ;;
+esac
+case "\$*" in
+  "api repos/acme/night-private/commits/"*/status) [ -n "\${FAKE_MAIN_FAIL:-}" ] && { echo "gh: HTTP 502" >&2; exit 1; }; [ -z "\${FAKE_MAIN-x}" ] && { echo '{"statuses": []}'; exit 0; }; printf '{"statuses": [{"context": "ci/circleci: linux", "state": "%s"}]}\n' "\${FAKE_MAIN-success}"; exit 0 ;;
+  "api repos/acme/night-private/commits/"*/check-runs) [ -n "\${FAKE_MAIN_FAIL:-}" ] && { echo "gh: HTTP 502" >&2; exit 1; }; echo '{"check_runs": []}'; exit 0 ;;
+  "pr list"*) [ -n "\${FAKE_LIST:-}" ] && echo "\$FAKE_LIST"; exit 0 ;;
+  "pr create"*) while [ \$# -gt 0 ]; do [ "\$1" = --head ] && echo "\$2" > "$T/ngh.head"; shift; done; echo https://github.com/acme/night/pull/9; exit 0 ;;
+  "pr view"*) st=OPEN; [ -f "$T/ngh.merged" ] && st=MERGED; [ -n "\${FAKE_PR_STATE:-}" ] && st=\$FAKE_PR_STATE
+    roll=\$(printf '{"__typename": "CheckRun", "name": "check", "status": "%s", "conclusion": "%s"}' "\${FAKE_STATUS-COMPLETED}" "\${FAKE_CONCLUSION-SUCCESS}")
+    [ -n "\${FAKE_DUP:-}" ] && roll="\$roll, {\"__typename\": \"CheckRun\", \"name\": \"check\", \"status\": \"COMPLETED\", \"conclusion\": \"\$FAKE_DUP\"}"
+    [ -n "\${FAKE_EMPTY:-}" ] && roll=""
+    printf '{"state": "%s", "headRefOid": "%s", "statusCheckRollup": [%s]}\n' "\$st" "\${FAKE_HEAD:-\$(tip)}" "\$roll"; exit 0 ;;
+  "pr merge"*) [ -n "\${FAKE_MERGE_FAIL:-}" ] && { echo "GraphQL: Protected branch rules not configured for this branch" >&2; exit 1; }
+    git -C "$PUB3" update-ref refs/heads/main "\$(tip)"; touch "$T/ngh.merged"; exit 0 ;;
+  "issue list"*) echo '[]'; exit 0 ;;
+  "issue create"*) while [ \$# -gt 0 ]; do [ "\$1" = --body-file ] && cp "\$2" "$T/issue.body"; shift; done; echo https://github.com/acme/logbook/issues/3; exit 0 ;;
+esac
+echo "fake gh: no answer for \$*" >&2; exit 1
+EOF
+chmod +x "$T/nbin/gh"
+night() { GIT_CONFIG_GLOBAL="$T/gitconfig" PATH="$T/nbin:$PATH" HELLOWORLD_NIGHTLY_POLL=0 env -u REGATTA_UNATTENDED -u CLAUDE_UNATTENDED -u CLAUDECODE -u CI -u GITHUB_ACTIONS -u CIRCLECI \
+          python3 "$B/helloworld" nightly "$@" > "$T/out" 2>&1; echo $?; }
+nclean() { rm -f "$T/ngh.log" "$T/ngh.merged" "$T/issue.body" "$T/ngh.head"
+           for r in $(git -C "$PUB3" for-each-ref --format='%(refname)' refs/heads/claude); do git -C "$PUB3" update-ref -d "$r"; done; }
+setmode() { printf '%s\n' "$@" > "$R3/.helloworld/nightly"; rc3 "Project: nightly $1"; up3; }
+merges() { cat "$T/ngh.log" 2>/dev/null | grep -c '^pr merge'; }
+nclean
+check "$(night)" 0 "no repo given and no helloworld/nightly-repos: nothing runs"
+has "$T/out" "no repo to publish on this host" "  said in one line"
+check "$(CLAUDECODE=1 GIT_CONFIG_GLOBAL="$T/gitconfig" env -u REGATTA_UNATTENDED -u CLAUDE_UNATTENDED -u CI -u GITHUB_ACTIONS -u CIRCLECI python3 "$B/helloworld" nightly "$R3" > "$T/out" 2>&1; echo $?)" 2 "a real night inside an agent's shell: refused"
+has "$T/out" "--dry-run\` is the agent's" "  --dry-run is the agent's"
+check "$(GIT_CONFIG_GLOBAL="$T/gitconfig" env -u CLAUDECODE -u CI -u GITHUB_ACTIONS -u CIRCLECI -u CLAUDE_UNATTENDED REGATTA_UNATTENDED=1 python3 "$B/helloworld" nightly "$R3" > "$T/out" 2>&1; echo $?)" 2 "an unattended run (REGATTA_UNATTENDED) of a real night: refused"
+has "$T/out" "never an agent's shell (REGATTA_UNATTENDED is set)" "  by the unattended marker, not a CI one"
+check "$(GIT_CONFIG_GLOBAL="$T/gitconfig" env -u CLAUDECODE CI=true python3 "$B/helloworld" nightly "$R3" > "$T/out" 2>&1; echo $?)" 2 "on a CI runner: refused, the word list lives on the Macs"
+check "$(night "$R3")" 0 "no .helloworld/nightly at origin/main: off"
+has "$T/out" "mode off" "  says so"
+check "$(git -C "$PUB3" for-each-ref refs/heads/claude | wc -l | tr -d ' ')" 0 "  and pushes nothing"
+setmode "mode: merge"
+check "$(night "$R3")" 1 "a bad mode: held, never read as off or a merge"
+has "$T/out" "held: its nightly config: .helloworld/nightly at origin/main: mode 'merge' is none of off, pr, on-green" "  naming the line"
+has "$T/out" "filed on the logbook: https://github.com/acme/logbook/issues/3" "  and filed on the logbook (helm/logbook-repo)"
+has "$T/ngh.log" "issue create --repo acme/logbook --title helloworld nightly: acme/night held" "  one issue per twin, by its public name"
+nclean; setmode "mode: pr"
+check "$(night "$R3")" 0 "mode pr: publish --pr, no merge"
+has "$T/out" "proposed: https://github.com/acme/night/pull/9 — the owner's merge is the publish" "  the PR named"
+check "$(merges)" 0 "  gh pr merge never called"
+check "$(cat "$T/ngh.head")" "claude/publish/$(date -u +%F)-nightly" "  the branch's topic is nightly"
+nclean; setmode "mode: on-green" "main-check: ci/circleci: linux"
+mkdir -p "$T/config/helloworld"; echo "$R3" > "$T/config/helloworld/nightly-repos"
+check "$(night --dry-run)" 0 "--dry-run, the host's helloworld/nightly-repos: the plan, nothing pushed"
+has "$T/out" "== $R3" "  the checkout from the config dir"
+has "$T/out" "mode on-green: publish --pr, then merge on green: the twin PR's checks and main's ci/circleci: linux" "  the mode and the plan"
+has "$T/out" "pending: " "  the check's backlog line"
+has "$T/out" "main's ci/circleci: linux on $(git -C "$R3" rev-parse --short=7 main): green" "  main's check, read now"
+has "$T/out" "merge actor: acme-bot (may admin,push on acme/night)" "  the merge actor and its rights on the twin"
+has "$T/out" "merge actor judged: its login and name hold no private word" "  and its names judged"
+check "$(FAKE_ACTOR=zq-machine night --dry-run)" 1 "--dry-run with a merge actor whose login is a private word: fails, so --schedule would not load"
+has "$T/out" "merge actor judged: the merging gh account's login holds a private word" "  saying which"
+check "$(printf 'acme-bot\tZed Quill' > "$T/actor"; FAKE_ACTOR="$(cat "$T/actor")" night --dry-run)" 1 "  its name a private word: fails too"
+has "$T/out" "the merging gh account's name holds a private word" "  the name named"
+has "$T/out" "a held night files on: acme/logbook" "  where a held night files"
+check "$(git -C "$PUB3" for-each-ref refs/heads/claude | wc -l | tr -d ' ')" 0 "  nothing pushed"
+check "$(CLAUDECODE=1 GIT_CONFIG_GLOBAL="$T/gitconfig" PATH="$T/nbin:$PATH" env -u REGATTA_UNATTENDED -u CLAUDE_UNATTENDED -u CI -u GITHUB_ACTIONS -u CIRCLECI python3 "$B/helloworld" nightly --dry-run > /dev/null 2>&1; echo $?)" 0 "  --dry-run inside an agent's shell: allowed"
+nclean
+check "$(FAKE_CONCLUSION=FAILURE night)" 1 "on-green, the twin PR's check red: held"
+has "$T/out" "held: red: the twin PR's check — nothing merged" "  naming the check"
+check "$(merges)" 0 "  no merge"
+nclean
+check "$(FAKE_MAIN=failure night)" 1 "on-green, main's ci/circleci: linux red: held"
+has "$T/out" "red: main's ci/circleci: linux on $(git -C "$R3" rev-parse --short=7 main) (red)" "  naming main's check"
+check "$(merges)" 0 "  no merge"
+nclean
+check "$(FAKE_STATUS=IN_PROGRESS night --wait 0)" 1 "on-green, a check still running past --wait: held"
+has "$T/out" "not green within 0 min: still waiting on the twin PR's check" "  naming what it waited on"
+nclean
+check "$(FAKE_HEAD=0123456789abcdef0123456789abcdef01234567 night)" 1 "on-green, the PR's head is not what the gate pushed: held"
+nclean
+check "$(FAKE_MERGE_FAIL=1 night)" 1 "on-green, green but the merge refused (branch rules, the actor's rights): held"
+has "$T/out" "green, but the merge was refused: GraphQL: Protected branch rules" "  gh's words in the record"
+nclean
+check "$(FAKE_DUP=FAILURE night)" 1 "on-green, two checks named alike, one red: held, not read as green"
+nclean
+check "$(FAKE_EMPTY=1 night --wait 0)" 1 "on-green, no check on the twin PR by the end of the wait: held"
+has "$T/out" "still waiting on any check on the twin PR" "  saying so"
+nclean
+check "$(FAKE_MAIN= night --wait 0)" 1 "on-green, main's check never reported: held at the end of the wait"
+has "$T/out" "still waiting on main's ci/circleci: linux" "  naming it"
+nclean
+check "$(FAKE_MAIN_FAIL=1 night --wait 0)" 1 "on-green, main's checks unread: waited on, then held"
+has "$T/out" "main's ci/circleci: linux (unread (gh: HTTP 502))" "  with GitHub's words"
+nclean
+check "$(FAKE_PR_STATE=CLOSED night)" 1 "on-green, the twin PR closed meanwhile: held"
+has "$T/out" "is closed" "  saying so"
+nclean; setmode "mode: on-green" "main-check: ci/circleci: linux" "twin-check: dco"
+check "$(night --wait 0)" 1 "on-green, a twin-check not reported yet: waited on, not passed over"
+has "$T/out" "still waiting on the twin PR's dco (not reported yet)" "  naming it"
+check "$(FAKE_LIST=https://github.com/acme/night/pull/9 night --wait 0)" 1 "  the next night, the same tree's PR still open (not proposed twice): held again while dco is missing"
+check "$(cat "$T/ngh.log" | grep -c '^pr create')" 1 "  one PR in all"
+setmode "mode: on-green" "main-check: ci/circleci: linux"
+nclean
+check "$(FAKE_CONCLUSION=FAILURE night)" 1 "a night held red, its PR opened by a public login"
+check "$(FAKE_ACTOR=zq-machine FAKE_LIST=https://github.com/acme/night/pull/9 night)" 1 "  the next night on another Mac, green, the merger a private word (the open road scans no PR author): held"
+has "$T/out" "held: the merging gh account's login holds a private word, and the merge would publish it" "  saying why"
+check "$(merges)" 0 "  no merge"
+lacks "$T/issue.body" "zq-machine" "  the issue names no account"
+nclean
+check "$(FAKE_CONCLUSION=FAILURE night)" 1 "a night held red"
+check "$(FAKE_LIST=https://github.com/acme/night/pull/9 night)" 0 "  the next night, its PR still open and now green: merged, not proposed again"
+check "$(cat "$T/ngh.log" | grep -c '^pr create')" 1 "  one PR in all"
+has "$T/out" "nothing to propose — branch claude/publish/" "  the open road"
+has "$T/out" "merged on green: https://github.com/acme/night/pull/9 (read back)" "  read back"
+has "$T/ngh.log" "pr merge https://github.com/acme/night/pull/9 --rebase --match-head-commit $(cat "$T/ngh.head" | xargs git -C "$PUB3" rev-parse)" \
+    "  a rebase merge, pinned to the head the gate pushed"
+check "$(git -C "$PUB3" rev-parse 'main^{tree}')" "$(GIT_CONFIG_GLOBAL="$T/gitconfig" python3 -c '
+import importlib.machinery as m, importlib.util as u, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+f = mod.entries(sys.argv[2], "main"); p, _ = mod.allowlist(mod.blob(sys.argv[2], f[".helloworld/allowlist.txt"][2]).decode(), f)
+print(mod.write_tree(sys.argv[2], p, f))' "$B/helloworld" "$R3")" "  the twin's main has the private main's published tree"
+nclean
+check "$(night)" 0 "the next night with nothing new: quiet"
+has "$T/out" "nothing to publish: the twin's main has this tree" "  one line"
+check "$(cat "$T/ngh.log" 2>/dev/null | grep -c '^pr create')" 0 "  no PR"
+printf 'print(1)  # /Users/someone\nprint(4)  # Harbourview\n' > "$R3/tool.py"; rc3 "Tool: a second leak"; up3
+nclean
+check "$(night)" 1 "the gate refuses the publish: held"
+has "$T/out" "held: the gate refused the publish" "  said"
+has "$T/issue.body" "tool.py:2: private word — Ha…" "  the issue carries the run's last lines"
+lacks "$T/issue.body" "Harbourview" "  its private words masked, though the run itself is not in an agent's shell"
+rm "$T/config/helm/logbook-repo"; nclean
+check "$(night)" 1 "  without a logbook: still held"
+has "$T/out" "no issue filed: $T/config/helm/logbook-repo names no owner/name" "  and says no issue was filed"
+check "$(python3 -c '
+import importlib.machinery as m, importlib.util as u, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+print(mod.masked("by OZ and Zed at Harbourview", mod.words_regex(["OZ", "Zed", "Harbourview"])))' "$B/helloworld")" "by … and … at Ha…" \
+      "the logbook mask: a short private word cut whole"
+echo "install.sh --schedule: the nightly's launchd agent, loaded only where its dry run passes"
+I="$(cd "$B/.." && pwd)/install.sh"
+printf '#!/bin/sh\necho "$*" >> "%s"\n' "$T/lc.log" > "$T/lc"; chmod +x "$T/lc"
+mkdir -p "$T/config/regatta"; echo "$T/logs" > "$T/config/regatta/log-dir"
+inst() { GIT_CONFIG_GLOBAL="$T/gitconfig" PATH="$T/nbin:$PATH" HELLOWORLD_LAUNCH_DIR="$T/la" HELLOWORLD_LAUNCHCTL="$T/lc" HELLOWORLD_JOB_DIR="${JOB:-$(cd "$B/.." && pwd)}" \
+         HELLOWORLD_NIGHTLY_POLL=0 env -u REGATTA_UNATTENDED -u CLAUDE_UNATTENDED -u CI -u GITHUB_ACTIONS -u CIRCLECI sh "$I" "$@" > "$T/out" 2>&1; echo $?; }
+PL="$T/la/dev.regatta.helloworld-nightly.plist"
+mv "$T/config/helloworld/nightly-repos" "$T/nightly-repos.off"
+check "$(GIT_CONFIG_GLOBAL="$T/gitconfig" PATH="$T/nbin:$PATH" HELLOWORLD_LAUNCH_DIR="$T/la" HELLOWORLD_LAUNCHCTL="$T/lc" env -u CLAUDE_UNATTENDED REGATTA_UNATTENDED=1 sh "$I" --schedule > "$T/out" 2>&1; echo $?)" 2 "--schedule from an unattended run: refused, the owner's step"
+has "$T/out" "not loading the nightly from an unattended run" "  saying so"
+check "$(inst --schedule)" 1 "--schedule with no helloworld/nightly-repos: refused"
+has "$T/out" "no repo to publish on this host" "  saying why"
+mv "$T/nightly-repos.off" "$T/config/helloworld/nightly-repos"
+check "$(inst --schedule)" 1 "--schedule while a night would be held (the gate refuses main): refused"
+has "$T/out" "its dry run did not pass (exit 1" "  the dry run's verdict"
+check "$([ -e "$PL" ] && echo written || echo none)" none "  and no plist"
+printf 'print(1)  # /Users/someone\n' > "$R3/tool.py"; rc3 "Tool: the second leak taken back"; up3
+mkdir -p "$T/oldjob/bin"; printf 'import sys\nsys.exit("usage: helloworld: invalid choice")\n' > "$T/oldjob/bin/helloworld"
+check "$(JOB="$T/oldjob" inst --schedule)" 1 "--schedule where the copy the plist would run has no nightly: refused"
+check "$([ -e "$PL" ] && echo written || echo none)" none "  and no plist"
+check "$(inst --schedule)" 0 "--schedule once the dry run passes: loaded"
+check "$(python3 -c 'import plistlib,sys; p=plistlib.load(open(sys.argv[1],"rb")); a=p["ProgramArguments"]; print(a[0].endswith("modules/helloworld/bin/helloworld"), a[1:], p["StartCalendarInterval"], p["StandardOutPath"])' "$PL")" \
+      "True ['nightly'] {'Hour': 3, 'Minute': 30} $T/logs/helloworld/nightly.log" "  bin/helloworld nightly at 03:30, its log in the core's log dir"
+has "$T/lc.log" "bootstrap gui/$(id -u) $PL" "  bootstrapped"
+check "$(inst --check)" 0 "--check: the gate's needs and the schedule"
+has "$T/out" "nightly:    $R3" "  the host's repos"
+check "$(inst --remove)" 0 "--remove"
+check "$([ -e "$PL" ] && echo written || echo none)" none "  the plist is gone"
+check "$(python3 -c '
+import importlib.machinery as m, importlib.util as u, sys
+sp = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", sys.argv[1]))
+mod = u.module_from_spec(sp); sp.loader.exec_module(mod)
+print(mod.masked("at Alphabet Soupkitchen, mail maker@example.org", mod.words_regex(["Alphabet Soup", "Soupkitchen"])))' "$B/helloworld")" \
+      "at Al…, mail ma…" "the logbook's mask: overlapping words cut as one, an address too"
+rm -r "$T/config/helloworld"
+
 # git's stdin is a temporary file, never `input=`: communicate()'s pipe hung a cat-file --batch for
 # hours on macOS 12 (2026-10-27). Structural, so a revert fails on every Mac, not only the one that hung.
 stdinunit() { python3 -c '

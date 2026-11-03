@@ -14,11 +14,12 @@ question takes instead of a prompt nobody would answer, and the board that shows
 | `bin/skipperlib.py`, `libexec/skipper-run` | the scope's skipper: one Claude session per scope on the yard host, started by the tick as a one-shot launchd job (`regatta helm skipper --start`, refused inside a session) when a ship the yard holds needs one, on a login every repo of the scope allows; run on Opus `high`; ended by `--stop` when no ship has needed it for 30 minutes, while a ship needs it, at its first quiet pass (idle 10 minutes, no question of its own open) once 8 h old or past 200k tokens of context after its first hour, at the 04:00 pass once 24 h old whether quiet or not, or when its lease lapses or it goes deaf — its ships back to the yard, its open questions re-hailed to the next one. Three failed starts in a row are the stall `skipper won't start` |
 | `bin/helm_render.py` | the ship's page and the board (six columns, the timeline), served locally or deployed |
 | `bin/sendlib.py` | `regatta helm send`: a blueprint, a handoff branch or a `--text` task handed to its scope's skipper — pinned on a pushed `claude/*` branch with `skipper: scope`, laid on the scope's yard over ssh (`wharf apply --yard`), then a wait for the pickup (`PICKED UP … this session may close`); `--listen` pulls `helm skipper --line` every 5 minutes into the sending session, `--detach` returns once laid |
-| `bin/stalls.py`, `bin/stalls_tick.py` | the tick: finds unattended runs that stopped without their closing line (S1–S7), and a start path whose canary beat fails (`start path dead`), retries a step at most twice, raises the rest to the skipper or the owner. It runs on the laptop and on each scope's yard, every host judging its own runs; on a yard a raised stall, a block waiting on the owner and a question unanswered 15 minutes go out by the stall road — one row in `escalations.jsonl` and one issue in the config's `helm/logbook-repo` mentioning `helm/mention` (`notify.<host>: ["github-issue"]`), closed when it clears. A yard's tick ends by pinging the dead-man's switch (`deadman ping`, lighthouse), `--braked` while the studio brake holds, `--fail` after three passes in a row Orca did not answer where a ship has an Orca Run; its passes leave the ping 40 s of the kill time; under the brake it reads no Orca and starts or stops no skipper, and the time the brake held is never charged to a skipper's clocks |
+| `bin/stalls.py`, `bin/stalls_tick.py` | the tick: finds unattended runs that stopped without their closing line (S1–S7), and a start path whose canary beat fails (`start path dead`), retries a step at most twice, raises the rest to the skipper or the owner. It runs on the laptop and on each scope's yard, every host judging its own runs; on a yard a raised stall, a block waiting on the owner and a question unanswered 15 minutes go out by the stall road — one row in `escalations.jsonl` per rung of the notify ladder (below), the github-issue rung one issue in the config's `helm/logbook-repo` mentioning `helm/mention`, closed when it clears, and with no wait once two passes in a row read its question answered. A yard's tick ends by pinging the dead-man's switch (`deadman ping`, lighthouse), `--braked` while the studio brake holds, `--fail` after three passes in a row Orca did not answer where a ship has an Orca Run; its passes leave the ping 40 s of the kill time; under the brake it reads no Orca and starts or stops no skipper, and the time the brake held is never charged to a skipper's clocks |
 | `bin/ask`, `bin/asklib.py` | asks: an unattended run never prompts; it writes the question as a D-item and `ask relay` sends it to its skipper (Talk, SendMessage or a file); `ask answer`, `listen`, `apply`, and `ask poll`, the 5-minute bell |
-| `bin/surfaces.py`, `surfaces.schema.json` | which backend each seam takes (relay, render, live, notify), from `surfaces.json` |
+| `bin/surfaces.py`, `surfaces.schema.json` | which backend each seam takes (relay, render, live, notify, and hail's roads, which wharf-runs' `hail` reads), from `surfaces.json`; the notify ladder (below) |
 | `hooks/ask_guard.py` | PreToolUse: denies AskUserQuestion in an unattended run, with the relay instruction; UserPromptSubmit: prints relays queued for the session; Notification: a banner for an ask nobody relays |
 | `hooks/talk_nudge.py` | SessionStart: tells a session on a Talk host how to listen for the owner's Session-tab messages |
+| `vscode/` | the VS Code extension `220labs.regatta`: the board (read from the file helm's poll writes; `helm board` only on its refresh button, or every 30 minutes at most while no board file exists) and the navigator's meetings in their own sidebar; it exports helm's notes on sessions (`RegattaApi`, apiVersion 1) for Sheepfold's rows and reads Sheepfold's session labels, marks and openers when that is installed, each whole without the other. `npm ci && npm run check` there builds the `.vsix`; `tests/check.sh` runs it |
 
 ## spacesheep plans
 
@@ -34,6 +35,34 @@ hour in the core's `sheep/plan.json`, which cannot tell Pro from Max):
 | Max | Pro plus Streams: `helm.live stream` with a `spacesheep stream plans/<id>` process keeps a ship's page live with no redeploys. A refused stream (`plan_required`) keeps its process running, so helm also checks the server's list and redeploys while the stream is absent or silent for 2 minutes |
 
 The count is this Mac's; the cap is the account's, and deploys from other tools are not counted.
+
+## The notify ladder
+
+Which channel pings when is the owner's, in `surfaces.json`'s `notify` seam: a ladder per kind of message
+(`update`, `question`, `stall`), each rung a channel with `after` (from the message's first moment) and an
+optional `when: present`, plus quiet hours (in `quiet.tz`, an IANA zone, else the yard's own local time) and an hourly cap on
+what reaches a phone. A `quiet` or `cap` that is there and does not read holds every phone rung until it does.
+
+```json
+"notify": {
+  "question": [{"via": "charterer"}, {"via": "github-issue", "after": "10m"}],
+  "stall":    [{"via": "github-issue", "after": "10m"}],
+  "quiet":    {"hours": "22:00-07:00", "except": ["stall"]},
+  "cap":      {"per_hour": 6}
+}
+```
+
+A rung fires once per message while it is unanswered, one rung per channel; an answer (or a block that no
+longer waits on the owner) withdraws the rest and closes the issue on the second pass in a row that reads it answered (one misread never closes it). Each firing is a row in the yard's `escalations.jsonl`. A kind with no ladder behaves as
+before it: the host's `notify.<host>` row is read as one rung, sent as before (its backends in order, the first
+that delivers), and a question's is `charterer` then that rung. Quiet hours and the cap hold an issue's comments
+too, a close's included; a seam that does not read holds every rung and is carded on the board. A host row
+that names `github-issue` is held whole by quiet hours and the cap, its banner too, as `notice()` may fall
+through to the issue. Write a ladder, `quiet` or `cap` into the shared file only once every host runs this
+version: an older `ask backends` cannot print a ladder (an older stall road reads only the host rows, and is
+unaffected). The channels: `github-issue` and `banner` deliver today; `charterer`, `vscode-question`,
+`claude-app`, `orca-app`, `telegram` and `spacesheep-app` are accepted and say why they have no road yet.
+`ask backends` prints the seam and any problem with it.
 
 ## Install
 
@@ -60,7 +89,9 @@ Or `claude plugin install helm@regatta` for the session face.
   column). Absent, the owner alone.
 - Hosts: the core's `regatta/laptop` (the ask poll's bell and its sweep run there; the default
   banner row) and `wharf-runs/ssh` (`<host>:<ssh alias>`: the peers stalls reads, and the hosts
-  given a build box's run cap).
+  given a build box's run cap). `helm send` reaches a yard that is a named node's peer, and every
+  confidential send's yard, by `wharf-runs/nodes/<name>/ssh` alone (through wharf-runs' orca-host),
+  never `wharf-runs/ssh`.
 - The Talk service: `helm/talk-url` (else `$SPACESHEEP_URL`; absent, the talk relay is off and says
   so) and `helm/talk-hosts`, the Macs whose sessions are told to listen (`$CLAUDE_TALK_HOSTS` wins;
   absent, none).
@@ -74,8 +105,8 @@ Or `claude plugin install helm@regatta` for the session face.
   road): an operational issue (a stall, an outage, a bug) goes to the project's own private repo,
   never a public one and never the private inbox that holds strangers' contacts; for a deployment of
   Regatta, a private fork of it or a new private repo. A stall mentions the owner, since only a
-  mention pushes to a phone; a bug mentions nobody. One GitHub Project can be the dashboard: a view
-  per label (`contact`, `stall`, `deadman`, `bug`), fed by one auto-add workflow per repo, each
+  mention pushes to a phone, and so does lighthouse's CI budget alarm, filed through this road (`ask`'s `issue_open`); a bug mentions nobody. One GitHub Project can be the dashboard: a view
+  per label (`contact`, `stall`, `deadman`, `budget`, `bug`), fed by one auto-add workflow per repo, each
   filtered by its label, with issues already open added by hand once.
 
 `config-keys` lists the three keys of helm's own that must be there, which `regatta check` reports
@@ -89,7 +120,7 @@ trace (`tests/peers.sh` runs helm with none):
 | Peer | Used for | Without it |
 | --- | --- | --- |
 | keel (`keel`, `sheep`, `hooks/sheep_gate.py`) | reading and writing a doc's D-items; the spacesheep key; the guarded-repo list; the lookout's pass and cards (`lookout --if-due`, `lookout --status --json`) | `ask relay` refuses in one line; the board has no doc or lookout cards; the poll skips the lookout in one line; the guarded list is helmlib's fallback copy |
-| wharf-runs (`dispatch`, `dispatch-rc`, `harness` and its adapters, `autofinish`, `autofinish-run`, `wharf`, `blueprintlib.py`, `hail`) | the runs the tick judges and retries; a ship's blocks; the poll's `hail subs --fulfil` | stalls judges nothing and says so; the tick applies no ship; `--done-when` refuses; the poll skips the fulfil in one line |
+| wharf-runs (`dispatch`, `dispatch-rc`, `harness` and its adapters, `autofinish`, `autofinish-run`, `wharf`, `blueprintlib.py`, `hail`) | the runs the tick judges and retries; a ship's blocks; the poll's `hail subs --fulfil` and `hail mail --pull` | stalls judges nothing and says so; the tick applies no ship; `--done-when` refuses; the poll skips the fulfil and the pull in one line |
 | plumb (`usage-report`, `tier_check.py`, `attention.py`) | a session's cost, the week line, the relay row | no cost, no week line, the row written by hand (G26) |
 | wharf (`session_status.py`) | the Stop hook's reading of a closing line | an unread line counts as no line |
 | the core's `gate` | the tick's classifier for an unsure stall | no label; the stall carries the load error |

@@ -96,6 +96,8 @@ out=$($KH init t2); rc=$?
 check "$rc|$(echo "$out" | grep -c 'no memory/ in in_place')" "1|1" "an existing workflow.json without memory/ in place: named, exit 1"
 check "$(cat "$P/tools2/.claude/workflow.json")" '{"checkpoint": true, "in_place": ["notes/"]}' "  and never rewritten"
 echo "$out" | grep -q "missing — add it on a claude/\* branch of tools2"; check $? 0 "  an existing checkout: each missing file named for a branch"
+echo "$out" | grep -q 'has no dreams/ in in_place — add "dreams/" to its "in_place" list on a claude/\* branch of tools2'; check $? 0 \
+  "  dreams/ missing from in_place: named with the exact edit, so scope-pass's not-ready points somewhere true (S2 review, 15)"
 [ ! -e "$P/tools2/memory" ] && [ ! -e "$P/tools2/docs" ] && [ ! -e "$P/tools2/.gitignore" ]; check $? 0 "  and nothing written on its main"
 $KH init t2 --dry-run >/dev/null; check $? 1 "  --dry-run gives the real run's answer"
 echo .claude/ > "$P/tools2/.gitignore"
@@ -113,6 +115,11 @@ check "$(cat "$P/acme-knowledge/memory/app/n.md" 2>/dev/null)" secret "  the fol
 check "$(readlink "$C1/projects/$s/memory")" "$P/acme-knowledge/memory/app" "  and is linked back"
 out=$($KH check --config-dir "$C1"); check $? 0 "check: clean"
 echo "$out" | head -1 | grep -q '^✓ memory homes: 1 confidential scope,'; check $? 0 "  its first line, for bootstrap.sh"
+git -C "$P/acme-knowledge" remote add origin https://github.com/o/acme-knowledge.git
+out=$($KH check --config-dir "$C1"); rc=$?
+check "$rc|$(echo "$out" | grep -c 'has no .github/workflows/automerge.yml on its main')" "0|1" \
+  "  an anchor on GitHub with no automerge: a note, its records pull requests wait for a hand merge (S2's third review)"
+git -C "$P/acme-knowledge" remote remove origin
 
 echo "adopt: one move per real projects folder, a link from the vault rehomed"
 C2="$T/login2"; mkdir -p "$C2"; ln -s "$C1/projects" "$C2/projects"

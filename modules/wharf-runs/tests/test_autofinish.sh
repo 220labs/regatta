@@ -903,12 +903,14 @@ EOF
 export AUTOFINISH_STATE_DIR="$T/state"
 AF="python3 $B/autofinish"
 echo "arm, disarm, status (Sam, 2026-10-05: three hours dry, then armed)"
-check "$($AF status)" "disarmed — verdicts and logs only; nothing starts (autofinish arm)" "disarmed is the default"
+check "$($AF status | sed 's/ · landings .*//')" "disarmed — verdicts and logs only; nothing starts (autofinish arm)" "disarmed is the default"
+check "$($AF status | sed 's/.* · //' | cut -d' ' -f1-2)" "landings off" "  and the landing switch is off by default, on the same line (task-shape S3)"
+check "$($AF status | wc -l | tr -d ' '):$($AF status | cut -d' ' -f1)" "1:disarmed" "  one line, its first word the sweep's switch (the overlay's bootstrap reads it so)"
 $AF arm --by tester > /dev/null
-case "$($AF status)" in "armed by tester at 20"*) echo "  ok   arm: status names who and when";; *) echo "  FAIL arm: $($AF status)"; fails=$((fails+1));; esac
+case "$($AF status | head -1)" in "armed by tester at 20"*) echo "  ok   arm: status names who and when";; *) echo "  FAIL arm: $($AF status)"; fails=$((fails+1));; esac
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sorted(d))' "$T/state/armed")" "['by', 'ts']" "  the state file is JSON {by, ts}"
 $AF disarm > /dev/null
-check "$($AF status | cut -d' ' -f1)" "disarmed" "disarm"
+check "$($AF status | head -1 | cut -d' ' -f1)" "disarmed" "disarm"
 check "$([ -e "$T/state/armed" ] && echo there || echo gone)" "gone" "  the file is gone"
 
 echo "one worktree: --worktree, --after, --session, --reply, and /autofinish now"
@@ -953,6 +955,23 @@ echo "$out" | grep -qF "refused in an unattended session" && echo "  ok   … an
 out=$(CLAUDECODE=1 $AF arm --by tester 2>&1); rc=$?
 check "$rc:$([ -e "$T/state/armed" ] && echo armed || echo disarmed)" "0:armed" "an interactive session may arm (on Sam's word)"
 $AF disarm > /dev/null
+echo "the landing switch (task-shape S3): arm --landings, apart from the sweep's armed"
+$AF arm --landings --by tester > "$T/out" 2>&1
+check "$(cut -d' ' -f1-4 "$T/out")" "landings on, by tester" "arm --landings: on, by whom"
+check "$([ -e "$T/state/landings" ] && echo on || echo off):$([ -e "$T/state/armed" ] && echo armed || echo disarmed)" "on:disarmed" "  the landings file alone: the sweep stays disarmed"
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$T/state/landings")" "['by', 'ts']" "  JSON {by, ts}, as armed"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(bool(common.autofinish_landings()))' "$B/../../regatta/hooks")" "True" "  common.autofinish_landings reads it"
+check "$($AF status | sed 's/.* · //' | cut -d' ' -f1-2)" "landings on," "  status says it after the sweep's switch"
+$AF disarm --landings > /dev/null
+check "$([ -e "$T/state/landings" ] && echo on || echo off)" "off" "disarm --landings turns it off"
+out=$(CLAUDE_UNATTENDED=dispatch $AF arm --landings --by runner 2>&1); rc=$?
+check "$rc:$([ -e "$T/state/landings" ] && echo on || echo off)" "1:off" "arm --landings refuses under CLAUDE_UNATTENDED"
+echo "$out" | grep -qF "autofinish arm --landings: refused in an unattended session" && echo "  ok   … and says why" || { echo "  FAIL … says why: $out"; fails=$((fails+1)); }
+out=$(env -u CLAUDE_UNATTENDED REGATTA_UNATTENDED=1 $AF arm --landings --by runner 2>&1); rc=$?
+check "$rc:$([ -e "$T/state/landings" ] && echo on || echo off)" "1:off" "  …and under REGATTA_UNATTENDED, the name every launcher sets beside it"
+$AF arm --by tester > /dev/null; $AF arm --landings --by tester > /dev/null; $AF disarm > /dev/null
+check "$([ -e "$T/state/landings" ] && echo on || echo off):$([ -e "$T/state/armed" ] && echo armed || echo disarmed)" "off:disarmed" "a plain disarm turns both off: the switch never outlives the experiment"
+$AF status --landings > /dev/null 2>&1; check "$?" "2" "--landings with status: a usage error"
 mk $D gate-ov bin/gate.py "x"; ghjson
 GOV="$(gd $D gate-ov)/claude"
 out=$(cd "$(wtp $D gate-ov)" && CLAUDE_UNATTENDED=dispatch $AF override now 2>&1); rc=$?
@@ -1058,6 +1077,96 @@ check "$(sed -n 6p "$T/brief-held")" "brief override" "  runner_by: rule C from 
 check "$(sed -n 7p "$T/brief-held")" "a binary (docs/b.bin): no landing carries one unread" "  a binary holds (finding 7)"
 check "$(sed -n 8p "$T/brief-held" | cut -d';' -f1)" "a held path (.github/workflows/automerge.yml" "  .github/workflows/ holds: check and the hold brake run from the PR's copy (finding 4)"
 check "$(sed -n 9p "$T/brief-held")" "the branch's diff could not be read (or is empty)" "  a diff that will not read holds, never merges (finding 7)"
+
+echo "--by handed (task-shape S2, D1-C): handed_held holds nothing that reads, bar what does not"
+python3 - "$B/autofinish" "$T/projects/bf" <<'PYHANDED' > "$T/handed-held" 2>&1
+import os, sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish_h", sys.argv[1]).load_module()
+bf = sys.argv[2]
+w = lambda t: os.path.join(bf, ".claude", "worktrees", t)
+print(m.HANDED_SLICE)
+print(" ".join(str(m.handed_held(bf, w(t), "main")) for t in ("bf-hook", "bf-leak", "bf-list", "bf-mem", "bf-ci")))
+print(m.handed_held(bf, w("bf-bin"), "main"))
+print(m.handed_held(bf, w("bf-hook"), "main", slice_="exclude"))
+print(m.handed_held(bf, w("bf-leak"), "main", slice_="brief"), "|", m.handed_held(bf, w("bf-hook"), "main", slice_="brief"))
+print(m.handed_held(bf, w("bf-hook"), "main", slice_="hooks/zz"), "|", m.handed_held(bf, w("bf-leak"), "main", slice_="leak/"))
+print(m.handed_held(bf, w("bf-hook"), "main", cfg=("off", [], "autofinish_exclude is not a list (str)", [])))
+print(m.handed_held(bf, w("bf-hook"), "main", cfg=("off", [], "no .claude/workflow.json on origin/main, none in repos.json", [])),
+      "|", m.handed_held(bf, w("bf-hook"), "main", cfg=("off", [], "origin/main carries .claude/no-workflow", [])))
+launcher, m.LAUNCHER = m.LAUNCHER, "bf"
+print(m.handed_held(bf, w("bf-hook"), "main"), "|", m.handed_held(bf, w("bf-leak"), "main"))
+m.LAUNCHER = launcher
+real = m.raw
+def fake(names, numstat):
+    # name-status and numstat as git prints them with -z; anything else from git itself
+    return lambda wt, *a, **k: names if "--name-status" in a else numstat if "--numstat" in a else real(wt, *a, **k)
+m.raw = fake("D\0docs/old.bin\0", "-\t-\tdocs/old.bin\0")
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.raw = fake("A\0.gitattributes\0A\0docs/b.bin\0", "1\t0\t.gitattributes\0" "2\t0\tdocs/b.bin\0")
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.raw = fake("A\0docs/.GitAttributes\0A\0docs/b.bin\0", "1\t0\tdocs/.GitAttributes\0" "2\t0\tdocs/b.bin\0")
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.raw = fake("A\0docs/.gitattribute\u017f\0A\0docs/b.bin\0", "1\t0\tdocs/.gitattribute\u017f\0" "2\t0\tdocs/b.bin\0")
+print(m.handed_held(bf, w("bf-hook"), "main").split(":")[0])
+m.LAUNCHER = "bf"
+m.raw = fake("A\0Hooks/x.py\0", "1\t0\tHooks/x.py\0")
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.LAUNCHER = launcher
+m.raw = fake("A\0docs/b.bin\0", "")
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.raw = lambda *a, **k: None   # git failing or timing out: the diff reads empty
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.raw = fake("M\0.gitattributes\0A\0TODO.md\0", "2\t0\t.gitattributes\0" "3\t0\tTODO.md\0")
+ulo = m.union_lines_only
+m.union_lines_only = lambda *a: True
+print(m.handed_held(bf, w("bf-hook"), "main"))
+m.union_lines_only = lambda *a: False
+print(m.handed_held(bf, w("bf-hook"), "main").split(":")[0])
+m.union_lines_only, m.raw = ulo, real
+import subprocess, tempfile
+def repo_with(old, new):
+    d = tempfile.mkdtemp()
+    run = lambda *a: subprocess.run(["git", "-C", d, *a], capture_output=True, check=True)
+    run("init", "-q")
+    open(os.path.join(d, ".gitattributes"), "wb").write(old)
+    run("add", "-A"); run("commit", "-qm", "base")
+    open(os.path.join(d, ".gitattributes"), "wb").write(new)
+    run("add", "-A"); run("commit", "-qm", "tip")
+    return m.union_lines_only(d, "HEAD~1", "HEAD", ".gitattributes")
+print(repo_with(b"*.png binary\n", b"*.png binary\n# lists merge by item\nTODO.md merge=union\nCHANGELOG.md merge=union\n"),
+      repo_with(b"*.png binary\n", b"*.png binary\nTODO.md merge=union\n++*.dat diff\n"),
+      repo_with(b"*.png binary\n", b"TODO.md merge=union\n"),
+      repo_with(b"*.png binary\n", b"*.png binary\nTODO.md merge=union\n\xff\n"),
+      repo_with(b"*.bin diff\n*.bin -diff\n", b"*.bin -diff\n*.bin diff\nTODO.md merge=union\n"),
+      repo_with(b"* text=auto\n", b"* text=auto\x0b#x diff\nTODO.md merge=union\n"))
+PYHANDED
+check "$(sed -n 1p "$T/handed-held")" "()" "HANDED_SLICE is empty under D1-C"
+check "$(sed -n 2p "$T/handed-held")" "None None None None None" \
+  "  class 1 (hooks/), class 2, the list, in_place and the workflows all land, as a typed /finish does"
+check "$(sed -n 3p "$T/handed-held")" "a binary (docs/b.bin): no landing carries one unread" "  a binary holds, whatever the slice (the contract: never a binary)"
+check "$(sed -n 4p "$T/handed-held")" "a held path (hooks/h.py; the handed slice, task-shape D1)" \
+  "  D1-A is one constant, \"exclude\": the base's autofinish_exclude holds a class-1 path"
+check "$(sed -n 5p "$T/handed-held" | sed 's/ (\([^;]*\);[^|]*/ \1/')" "a held path leak/l.py| None" \
+  "  D1-B is \"brief\": brief_held's class 2 holds, class 1 lands"
+check "$(sed -n 6p "$T/handed-held")" "None | a held path (leak/l.py; the handed slice, task-shape D1)" "  a bare string is one prefix, never its characters (hooks/zz holds no hooks/h.py)"
+check "$(sed -n 7p "$T/handed-held")" "the repo's config (autofinish_exclude is not a list (str))" "  a config that will not read holds, whatever the slice"
+check "$(sed -n 8p "$T/handed-held")" "None | None" "  a repo with no workflow.json of its own (a repos.json opt-in), or one opted out, holds nothing"
+check "$(sed -n 9p "$T/handed-held")" "the launcher's own gate (hooks/h.py) | None" "  in the launcher's repo its own gates hold, as every unattended landing's do"
+check "$(sed -n 10p "$T/handed-held")" "None" "  a branch that only deletes a binary lands (S2's review round 2)"
+check "$(sed -n 11p "$T/handed-held")" "a .gitattributes change (.gitattributes): a binary cannot be told from text by the branch's own attributes" \
+  "  a .gitattributes the branch changes holds: \`*.bin diff\` would hide a binary from numstat"
+check "$(sed -n 12p "$T/handed-held")" "a .gitattributes change (docs/.GitAttributes): a binary cannot be told from text by the branch's own attributes" \
+  "  in any folder and any case: a case-insensitive disk reads .GitAttributes (S2's review round 3)"
+check "$(sed -n 13p "$T/handed-held")" "a .gitattributes change (docs/.gitattributeſ)" "  casefold, not lower: APFS reads .gitattributeſ as the file (round 4)"
+check "$(sed -n 14p "$T/handed-held")" "the launcher's own gate (Hooks/x.py)" "  the launcher's gates case folded too: Hooks/ lands over hooks/ on APFS"
+check "$(sed -n 15p "$T/handed-held")" "the branch's diff could not be read in full" "  a numstat that lacks a path the list names holds"
+check "$(sed -n 16p "$T/handed-held")" "the branch's diff could not be read (or is empty)" "  a diff that will not read holds, never merges"
+check "$(sed -n 17p "$T/handed-held")" "None" \
+  "  a root .gitattributes that only adds the union lines lands (a repo's first /todo, todo-driver)"
+check "$(sed -n 18p "$T/handed-held")" "a .gitattributes change (.gitattributes)" "  any other change to it holds"
+check "$(sed -n 19p "$T/handed-held")" "True False False False False False" \
+  "  union_lines_only: the union lines alone pass; an added \`++*.dat diff\`, a removed line, a byte that will not decode, a reorder of the old lines, a line split by \\v hold"
 out=$(cd "$(wtp bf bf-hook)" && $AF override off 2>&1)
 check "$(echo "$out" | sed -n 1p):$([ -e "$BRIEF" ] && echo there || echo gone)" "the yes at the brief off: $(br bf-hook):gone" "  override off in its worktree removes the yes at the brief"
 
@@ -1261,7 +1370,7 @@ check "$(cat "$T/since")" "late enough" "  GitHub's quiet counts from the tip, a
 : > "$T/runner.calls"
 out=$(AUTOFINISH_RUNNER="$T/runner" DD --worktree "$(wtp dead dd-same)" 2>&1)
 check "$(echo "$out" | tail -1)" "start dead $(br dd-same) A" "a tip started once whose run died starts again"
-was=$($AF status | cut -d' ' -f1); $AF disarm > /dev/null
+was=$($AF status | head -1 | cut -d' ' -f1); $AF disarm > /dev/null
 DD --sweep > /dev/null 2>&1
 check "$(grep -c "^[^ ]* died $(br dd-unrec) " "$REC")" "0" "a disarmed sweep buries nothing: verdicts and logs only (review 2026-10-08)"
 $AF arm --by tester > /dev/null
@@ -1392,13 +1501,98 @@ check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoade
 rm -f "$RUNS/m-code-sibling.json"
 rm_own "$RUNS"/m-*.json
 
+echo "the origin gate, in process: autofinish-run's tip_gate (its roads are test_autofinish_run's, a Mac's suite; these run on Linux too)"
+cat > "$T/gate.py" <<'GATE'
+import sys, types
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish_run", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+mode = sys.argv[4]
+if mode.startswith("spent"):   # the send spent its budget: a road that must still read origin, and one that need not
+    t.deadline, t.reserve = 0, 0
+why = m.tip_gate(t, types.SimpleNamespace(dry=False, by=sys.argv[3]), follow=mode == "follow", strict=mode == "spent-strict")
+print("%s|%s" % (t.tip, why))
+GATE
+gate() { env -u SKIPPER_SCOPE -u AUTOFINISH_CALLER_UNATTENDED AUTOFINISH_END_WARM=/usr/bin/true python3 "$T/gate.py" "$B/autofinish-run" "$GW" "${1:-override}" "${2:-follow}" 2>&1; }
+# origin gains a commit this worktree never saw: its sha
+gate_ahead() { local o="$T/origin-demo.git" g; g=$(git -C "$o" rev-parse "refs/heads/$GB"); g=$(git -C "$o" -c user.name=t -c user.email=t@t commit-tree "$g^{tree}" -p "$g" -m "$1"); git -C "$o" update-ref "refs/heads/$GB" "$g"; echo "$g"; }
+mk demo gate-tip f-gate "the seed"; GW=$(wtp demo gate-tip); GB=$(br gate-tip); GT=$(git -C "$GW" rev-parse HEAD)
+check "$(gate)" "$GT|None" "equal to origin: unchanged, the gate silent"
+git -C "$GW" commit -q --allow-empty -m "local only"; GL=$(git -C "$GW" rev-parse HEAD)
+check "$(gate)" "$GL|None" "ahead of origin: unchanged (the send or /finish pushes it)"
+git -C "$GW" reset -q --hard "$GT"
+GN=$(gate_ahead "the build, on origin"); echo scratch > "$GW/scratch.txt"
+gate > "$T/gate.out"; has "$T/gate.out" "$GT|origin's $GB is at ${GN:0:7}, ahead of this worktree's tip ${GT:0:7}, and 1 uncommitted file(s)" "behind and dirty: refused"
+check "$(git -C "$GW" rev-parse HEAD)" "$GT" "  the tree unmoved"
+rm -f "$GW/scratch.txt"
+gate any nofollow > "$T/gate.out"; has "$T/gate.out" "origin's $GB moved on to ${GN:0:7}, past the tip ${GT:0:7} this run was given" "behind, a road that may not move it (the peer's job): refused"
+check "$(git -C "$GW" rev-parse HEAD)" "$GT" "  the tree unmoved"
+gate any spent > "$T/gate.out"; has "$T/gate.out" "$GT|None" "behind, the budget spent, an ordinary road: origin not read, the gate's one pass"
+has "$T/gate.out" "was not compared with origin's" "  saying so"
+gate any spent-strict > "$T/gate.out"; has "$T/gate.out" "origin's $GB moved on to ${GN:0:7}" "behind, the budget spent, the send's fallback: read past the budget, refused"
+check "$(git -C "$GW" rev-parse HEAD)" "$GT" "  the tree unmoved"
+gate > "$T/gate.out"; has "$T/gate.out" "fast-forwarded from ${GT:0:7} to ${GN:0:7}, origin's tip: that tip is the one landed" "behind and clean: fast-forwarded, in one line"
+has "$T/gate.out" "$GN|None" "  the run goes on, on that tip"
+check "$(git -C "$GW" rev-parse HEAD)" "$GN" "  the tree moved"
+GT=$GN; GN=$(gate_ahead "more, on origin")
+gate sweep > "$T/gate.out"; has "$T/gate.out" "$GN|this start was judged on ${GT:0:7}, not ${GN:0:7}: the next start judges that tip" "the sweep, behind and clean: moved, and refused: it never judged that tip"
+GT=$GN; GN=$(gate_ahead "apart, on origin"); git -C "$GW" commit -q --allow-empty -m "apart, here"; GL=$(git -C "$GW" rev-parse HEAD)
+gate > "$T/gate.out"; has "$T/gate.out" "$GL|origin's $GB is at ${GN:0:7}, apart from this worktree's tip ${GL:0:7}: neither holds the other" "diverged: refused"
+check "$(git -C "$GW" rev-parse HEAD)" "$GL" "  the tree unmoved"
+
 echo "the launchd job (install.sh --schedule, the module's own)"
 LC="$T/lc"; printf '#!/bin/sh\necho "$*" >> "%s"\n[ "$1" = print ] && exit 113\nexit 0\n' "$T/lc.calls" > "$LC"; chmod +x "$LC"
 IN() { WHARF_RUNS_LAUNCH_DIR="$T/la" WHARF_RUNS_LAUNCHCTL="$LC" WHARF_RUNS_LOG_DIR="$T/rlogs" sh "$B/../install.sh" "$@"; }
 mkdir -p "$T/cfg-ovl/regatta" "$T/cfg-bare"; : > "$T/cfg-ovl/regatta/overlay"
-REGATTA_CONFIG="$T/cfg-ovl" IN --schedule > "$T/in.out" 2>&1; check "$?" "1" "beside an overlay (its marker): refused, no second sweep"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Darwin IN --schedule > "$T/in.out" 2>&1; check "$?" "1" "beside an overlay (its marker) on a Mac: refused, no second sweep"
 check "$(ls "$T/la" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and no plist written"
-REGATTA_CONFIG="$T/cfg-bare" IN --schedule > "$T/in.out" 2>&1; check "$?" "0" "no overlay: scheduled"
+# off a Mac the overlay's bootstrap.sh --schedule writes no job (launchd only), so the module's schedules it, under
+# the overlay's label prefix: a later overlay job there replaces it rather than running beside it (node-lands)
+mkdir -p "$T/cfg-ovl/wharf-runs"; echo "dev.x.claude" > "$T/cfg-ovl/wharf-runs/label-prefix"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Linux IN --schedule > "$T/in.out" 2>&1; check "$?" "0" "beside an overlay off a Mac: scheduled (nothing else schedules the sweep there)"
+check "$(ls "$T/la")" "dev.x.claude.autofinish.plist" "  under the overlay's label prefix"
+has "$T/lc.calls" "bootstrap gui/$(id -u) $T/la/dev.x.claude.autofinish.plist" "  loaded through the launchctl given"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Linux IN --remove > /dev/null 2>&1
+check "$(ls "$T/la" 2>/dev/null | wc -l | tr -d ' ')" "0" "  --remove finds it by the same label"
+# a prefix moved off a Mac: the old job is booted out and its file removed as the new one loads (the build review)
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Linux IN --schedule > /dev/null 2>&1
+echo "dev.x.claude" > "$T/cfg-ovl/wharf-runs/label-prefix-previous"; echo "dev.z.claude" > "$T/cfg-ovl/wharf-runs/label-prefix"
+: > "$T/lc.calls"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Linux IN --schedule > /dev/null 2>&1
+check "$(ls "$T/la")" "dev.z.claude.autofinish.plist" "a moved prefix: the new label's file alone"
+has "$T/lc.calls" "bootout gui/$(id -u)/dev.x.claude.autofinish" "  …the old label's job booted out, never two sweeps"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Linux IN --remove > /dev/null 2>&1
+rm -f "$T/cfg-ovl/wharf-runs/label-prefix-previous"; echo "dev.x.claude" > "$T/cfg-ovl/wharf-runs/label-prefix"
+# a prefix set after a first --schedule with none: the default label's job goes as the prefixed one loads (landing review)
+mkdir -p "$T/cfg-late/wharf-runs"; : > "$T/lc.calls"
+REGATTA_CONFIG="$T/cfg-late" WHARF_RUNS_OS=Linux IN --schedule > /dev/null 2>&1
+echo "dev.x.claude" > "$T/cfg-late/wharf-runs/label-prefix"
+REGATTA_CONFIG="$T/cfg-late" WHARF_RUNS_OS=Linux IN --schedule > /dev/null 2>&1
+check "$(ls "$T/la")" "dev.x.claude.autofinish.plist" "a prefix set later: the prefixed label's file alone"
+has "$T/lc.calls" "bootout gui/$(id -u)/dev.regatta.autofinish" "  …the default label's job booted out, never two sweeps"
+REGATTA_CONFIG="$T/cfg-late" WHARF_RUNS_OS=Linux IN --remove > /dev/null 2>&1
+check "$(ls "$T/la" 2>/dev/null | wc -l | tr -d ' ')" "0" "  --remove leaves no job of either label"
+# a Mac beside an overlay that has a prefix: its own label, never the overlay's live sweep (review, node-lands)
+: > "$T/lc.calls"
+REGATTA_CONFIG="$T/cfg-ovl" WHARF_RUNS_OS=Darwin IN --remove > /dev/null 2>&1
+has "$T/lc.calls" "bootout gui/$(id -u)/dev.regatta.autofinish" "on a Mac the prefix is not read: --remove boots out the module's own label"
+hasnt "$T/lc.calls" "dev.x.claude" "  …never the overlay's <prefix>.autofinish"
+# off a Mac with no launchctl named, the job goes through the module's systemd shim (dispatch's, dispatch-queue's):
+# a user timer every 600 s; and the prefix is read with no overlay too (dispatch reads it so), a CR and blanks dropped
+SC="$T/systemctl"; printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$T/sc.calls" > "$SC"; chmod +x "$SC"
+mkdir -p "$T/cfg-np/wharf-runs"; printf '\n  dev.y.claude\r\n' > "$T/cfg-np/wharf-runs/label-prefix"
+( unset WHARF_RUNS_LAUNCHCTL; REGATTA_CONFIG="$T/cfg-np" WHARF_RUNS_OS=Linux WHARF_RUNS_LAUNCH_DIR="$T/la-sd" \
+  WHARF_RUNS_LOG_DIR="$T/rlogs" SYSTEMD_LAUNCHCTL_SYSTEMCTL="$SC" SYSTEMD_LAUNCHCTL_UNITS="$T/units" \
+  sh "$B/../install.sh" --schedule ) > "$T/in.out" 2>&1
+check "$?" "0" "off a Mac with no launchctl named: scheduled"
+check "$(ls "$T/la-sd")" "dev.y.claude.autofinish.plist" "  under the prefix with no overlay marker, its blank line and CR dropped"
+has "$T/units/dev.y.claude.autofinish.timer" "OnUnitActiveSec=600" "  through bin/systemd-launchctl: a user timer every 10 min"
+has "$T/sc.calls" "enable --now dev.y.claude.autofinish.timer" "  …enabled through the systemctl it was given"
+( REGATTA_CONFIG="$T/cfg-bare" WHARF_RUNS_OS=Linux IN --schedule ) > /dev/null 2>&1
+check "$([ -f "$T/la/dev.regatta.autofinish.plist" ] && echo there)" "there" "off a Mac with no prefix: the module's own label"
+REGATTA_CONFIG="$T/cfg-bare" WHARF_RUNS_OS=Linux IN --remove > /dev/null 2>&1
+: > "$T/lc.calls"   # the Darwin road's calls alone: the Linux case above wrote the same label's lines (the build review)
+REGATTA_CONFIG="$T/cfg-bare" WHARF_RUNS_OS=Darwin IN --schedule > "$T/in.out" 2>&1; check "$?" "0" "no overlay: scheduled"
 IP="$T/la/dev.regatta.autofinish.plist"
 if command -v plutil >/dev/null; then
   check "$(plutil -extract StartInterval raw -o - "$IP")" "600" "  every 10 min"
@@ -1409,8 +1603,25 @@ if command -v plutil >/dev/null; then
   check "$(plutil -extract EnvironmentVariables.REGATTA_CONFIG raw -o - "$IP")" "$T/cfg-bare" "  the config dir it was installed with travels"
 fi
 has "$T/lc.calls" "bootstrap gui/$(id -u) $IP" "  loaded through the launchctl given"
-IN --remove > /dev/null 2>&1; check "$([ -f "$IP" ] && echo there || echo gone)" "gone" "--remove deletes the plist"
+REGATTA_CONFIG="$T/cfg-bare" WHARF_RUNS_OS=Darwin IN --remove > /dev/null 2>&1; check "$([ -f "$IP" ] && echo there || echo gone)" "gone" "--remove deletes the plist"
 has "$T/lc.calls" "bootout gui/$(id -u)/dev.regatta.autofinish" "  …after unloading it"
+
+echo "install.sh --check: what a /finish here needs (node-lands: the Linux node had neither)"
+mkdir -p "$T/lh-a/.claude/skills/finish" "$T/lh-b/.claude"; : > "$T/lh-a/.claude/skills/finish/SKILL.md"
+CK() { HOME="$1" REGATTA_CONFIG="$T/cfg-bare" HELLOWORLD_WORDLIST="$2" IN --check 2>&1; }
+CK "$T/lh-b" "$T/no-words.txt" > "$T/ck.out"
+has "$T/ck.out" "word list:   MISSING ($T/no-words.txt) — the publish gate refuses here" "a missing word list is named, with what it stops"
+has "$T/ck.out" "finish:      MISSING in $T/lh-b/.claude — a landing on that login reads 'Unknown command: /finish'" "a login dir without the finish skill is named"
+echo "word" > "$T/words.txt"
+CK "$T/lh-a" "$T/words.txt" > "$T/ck.out"
+has "$T/ck.out" "word list:   $T/words.txt" "a word list that is there is named"
+has "$T/ck.out" "finish:      in $T/lh-a/.claude" "  and a login dir that has the skill"
+: > "$T/empty-words.txt"
+CK "$T/lh-a" "$T/empty-words.txt" > "$T/ck.out"
+has "$T/ck.out" "word list:   REFUSED (" "an empty list is what the gate refuses, not a list that is there"
+mkdir -p "$T/lh-c/.claude/plugins"; echo '{"plugins": {"wharf@regatta": [{"scope": "user"}]}}' > "$T/lh-c/.claude/plugins/installed_plugins.json"
+CK "$T/lh-c" "$T/words.txt" > "$T/ck.out"
+has "$T/ck.out" "finish:      in $T/lh-c/.claude" "a login with wharf installed as a plugin has /finish"
 
 echo
 [ "$fails" -eq 0 ] && echo "all autofinish tests passed" || { echo "$fails autofinish test(s) failed"; exit 1; }

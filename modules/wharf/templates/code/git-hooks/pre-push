@@ -48,57 +48,74 @@
 # Test with: sh scripts/test_git_hooks.sh
 [ "${GIT_PUSH_OK:-}" = "1" ] && exit 0
 
-refs=$(cat)
+refs=$(cat) || { printf 'refusing this push: the refs to push could not be read\n' >&2; exit 1; }
 
-if [ "${VSCODE_GIT_COMMAND:-}" = "push" ]; then
-	onto=''
+# Each loop reads the refs from a pipe and prints what it refuses, never from a heredoc: macOS's
+# /bin/sh (bash 3.2) writes a heredoc to a temp file, and where none can be made (a sandboxed
+# session: "cannot create temp file for here document") the loop never ran, the verdict stayed
+# empty and every push passed. Its last line is a sentinel, `#end` (an entry starts with two
+# spaces); a verdict without it is a refusal (node-road, 2026-11-02). Each loop is a function of
+# its own, called inside "$(…)": bash 3.2 ends a quoted substitution at a case pattern's `)`.
+end_line='
+#end'
+verdict() {  # <the loop's output>: what it refused, or a refusal when the loop did not finish
+	case "$1" in
+		'#end') ;;
+		*"$end_line") v=${1%"$end_line"}; printf '%s\n' "$v" ;;
+		*) printf '  (the refs to push could not be read: refused)\n' ;;
+	esac
+}
+
+sync_onto() {  # stdin: the refs; stdout: each claude/* branch Sync would land on another ref, then #end
 	while read -r local_ref local_sha remote_ref remote_sha; do
 		[ -z "$remote_ref" ] && continue
 		case "$local_ref" in
 			refs/heads/claude/*)
 				case "$remote_ref" in
 					refs/heads/claude/*) ;;
-					*) onto="$onto  $local_ref -> $remote_ref
-" ;;
+					*) printf '  %s -> %s\n' "$local_ref" "$remote_ref" ;;
 				esac
 				;;
 		esac
-	done <<EOF
-$refs
-EOF
+	done
+	echo '#end'
+}
+
+agent_refused() {  # stdin: the refs; stdout: each ref an agent may not push, then #end
+	while read -r local_ref local_sha remote_ref remote_sha; do
+		[ -z "$remote_ref" ] && continue
+		# An all-zero local sha is a deletion. Matched as "contains no non-zero character" so
+		# it holds for SHA-256 repos (64 chars) as well as SHA-1 (40), rather than comparing
+		# against a literal of one fixed length.
+		case "$local_sha" in
+			*[!0]*)
+				case "$remote_ref" in
+					refs/heads/claude/*) ;;
+					*) printf '  %s\n' "$remote_ref" ;;
+				esac
+				;;
+			*) printf '  %s (deletion)\n' "$remote_ref" ;;
+		esac
+	done
+	echo '#end'
+}
+
+if [ "${VSCODE_GIT_COMMAND:-}" = "push" ]; then
+	onto=$(verdict "$(printf '%s\n' "$refs" | sync_onto)") || onto='  (the refs to push could not be read: refused)'
 	[ -z "$onto" ] && exit 0
-	printf 'refusing this push: it would land an agent branch on another ref:\n%s\n' "$onto" >&2
+	printf 'refusing this push: it would land an agent branch on another ref:\n%s\n\n' "$onto" >&2
 	printf 'The branch tracks that ref (git checkout -b … origin/main does this), so Sync aimed\n' >&2
 	printf 'there. To publish the branch instead:  git push -u origin <branch>\n' >&2
 	printf 'To move main on purpose:  GIT_PUSH_OK=1 git push origin <branch>:main\n' >&2
 	exit 1
 fi
 
-refused=''
-while read -r local_ref local_sha remote_ref remote_sha; do
-	[ -z "$remote_ref" ] && continue
-	# An all-zero local sha is a deletion. Matched as "contains no non-zero character" so
-	# it holds for SHA-256 repos (64 chars) as well as SHA-1 (40), rather than comparing
-	# against a literal of one fixed length.
-	case "$local_sha" in
-		*[!0]*)
-			case "$remote_ref" in
-				refs/heads/claude/*) ;;
-				*) refused="$refused  $remote_ref
-" ;;
-			esac
-			;;
-		*) refused="$refused  $remote_ref (deletion)
-" ;;
-	esac
-done <<EOF
-$refs
-EOF
+refused=$(verdict "$(printf '%s\n' "$refs" | agent_refused)") || refused='  (the refs to push could not be read: refused)'
 
 [ -z "$refused" ] && exit 0
 
 printf 'refusing this push: an agent may push only its own branches.\n\n' >&2
-printf 'Not allowed here:\n%s\n' "$refused" >&2
+printf 'Not allowed here:\n%s\n\n' "$refused" >&2
 printf 'Allowed: refs/heads/claude/** , never a deletion.\n\n' >&2
 printf 'To change main, push the claude/* branch and open a pull request — the owner merges it\n' >&2
 printf 'on github.com. Do not retry, and do not look for another way to move main.\n' >&2

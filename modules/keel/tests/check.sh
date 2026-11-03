@@ -9,7 +9,9 @@ D="$(cd "$(dirname "$0")" && pwd)"
 rc=0
 # The module's own validate, beside the repo's (its marketplace row lands with the scrub).
 if command -v claude >/dev/null 2>&1; then
-  claude plugin validate --strict "$D/.." > /dev/null || { echo "plugin.json: claude plugin validate --strict fails"; rc=1; }
+  # captured, never on the job's own fds: the CLI leaves the pipes it was given O_NONBLOCK, and every later
+  # write of this suite could then fail EAGAIN on a loaded runner (docs/runner-interference-2026-11-02.md)
+  out=$(claude plugin validate --strict "$D/.." 2>&1 </dev/null) || { echo "plugin.json: claude plugin validate --strict fails"; printf '%s\n' "$out"; rc=1; }
 fi
 echo "== keel"; bash "$D/keel.sh" || rc=1
 # the other four share nothing (each its own mktemp dir and state dirs): side by side once keel.sh
@@ -26,6 +28,7 @@ for s in paste-paths owed test_lookout sheep_gate; do
   wait "${pids[$i]}" || rc=1; i=$((i+1))
   echo "== $s"; cat "$O/$s"; rm -f "$O/$s"
 done
-# sheep_control and routed (S2) came after that audit: alone, until someone shows they share nothing with the four
-for s in sheep_control routed; do echo "== $s"; bash "$D/$s.sh" || rc=1; done
+# sheep_control and routed (S2) came after that audit, ui (helm-ui S10) after them: alone, until someone shows they
+# share nothing with the four
+for s in sheep_control routed ui; do echo "== $s"; bash "$D/$s.sh" || rc=1; done
 exit $rc

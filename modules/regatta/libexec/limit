@@ -1,0 +1,738 @@
+#!/usr/bin/env python3
+"""regatta limit — change a fleet limit on one host or all of them, effective on each host's next read:
+no build, no landing, no overlay run. Stdlib, Python 3.9.
+
+    regatta limit list [--on H[,H…] | --all]          every limit, each host's value and where it came from
+    regatta limit get KEY [--on H[,H…] | --all]       one limit the same way
+    regatta limit set KEY H:VALUE [H:VALUE…]          a host's value, written on that host
+    regatta limit set KEY VALUE --all                 the same value on every host of the fleet
+    regatta limit set KEY LOGIN:VALUE (--on H… | --all)   a login's value (the week ceiling), on those hosts
+    regatta limit unset KEY H [H…] | --all            back to what the config says
+    regatta limit unset KEY LOGIN (--on H… | --all)
+
+KEY is a key's whole name (`wharf-runs/run-cap`) or its last part (`run-cap`). The limits are what the
+modules declare in their `limits` file (wharf-runs': the run cap, the check slots, the memory headroom,
+the load rule; lighthouse's: the week ceiling), each with its shape and its trial read:
+
+  host    a line `<host>:<value>` each host reads for itself (`run-cap`, `headroom`, `check-slots`)
+  plain   one value the host reads whole (`load-max`: the rule berth on that host judges every candidate by)
+  login   lines `<login>:<value>`, `*:` for any login (`week-max`), the same on every host they are set on
+
+Where it writes (why: live-limits, 2026-11-01). Each host's own config dir, in its live layer:
+`<config>/live/<key>`, which the core's config_read reads in front of `<config>/<key>` (common.py's
+live_merge: a layer line for a word replaces the config's entry for that word, on whatever line; a plain layer
+line replaces the config's plain lines). The overlay's `bootstrap.sh --config` writes `<config>/<key>` and never `live/`, so a
+value set here survives it. The trade-off taken: a value lives on each host, written over ssh, so a host
+that cannot be reached keeps its old value and is named (exit 3), and a host added later starts from its
+config, not from the fleet's last word; the fleet ref (the queue's home) would have reached every host at
+its next fetch, but a read of a limit would then wait on the network, and a cap must read in a hook's time.
+
+Refusals. A value is tried before anything is written: the key's reader runs on a scratch config dir that
+holds only that value, for the host it is meant for, and must read back the value given (dispatch's `--cap`,
+check's `--slots`, headroom's `limits`, berth's `--load-key`, account's `week-max`). A value it reads as
+anything else — the default, a parse error — is refused, with what the reader said, and nothing is
+written anywhere (exit 2). `DISPATCH_MAX_RUNS` and `CHECK_SLOTS`, which override the files, are dropped
+for the trial; they still win on a host that sets them (`get` cannot see a host's environment: `dispatch
+--cap` there is the cap's last word).
+
+The fleet: this host and the peers `regatta/fleet-ssh` names (`<host>:<ssh alias>` lines, read by this verb
+alone, as `wharf-runs/kick-ssh` is the kick's: a scope's node may be named here and nowhere a placer reads),
+else those `wharf-runs/ssh` names. Whoever installs the modules writes it; until the owner's overlay does,
+`--all` reaches what `wharf-runs/ssh` names, and every `--all` prints the hosts it reached and names each host
+`lighthouse/hosts` knows with no road here. A host is reached with `ssh -o BatchMode=yes -o ConnectTimeout=10 <alias>` (REGATTA_SSH stands in
+for the tests), reads and writes the config dir there (`REGATTA_CONFIG`, else the default), and needs nothing of
+regatta installed to be written: its readers honour the layer once its checkout has this change. After a write, and
+in `get` and `list`, each host's own reader is asked what it reads, a peer's over the same road through its config
+dir's `home` file. After a set, a host whose reader reads another value, refuses, or runs a checkout that predates the
+layer is said with exit 3; a peer with no checkout is said and not failed. `get` and `list` show what each reader
+reads beside the file's value, and exit 3 only on a host they could not reach or a reader that refuses.
+Each change is a row in `limits.jsonl`, in `.local/state/regatta` under the home folder of the host that made it.
+
+`set` and `unset` refuse an unattended caller (REGATTA_UNATTENDED or CLAUDE_UNATTENDED): a dispatched run
+refused at its host's cap must not raise the cap itself; the owner's word reaches a host through a session the
+owner runs. `list` and `get` read only. A set says each config line its value stands over, whole: a plain key's
+`log` word or a headroom line's other rules are not kept unless the value names them.
+
+Exit 0 done; 2 a usage error, a refused value or an unattended caller; 3 a host that could not be reached, one
+whose reader reads another value after the write or runs a checkout that predates the layer (the rest done), or, in
+`get` and `list`, a reader that refuses the config or could not tell. A reader refuses with exit 2; any other
+non-zero exit is said as "could not tell", never as a refusal.
+LIMIT_HOST stands in for this host's name (the tests).
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import common  # noqa: E402
+
+SHAPES = ("host", "plain", "login")
+KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$")
+TIMEOUT = 25
+# what overrides a file on the host itself, so a trial read must not inherit it
+TRIAL_DROP = ("DISPATCH_MAX_RUNS", "CHECK_SLOTS", "DISPATCH_HOST", "CHECK_HOST", "HEADROOM_HOST")
+# a read-back keeps the overrides (they are what the host reads by) and drops only the host stand-ins
+HOST_VARS = ("DISPATCH_HOST", "CHECK_HOST", "HEADROOM_HOST")
+
+
+class Usage(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------- the table
+
+def module_dirs():
+    """[(module name, folder)]: the regatta checkout's modules, then installed plugins it lacks."""
+    root = common.regatta_root()
+    seen = []
+    if root:
+        seen += [(p.name, p) for p in sorted((root / "modules").glob("*")) if p.is_dir()]
+    names = {n for n, _ in seen}
+    for plugin, base in common._installed_roots():
+        name = str(plugin).split("@", 1)[0]   # the cache's folder is a version: the plugin's name says which module
+        if base.is_dir() and name not in names:
+            names.add(name)
+            seen.append((name, base))
+    return seen
+
+
+def table():
+    """{key: {shape, default, probe, star, module}} from each module's `limits` file:
+    `<key> <shape>[*] <default|-> <probe…>`, the probe run from the module's folder, `{host}` and `{login}`
+    its placeholders. A line it cannot read is said on stderr and skipped."""
+    out = {}
+    for name, m in module_dirs():
+        f = m / "limits"
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for l in lines:
+            l = l.strip()
+            if not l or l.startswith("#"):
+                continue
+            parts = l.split(None, 3)
+            if len(parts) < 4 or not KEY_RE.match(parts[0]) or parts[1].rstrip("*") not in SHAPES:
+                print("regatta limit: %s: a line it cannot read: %s" % (f, l), file=sys.stderr)
+                continue
+            out[parts[0]] = {"shape": parts[1].rstrip("*"), "star": parts[1].endswith("*"),
+                             "default": None if parts[2] == "-" else parts[2], "probe": parts[3], "module": m,
+                             "name": name}
+    return out
+
+
+def resolve_key(name, tab):
+    if name in tab:
+        return name
+    hits = [k for k in tab if k.split("/", 1)[1] == name]
+    if len(hits) == 1:
+        return hits[0]
+    raise Usage("no limit %r (regatta limit list names them%s)" % (name, ": " + ", ".join(sorted(hits)) if hits else ""))
+
+
+# ---------------------------------------------------------------------------- the fleet
+
+def norm_host(h):
+    return re.sub(r"[^a-z0-9-]", "-", (h or "").lower()).strip("-")
+
+
+def me():
+    return norm_host(os.environ.get("LIMIT_HOST") or common.host_name())
+
+
+def fleet():
+    """{host: alias or None (this host)}, this host first."""
+    here = me()
+    out = {here: None}
+    lines = common.config_lines("regatta/fleet-ssh")
+    if lines is None:
+        lines = common.config_lines("wharf-runs/ssh") or []
+    for l in lines:
+        h, colon, alias = l.partition(":")
+        h, alias = norm_host(h), alias.strip()
+        if colon and h and alias and h != here:
+            out.setdefault(h, alias)
+    return out
+
+
+def roadless(fl, key=None):
+    """The hosts lighthouse/hosts knows, and those this host's lines for KEY name, that have no road from here."""
+    named = [norm_host(x) for x in common.config_lines("lighthouse/hosts") or []]
+    if key:
+        named += [norm_host(w) for w, _ in map(word_of, common.config_lines(key) or []) if w and w != "*"]
+    out = []
+    for h in named:
+        if h and h not in fl and h not in out:
+            out.append(h)
+    return out
+
+
+def hosts_of(a, fl, key=None):
+    if a.all:
+        missing = roadless(fl, key)
+        print("regatta limit: --all is %s%s" % (", ".join(fl), "; no road to %s (regatta/fleet-ssh names none)"
+                                                 % ", ".join(missing) if missing else ""), file=sys.stderr)
+        return list(fl)
+    if a.on:
+        hs = [norm_host(h) for h in a.on.split(",") if h.strip()]
+        bad = [h for h in hs if h not in fl]
+        if bad:
+            raise Usage("no road to %s: not this host, nor a peer regatta/fleet-ssh (else wharf-runs/ssh) names"
+                        % ", ".join(bad))
+        return hs
+    return list(fl)
+
+
+# ---------------------------------------------------------------------------- reading and writing a host
+
+def ssh_cmd():
+    return shlex.split(os.environ.get("REGATTA_SSH") or "ssh") + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+
+
+REMOTE_DIR = 'c="${REGATTA_CONFIG:-$HOME/.config/regatta}"'
+
+
+def read_host(host, alias, key):
+    """(layer lines or None, base lines or None) on host; raises OSError naming why it could not."""
+    return read_host_keys(host, alias, [key])[key]
+
+
+def read_host_keys(host, alias, keys):
+    """{key: (layer, base)} on host, in one ssh for a peer; raises OSError naming why it could not."""
+    if alias is None:
+        out = {}
+        for key in keys:
+            layer, lwhy = common._config_file(common.CONFIG / common.LIVE / key)
+            base, _ = common._config_file(common.CONFIG / key)
+            out[key] = ((None if lwhy else layer), base)
+        return out
+    parts = [REMOTE_DIR]
+    for i, key in enumerate(keys):
+        q = shlex.quote(key)
+        parts.append('echo @@live%d; cat "$c/live/"%s 2>/dev/null; echo; echo @@base%d; cat "$c/"%s 2>/dev/null; echo'
+                     % (i, q, i, q))
+    parts.append("echo @@end")
+    out = run_ssh(alias, "; ".join(parts))
+    if "@@end" not in out:
+        raise OSError("no answer from %s" % alias)
+    clean = lambda t: [l.strip() for l in t.lstrip("\ufeff").splitlines() if l.strip()] or None
+    got = {}
+    for i, key in enumerate(keys):
+        nxt = "@@live%d\n" % (i + 1) if i + 1 < len(keys) else "@@end"
+        live = out.split("@@live%d\n" % i, 1)[1].split("@@base%d\n" % i, 1)[0]
+        base = out.split("@@base%d\n" % i, 1)[1].split(nxt, 1)[0]
+        got[key] = (clean(live), clean(base))
+    return got
+
+
+def run_ssh(alias, cmd, stdin=None):
+    try:
+        # no stdin of the caller's: `while read …; do regatta limit set …; done < f` would lose the rest of f to ssh
+        r = subprocess.run(ssh_cmd() + ["--", alias, cmd], input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise OSError("ssh %s: %s" % (alias, type(e).__name__))
+    if r.returncode != 0:
+        raise OSError("ssh %s: exit %d %s" % (alias, r.returncode, (r.stderr.strip().splitlines() or [""])[-1][:160]))
+    return r.stdout
+
+
+def write_host(host, alias, key, lines):
+    """The host's layer for key becomes lines; none removes it."""
+    text = "".join(l + "\n" for l in lines)
+    if alias is None:
+        f = common.CONFIG / common.LIVE / key
+        if not lines:
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(".%s.tmp.%d" % (f.name, os.getpid()))
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, f)   # a reader mid-write sees the old file or the new one, never an empty one
+        return
+    if not KEY_RE.match(key):   # the table's keys only, so the names below need no quoting
+        raise OSError("no such key: %r" % key)
+    d, b = key.rsplit("/", 1)
+    if not lines:
+        run_ssh(alias, '%s; rm -f "$c/live/%s/%s"' % (REMOTE_DIR, d, b))
+        return
+    # through a temporary file and a rename, as here: a reader there never sees half a value
+    run_ssh(alias, '%s; d="$c/live/%s"; mkdir -p "$d" && cat > "$d/.%s.tmp.$$" && mv -f "$d/.%s.tmp.$$" "$d/%s"'
+            % (REMOTE_DIR, d, b, b, b), stdin=text)
+
+
+def log(row):
+    f = Path.home() / ".local" / "state" / "regatta" / "limits.jsonl"
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with f.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError as e:
+        print("regatta limit: no log row (%s)" % e, file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------- what a host reads
+
+def word_of(line):
+    m = re.match(r"^([^\s:#(]+):\s*(.*)$", line)
+    return (m.group(1).lower(), m.group(2).strip()) if m else (None, line)
+
+
+def effective(spec, host, layer, base):
+    """(value, where from) as the key's reader on host takes it."""
+    merged = common.live_merge(layer, base) or []
+    from_layer = set(layer or [])
+    if spec["shape"] == "login":
+        if not merged:
+            return "none", "default (the registry's)"
+        return " ".join(merged), "live" if layer else "config"
+    if spec["shape"] == "plain":
+        if not merged:
+            return spec["default"] or "none", "default"
+        return " ".join(merged), "live" if layer else "config"
+    ents = common.config_entries(merged)
+    live_words = {w for w, _ in common.config_entries(layer)}
+    for want in (host, "*") if spec["star"] else (host,):
+        for w, v in ents:
+            if w == want:
+                where = "live" if w in live_words else "config"
+                return v, where + ("" if want == host else " (*:)")
+    return spec["default"] or "none", "default"
+
+
+# ---------------------------------------------------------------------------- the trial read
+
+def canon(text):
+    """Tokens compared as the readers print them: numbers as numbers, `k=v` with v a number, in any order."""
+    out = []
+    for t in re.split(r"[\s,]+", (text or "").strip()):
+        if not t:
+            continue
+        k, eq, v = t.partition("=")
+        try:
+            out.append("%s=%r" % (k, float(v)) if eq else repr(float(t)))
+        except ValueError:
+            out.append(t.lower())
+    return sorted(out)
+
+
+def trial(key, spec, host, line):
+    """None when the key's reader, on a config dir holding only `line` in its live layer, reads it back;
+    else why not."""
+    w, v = word_of(line)
+    login = w if spec["shape"] == "login" else ""
+    with tempfile.TemporaryDirectory(prefix="regatta-limit-") as t:
+        f = Path(t) / common.LIVE / key
+        f.parent.mkdir(parents=True)
+        f.write_text(line + "\n", encoding="utf-8")
+        env = {k: x for k, x in os.environ.items() if k not in TRIAL_DROP}
+        env["REGATTA_CONFIG"] = t
+        cmd = probe_cmd(spec, host, login)
+        try:
+            # no stdin of the caller's, as run_ssh: a probe must not eat the rest of a `while read` loop's file
+            r = subprocess.run(["/bin/sh", "-c", cmd], cwd=str(spec["module"]), env=env, capture_output=True,
+                               text=True, timeout=60, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return "its reader did not answer (%s)" % type(e).__name__
+    said = (r.stderr.strip().splitlines() or [""])[-1][:200]
+    got = re.sub(r"\s*\(.*\)\s*$", "", (r.stdout.strip().splitlines() or [""])[0])
+    if r.returncode != 0:
+        return "%s (exit %d%s)" % (refusal(r.returncode), r.returncode, ": " + said if said else "")
+    if not canon(got):
+        # a headroom line with no rules (`host-a:,`) reads back as nothing, which canon(",") also is: refused, as
+        # get would call the same reading a refusal (the landing review)
+        return "its reader reads nothing"
+    if canon(got) != canon(v):
+        return "its reader reads %s, not %s%s" % (got or "nothing", v, " (" + said + ")" if said else "")
+    if said and got.strip() != v.strip() and re.search(r"\bdefault\b", said):
+        # the same number in another spelling (`03`, `3.0`) that the reader refused aloud and met with a default
+        # equal to it: dispatch's cap_here says `is no cap … the default here` and reads 3 (the round-1 review of the
+        # laptop run). Only a reader that says it took its default: headroom names its source line on stderr every
+        # time, and `rate=50,avail=20` is its own line in another order (round 2)
+        return "its reader reads %s only by its default (%s)" % (got, said)
+    return None
+
+
+# ---------------------------------------------------------------------------- the verbs
+
+def probe_cmd(spec, host, word=None):
+    return spec["probe"].replace("{host}", shlex.quote(host)).replace("{login}", shlex.quote(word or "*"))
+
+
+def refusal(rc):
+    """What a reader's non-zero exit says. The readers refuse with 2; any other code (python's 1 on a traceback, 127
+    for a missing interpreter, a signal) is a reader that could not tell, never a verdict on the config (AGENTS.md's
+    trap: a probe's refuse exit must not be 1; the landing review)."""
+    return "its reader refuses it" if rc == 2 else "its reader could not tell"
+
+
+def answer(rc, out):
+    """(value, why) from a reader's exit code and output: (None, why) when it refuses or gives nothing."""
+    got = re.sub(r"\s*\(.*\)\s*$", "", (out.strip().splitlines() or [""])[0])
+    if rc != 0:
+        return None, ("its reader refuses the config as merged (exit %d)" if rc == 2
+                      else "its reader could not tell (exit %d)") % rc
+    return (got, None) if got else (None, "its reader reads nothing")
+
+
+def read_back(key, spec, host, word=None):
+    """(value, why) the key's reader on this host reads now, from the real config dir (no scratch): the ground truth
+    a file's text is not, an override in this environment included."""
+    env = {k: x for k, x in os.environ.items() if k not in HOST_VARS}
+    try:
+        r = subprocess.run(["/bin/sh", "-c", probe_cmd(spec, host, word)], cwd=str(spec["module"]), env=env,
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "its reader did not answer (%s)" % type(e).__name__
+    return answer(r.returncode, r.stdout)
+
+
+def peer_reads(alias, host, items):
+    """{i: (value, why)} for items [(key, spec, word)], each asked of the key's reader on the peer, in one ssh: the
+    peer's own checkout through its config dir's `home` file, as berth's probe reaches it. A peer with no home, or a
+    checkout without the module, answers (None, None): nothing of regatta there to ask (the header: a host needs
+    nothing installed to be written). Raises OSError when the peer cannot be reached (the round-1 review: a set or
+    get on a peer read the file's text alone, so a checkout that predates the layer read as `live`)."""
+    parts = [REMOTE_DIR, 'r="$(head -1 "$c/home" 2>/dev/null)"']
+    for i, (key, spec, word) in enumerate(items):
+        if not re.match(r"^[a-z0-9][a-z0-9-]*$", spec["name"]):
+            continue
+        # a checkout without the module's `limits` file predates the live layer: its readers lack the verbs
+        # the probes call, so its exit would read as a refusal (round 2)
+        parts.append('echo @@q%d; if [ -z "$r" ] || [ ! -d "$r/modules/%s" ]; then echo @@none; '
+                     'elif [ ! -f "$r/modules/%s/limits" ]; then echo @@old; else (cd "$r/modules/%s" && %s) '
+                     '</dev/null 2>/dev/null; echo "@@rc$?"; fi'
+                     % (i, spec["name"], spec["name"], spec["name"], probe_cmd(spec, host, word)))
+    parts.append("echo @@end")
+    out = run_ssh(alias, "; ".join(parts))
+    if "@@end" not in out:
+        raise OSError("no answer from %s" % alias)
+    got = {}
+    for i in range(len(items)):
+        if "@@q%d\n" % i not in out:
+            got[i] = (None, None)
+            continue
+        part = out.split("@@q%d\n" % i, 1)[1]
+        part = re.split(r"@@q\d+\n|@@end", part, maxsplit=1)[0]
+        if part.startswith("@@none"):
+            got[i] = (None, None)
+            continue
+        if part.startswith("@@old"):
+            got[i] = (None, OLD)
+            continue
+        m = re.search(r"@@rc(\d+)\s*$", part)
+        got[i] = answer(int(m.group(1)), part[:m.start()]) if m else (None, "its reader did not answer")
+    return got
+
+
+OLD = "its checkout predates the live layer and reads the config until it updates"
+
+
+def reads(host, alias, items):
+    """{i: (value, why)} of each item's reader on host, this one or a peer."""
+    if alias is None:
+        return {i: read_back(k, sp, host, w) for i, (k, sp, w) in enumerate(items)}
+    return peer_reads(alias, host, items)
+
+
+def show(keys, tab, hosts, fl, rows):
+    bad = 0
+    here = me()
+    for h in hosts:
+        try:
+            got = read_host_keys(h, fl[h], keys)
+        except OSError as e:
+            rows += [(k, h, "?", "could not reach %s: %s" % (h, e)) for k in keys]
+            bad = 1
+            continue
+        # each host's reader's own answer, a peer's included (its checkout through its home file), so a line it
+        # ignores (a cap of 0, a typo, a checkout that predates the layer) shows as what it does, and one it
+        # refuses shows refused (the round-1 review)
+        asked = [k for k in keys if tab[k]["shape"] != "login"]
+        unasked = None
+        try:
+            ans = reads(h, fl[h], [(k, tab[k], None) for k in asked])
+        except OSError as e:
+            ans, unasked = {}, "not read back (%s)" % e
+        ans = {k: ans.get(i, (None, unasked)) for i, k in enumerate(asked)}
+        for key in keys:
+            spec = tab[key]
+            layer, base = got[key]
+            v, where = effective(spec, h, layer, base)
+            rb, why = ans.get(key, (None, None))
+            if why == OLD:
+                # that host reads the config, not the layer: its value column is the config's (the landing review)
+                v, where = effective(spec, h, None, base)
+            if rb is not None and canon(rb) != canon(v):
+                where += "; its reader reads %s" % rb
+                v = rb
+            elif why in (OLD, unasked) and why:
+                where += "; " + why   # said, as a peer with no checkout is: the value is written, unread there
+            elif why:
+                where += "; " + why
+                bad = 1
+            elif rb is None and fl[h] is not None and key in asked:
+                where += "; not read back (no regatta checkout there)"
+            rows.append((key, h, v, where))
+    return bad
+
+
+def cmd_list(a, tab, keys):
+    fl = fleet()
+    hosts = hosts_of(a, fl)
+    rows, bad = [], 0
+    bad |= show(keys, tab, hosts, fl, rows)
+    wk = max([len(r[0]) for r in rows] + [3])
+    wh = max([len(r[1]) for r in rows] + [4])
+    wv = max([len(r[2]) for r in rows] + [5])
+    for r in rows:
+        print("%-*s  %-*s  %-*s  %s" % (wk, r[0], wh, r[1], wv, r[2], r[3]))
+    return 3 if bad else 0
+
+
+def plan_set(a, key, spec, fl):
+    """[(host, word or None, line)] to write: word None for a plain key."""
+    shape = spec["shape"]
+    out = []
+    if a.all or a.on:
+        hosts = hosts_of(a, fl, key if spec["shape"] == "host" else None)
+        for item in a.values:
+            w, v = word_of(item)
+            if shape == "login":
+                if not w:
+                    raise Usage("%s takes LOGIN:VALUE (`*:` for any login)" % key)
+                out += [(h, w, "%s:%s" % (w, v)) for h in hosts]
+            elif w:
+                raise Usage("with --all or --on, %s takes a bare VALUE: each host gets its own line" % key)
+            else:
+                out += [(h, h if shape == "host" else None, "%s:%s" % (h, item) if shape == "host" else item)
+                        for h in hosts]
+        if len(a.values) != 1 and shape != "login":
+            raise Usage("with --all or --on, one VALUE")
+    else:
+        if shape == "login":
+            raise Usage("%s is a login's: name the hosts it is set on (--on H[,H…] or --all)" % key)
+        for item in a.values:
+            w, v = word_of(item)
+            if not w or w == "*":
+                raise Usage("%s takes HOST:VALUE (or VALUE --all)" % key)
+            h = norm_host(w)
+            if h not in fl:
+                raise Usage("no road to %s: not this host, nor a peer regatta/fleet-ssh (else wharf-runs/ssh) names" % h)
+            out.append((h, h if shape == "host" else None, "%s:%s" % (h, v) if shape == "host" else v))
+    for _, w, line in out:
+        _, v = word_of(line) if w else (None, line)
+        if not v.strip() or "\n" in v:
+            raise Usage("an empty value: `regatta limit unset` takes a value away")
+    return out
+
+
+def stands_over(spec, w, base):
+    """What a value for word W stands over, whole: W's entry in the config, on whatever line; for a key a `*:` line
+    serves, that entry where W has none; else the default (rounds 3 and 4 of the review)."""
+    ents = common.config_entries(base)
+    if not w:
+        return ["the config's " + " ".join(v for x, v in ents if x is None)] if any(x is None for x, _ in ents) else []
+    own = ["the config's %s:%s" % (x, v) for x, v in ents if x == w]
+    if own or spec is None or spec["shape"] != "host":
+        return own[:1]
+    star = ["the config's *:%s" % v for x, v in ents if x == "*"][:1] if spec["star"] else []
+    return star or (["the default " + spec["default"]] if spec["default"] else [])
+
+
+def lock_here():
+    """An exclusive lock on this host's layer while one set here reads, edits and writes it: two sets at once would
+    otherwise lose one. A set into a peer reads and writes in two ssh calls, unlocked (the digest's kept finding)."""
+    import fcntl
+    f = common.CONFIG / common.LIVE / ".lock"
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(f, "a")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def apply(key, fl, plan, verb, spec=None):
+    """Each host's layer rewritten for its items; (done, unreached)."""
+    by = {}
+    for h, w, line in plan:
+        by.setdefault(h, []).append((w, line))
+    done, unreached = [], []
+    for h, items in by.items():
+        held = lock_here() if fl[h] is None else None
+        try:
+            layer, base = read_host(h, fl[h], key)
+            new = list(layer or [])
+            for w, line in items:   # what the value stands over, whole (the header): said, never merged
+                if line is None:
+                    continue
+                over = stands_over(spec, w, base)
+                if over and over != ["the config's " + line]:   # its own value again: nothing to say
+                    print("regatta limit: %s on %s: %s stands over %s, whole" % (key, h, line, " ".join(over)),
+                          file=sys.stderr)
+            for w, line in items:
+                if line is None and not any((word_of(l)[0] == w) if w else True for l in new):
+                    print("regatta limit: %s on %s has no live line%s to unset" % (key, h, " for " + w if w else ""),
+                          file=sys.stderr)
+                if w is None:   # a plain key: the value is the whole layer
+                    new = [] if line is None else [line]
+                else:
+                    new = [l for l in new if word_of(l)[0] != w] + ([] if line is None else [line])
+            write_host(h, fl[h], key, new)
+        except OSError as e:
+            if held:
+                held.close()
+            unreached.append(h)
+            print("regatta limit: could not reach %s (%s): %s — its value is unchanged" % (h, fl[h], e), file=sys.stderr)
+            continue
+        if held:
+            held.close()
+        done.append(h)
+        for w, line in items:
+            log({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "by": me(), "host": h,
+                 "key": key, "verb": verb, "line": line, "word": w,
+                 "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None})
+            print("%s %s on %s: %s" % (verb, key, h, line if line is not None else (w or "the value") + " → the config's"))
+    return done, unreached
+
+
+def verify(key, spec, plan, fl, done):
+    """After the writes: each written host's reader reads the value set, or say what it reads (exit 3). A peer's is
+    asked over ssh through its home file (the round-1 review); a peer with nothing of regatta to ask is said, not
+    failed. A host not written (unreached) is not asked: its message is said already."""
+    bad = 0
+    by = {}
+    for h, w, line in plan:
+        if h in done and line is not None:
+            by.setdefault(h, []).append((w, line))
+    for h, items in by.items():
+        try:
+            ans = reads(h, fl[h], [(key, spec, w if spec["shape"] == "login" else None) for w, _ in items])
+        except OSError as e:
+            print("regatta limit: %s on %s: written, but its reader could not be asked (%s)" % (key, h, e),
+                  file=sys.stderr)
+            bad = 1
+            continue
+        for i, (w, line) in enumerate(items):
+            want = word_of(line)[1] if w else line
+            rb, why = ans.get(i, (None, None))
+            if rb is None and why is None:
+                print("regatta limit: %s on %s: written; no regatta checkout there to read it back" % (key, h),
+                      file=sys.stderr)
+            elif why == OLD:
+                print("regatta limit: %s on %s: written, but %s" % (key, h, OLD), file=sys.stderr)
+                bad = 1
+            elif rb is None or canon(rb) != canon(want):
+                print("regatta limit: %s on %s: written, but %s" % (key, h, "its reader reads %s, not %s (an override in "
+                      "the environment, DISPATCH_MAX_RUNS or CHECK_SLOTS, or a checkout that predates the live layer?)"
+                      % (rb, want) if rb else why + " — `regatta limit unset` takes the value back"), file=sys.stderr)
+                bad = 1
+    return bad
+
+
+def cmd_set(a, tab):
+    key = resolve_key(a.key, tab)
+    spec = tab[key]
+    fl = fleet()
+    plan = plan_set(a, key, spec, fl)
+    refused = []
+    for h, w, line in plan:
+        why = trial(key, spec, h, line)
+        if why:
+            refused.append("%s on %s: %s" % (line, h, why))
+    if refused:
+        for r in refused:
+            print("regatta limit: refused %s %s — %s; nothing written" % (key, r.split(" on ", 1)[0], r.split(" on ", 1)[1]),
+                  file=sys.stderr)
+        return 2
+    done, unreached = apply(key, fl, plan, "set", spec)
+    if spec["shape"] == "login" and any(w == "*" for _, w, _ in plan):
+        print("regatta limit: a `*:` line serves only a login whose registry row sets no week ceiling of its own; "
+              "name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
+    if spec["shape"] == "login" and any(w not in (None, "*") for _, w, _ in plan):
+        # a second home for a login's ceiling beside budgets.json (main, 2026-10-31): this line outranks it on these
+        # hosts until unset, so say it at the set (the round-1 review of the laptop run)
+        print("regatta limit: a login's line stands over its registry row's and budgets.json's week ceiling on these "
+              "hosts until `regatta limit unset`", file=sys.stderr)
+    unread = verify(key, spec, plan, fl, done)
+    return 3 if unreached or unread else 0
+
+
+def cmd_unset(a, tab):
+    key = resolve_key(a.key, tab)
+    spec = tab[key]
+    fl = fleet()
+    plan = []
+    if spec["shape"] == "login":
+        if not (a.all or a.on) or not a.values:
+            raise Usage("%s: unset LOGIN [LOGIN…] (--on H[,H…] or --all)" % key)
+        hosts = hosts_of(a, fl)
+        plan = [(h, w.lower(), None) for h in hosts for w in a.values]
+    else:
+        if a.all or a.on:
+            if a.values:
+                raise Usage("unset %s takes hosts or --all/--on, not both" % key)
+            hosts = hosts_of(a, fl)
+        else:
+            if not a.values:
+                raise Usage("unset %s takes HOST [HOST…] or --all" % key)
+            hosts = [norm_host(h) for h in a.values]
+            bad = [h for h in hosts if h not in fl]
+            if bad:
+                raise Usage("no road to %s" % ", ".join(bad))
+        plan = [(h, h if spec["shape"] == "host" else None, None) for h in hosts]
+    _, unreached = apply(key, fl, plan, "unset")
+    return 3 if unreached else 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="regatta limit", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="verb", required=True)
+    for name in ("list", "get", "set", "unset"):
+        s = sub.add_parser(name)
+        if name != "list":
+            s.add_argument("key")
+        if name in ("set", "unset"):
+            s.add_argument("values", nargs="*")
+        g = s.add_mutually_exclusive_group()
+        g.add_argument("--on", help="hosts, comma-separated")
+        g.add_argument("--all", action="store_true", help="every host of the fleet")
+    a = p.parse_args(argv)
+    if a.verb in ("set", "unset") and common.unattended():
+        print("regatta limit: %s writes a host's live limits — refused under %s; the owner's session runs it"
+              % (a.verb, common.unattended_label()), file=sys.stderr)
+        return 2
+    tab = table()
+    try:
+        if a.verb == "list":
+            return cmd_list(a, tab, sorted(tab))
+        if a.verb == "get":
+            return cmd_list(a, tab, [resolve_key(a.key, tab)])
+        if a.verb == "set":
+            if not a.values:
+                raise Usage("set %s takes HOST:VALUE, or VALUE --all" % a.key)
+            return cmd_set(a, tab)
+        return cmd_unset(a, tab)
+    except Usage as e:
+        print("regatta limit: %s" % e, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

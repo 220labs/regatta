@@ -76,7 +76,7 @@ def render(pid, deploy=None):
     """Write the local files; deploy per the live backend (deploy=None), now (True) or never (False).
     Returns the lines to print."""
     st = helmlib.state(pid)
-    pub = dict(helmlib.public(st), kind="plan")
+    pub = dict(plan_view(st), kind="plan")
     d = cache_root() / pid
     _write(d / "state.json", json.dumps(pub, ensure_ascii=False, sort_keys=True))
     _write(d / "index.html", page(pub, "Helm · %s" % (st.get("topic") or pid)))
@@ -367,6 +367,12 @@ def _card(kind, title, column, **kw):
     return c
 
 
+def repo_name(path):
+    """A task's repo as the board names it: the folder's name, or its main checkout's when the path is a
+    session's worktree, so its ask matches the poll's row (_repo_of_cwd's reading, one for both)."""
+    return _repo_of_cwd(str(path or "").rstrip("/")) or ""
+
+
 def plan_cards(st):
     cards = []
     plan = st.get("topic") or st["id"]
@@ -394,8 +400,8 @@ def plan_cards(st):
             col = None
         if not col:
             continue
-        cards.append(_card("human" if human else "task", t["title"], col, plan=plan, plan_id=st["id"],
-                           repo=Path(str(t.get("repo") or "")).name, by=by or ((t.get("session") or "")[:8]),
+        cards.append(_card("human" if human else "task", t["title"], col, plan=plan, plan_id=st["id"], task=t.get("id"),
+                           repo=repo_name(t.get("repo")), by=by or ((t.get("session") or "")[:8]),
                            status=s, eta=t.get("eta"), cost=t.get("cost"), est=t.get("est_to_go"),
                            blockers=t["blockers"], parked=t["parked"], updated=t.get("updated"),
                            overrun=t.get("overrun"), guarded=t.get("guarded")))
@@ -403,13 +409,13 @@ def plan_cards(st):
             if a["open"]:
                 # a held dnd item and any ask in mode ask wait on the owner alone: no skipper answers them (S5)
                 acol = owner_col if s == "waiting" or a.get("mode") in ("ask", "dnd") else "Parked / Relayed"
-                repo = Path(str(t.get("repo") or "")).name
+                repo = repo_name(t.get("repo"))
                 course, github = ask_links(repo, t.get("branch"), a["ref"].rpartition("#")[0])
-                cards.append(_card("ask", a.get("summary") or a["ref"], acol, plan=plan, plan_id=st["id"], ref=a["ref"],
+                cards.append(_card("ask", a.get("summary") or a["ref"], acol, plan=plan, plan_id=st["id"], ref=a["ref"], task=t.get("id"),
                                    repo=repo, reversible=a.get("reversible"),
                                    recommended=a.get("recommended"), updated=a.get("opened"), guarded=t.get("guarded"),
                                    mode=a.get("mode"), held="held for %s (dnd)" % helmlib.display(helmlib.people()[0]) if a.get("mode") == "dnd" else None,
-                                   course=course, github=github))
+                                   course=course, github=github, branch=t.get("branch")))
     return cards
 
 
@@ -440,6 +446,23 @@ def _github_slug(repo):
     return r.get("github") if isinstance(r, dict) else None
 
 
+_PINS = []   # [(read at, keel's pins)]: one read per render — sheep.json is megabytes (S2's review: ~0.3 s a read)
+
+
+def _pin(repo, branch, rel):
+    k = _keel()
+    if k is None:
+        return {}
+    if not _PINS or time.time() - _PINS[0][0] > 60:
+        try:
+            pins = k.pins()
+        except Exception:
+            pins = {}
+        _PINS[:] = [(time.time(), pins if isinstance(pins, dict) else {})]
+    pin = _PINS[0][1].get("%s@%s:%s" % (repo, branch, rel))
+    return pin if isinstance(pin, dict) else {}
+
+
 def ask_links(repo, branch, rel):
     """(course, github) for a doc on a branch, each None when it cannot be read."""
     if not (repo and branch and rel):
@@ -447,10 +470,7 @@ def ask_links(repo, branch, rel):
     k = _keel()
     course = github = None
     if k is not None:
-        try:
-            course = (k.pins().get("%s@%s:%s" % (repo, branch, rel)) or {}).get("url")
-        except Exception:
-            course = None
+        course = _pin(repo, branch, rel).get("url")
         slug = _github_slug(repo)
         if slug:
             try:
@@ -458,6 +478,41 @@ def ask_links(repo, branch, rel):
             except Exception:
                 github = None
     return course, github
+
+
+# The whole doc in place (helm-board-ux S2, `queue`): the Course page from its content origin,
+# `https://<space>.spacesheep.app/`, the space read from keel's pin on the host that deployed it; a host
+# without the pin carries none, and the card's GitHub link (keel's urls()) stands for the doc there.
+# The frame case, read 2026-11-02 against a pinned Course page: anonymous, with the CLI's key as a Bearer
+# header and as a cookie, the content origin answers 200 with no content-security-policy and no
+# x-frame-options — a 4,354-byte shell, the same three ways, so no frame header refuses a frame. The shell
+# is the catch: it renders only inside a frame (`window.parent===window` shows "Open this space at
+# spacesheep.dev") and takes its sign-in ticket only from a parent at spacesheep.dev or *.spacesheep.dev
+# (`trusted(o)`), then fetches /index.html with that ticket's token. The board's page runs on its own
+# content origin (or 127.0.0.1), which the shell does not trust, so a private Course page framed by the
+# board stays on its shell. D4 (docs/helm-board-ux-2026-10-26.md) is answered C, by surface: the local page
+# renders the whole doc from the doc on disk at a click, the deployed board opens the Course page in its own
+# tab, signed in there — the card's `course` URL, never `frame`, whose shell shows only "Open this space at
+# spacesheep.dev" outside a frame. `frame` serves one road: the board framing the Course page while the board
+# itself sits under a spacesheep.dev parent, the only parent the shell takes a sign-in from (S11).
+CONTENT_ORIGIN = "https://%s.spacesheep.app/"
+
+
+def ask_frame(repo, branch, rel):
+    """The content-origin URL of a doc's Course page from this host's keel pin, or None."""
+    space = _pin(repo, branch, rel).get("space") if repo and branch and rel else None
+    return CONTENT_ORIGIN % space if space and re.match(r"^[0-9a-f-]{8,64}$", str(space)) else None
+
+
+# What an ask card carries from ask poll's row for the Decide feed (S2): the item's own section, its options,
+# its first line and the worktree on this host (the VS Code link), the steps that wait on it, its content hash,
+# the branch's tip and time, and the doc's title and Summary (moved onto the doc's group in `queue`).
+ASK_FIELDS = ("section", "options", "line", "step_waits", "hash", "worktree", "sha", "summary", "doc_title")
+
+
+def ask_key(repo, branch, rel, item):
+    """The reconcile key the page keys a decision by (`queue`): repo@branch:rel#D3."""
+    return "%s@%s:%s#%s" % (repo, branch, rel, item)
 
 
 def poll_cards(states=None):
@@ -473,11 +528,20 @@ def poll_cards(states=None):
     rows = [a for a in d.get("asks") or [] if isinstance(a, dict) and not helmlib.not_an_ask(a.get("rel"))
             and not helmlib.branch_ended(states or {}, a.get("repo"), a.get("branch"), a.get("sha"), a.get("t"))]
     out = []
+    # a guard list that may be short (helmlib.guard_unread: no `regatta/guarded`, a torn registry) keeps every
+    # row's doc words home, as ask poll's scan does; the card stays as main showed it, its title and links
+    unread = helmlib.guard_unread()
     for a in helmlib.newest_per_item(rows):
         course, github = ask_links(a.get("repo"), a.get("branch"), a.get("rel"))
         out.append(_card("ask", a.get("title") or a.get("item"), helmlib.columns()[0], repo=a.get("repo"), ref="%s#%s" % (a.get("rel"), a.get("item")),
                          branch=a.get("branch"), reversible=a.get("reversible"), recommended=a.get("recommended"),
-                         course=course, github=github))
+                         course=course, github=github, frame=ask_frame(a.get("repo"), a.get("branch"), a.get("rel")),
+                         key=ask_key(a.get("repo"), a.get("branch"), a.get("rel"), a.get("item")), rel=a.get("rel"), item=a.get("item"),
+                         # an epoch, as the page's ago() reads: when the poll first saw the item, else its branch tip's time
+                         updated=next((x for x in (a.get("asked"), a.get("t")) if isinstance(x, (int, float))), None),
+                         # K6 at render too: a row written while the registry read may name a repo it now guards
+                         guarded=helmlib.guarded(a.get("repo")) or None,
+                         **{f: a.get(f) for f in ASK_FIELDS if not (unread and f in helmlib.DOC_TEXT)}))
     return out
 
 
@@ -653,6 +717,8 @@ def lookout_cards(states=None):
         out.append(_card("lookout", " ".join([rel or doc or "?"] + [str(i) for i in items]),
                          helmlib.columns()[0], repo=repo if rest else None, by=helmlib.people()[0], ref=branch, doc=r.get("doc"),
                          evidence=("%s: " % h if h else "") + str(r["card"]), updated=r.get("ts"), host=h,
+                         # its key names the doc and its items, so it stays one card's whatever else is listed (S2)
+                         key="lookout:%s#%s" % (doc or "?", ",".join(str(i) for i in items) or r.get("id") or ""),
                          guarded=helmlib.guarded(repo if rest else doc)))
     return out
 
@@ -924,7 +990,8 @@ def tag_re():
 def road_cards():
     """skipper-resilience S8: one card in the owner's column per escalation the stall road could not
     deliver or settle (stalls_tick.road_faults: an issue that never opened after its one retry, a
-    followed issue or a cleared one left open) — what GitHub never got is on the board instead. Quiet
+    followed issue or a cleared one left open, a ladder rung that failed twice, a notify seam that holds every
+    phone rung) — what GitHub never got is on the board instead. Quiet
     with no escalations.jsonl (every host that is no yard)."""
     try:
         import stalls_tick
@@ -935,7 +1002,9 @@ def road_cards():
     for r in faults:
         closed = r.get("state") == "closed"
         left = [n for n in ((r.get("close_failed_issues") or [r.get("issue")]) if closed else stalls_tick.followed(r)) if n]
-        if not closed and r.get("issue") is None:
+        if r.get("state") == "held":
+            what = "%s (`ask backends` names it)" % (r.get("why") or "?")   # the notify seam does not read (charterer S3)
+        elif not closed and r.get("issue") is None:
             # its new issue never opened: that is the fault; the one it follows stays the stall's
             what = "not opened: %s%s" % (r.get("why") or "?", " (#%s still open)" % ", #".join(map(str, left)) if left else "")
         else:
@@ -960,7 +1029,8 @@ def todo_cards():
             if not m or not re.match(r"^\s*(?:[-*]|\d+\.)\s", line):
                 continue
             who = m.group(1).lower()
-            text = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", tag.sub("", line)).strip()
+            # the item's id (`- [porch-bulb] …`, wharf's /todo since 2026-10-31) is the list's handle, not the card's words
+            text = re.sub(r"^\s*(?:[-*]|\d+\.)\s+(?:\[[a-z0-9-]{2,}\]\s+)?", "", tag.sub("", line)).strip()
             out.append(_card("human", text[:140], helmlib.column_for(who), repo=repo, by=who,
                              guarded=helmlib.guarded(repo)))
     return out
@@ -1093,21 +1163,62 @@ def week_line():
         return None
 
 
-def timeline(states):
+def doc_decision_counts(docs):
+    """(answered, all) D-items over a ship's docs, read with keel's parse (the hill's uphill, R2.13), or None
+    when keel is absent or none of the docs reads here (a ship from another host, a doc moved)."""
+    if not docs:
+        return None
+    k = _keel()
+    if k is None:
+        return None
+    done = total = read = 0
+    for d in docs:
+        try:
+            _, items, _ = k.parse(Path(d).read_text())
+        except Exception:   # noqa: BLE001 — a doc that will not read counts nothing; keel's Stop included
+            continue
+        read += 1
+        total += len(items)
+        done += sum(1 for i in items if (i.get("answer") or "").strip())
+    return (done, total) if read else None
+
+
+def plan_view(st, at=None):
+    """public()'s copy of a ship with its ladder (S2): the hill's decisions read from the private copy's docs."""
+    pub = helmlib.public(st)
+    try:
+        pub["ladder"] = helmlib.ladder(pub, at, doc_decision_counts(st.get("docs")))
+    except Exception as e:   # noqa: BLE001 — a hand-edited due or cost that will not read: the ship without its ladder
+        print("helm: %s's ladder skipped (%s: %s)" % (st.get("id"), type(e).__name__, str(e)[:120]), file=sys.stderr)
+        pub["ladder"] = None
+    return pub
+
+
+def timeline(states, at=None):
+    """A row per ship for the ship ladder (B7; S2 adds the ladder's data): each task a bar from its start to its
+    end — a built step's first DONE (`built_at`), an open one's projected end along the dependency order
+    (helmlib.task_ends; `projected` says how when it is not the skipper's own ETA) — and the ship's `ladder`."""
+    at = time.time() if at is None else at
     rows = []
     for st in states:
+        try:   # a value plan_view's ladder tolerated (a hand-edited plan.json) never takes the board down
+            ends = helmlib.task_ends(st, at)[0]
+        except Exception as e:   # noqa: BLE001
+            print("helm: %s timeline ends skipped (%s: %s)" % (st.get("id"), type(e).__name__, str(e)[:120]), file=sys.stderr)
+            ends = {}
         bars = []
         for t in st["tasks"]:
             start = t.get("started") or st.get("created")
-            end = t.get("eta") or t.get("updated") or time.time()
-            if t["status"] in helmlib.ENDED:
-                end = t.get("updated") or end
+            end, how = ends.get(t["id"]) or (t.get("eta") or t.get("updated") or at, None)
+            if t["status"] in helmlib.ENDED and t["status"] != "failed":
+                end, how = t.get("built_at") or t.get("updated") or end, "built"
             bars.append({"id": t["id"], "title": t["title"], "start": start, "end": end, "status": t["status"],
+                         "projected": how if how in ("projected", "pushed", "overrun") else None,
                          "kind": t.get("kind"), "deps": t["deps"], "cost": t.get("cost"), "est": t.get("est_to_go"),
                          "parked_at": t.get("parked_at"), "overrun": t.get("overrun"),
                          "flags": [a["ref"].split("#")[-1] for a in t["asks"] if a["open"]], "blockers": t["blockers"]})
         rows.append({"plan": st.get("topic") or st["id"], "id": st["id"], "bars": bars, "milestones": st["milestones"],
-                     "totals": st["totals"]})
+                     "totals": st["totals"], "ladder": st.get("ladder") if "ladder" in st else helmlib.ladder(st, at)})
     return rows
 
 
@@ -1166,15 +1277,271 @@ def intake_cards():
     return out
 
 
+# helm-board-ux S2: the Decide feed's order and the Later shelf, carried in the board's JSON as keys into
+# the owner's column (a card is written once, in its column; `queue` and `later` name it by `key`).
+QUEUE_GROUPS = {"pr": "land", "held": "land", "stall": "unstick", "waiting": "unstick", "permission": "unstick",
+                "road": "unstick", "lookout": "unstick", "run": "unstick", "memo": "memo"}
+GUARDED_DROP = ("title", "recommended", "blockers", "by", "owner", "doc", "ref", "url", "evidence", "rule", "session", "run",
+                "next_action", "orca_dispatch", "host", "course", "github", "branch", "frame", "rel", "item") + ASK_FIELDS
+
+
+def card_key(c):
+    """A card's reconcile key: an ask's repo@branch:rel#D3, else its kind and what names it; never its
+    title's ages (AGE_RE), which move on every poll."""
+    if c.get("key"):
+        return c["key"]
+    if c.get("plan_id"):   # a ship's card: its plan and task (a guarded task's id is public()'s salted token)
+        ref = str(c.get("ref") or "")
+        # an ask: its item; a guarded one's ref is public()'s "guarded", so its opening time tells its asks apart
+        # (finish review: every ask of one guarded task shared a key, so a done on one hid the next)
+        item = "#" + ref.rpartition("#")[2] if "#" in ref else "@%s" % c.get("updated") if c.get("updated") is not None else ""
+        return "%s:%s/%s%s" % (c.get("kind"), c["plan_id"], c.get("task") or AGE_RE.sub("", str(c.get("title") or "")).strip(),
+                               item if c.get("kind") == "ask" else "")
+    what = c.get("url") or c.get("doc") or c.get("ref") or c.get("session") or c.get("run") or AGE_RE.sub("", str(c.get("title") or "")).strip()
+    return "%s:%s%s" % (c.get("kind"), "%s/" % c["repo"] if c.get("repo") and not c.get("url") and not c.get("doc") else "", what)
+
+
+def key_cards(cards):
+    """Give each card its key, unique in `cards`: where two share one (a lookout card per answered item of
+    one doc), each of those takes its title, ages left out, after a `|`; a tie left after that is numbered
+    `~2`, `~3` in the order the board lists them. Every card is told apart, so no draft or snooze is shared."""
+    base = [card_key(c) for c in cards]
+    n = {}
+    for k in base:
+        n[k] = n.get(k, 0) + 1
+    seen = {}
+    for c, k in zip(cards, base):
+        k = k if n[k] == 1 else "%s|%s" % (k, AGE_RE.sub("", str(c.get("title") or "")).strip())
+        seen[k] = seen.get(k, 0) + 1
+        c["key"] = k if seen[k] == 1 else "%s~%d" % (k, seen[k])
+
+
+def guard_salt():
+    """This host's salt for a guarded card's key and hash digests, kept beside board-state.json and never
+    published: a reader of the board cannot check a guessed repo, branch and doc against a digest (as public()'s
+    plan salt). Made once: written whole to a file of this process's own, then linked into place, which only
+    the first render wins; a file that reads short (a torn write from before) is replaced the same way."""
+    p = cache_root() / "guard-salt"
+    for _ in range(3):
+        try:
+            s = p.read_text().strip()
+            if len(s) >= 16:
+                return s
+            short = True
+        except OSError:
+            short = False
+        s = os.urandom(16).hex()
+        tmp = p.with_name("guard-salt.%d.tmp" % os.getpid())
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # never the umask's 0644
+            with os.fdopen(fd, "w") as fh:
+                fh.write(s)
+            if short:
+                os.replace(str(tmp), str(p))   # a torn salt never served a key: replacing it loses nothing
+            else:
+                try:
+                    os.link(str(tmp), str(p))  # create-if-absent with its content: the first render's salt is everyone's
+                except FileExistsError:
+                    raise
+                except OSError:                # no hard links here: an exclusive create, written in place
+                    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(s)
+            return s
+        except FileExistsError:
+            continue                           # another render won: read its salt
+        except OSError:
+            return s                           # no cache dir to keep it in: this render's own
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return s
+
+
+def strip_guarded(cards):
+    """K6: another person reads the board; a guarded card keeps its column and nothing else — S2's section,
+    Summary, worktree and frame included, its repo read as "guarded" (as public() names a ship's), and its key
+    and hash only as salted digests, enough to reconcile by (the hash taken before the strip, so a snooze still
+    sees the item change)."""
+    salt = None
+    for c in cards:
+        if c.get("guarded"):
+            salt = salt or guard_salt()
+            pre = card_hash(c) + "\0" + str(c.get("key") or "")   # two asks of one guarded task differ by key alone
+            for k in GUARDED_DROP:
+                c.pop(k, None)
+            c["title"] = "guarded — open it"
+            if c.get("repo"):
+                c["repo"] = "guarded"
+            c["hash"] = "g" + hashlib.sha256((salt + "\0" + pre).encode()).hexdigest()[:15]
+            if c.get("key"):
+                c["key"] = "guarded:" + hashlib.sha256((salt + "\0" + c["key"]).encode()).hexdigest()[:12]
+    return cards
+
+
+def card_hash(c):
+    """What a snooze "until it changes" and a done compare: an ask's item hash (S2), else a digest of what
+    the card shows — its deploy-check fields and title without ages, its status, class, rule and evidence —
+    so a stall that escalates or a PR whose checks turn comes back. S4's drainer writes the row with the
+    hash the page showed, which is this."""
+    if c.get("hash"):
+        return c["hash"]
+    # what moves on a card while it is held: a stall's class (`stall`), a memo's open count and keel line, a
+    # review's state, a held PR's reason (finish review: `class` was read, which no card carries)
+    keep = {k: c.get(k) for k in BOARD_SIG_KEYS + ("status", "stall", "rule", "evidence", "label", "open", "keel", "review", "held")}
+    keep["title"] = AGE_RE.sub("", str(c.get("title") or ""))
+    keep["evidence"] = AGE_RE.sub("", json.dumps(keep.get("evidence"), ensure_ascii=False, sort_keys=True, default=str))
+    return "c" + hashlib.sha256(json.dumps(keep, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()[:15]
+
+
+def board_state_file():
+    return cache_root() / "board-state.json"
+
+
+def read_later(now=None):
+    """The owner's attention apart from the work's state (features: three states kept apart): the rows of
+    this host's board-state.json, which S4's drainer writes from the page's snooze and done events —
+    {"later": [{"key", "hash", "kind": "snooze" | "done", "until": "<iso>" | null, "at"}]}. A snooze's
+    `until` null is "until it changes". A row that will not read is skipped; no file is no rows."""
+    try:
+        d = json.loads(board_state_file().read_text())
+    except (OSError, ValueError):
+        return []
+    rows = d.get("later") if isinstance(d, dict) else None
+    now = time.time() if now is None else now
+    out = []
+    for r in rows if isinstance(rows, list) else ():
+        if not (isinstance(r, dict) and isinstance(r.get("key"), str) and r.get("kind") in ("snooze", "done")):
+            continue
+        until = helmlib._iso_ts(r["until"]) if r.get("until") else None
+        if r["kind"] == "snooze" and r.get("until") and (until is None or until <= now):
+            continue   # awake: back on the feed
+        out.append(r)
+    return out
+
+
+def decide_queue(cards, later_rows=()):
+    """(queue, later) over the owner's column. `queue`: the docs whose decisions wait — each a group with its
+    items' keys in the doc's order, in the queue component's order, the reason shown (docs an S-step waits
+    on, then docs holding a `Reversible: no` item, then oldest first) — and after them the other cards'
+    keys by what they need: memo, land, unstick, people, tasks, other. `later`: the cards a snooze or a done
+    holds off the feed while their hash is the row's (an item that changed comes back)."""
+    owner = helmlib.columns()[0]
+    held = {}
+    for r in later_rows:
+        held[r["key"]] = r
+    docs, rest, later, seen = {}, {}, [], set()
+    for c in cards:
+        if c.get("column") != owner:
+            continue
+        k = c.get("key") or card_key(c)
+        if k in seen:
+            continue
+        seen.add(k)
+        r = held.get(k)
+        if r and r.get("hash") == card_hash(c):
+            later.append({"key": k, "kind": r["kind"], "until": r.get("until"), "at": r.get("at"), "title": c.get("title")})
+            continue
+        if c.get("kind") == "ask" and c.get("rel") and not c.get("guarded"):
+            dk = "%s@%s:%s" % (c.get("repo"), c.get("branch"), c.get("rel"))
+            g = docs.setdefault(dk, {"key": dk, "repo": c.get("repo"), "branch": c.get("branch"), "rel": c.get("rel"),
+                                     "title": c.get("doc_title") or c.get("rel"), "summary": c.get("summary"),
+                                     "course": c.get("course"), "github": c.get("github"), "frame": c.get("frame"),
+                                     "worktree": c.get("worktree"), "items": [], "waits": [], "oneway": 0, "oldest": None})
+            it = str(c.get("item") or k.rpartition("#")[2])
+            num = int(it[1:]) if it[1:].isdigit() else 0
+            # the doc's order: by line, a card with none (a ship's ask no poll row matched) after them, by its number
+            g["items"].append((c.get("line") is None, c.get("line") or 0, num, k))
+            g["waits"] += ["%s waits on %s" % (s, c.get("item") or k.rpartition("#")[2]) for s in c.get("step_waits") or ()]
+            g["oneway"] += c.get("reversible") == "no"
+            u = c.get("updated")   # an epoch: a poll card's branch tip, a ship's ask its opening
+            u = float(u) if isinstance(u, (int, float)) else helmlib._iso_ts(u) if u else None
+            if u is not None and (g["oldest"] is None or u < g["oldest"]):
+                g["oldest"] = u
+            continue
+        # a plan task waiting on the owner stays in Decide (R2.8): `tasks`; a TODO line's @name is People's
+        grp = QUEUE_GROUPS.get(c.get("kind")) or ("tasks" if c.get("kind") in ("task", "human") and c.get("plan_id")
+                                                   else "people" if c.get("kind") == "human" else "other")
+        rest.setdefault(grp, []).append(k)
+    out = []
+    for g in docs.values():
+        g["items"] = [x[-1] for x in sorted(g["items"])]
+        g["open"] = len(g["items"])
+        g["why"] = ("↑ first: " + ", ".join(g["waits"])) if g["waits"] else (
+            "holds %d irreversible" % g["oneway"]) if g["oneway"] else "oldest first"
+        g["rank"] = 0 if g["waits"] else 1 if g["oneway"] else 2
+        out.append({k: v for k, v in g.items() if v not in (None, "", [])})
+    out.sort(key=lambda g: (g["rank"], g.get("oldest") if g.get("oldest") is not None else float("inf"), g["key"]))
+    for g in out:
+        g.pop("oneway", None)
+        if g.get("oldest") is not None:
+            g["oldest"] = helmlib.iso(g["oldest"])
+    order = ("memo", "land", "unstick", "people", "tasks", "other")
+    return {"docs": out, "groups": [[g, rest[g]] for g in order if rest.get(g)]}, later
+
+
+def absorb_polled(cards, polled):
+    """`cards` (a ship's) then `polled`, one card per decision: a ship's ask card that names the item the
+    poll read takes the poll card's key, repo, branch, links and S2 fields, and that poll card is dropped.
+    Matched on (repo, rel, item) — the branch too when the task recorded one; a task that names no repo
+    matches only when one poll card in all repos holds that doc and item, never a guess between two."""
+    by_key = {c["key"]: c for c in polled if c.get("key")}
+    by_item = {}
+    for c in polled:
+        by_item.setdefault((c.get("repo"), c.get("rel"), c.get("item")), []).append(c)
+    took = set()
+    owner = helmlib.columns()[0]
+    # a ship's ask relayed to its skipper (Parked / Relayed) leaves the owner's poll card in Decide, as before S2
+    asks = [c for c in cards if c.get("kind") == "ask" and c.get("plan_id") and "#" in str(c.get("ref") or "")
+            and c.get("column") == owner]
+    for c in asks:
+        rel, _, item = c["ref"].rpartition("#")
+        c.setdefault("rel", rel)
+        c.setdefault("item", item)
+
+    def take(c, row):
+        if row is None or id(row) in took:
+            return
+        took.add(id(row))
+        c.update({f: row[f] for f in ASK_FIELDS + ("frame", "repo", "branch", "course", "github", "key")
+                  if row.get(f) not in (None, "", [])})
+        if c.get("updated") is None:   # a ship's ask keeps when it was opened; the poll's is the branch tip's time
+            c["updated"] = row.get("updated")
+        c["guarded"] = c.get("guarded") or row.get("guarded")
+        c["_took"] = True
+
+    for c in asks:   # first every ask on the poll's own branch, so an older branch never takes its card
+        if c.get("repo") and c.get("branch"):
+            take(c, by_key.get(ask_key(c["repo"], c["branch"], c["rel"], c["item"])))
+    for c in asks:
+        if c.pop("_took", False):
+            continue
+        rel, item = c["rel"], c["item"]
+        got = by_item.get((c["repo"], rel, item)) if c.get("repo") else \
+            [x for (_, r2, i2), xs in by_item.items() if (r2, i2) == (rel, item) for x in xs]
+        # the poll keeps the newest branch's row of an item: the task's may be an older one
+        take(c, got[0] if got and len(got) == 1 else None)
+        c.pop("_took", None)
+    return cards + [c for c in polled if id(c) not in took]
+
+
 def overview_state():
     states = []
+    at = time.time()   # one clock for every ship's ladder and the timeline's bars
     for pid in helmlib.list_plans():
         try:
-            st = helmlib.public(helmlib.state(pid))
+            st = helmlib.state(pid, at)
+            if all(t["status"] in helmlib.ENDED and not _today(t.get("updated")) for t in st["tasks"]) and st["tasks"]:
+                continue  # a finished plan rolls off the board the day after
         except (FileNotFoundError, ValueError):
             continue
-        if all(t["status"] in helmlib.ENDED and not _today(t.get("updated")) for t in st["tasks"]) and st["tasks"]:
-            continue  # a finished plan rolls off the board the day after
+        except Exception as e:   # noqa: BLE001 — a torn ship (an event time that is no number) costs itself, never the board
+            print("helm: ship %s skipped (%s: %s)" % (pid, type(e).__name__, str(e)[:120]), file=sys.stderr)
+            continue
+        st = plan_view(st, at)
         states.append(st)
     cards = []
     for st in states:
@@ -1182,7 +1549,7 @@ def overview_state():
     # one read of every cloned repo's pull requests serves the stall, ask, PR and Done today cards
     prs = {} if os.environ.get("PLAN_NO_GH") else helmlib.prefetch_prs([t for ts in helmlib.repo_tops().values() for t in ts])
     polled = poll_cards(prs)
-    cards += polled
+    cards = absorb_polled(cards, polled)
     cards += memo_cards({Path((c.get("ref") or "").split("#")[0]).name for c in polled})
     cards += lookout_cards(prs)
     stalled, judged = stall_cards(prs)
@@ -1201,24 +1568,29 @@ def overview_state():
     held_urls = {c["url"] for c in held if c.get("url")}
     # a session at work on a branch, either Mac's, or a running task's: its WIP PR is a Running card
     live = {(_repo_of_cwd(x.get("cwd")), x.get("branch")) for x in judged.get("live") or [] if x.get("branch")}
-    live |= {(Path(str(t.get("repo") or "")).name, t.get("branch")) for st in states for t in st["tasks"]
+    live |= {(repo_name(t.get("repo")), t.get("branch")) for st in states for t in st["tasks"]
              if t["status"] == "running" and t.get("branch")}
     pr, wip_idle = pr_cards(prs, live)
     cards += [c for c in pr if c.get("url") not in held_urls]
     cards += done_cards(prs)
     cards += intake_cards()
     cards = embark_first(cards)
-    for c in cards:  # K6: another person reads the board; a guarded card keeps its column and nothing else
-        if c.get("guarded"):
-            for k in ("title", "recommended", "blockers", "by", "owner", "doc", "ref", "url", "evidence", "rule", "session", "run",
-                      "next_action", "orca_dispatch", "host", "course", "github", "branch"):
-                c.pop(k, None)
-            c["title"] = "guarded — open it"
+    owner = helmlib.columns()[0]
+    key_cards([c for c in cards if c.get("column") == owner])
+    strip_guarded(cards)
+    for c in cards:   # the hash a snooze or done names (S4's drainer writes the one the page showed): every owner card's
+        if c.get("column") == owner and not c.get("hash"):
+            c["hash"] = card_hash(c)
+    queue, later = decide_queue(cards, read_later())
+    for c in cards:   # the doc's title and Summary ride its group in `queue`, once per doc
+        c.pop("summary", None)
+        c.pop("doc_title", None)
     cols = [{"name": n, "cards": [c for c in cards if c["column"] == n]} for n in board_columns()]
     today_cost = sum(t.get("cost") or 0 for st in states for t in st["tasks"] if _today(t.get("updated")))
     ops = ops_row()
     return {"kind": "overview", "as_of": time.time(), "host": helmlib.host(), "columns": cols,
-            "header": {"needs_owner": len(cols[0]["cards"]), "owner": helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
+            # needs_owner: a snoozed or done card (Later) needs no one now
+            "header": {"needs_owner": len(cols[0]["cards"]) - len(later), "owner":helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
                        "stalled": None if "error" in judged else len(stalled),
                        "stalls_old": (judged.get("hidden") or {}).get("old") or 0,
                        "stalls_oldest": (judged.get("hidden") or {}).get("oldest"),
@@ -1228,12 +1600,13 @@ def overview_state():
                        "stalls_note": judged.get("error") or "; ".join(judged.get("notes") or []) or None,
                        "sheep": paused_note(), "talk": talk_note(),
                        "ops": (ops or {}).get("line"), "ops_stale": (ops or {}).get("stale"), "ops_sig": (ops or {}).get("sig")},
-            "timeline": timeline(states)}
+            "timeline": timeline(states, at), "queue": queue, "later": later}
 
 
 # an age in a card's title ("gone 40h", "12 min"): it moves every poll, so the deploy check leaves it out
-AGE_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:s|min|h|d|w)\b")
-BOARD_SIG_KEYS = ("column", "kind", "repo", "ref", "url", "doc", "session", "run", "course", "github", "guarded")
+AGE_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:s|m|min|h|d|w)\b")   # `m`: stalls' _ago ("gone 37m")
+BOARD_SIG_KEYS = ("column", "kind", "repo", "ref", "url", "doc", "session", "run", "course", "github", "guarded",
+                  "hash", "recommended", "reversible")   # S2: an item's text, its pick or its lock changed is a new version
 
 
 def board_sig(st):
@@ -1252,7 +1625,12 @@ def board_sig(st):
     hdr = st.get("header") or {}
     return hashlib.sha256(json.dumps({"columns": cols, "needs_owner": hdr.get("needs_owner"), "stalled": hdr.get("stalled"),
                                        "stalls_old": hdr.get("stalls_old"), "wip_idle": hdr.get("wip_idle"),
-                                       "ops": hdr.get("ops_sig")},
+                                       "ops": hdr.get("ops_sig"),
+                                       # the feed's order and reasons move with a step done or a Summary edited (no clock: `oldest`
+                                       # is a branch tip's commit time)
+                                       "queue": st.get("queue"),
+                                       # a snooze or a done moves a card off the feed: a new version, as its keys say
+                                       "later": sorted(str(r.get("key")) for r in st.get("later") or () if isinstance(r, dict))},
                                      ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -1364,7 +1742,7 @@ function card(c,i){var m=[];if(c.plan)m.push(esc(c.plan));if(c.repo)m.push(esc(c
 // the owner's column groups by kind (board-cleanup S1: 130 cards in one list), five each, "+N more" to open
 var KINDS=[['asks',['ask']],['stalls',['stall','road']],['sessions waiting',['waiting','permission','task']],['PRs',['pr','held']],['memos',['memo','lookout']]],SHOW=5,more={};
 // Intake's lanes in ops' order (deadman first); any other label ranks after them, alphabetically
-var IKINDS=['deadman','stall','contact','bug','other'];
+var IKINDS=['deadman','stall','budget','contact','bug','other'];
 function kindOf(c){for(var j=0;j<KINDS.length;j++)if(KINDS[j][1].indexOf(c.kind)>=0)return j;return KINDS.length}
 function lanes(col,i){var groups={},rank={};col.cards.forEach(function(c){var k,r;
   if(c.label){k=c.label;var j=IKINDS.indexOf(k);r=j<0?-1:j-IKINDS.length}else if(i===0){r=kindOf(c);k=r<KINDS.length?KINDS[r][0]:'other'}else{k=(lane==='by'?by(c):c[lane])||'—';r=0}

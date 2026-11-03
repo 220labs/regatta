@@ -15,6 +15,8 @@ CALLER_CONFIG="${REGATTA_CONFIG:-}"
 # git reads a global config of the suite's own, and no system one: the caller's ~/.gitconfig (a
 # hook path, an init template, a default branch) never reaches a scratch repo (review 2026-10-21, 15)
 export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
+# the fake gh logs a token call by GH_TOKEN, and ci-provider reads WHARF_READ_TOKEN: neither from the caller
+unset GH_TOKEN GITHUB_TOKEN WHARF_READ_TOKEN
 : > "$GIT_CONFIG_GLOBAL"
 # A scratch config dir of its own, whatever the caller's REGATTA_CONFIG: every key a case reads is
 # pinned here, so the suite passes the same on a Mac whose login names real hosts and on a runner
@@ -34,21 +36,28 @@ printf 'ci\n' > "$REGATTA_CONFIG/wharf/ci-runner-user"
 # $T/gh/collabs.json, its runners $T/gh/runners.json ($T/gh/runners.fail: unread), its queued check
 # runs $T/gh/queued.json, and both runner tokens are $TOKEN. Its
 # repository variables are $T/gh/vars/<NAME>.json: a POST or PATCH body becomes one, a GET of
-# none is GitHub's 404; with $T/gh/vars/fail a GET fails with no output at all (gh's own failure).
+# none is GitHub's 404; with $T/gh/vars/fail a GET fails with no output at all (gh's own failure), with
+# $T/gh/vars/<NAME>.unread a GET of that one does, and with $T/gh/vars/<NAME>.refuse GitHub refuses its write.
 mkdir -p "$T/bin" "$T/gh"
 cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 D="$FAKE_GH"
 args="$*"
 echo "$args" >> "$D/calls"
+[ -n "${GH_TOKEN:-}" ] && echo "$args" >> "$D/tokcalls"
+[ -n "${WHARF_READ_TOKEN:-}" ] && echo "$args" >> "$D/leak"
 case "$args" in
   *"/actions/runners/registration-token --jq .token"|*"/actions/runners/remove-token --jq .token") echo "$FAKE_TOKEN" ;;
   *"/actions/runners") [ -e "$D/runners.fail" ] && { echo "HTTP 403" >&2; exit 1; }
+    # with an admin named (forkpr.admin), the runner list is an admin's read too, as on GitHub
+    [ -e "$D/forkpr.admin" ] && [ "${GH_TOKEN:-}" != "$(cat "$D/forkpr.admin")" ] && { echo "HTTP 404" >&2; exit 1; }
     cat "$D/runners.json" 2>/dev/null || echo '{"total_count":0,"runners":[]}' ;;
   *"/actions/workflows/check.yml/runs?status=queued&per_page=20") cat "$D/queued.json" 2>/dev/null || echo '{"workflow_runs":[]}' ;;
   *" --jq .private") p=$(cat "$D/private" 2>/dev/null || echo true); [ "$p" = fail ] && { echo "HTTP 404" >&2; exit 1; }; echo "$p" ;;
   *"/actions/permissions/fork-pr-workflows-private-repos") f=$(cat "$D/forkpr" 2>/dev/null || echo false)
-    [ "$f" = fail ] && { echo "HTTP 403" >&2; exit 1; }
+    # an admin's token reads it where the login cannot: $D/forkpr.admin names that token
+    [ "$f" = fail ] && [ -n "${GH_TOKEN:-}" ] && [ "$GH_TOKEN" = "$(cat "$D/forkpr.admin" 2>/dev/null)" ] && f=false
+    [ "$f" = fail ] && { echo "HTTP 404" >&2; exit 1; }
     echo "{\"run_workflows_from_fork_pull_requests\":$f,\"send_write_tokens_to_workflows\":false,\"send_secrets_and_variables\":false,\"require_approval_for_fork_pr_workflows\":false}" ;;
   *"/collaborators?per_page=100") cat "$D/collabs.json" 2>/dev/null || echo '[{"login":"alice","permissions":{"admin":true,"push":true,"pull":true}},{"login":"bob","permissions":{"admin":false,"maintain":false,"push":true,"pull":true}},{"login":"carol","permissions":{"admin":false,"push":false,"pull":true}}]' ;;
   # GitHub answers a PATCH, contexts or checks alike, with both lists (a context's app_id: null here)
@@ -59,17 +68,34 @@ ch=[{"context": c["context"], "app_id": c.get("app_id")} for c in ch] if ch is n
 json.dump({"strict": d.get("strict"), "contexts": ctx, "checks": ch}, open(sys.argv[2], "w"))' "$D/patch.json" "$D/rsc.json"
     cat "$D/rsc.json" ;;
   *required_status_checks*) cat "$D/rsc.json" ;;
+  *"/branches/main") [ -e "$D/branch.json" ] || { echo "fake gh: no branch.json" >&2; exit 1; }; cat "$D/branch.json" ;;
   *"/status") cat "$D/status.json" 2>/dev/null || echo '{"statuses":[]}' ;;
   *"/check-runs") cat "$D/checkruns.json" 2>/dev/null || echo '{"check_runs":[]}' ;;
   *"-X POST "*"/actions/variables --input -") mkdir -p "$D/vars"; cat > "$D/vars/post.json"
     n=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$D/vars/post.json")
+    [ -e "$D/vars/$n.refuse" ] && { rm -f "$D/vars/post.json"; echo "HTTP 403" >&2; exit 1; }
     [ -e "$D/vars/$n.json" ] && { echo "HTTP 409" >&2; exit 1; }; mv "$D/vars/post.json" "$D/vars/$n.json" ;;
   *"-X PATCH "*"/actions/variables/"*" --input -") n=${args##*/actions/variables/}; n=${n%% *}
+    [ -e "$D/vars/$n.refuse" ] && { echo "HTTP 403" >&2; exit 1; }
     [ -e "$D/vars/$n.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat > "$D/vars/$n.json" ;;
-  *"/actions/variables/"*) n=${args##*/}; [ -e "$D/vars/fail" ] && exit 1
+  *"/actions/variables/"*) n=${args##*/}; { [ -e "$D/vars/fail" ] || [ -e "$D/vars/$n.unread" ]; } && exit 1
     [ -e "$D/vars/$n.json" ] && cat "$D/vars/$n.json" || { echo '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
+  # a runner's custom labels set (PUT) or cleared (DELETE) in runners.json, answered as GitHub does
+  *"-X PUT "*"/actions/runners/"*"/labels --input -"|*"-X DELETE "*"/actions/runners/"*"/labels")
+    [ -e "$D/labels.fail" ] && { echo "HTTP 422" >&2; exit 1; }
+    id=${args##*/actions/runners/}; id=${id%%/*}; body='{"labels":[]}'; case "$args" in *PUT*) body=$(cat) ;; esac
+    python3 "$D/setlabels.py" "$D/runners.json" "$id" "$body" ;;
   *) echo "fake gh: unhandled $args" >&2; exit 1 ;;
 esac
+EOF
+cat > "$T/gh/setlabels.py" <<'EOF'
+import json, sys
+path, rid, body = sys.argv[1], int(sys.argv[2]), json.loads(sys.argv[3])
+d = json.load(open(path))
+r = next(r for r in d["runners"] if r["id"] == rid)
+r["labels"] = [l for l in r["labels"] if l.get("type") != "custom"] + [{"name": n, "type": "custom"} for n in body["labels"]]
+json.dump(d, open(path, "w"))
+print(json.dumps({"total_count": len(r["labels"]), "labels": r["labels"]}))
 EOF
 chmod +x "$T/bin/gh"
 # A fake ssh: records its argv and stdin in $T/ssh, then runs the remote command here, as the runner Mac
@@ -118,7 +144,22 @@ echo "curl $*" >> "$FAKE_SSH/curl"; exit 22
 EOF
 chmod +x "$T/bin/ssh" "$T/ssh/rbin/"*
 TOKEN="AAAFAKERUNNERTOKEN0123456789"
-export PATH="$T/bin:$PATH" FAKE_GH="$T/gh" FAKE_SSH="$T/ssh" FAKE_TOKEN="$TOKEN"
+# git as it is, bar what reaches origin, which is no network here: $T/gh/fetch.fail, origin unreachable;
+# $T/gh/default, its default branch (main; `none`: an origin with no branch yet), the one a fetch finds
+REAL_GIT=$(command -v git)
+cat > "$T/bin/git" <<'EOF'
+#!/usr/bin/env bash
+b=$(cat "$FAKE_GH/default" 2>/dev/null || echo main)
+case " $* " in
+  *" ls-remote --symref origin HEAD "*) [ -e "$FAKE_GH/fetch.fail" ] && { echo "fatal: unable to access origin" >&2; exit 128; }
+    [ "$b" = none ] || printf 'ref: refs/heads/%s\tHEAD\n' "$b"; exit 0 ;;
+  *" fetch -q origin +refs/heads/$b:"*) [ -e "$FAKE_GH/fetch.fail" ] && exit 128; exit 0 ;;
+  *" fetch -q origin "*) echo "fatal: couldn't find remote ref" >&2; exit 128 ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$T/bin/git"
+export PATH="$T/bin:$PATH" FAKE_GH="$T/gh" FAKE_SSH="$T/ssh" FAKE_TOKEN="$TOKEN" REAL_GIT
 echo '{"strict": false, "contexts": ["check"]}' > "$T/gh/rsc.json"
 
 newrepo() { # newrepo <dir>: a repo on a claude/* branch with Actions' check.yml and protection
@@ -129,10 +170,17 @@ newrepo() { # newrepo <dir>: a repo on a claude/* branch with Actions' check.yml
   sed 's/{{COMMAND}}/sh check.sh/' "$TPL/.github/workflows/check.yml" > "$r/.github/workflows/check.yml"
   cp "$TPL/.github/main-protection.json" "$r/.github/main-protection.json"
   git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm init
+  git -C "$r" update-ref refs/remotes/origin/main HEAD
   git -C "$r" checkout -q -b claude/test/2026-10-18-ci
 }
 ctx() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['required_status_checks']['contexts'])" "$1"; }
-yamlok() { ruby -ryaml -e 'd = YAML.safe_load(File.read(ARGV[0])); puts d["jobs"].keys.sort.join(",") + "|" + d["workflows"].keys.sort.join(",")' "$1"; }
+# yamlread FILE EXPR: EXPR, python over the parsed file as d, printed as one string (a block scalar's
+# last newline not doubled). PyYAML, which every host that runs this suite has: ruby is not on all of them
+yamlread() { python3 -c 'import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+s = str(eval(sys.argv[2]))
+print(s, end="" if s.endswith("\n") else "\n")' "$1" "$2"; }
+yamlok() { yamlread "$1" '",".join(sorted(d["jobs"])) + "|" + ",".join(sorted(d["workflows"]))'; }
 
 echo "switching"
 R="$T/a"; newrepo "$R"
@@ -196,9 +244,9 @@ R="$T/d"; newrepo "$R"; touch "$R/.github/workflows/automerge.yml"
 "$CP" "$R" --to circleci > "$T/out" 2>&1; check "$?" "2" "automerge.yml: refused (it waits on Actions)"
 R="$T/e"; newrepo "$R"
 "$CP" "$R" --to circleci --check $'sh check.sh\necho done' > /dev/null 2>&1
-check "$(ruby -ryaml -e 'puts YAML.safe_load(File.read(ARGV[0]))["jobs"]["check"]["steps"][1]["run"]["command"]' "$R/.circleci/config.yml" | tr '\n' ';')" "sh check.sh;echo done;" "a two-line command survives"
+check "$(yamlread "$R/.circleci/config.yml" 'd["jobs"]["check"]["steps"][1]["run"]["command"]' | tr '\n' ';')" "sh check.sh;echo done;" "a two-line command survives"
 "$CP" "$R" --to actions > /dev/null 2>&1
-check "$(ruby -ryaml -e 'puts YAML.safe_load(File.read(ARGV[0]))["jobs"]["check"]["steps"][1]["run"]' "$R/.github/workflows/check.yml" | tr '\n' ';')" "sh check.sh;echo done;" "…both ways"
+check "$(yamlread "$R/.github/workflows/check.yml" 'd["jobs"]["check"]["steps"][1]["run"]' | tr '\n' ';')" "sh check.sh;echo done;" "…both ways"
 "$CP" "$R" --to circleci --dry-run > "$T/out" 2>&1
 check "$(grep -c 'would' "$T/out" | tr -d ' ' | sed 's/^[1-9][0-9]*$/some/')" "some" "--dry-run says what it would do"
 check "$(test -e "$R/.circleci/parts/check.yml" && echo wrote || echo none)" "none" "…and writes nothing"
@@ -329,7 +377,7 @@ echo "self-hosted: Actions on the runner Mac's self-hosted runner"
 echo '{"strict": false, "contexts": ["check"]}' > "$T/gh/rsc.json"
 R="$T/p"; newrepo "$R"; cp "$R/.github/workflows/check.yml" "$T/p.ubuntu.yml"
 "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "actions → self-hosted"
-check "$(ruby -ryaml -e 'puts YAML.safe_load(File.read(ARGV[0]))["jobs"]["check"]["runs-on"].join(",")' "$R/.github/workflows/check.yml")" "self-hosted,macOS,laptop" "check.yml runs on the labels key's [self-hosted, macOS, laptop]"
+check "$(yamlread "$R/.github/workflows/check.yml" '",".join(d["jobs"]["check"]["runs-on"])')" "self-hosted,macOS" "check.yml asks for a self-hosted macOS runner, not the labels key's machine"
 check "$(grep -c "^ *if: .*!github.event.pull_request.draft" "$R/.github/workflows/check.yml")" "1" "…the draft skip kept"
 check "$(grep -c 'cancel-in-progress: true' "$R/.github/workflows/check.yml")" "1" "…the concurrency block kept"
 check "$(grep -c "^ *group: check-.*pull_request.draft && 'draft' || 'live'" "$R/.github/workflows/check.yml")" "1" "…its group keyed on draft (the 2026-10-25 race)"
@@ -343,7 +391,7 @@ grep -q 'no --protect' "$T/out"; check "$?" "0" "it says no --protect is needed"
 grep -q -- '--runner install' "$T/out"; check "$?" "0" "it names the runner install"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "a re-run on self-hosted: its own runs-on is no extra"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (ci.json)' "$T/out"; check "$?" "0" "status names self-hosted"
-grep -q 'no online runner labelled self-hosted, macOS, laptop' "$T/out"; check "$?" "0" "…and warns with no runner online"
+grep -q 'no online runner labelled self-hosted, macOS:' "$T/out"; check "$?" "0" "…and warns with no runner online"
 rm "$R/.github/ci.json"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "without ci.json, self-hosted inferred from runs-on"
 "$CP" "$R" --to actions > /dev/null 2>&1; check "$?" "0" "self-hosted → actions"
@@ -809,16 +857,16 @@ R="$T/v2"; newrepo "$R"; grep '^ *#' "$R/.github/workflows/check.yml" > "$T/v2.b
 check "$(grep '^ *#' "$R/.github/workflows/check.yml" | grep -vxF -f "$T/v2.before" | grep -ci 'laptop\|ci-runner\| as ci\b')" "0" "the comment it adds to check.yml names no machine or user: only runs-on does"
 python3 - "$R/.github/workflows/check.yml" <<'PY'
 import sys; p=sys.argv[1]; t=open(p).read()
-open(p,"w").write(t.replace("runs-on: [self-hosted, macOS, laptop]", "runs-on: [self-hosted, macOS, othermac]", 1))
+open(p,"w").write(t.replace("runs-on: [self-hosted, macOS]", "runs-on: [self-hosted, macOS, othermac]", 1))
 PY
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (ci.json)' "$T/out"; check "$?" "0" "a file on another Mac's labels is still self-hosted"
 grep -q 'no online runner labelled self-hosted, macOS, othermac' "$T/out"; check "$?" "0" "…and status asks for the file's labels, not the key's"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "2" "…but not this config's form: a re-run holds it as a hand edit (review 2026-10-21, 4)"
 "$CP" "$R" --to self-hosted --force > /dev/null 2>&1; check "$?" "0" "…--force takes it"
-check "$(grep -c 'runs-on: \[self-hosted, macOS, laptop\]' "$R/.github/workflows/check.yml")" "1" "…and writes this config's labels"
+check "$(grep -c 'runs-on: \[self-hosted, macOS\]' "$R/.github/workflows/check.yml")" "1" "…and writes what the repo needs"
 rm "$R/.github/ci.json"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "this config's literal form, no ci.json: self-hosted inferred"
-sed 's/runs-on: \[self-hosted, macOS, laptop\]/runs-on: [self-hosted, macOS, oldmac]/' "$R/.github/workflows/check.yml" > "$T/v2.yml" && mv "$T/v2.yml" "$R/.github/workflows/check.yml"
+sed 's/runs-on: \[self-hosted, macOS\]/runs-on: [self-hosted, macOS, oldmac]/' "$R/.github/workflows/check.yml" > "$T/v2.yml" && mv "$T/v2.yml" "$R/.github/workflows/check.yml"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'actions (inferred' "$T/out"; check "$?" "0" "another Mac's labels, no ci.json: not this config's runner, read as actions (review 2026-10-21, 5)"
 R="$T/v3"; newrepo "$R"; "$CP" "$R" --to circleci > /dev/null 2>&1
 python3 - "$R/.circleci/config.yml" <<'PY'
@@ -835,7 +883,7 @@ R="$T/w1"; newrepo "$R"; mkdir -p "$R/.helloworld"; cp "$R/.github/workflows/che
 "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a repo with a public twin (.helloworld/): --to self-hosted"
 check "$(grep -cxF "    $VARLINE" "$R/.github/workflows/check.yml")" "1" "…runs-on reads CI_RUNS_ON, ubuntu-latest where unset"
 check "$(diff "$T/w1.ubuntu.yml" "$R/.github/workflows/check.yml" | grep '^>' | grep -ci 'laptop\|\[self-hosted\|"self-hosted"')" "0" "…and nothing it writes names the machine or its labels"
-check "$(ruby -ryaml -e 'puts YAML.safe_load(File.read(ARGV[0]))["jobs"]["check"]["runs-on"]' "$R/.github/workflows/check.yml")" \
+check "$(yamlread "$R/.github/workflows/check.yml" 'd["jobs"]["check"]["runs-on"]')" \
       "\${{ fromJSON(vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}" "…a YAML string Actions evaluates"
 grep -q 'sets CI_RUNS_ON to \["self-hosted","macOS","laptop"\]' "$T/out"; check "$?" "0" "…the next step names the variable and its value"
 grep -q 'runs on ubuntu-latest, hosted' "$T/out"; check "$?" "0" "…and says the check runs hosted until then"
@@ -855,7 +903,7 @@ R="$T/w3"; newrepo "$R"
 "$CP" "$R" --to self-hosted --runs-on-var '9x' > /dev/null 2>&1; check "$?" "2" "…and one starting with a digit"
 "$CP" "$R" --to actions --runs-on-var X > /dev/null 2>&1; check "$?" "2" "--runs-on-var without --to self-hosted: an error"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1
-check "$(grep -c 'runs-on: \[self-hosted, macOS, laptop\]' "$R/.github/workflows/check.yml")" "1" "no twin, no flag: the literal labels, as before"
+check "$(grep -c 'runs-on: \[self-hosted, macOS\]' "$R/.github/workflows/check.yml")" "1" "no twin, no flag: the literal labels, as before"
 
 echo "the variable form: status and the runner (fake gh, fake ssh)"
 R="$T/w4"; newrepo "$R"; mkdir -p "$R/.helloworld"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
@@ -928,6 +976,28 @@ except m.Refusal as e:
     print(e); sys.exit(2)
 PY
 grep -q "could not read acme/demo's runners (HTTP 403)" "$T/out"; check "$?" "0" "…and says so"
+python3 - "$CP" > "$T/out" 2>&1 <<'PY'; check "$?" "0" "a bare label in the variable (no JSON): fromJSON fails on it, so it routes nowhere"
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+m.variable = lambda s, v: ("box1", None)
+m.runners_of = lambda s: ([{"name": "other", "labels": [{"name": "box1"}]}], None)
+m.set_variable = lambda s, v, labels, dry: print("set %s %s" % (v, ",".join(labels)))
+m.route_variable("acme/demo", "CI_RUNS_ON", m.Target("h", ("self-hosted", "macOS", "box1"), "box1", 1), True)
+print("served=%s" % m.served("acme/demo", "box1", "box1"))
+print("caps=%s" % sorted(m.variable_labels("box1")))
+PY
+grep -qF "set CI_RUNS_ON self-hosted,macOS,box1" "$T/out"; check "$?" "0" "…install sets it (landing review 2026-11-01), never 'already routes'"
+grep -qF "served=[]" "$T/out"; check "$?" "0" "…no other runner serves it"
+grep -qF "caps=['box1']" "$T/out"; check "$?" "0" "…while caps still reads \${{ vars.X }}'s bare label"
+python3 - "$CP" > "$T/out" 2>&1 <<'PY'; check "$?" "0" "the host-write scan reads a block list holding self-hosted beside an expression"
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+t = "jobs:\n  a:\n    runs-on:\n      - self-hosted\n      - ${{ matrix.h }}\n    steps: []\n"
+print(m.runs_on_runner_mac(t, None), m.runs_on_runner_mac(t.replace("self-hosted", "ubuntu-latest"), None))
+PY
+check "$(tail -1 "$T/out")" "True False" "…and not one without it (landing review 2026-11-01)"
 echo "{\"total_count\":1,\"runners\":[$OLDMAC]}" > "$T/gh/runners.json"
 "$CP" "$R" --runner install $FLEET > "$T/out" 2>&1; check "$?" "0" "no other runner registered with the variable's labels"
 check "$(python3 -c "import json; print(json.load(open('$T/gh/vars/CI_RUNS_ON.json'))['value'])")" '["self-hosted","macOS","fleet"]' "…routed to this runner's labels"
@@ -1043,7 +1113,7 @@ echo "the review of 2026-10-21: a re-run keeps the file's form; the variable's n
 rm -rf "$T/gh/vars"
 R="$T/x6"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; mkdir -p "$R/.helloworld"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "a literal self-hosted file, .helloworld/ added: a re-run (6)"
-check "$(grep -c 'runs-on: \[self-hosted, macOS, laptop\]' "$R/.github/workflows/check.yml")" "1" "…keeps the literal form (6)"
+check "$(grep -c 'runs-on: \[self-hosted, macOS\]' "$R/.github/workflows/check.yml")" "1" "…keeps the literal form (6)"
 : > "$T/gh/calls"
 "$CP" "$R" --runner install --dry-run > "$T/out" 2>&1
 grep -q 'no repository variable set: check.yml.s runs-on names the labels itself' "$T/out"; check "$?" "0" "--runner install --dry-run on it: no variable, and why (16)"
@@ -1136,7 +1206,7 @@ echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 
 echo "a job on the runner Mac keeps out of its login's own (the move of eight repos, 2026-10-21)"
 rm -rf "$T/gh/vars"
-stepnames() { ruby -ryaml -e 'puts YAML.safe_load(File.read(ARGV[0]))["jobs"]["check"]["steps"].map { |s| s["name"] || s["uses"] }.join("|")' "$1"; }
+stepnames() { yamlread "$1" '"|".join(s.get("name") or s["uses"] for s in d["jobs"]["check"]["steps"])'; }
 R="$T/gcg1"; newrepo "$R"
 "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "--to self-hosted"
 check "$(stepnames "$R/.github/workflows/check.yml")" "git config --global in this job's own file|actions/checkout@v4|check" \
@@ -1259,7 +1329,7 @@ echo "a publishing repo's check.yml names no host (twin)"
 R="$T/gcg7"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
 mkdir -p "$R/.helloworld"; printf '# what goes public\nREADME.md\n' > "$R/.helloworld/allowlist.txt"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1
-check "$(grep -c 'runs-on: \[self-hosted, macOS, laptop\]' "$R/.github/workflows/check.yml")" "1" "an allowlist without .github/: the literal stays"
+check "$(grep -c 'runs-on: \[self-hosted, macOS\]' "$R/.github/workflows/check.yml")" "1" "an allowlist without .github/: the literal stays"
 printf '.github/workflows/check.yml\n' >> "$R/.helloworld/allowlist.txt"
 "$CP" "$R" > "$T/out" 2>&1; grep -q '⚠ check.yml is published' "$T/out"; check "$?" "0" "status: a published check.yml naming the labels warned"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "the allowlist lists .github/: a re-run"
@@ -1332,22 +1402,57 @@ grep -q 'holds more than its template' "$T/out"; check "$?" "0" "…the holds-mo
 R="$T/lr6"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
 mkdir -p "$R/.helloworld"; printf '.github/dependabot.yml\n' > "$R/.helloworld/allowlist.txt"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1
-check "$(grep -c 'runs-on: \[self-hosted, macOS, laptop\]' "$R/.github/workflows/check.yml")" "1" "another .github/ file published: the literal stays (8)"
+check "$(grep -c 'runs-on: \[self-hosted, macOS\]' "$R/.github/workflows/check.yml")" "1" "another .github/ file published: the literal stays (8)"
 R="$T/lr7"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
 mkdir -p "$R/.opensource"; printf '.github/workflows/check.yml\n' > "$R/.opensource/allowlist.txt"
 "$CP" "$R" --to self-hosted > /dev/null 2>&1
 check "$(grep -cxF "    $VARLINE" "$R/.github/workflows/check.yml")" "1" "the old .opensource/ allowlist listing check.yml: the variable form (3)"
 
-echo "the self-hosted kind's name from the config dir (the scrub, 2026-10-22)"
-# The owner's repos' ci.json name the kind after the first runner Mac; wharf/ci-runner-kind carries it.
+echo "the self-hosted kind: its one name, an older one read as an alias (2026-10-31)"
+# ci.json files from before the rename name the kind after a runner Mac; wharf/ci-runner-kind lists such names.
 printf 'buildbox\n' > "$REGATTA_CONFIG/wharf/ci-runner-kind"
+provider() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['provider'])" "$1/.github/ci.json"; }
 R="$T/k1"; newrepo "$R"
-"$CP" "$R" --to buildbox > "$T/out" 2>&1; check "$?" "0" "the key's name: --to buildbox"
-check "$(python3 -c "import json; print(json.load(open('$R/.github/ci.json'))['provider'])")" "buildbox" "…ci.json records it"
-"$CP" "$R" > "$T/out" 2>&1; grep -q 'buildbox (ci.json)' "$T/out"; check "$?" "0" "…status names it"
-"$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "2" "…and the default name is no kind beside it"
-rm -f "$REGATTA_CONFIG/wharf/ci-runner-kind" "$R/.github/ci.json"
-"$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "key and ci.json gone: the same check.yml reads as self-hosted, inferred from runs-on"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "the default name, with an alias listed: --to self-hosted"
+check "$(provider "$R")" "self-hosted" "…ci.json records the kind's own name"
+python3 - "$R/.github/ci.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["provider"] = "buildbox"; d["context"] = "my-check"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+"$CP" "$R" > "$T/out" 2>&1; check "$?" "0" "a ci.json naming the old kind: status"
+grep -q 'self-hosted (ci.json, by its older name buildbox)' "$T/out"; check "$?" "0" "…reads as the kind, and says the old name"
+grep -q 'no online runner labelled' "$T/out"; check "$?" "0" "…and judges its runners as the kind's"
+cat > "$T/ctx.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("cp", sys.argv[1])
+spec = importlib.util.spec_from_loader("cp", loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print(m.required_context(sys.argv[2], m.SELF))
+PY
+check "$(python3 "$T/ctx.py" "$CP" "$R")" "my-check" "…its context is main's required check"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a re-run on the old name"
+check "$(provider "$R")" "self-hosted" "…ci.json moves to the kind's own name"
+check "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['context'])" "$R/.github/ci.json")" "my-check" "…its context kept: the same kind, not a switch"
+R="$T/k2"; newrepo "$R"
+"$CP" "$R" --to buildbox > "$T/out" 2>&1; check "$?" "0" "--to the old name"
+check "$(provider "$R")" "self-hosted" "…writes the kind's own name"
+"$CP" "$R" --to buildbox --runs-on-var POOL > /dev/null 2>&1; check "$?" "0" "…and takes the kind's flags"
+printf 'buildbox\nolderbox\nactions\ncircleci\nself-hosted\n' > "$REGATTA_CONFIG/wharf/ci-runner-kind"
+R="$T/k3"; newrepo "$R"; printf '{"provider": "olderbox", "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (ci.json, by its older name olderbox)' "$T/out"; check "$?" "0" "a second line of the key: an alias too"
+printf '{"provider": "actions", "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'actions (ci.json)' "$T/out"; check "$?" "0" "…a provider's own name in the key is no alias"
+printf 'buildbox\n' > "$REGATTA_CONFIG/wharf/ci-runner-kind"
+printf '{"provider": ["buildbox"], "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'Traceback' "$T/out"; check "$?" "1" "…a provider that is no string: no traceback"
+rm -f "$REGATTA_CONFIG/wharf/ci-runner-kind"
+R="$T/k4"; newrepo "$R"
+"$CP" "$R" --to buildbox > "$T/out" 2>&1; check "$?" "2" "the key gone: the old name is no kind"
+grep -q 'invalid choice' "$T/out"; check "$?" "0" "…said by the usage error"
+printf '{"provider": "buildbox", "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'buildbox (ci.json)' "$T/out"; check "$?" "0" "…a ci.json holding it reads as it says, nothing guessed"
+R="$T/k5"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; rm "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "no ci.json: the same check.yml reads as self-hosted, inferred from runs-on"
 
 echo "the pick: lanes, budgets, the trust refusals (lighthouse-ops S1)"
 # lighthouse's keys in the suite's config dir: four lanes (the runner Mac, a Linux guest, hosted ubuntu
@@ -1422,6 +1527,405 @@ python3 -c 'import json,sys,time; json.dump({"as_of":int(time.time()),"accounts"
 grep -q 'gh-main used 1600 minutes this week, its share 1500' "$T/out"; check "$?" "0" "over the week share: over budget"
 grep -q 'lane circle: CircleCI, advisory' "$T/out"; check "$?" "0" "a CircleCI lane is reported, never picked"
 
+echo "the pick: the Linux share (CI_LINUX_ELSEWHERE) by the CircleCI lane's budget (ci-budgets)"
+cp "$T/gh/rsc.json" "$T/gh/rsc.keep"; R="$T/pk2s"; pickrepo "$R"; echo '      # the share: vars.CI_LINUX_ELSEWHERE' >> "$R/.github/workflows/check.yml"
+cusage() { # cusage <credits used this month>: the desk's file for cci, gh-main under budget
+  python3 -c 'import json,sys,time; m=float(sys.argv[2])
+json.dump({"as_of":int(time.time()),"accounts":{"cci":{"state":"ok","month_used":m,"week_used":0,"net_amount":0,"unit":"credits"},
+ "gh-main":{"state":"ok","month_used":100,"week_used":50,"net_amount":0,"unit":"minutes"}}},open(sys.argv[1],"w"))' "$USAGE" "$1"; }
+share() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_LINUX_ELSEWHERE.json" 2>/dev/null || echo unset; }
+mkdir -p "$T/gh/vars"; echo '{"name":"CI_LINUX_ELSEWHERE","value":"true"}' > "$T/gh/vars/CI_LINUX_ELSEWHERE.json"
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+cusage 1000; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane circle: 22900 of 30000 credits left above the reserve)' "$T/out"; check "$?" "0" "the share on, CircleCI under budget: stays on, the margin counted"
+cusage 23000; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane circle: cci used 25300 of 30000 credits, the reserve 20% kept)' "$T/out"; check "$?" "0" "CircleCI past its reserve: the share goes off"
+check "$(share)" "true" "…without --apply nothing is written"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "--apply on the ops host"
+check "$(share)" "false" "…the share off: the runner Mac takes the whole line"
+check "$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; r=[x for x in r if x["variable"]=="CI_LINUX_ELSEWHERE"][0]; print(r["from"], r["to"], r["lane"], r["undo"])' "$PLOG")" \
+  "true false circle gh api -X PATCH repos/acme/demo/actions/variables/CI_LINUX_ELSEWHERE -f name=CI_LINUX_ELSEWHERE -f value=true" "…logged with the PATCH that undoes it"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: false, stays (lane circle: cci used 25300' "$T/out"; check "$?" "0" "…and stays off while over budget"
+cusage 1000; echo '{"strict":false,"contexts":["check"],"checks":[{"context":"check","app_id":null}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_ELSEWHERE: false, stays: lane circle is under budget, but main does not require check-linux, so a red Linux run would block nothing" "$T/out"; check "$?" "0" "under budget, check-linux not required: the share stays off (the rollout's order)"
+check "$(share)" "false" "…nothing written"
+mv "$T/gh/rsc.json" "$T/gh/rsc.away"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_ELSEWHERE: false, stays: lane circle is under budget, but main's required checks unread" "$T/out"; check "$?" "0" "…the protection unread: never taken for required"
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: false, stays: lane circle is under budget, but the share went off 0 min ago (on waits 60 min)' "$T/out"; check "$?" "0" "under budget, required, but off moments ago: held (a budget near its line flaps)"
+check "$(share)" "false" "…nothing written"
+backdate() { python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]
+for x in r: x["at"]-=7200 if x.get("variable")=="CI_LINUX_ELSEWHERE" else 0
+open(sys.argv[1],"w").write("".join(json.dumps(x)+"\n" for x in r))' "$PLOG"; }
+backdate
+CLAUDE_CODE_SESSION_ID=s-1 "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "the share's --apply inside a Claude Code session: refused"
+check "$(share)" "false" "…nothing written"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: false → true' "$T/out"; check "$?" "0" "under budget, check-linux required, off two hours ago: said…"
+check "$(share)" "true" "…and the share back on"
+echo '{"strict":false,"contexts":["check"],"checks":[{"context":"check","app_id":null}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane circle: main does not require check-linux)' "$T/out"; check "$?" "0" "on, under budget, main no longer requires check-linux: said…"
+check "$(share)" "false" "…and the share off (a red Linux run would block nothing)"
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+echo '{"name":"CI_LINUX_ELSEWHERE","value":"true"}' > "$T/gh/vars/CI_LINUX_ELSEWHERE.json"
+rm -f "$USAGE"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane circle: no usage at' "$T/out"; check "$?" "0" "no usage: said…"
+check "$(share)" "false" "…and the share goes off (fail closed, as a hosted lane)"
+rm -f "$T/gh/vars/CI_LINUX_ELSEWHERE.json" "$T/gh/rsc.away"; mv "$T/gh/rsc.keep" "$T/gh/rsc.json"
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, os, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); os.environ["PATH"]=sys.argv[2]; print(c.gh("repos/acme/demo"))' "$CP" "$T/empty-path")" \
+  "(False, 'gh is not on PATH')" "a shell whose PATH lacks gh (a plain ssh shell on the ops host): unread, never a traceback"
+
+echo "the pick: the Linux share moves between two CircleCI orgs (ci-two-orgs)"
+cp "$LANES" "$T/lanes.two"; cp "$BUDGETS" "$T/budgets.two"; cp "$T/gh/rsc.json" "$T/gh/rsc.two"
+SLUG_O=gh/acme/demo; SLUG_A=circleci/ORG/PROJ
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}},
+ {"name": "app", "provider": "circleci", "runs": ["linux"], "account": "cci-a", "projects": {"acme/demo": "circleci/ORG/PROJ"}}]}
+EOF
+cat > "$BUDGETS" <<'EOF'
+{"reserve": 0.2, "accounts": {"cci-o": {"provider": "circleci", "org_slug": "gh/acme", "month_credits": 30000},
+ "cci-a": {"provider": "circleci", "org_slug": "circleci/ORG", "month_credits": 30000}}}
+EOF
+ousage() { # ousage <oauth's month or `unread`> <app's month or `unread`>: the desk's file for both orgs
+  python3 -c 'import json,sys,time
+def row(v): return {"state":"unread","why":"no token"} if v=="unread" else {"state":"ok","month_used":float(v),"week_used":0,"net_amount":0,"unit":"credits"}
+json.dump({"as_of":int(time.time()),"accounts":{"cci-o":row(sys.argv[2]),"cci-a":row(sys.argv[3])}},open(sys.argv[1],"w"))' "$USAGE" "$1" "$2"; }
+# project: the variable's value, `unset` with none
+project() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_LINUX_TARGET.json" 2>/dev/null || echo unset; }
+setvar() { printf '{"name":"%s","value":"%s"}\n' "$1" "$2" > "$T/gh/vars/$1.json"; }
+tworepo() { # tworepo <dir>: the share on, its trigger reading the variable, the file naming the OAuth project
+  pickrepo "$1"; echo '      # the share: vars.CI_LINUX_ELSEWHERE' >> "$1/.github/workflows/check.yml"
+  mkdir -p "$1/.circleci" "$T/gh/vars"; printf '# a comment first\n%s\n' "$SLUG_O" > "$1/.circleci/project-slug"
+  echo '          PROJECT: ${{ vars.CI_LINUX_TARGET }}' > "$1/.github/workflows/check-linux.yml"
+  setvar CI_LINUX_ELSEWHERE true
+  echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"; }
+backproj() { python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]
+for x in r: x["at"]-=7200
+open(sys.argv[1],"w").write("".join(json.dumps(x)+"\n" for x in r))' "$PLOG"; }
+logrow() { python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; r=[x for x in r if x["variable"]==sys.argv[2]][-1]; print(r["from"], r["to"], r["lane"], r["undo"])' "$PLOG" "$1"; }
+
+R="$T/two"; tworepo "$R"
+ousage 1000 2000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "both orgs under budget, the file names the one with more left: exit 0"
+grep -q 'share lane oauth: eligible, 22900 of 30000 credits left above the reserve' "$T/out"; check "$?" "0" "…each lane's reading said"
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane oauth:' "$T/out"; check "$?" "0" "…the current lane with the most left stays: the variable unset reads as the file's project"
+check "$(project)" "unset" "…nothing moved, nothing written"
+ousage 23000 1000; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "oauth → app: oauth past its reserve, app under"
+grep -q 'share lane oauth: not chosen, cci-o used 25300 of 30000 credits, the reserve 20% kept' "$T/out"; check "$?" "0" "…the lane that is out said"
+grep -q "share CI_LINUX_TARGET: $SLUG_O → $SLUG_A (lane app: 22900 of 30000 credits left above the reserve)" "$T/out"; check "$?" "0" "…the move said, from the file's project"
+check "$(project)" "unset" "…without --apply nothing is written"
+CLAUDE_CODE_SESSION_ID=s-1 "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "2" "the move's --apply inside a Claude Code session: refused"
+check "$(project)" "unset" "…nothing written"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "--apply on the ops host"
+check "$(project)" "$SLUG_A" "…the project moved to the App org's"
+check "$(share)" "true" "…the share stays on: only the org moved"
+check "$(logrow CI_LINUX_TARGET)" "$SLUG_O $SLUG_A app gh api -X DELETE repos/acme/demo/actions/variables/CI_LINUX_TARGET" "…logged with the DELETE that sends the trigger back to the file"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$(grep -c CI_LINUX_TARGET "$PLOG")" "1" "a second pass: nothing more logged"
+ousage 1000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "app → oauth: app past its reserve, moments after the last move"
+check "$(project)" "$SLUG_O" "…moved at once: a lane that is out is left whatever the hold says"
+check "$(share)" "true" "…the share still on"
+check "$(logrow CI_LINUX_TARGET)" "$SLUG_A $SLUG_O oauth gh api -X PATCH repos/acme/demo/actions/variables/CI_LINUX_TARGET -f name=CI_LINUX_TARGET -f value=$SLUG_A" "…logged with the PATCH that undoes it"
+grep -v '"CI_RUNS_ON"' "$PLOG" > "$T/plog.moves"; cp "$T/plog.moves" "$PLOG"   # the Mac lane's own flip aside
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); print(c.last_flip("acme/demo"))' "$CP")" \
+  "0" "a project move is no runs-on flip: it hides no queued run from stale_lane"
+ousage 9000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_TARGET: stays on lane oauth: lane app has more left, but the project moved 0 min ago (a move waits 60 min)" "$T/out"; check "$?" "0" "both under, the other has more, moved moments ago: held (two orgs near one reading would swap)"
+check "$(project)" "$SLUG_O" "…nothing written"
+backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_A" "…past the hold: the lane with the most month left takes it"
+ousage 1000 1000; backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_A" "a tie stays where it is"
+
+R="$T/two2"; tworepo "$R"
+ousage 23000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "both orgs over"
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane oauth: cci-o used 25300' "$T/out"; check "$?" "0" "…the share goes off, the lane it stands on named"
+check "$(share)" "false" "…off: the runner takes the whole line"
+check "$(project)" "unset" "…and the project is left as it is"
+ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: false, stays: lane app is under budget, but the share went off 0 min ago' "$T/out"; check "$?" "0" "one org back under, off moments ago: held"
+check "$(project)" "unset" "…and nothing moved: an off share has no use for a project"
+backproj; echo '{"strict":false,"contexts":["check"],"checks":[{"context":"check","app_id":null}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: false, stays: lane app is under budget, but main does not require check-linux' "$T/out"; check "$?" "0" "one org under, check-linux not required: the share stays off"
+check "$(project)" "unset" "…nothing moved"
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+touch "$T/gh/vars/CI_LINUX_TARGET.refuse"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "the project's write refused on the way on: exit 3"
+grep -q '⚠ share CI_LINUX_TARGET not written: GitHub refused' "$T/out"; check "$?" "0" "…said"
+check "$(share)" "false" "…and the share stays off: never on at the org the pick judged out"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.refuse"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "the write goes through"
+check "$(project)" "$SLUG_A" "…the project written…"
+check "$(share)" "true" "…and the share on, at the org under budget"
+check "$(python3 -c 'import json,sys; print(" ".join(x["variable"] for x in map(json.loads, open(sys.argv[1]))))' "$PLOG" | sed 's/.* \(CI_LINUX_TARGET CI_LINUX_ELSEWHERE\)$/\1/')" "CI_LINUX_TARGET CI_LINUX_ELSEWHERE" "…in that order"
+
+R="$T/two5"; tworepo "$R"; touch "$T/gh/vars/CI_LINUX_TARGET.refuse"
+ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "on, its lane out, the move refused: exit 3"
+check "$(share)" "false" "…and the share off: it never runs at an org the pick judged out"
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane oauth: it is out, and the move to lane app was refused)' "$T/out"; check "$?" "0" "…naming the lane it left"
+check "$(project)" "unset" "…the project where it was"
+setvar CI_LINUX_ELSEWHERE true; ousage 9000 1000; rm -f "$PLOG"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "on, its lane still able, a better one's move refused: exit 3"
+check "$(share)" "true" "…and the share stays on, where it can run"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.refuse"
+echo '{"strict":false,"contexts":["check"],"checks":[{"context":"check","app_id":null}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project) $(share)" "unset false" "on, a lane with more left, main no longer requiring check-linux: off, and no move"
+R="$T/two10"; tworepo "$R"; setvar CI_LINUX_ELSEWHERE false; touch "$T/gh/vars/CI_LINUX_TARGET.refuse"; ousage 9000 1000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "off, its lane able, a better one's move refused on the way on: exit 3"
+check "$(project) $(share)" "unset true" "…on where it stands, which can run it"
+check "$(logrow CI_LINUX_ELSEWHERE | cut -d' ' -f1-3)" "false true oauth" "…and the log names the lane it came on at, not the refused one"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.refuse"
+R="$T/two6"; tworepo "$R"; setvar CI_LINUX_TARGET "$SLUG_A"; ousage 23000 23000; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane app: cci-a used 25300' "$T/out"; check "$?" "0" "both over, standing on the second lane: that lane named"
+setvar CI_LINUX_TARGET "$SLUG_A "; ousage 9000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_A" "a padded variable, which the trigger would refuse, reads as no lane's and is rewritten"
+printf 'gh/acme/demo \n' > "$R/.circleci/project-slug"; rm -f "$T/gh/vars/CI_LINUX_TARGET.json"; rm -f "$PLOG"; ousage 1000 2000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_O" "a file line the trigger would refuse reads as no lane's: the variable takes over"
+printf 'gh/acme/demo\r\n' > "$R/.circleci/project-slug"; rm -f "$T/gh/vars/CI_LINUX_TARGET.json" "$PLOG"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_O" "…a CR too, which grep keeps: the pick reads the line as the trigger does"
+printf '# a comment first\n%s\n' "$SLUG_O" > "$R/.circleci/project-slug"
+R="$T/two8"; tworepo "$R"; setvar CI_LINUX_TARGET circleci/ORG/THIRD; touch "$T/gh/vars/CI_LINUX_TARGET.refuse"; ousage 1000 2000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "on a project no lane names, the move refused: exit 3"
+check "$(share)" "false" "…off: where it runs is judged by nobody"
+grep -q 'true → false (lane oauth: no lane names its project, and the move to lane oauth was refused)' "$T/out"; check "$?" "0" "…saying so, no lane called out"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.refuse"
+cp "$LANES" "$T/lanes.named"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [x.pop("projects",None) for x in d["lanes"]]; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+R="$T/two7"; tworepo "$R"; touch "$T/gh/vars/CI_LINUX_TARGET.unread"; ousage 1000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "two lanes, neither naming a project, the variable unread: a healthy share stays on"
+setvar CI_LINUX_ELSEWHERE false; rm -f "$PLOG"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "false" "…and an off one does not come on: the variable may be one left behind"
+setvar CI_LINUX_ELSEWHERE true; rm -f "$T/gh/vars/CI_LINUX_TARGET.unread"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane oauth:' "$T/out"; check "$?" "0" "two lanes, neither naming a project, the variable unset: the first judged, as before"
+setvar CI_LINUX_TARGET "$SLUG_A"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_ELSEWHERE: true → false (lane oauth: CI_LINUX_TARGET holds $SLUG_A, which no lane names)" "$T/out"; check "$?" "0" "neither naming one, a variable left behind: the trigger goes where no lane is judged, so off"
+check "$(share)" "false" "…off"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "…and every pass says so with exit 3 until someone clears it"
+setvar CI_LINUX_ELSEWHERE true; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "…a pass without --apply as well"
+setvar CI_LINUX_ELSEWHERE true; setvar CI_LINUX_TARGET "$SLUG_O"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "neither naming one, the variable equal to the file: nothing left behind"
+setvar CI_LINUX_TARGET "$SLUG_A"; : > "$R/.github/workflows/check-linux.yml"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "neither naming one, a trigger that ignores the variable: it steers nothing"
+cp "$T/lanes.named" "$LANES"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][2].pop("projects"); json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+R="$T/two9"; tworepo "$R"; touch "$T/gh/vars/CI_LINUX_TARGET.unread"; ousage 1000 23000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "unread, and only a lane that names no project out: the share cannot stand there"
+cp "$T/lanes.named" "$LANES"; : > "$R/.github/workflows/check-linux.yml"; ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "false" "unread, a trigger that ignores it, the file's lane out: where it stands is known, so off"
+setvar CI_LINUX_ELSEWHERE true; ousage 1000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "…the file's lane able, another out: it stays, on the lane it is known to stand on"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.unread"
+cp "$T/lanes.named" "$LANES"
+
+R="$T/two3"; tworepo "$R"; setvar CI_LINUX_TARGET "$SLUG_A"
+ousage 1000 unread; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "one org unread, and the share on it"
+grep -q 'share lane app: not chosen, usage of cci-a unread (no token)' "$T/out"; check "$?" "0" "…unread never counts as left"
+check "$(project)" "$SLUG_O" "…the project leaves it, at once"
+ousage unread 1000; backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project)" "$SLUG_A" "the other one unread: the same, the other way"
+ousage 1000 unread; rm -f "$PLOG"; setvar CI_LINUX_ELSEWHERE false; setvar CI_LINUX_TARGET "$SLUG_A"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(project) $(share)" "$SLUG_O true" "off, coming on, the project on the unread org: it comes on at the one that reads"
+ousage unread unread; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$(share)" "false" "both unread: the share goes off (fail closed)"
+setvar CI_LINUX_ELSEWHERE true; rm -f "$USAGE"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share lane oauth: not chosen, no usage at' "$T/out"; check "$?" "0" "no usage file: both lanes not chosen…"
+check "$(share)" "false" "…and the share off"
+
+R="$T/two4"; tworepo "$R"; touch "$T/gh/vars/CI_LINUX_TARGET.unread"; ousage 23000 1000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "the project variable unread, a lane out: not a failure"
+grep -q 'share CI_LINUX_TARGET: unread' "$T/out"; check "$?" "0" "…said"
+grep -q 'share CI_LINUX_ELSEWHERE: true → false (lane oauth: CI_LINUX_TARGET is unread, and a lane it may stand on is out)' "$T/out"; check "$?" "0" "…naming the lane that is out, not the able one"
+check "$(project)" "unset" "…nothing moved: what stands is unknown"
+check "$(share)" "false" "…and the share off, which needs no project, for it may stand on that lane"
+setvar CI_LINUX_ELSEWHERE true
+ousage 1000 2000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "unread, every lane able: exit 0"
+check "$(share)" "true" "…the share left as it is"
+echo '{"strict":false,"contexts":["check"],"checks":[{"context":"check","app_id":null}]}' > "$T/gh/rsc.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$(share)" "false" "unread, a lane able, main no longer requiring check-linux: off, which needs no project"
+setvar CI_LINUX_ELSEWHERE true
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+ousage 23000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "false" "unread, and no lane under budget: the share still goes off, which needs no project"
+ousage 1000 23000; backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "unread, off, a lane under: exit 0"
+grep -q 'share CI_LINUX_TARGET: unread' "$T/out"; check "$?" "0" "…said"
+check "$(share)" "false" "…and it does not come on: nowhere known to come on at"
+setvar CI_LINUX_ELSEWHERE true
+rm -f "$T/gh/vars/CI_LINUX_TARGET.unread"
+ousage 23000 1000; printf '# the variable, in a comment: CI_LINUX_TARGET\n' > "$R/.github/workflows/check-linux.yml"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share lane app: not chosen, check-linux.yml reads no CI_LINUX_TARGET, so its project is out of reach' "$T/out"; check "$?" "0" "a trigger that reads no variable: a move there would move nothing"
+check "$(project)" "unset" "…nothing written"
+check "$(share)" "false" "…and with oauth over, the share goes off"
+setvar CI_LINUX_ELSEWHERE true; setvar CI_LINUX_TARGET "$SLUG_A"; rm -f "$PLOG"; ousage 1000 23000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane oauth:' "$T/out"; check "$?" "0" "the variable on the App org, a trigger that ignores it: the file's org is where the share stands"
+check "$(share)" "true" "…so it stays on, judged by that org"
+rm -f "$T/gh/vars/CI_LINUX_TARGET.json"
+setvar CI_LINUX_ELSEWHERE true; rm -f "$R/.github/workflows/check-linux.yml" "$PLOG"; ousage 1000 2000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane oauth:' "$T/out"; check "$?" "0" "no check-linux.yml at all: the file's project still stands"
+echo '          PROJECT: ${{ vars.CI_LINUX_TARGET }}' > "$R/.github/workflows/check-linux.yml"
+sed -i.bak 's/"projects": {"acme\/demo": "circleci\/ORG\/PROJ"}/"projects": {"acme\/other": "circleci\/ORG\/PROJ"}/' "$LANES" && rm -f "$LANES.bak"
+ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'share lane app: not chosen, names no project for acme/demo' "$T/out"; check "$?" "0" "a lane that names another repo's project only: never this repo's"
+check "$(project) $(share)" "unset false" "…nothing moved, and the share off: oauth is over"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][2]["projects"]=["circleci/ORG/PROJ"]; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a lane's projects that is no map: refused"
+grep -q "lane app's \`projects\` maps" "$T/out"; check "$?" "0" "…naming the lane"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][2]["projects"]={"acme/demo":"not a slug"}; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a project that is no slug: refused at the pick, never a held pull request"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][2]["projects"]={"demo":"circleci/ORG/PROJ"}; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a key that is no <owner>/<repo>: refused"
+cp "$T/lanes.two" "$LANES"; cp "$T/budgets.two" "$BUDGETS"; mv "$T/gh/rsc.two" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG"
+
+echo "the pick: the Linux share on GitHub Actions beside the CircleCI orgs (linux-on-actions)"
+cp "$LANES" "$T/lanes.gha"; cp "$BUDGETS" "$T/budgets.gha"; cp "$T/gh/rsc.json" "$T/gh/rsc.gha"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}},
+ {"name": "app", "provider": "circleci", "runs": ["linux"], "account": "cci-a", "projects": {"acme/demo": "circleci/ORG/PROJ"}},
+ {"name": "gha", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-u", "projects": {"acme/demo": "actions"}}]}
+EOF
+cat > "$BUDGETS" <<'EOF'
+{"reserve": 0.2, "accounts": {"cci-o": {"provider": "circleci", "org_slug": "gh/acme", "month_credits": 30000},
+ "cci-a": {"provider": "circleci", "org_slug": "circleci/ORG", "month_credits": 30000},
+ "gh-u": {"provider": "github", "user": "acme", "month_minutes": 3000}}}
+EOF
+gusage() { # gusage <oauth credits> <app credits> <github minutes>: the desk's file for all three accounts
+  python3 -c 'import json,sys,time
+def row(v, u): return {"state":"ok","month_used":float(v),"week_used":0,"net_amount":0,"unit":u}
+json.dump({"as_of":int(time.time()),"accounts":{"cci-o":row(sys.argv[2],"credits"),"cci-a":row(sys.argv[3],"credits"),"gh-u":row(sys.argv[4],"minutes")}},open(sys.argv[1],"w"))' "$USAGE" "$1" "$2" "$3"; }
+R="$T/gha"; tworepo "$R"; setvar CI_LINUX_ELSEWHERE false; rm -f "$PLOG"
+gusage 29443 33299 2; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "both CircleCI orgs over, GitHub's minutes under: exit 0"
+grep -q 'share CI_LINUX_TARGET: gh/acme/demo → actions (lane gha: 2398 of 3000 minutes left above the reserve)' "$T/out"; check "$?" "0" "…the Actions lane judged by the GitHub minutes"
+grep -q 'share lane oauth: not chosen, an Actions lane runs the share for acme/demo' "$T/out"; check "$?" "0" "…the CircleCI lanes read and said, not chosen"
+check "$(project) $(share)" "actions true" "…the target moves to actions, then the share comes on"
+check "$(logrow CI_LINUX_TARGET)" "gh/acme/demo actions gha gh api -X DELETE repos/acme/demo/actions/variables/CI_LINUX_TARGET" "…the move logged with its undo (created: a DELETE, back to the file's project)"
+rm -f "$PLOG"; setvar CI_LINUX_TARGET actions
+gusage 10000 33299 100; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays (lane gha:' "$T/out"; check "$?" "0" "13,000 credits left (43%) against 2,300 minutes (77%): the share of the month left decides, never the raw number"
+gusage 1000 33299 2500; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "share lane oauth: not chosen, an Actions lane runs the share for acme/demo" "$T/out"; check "$?" "0" "GitHub's minutes past the reserve, OAuth has credits: CircleCI is read, never chosen once the Actions lane is in the file"
+grep -q "actions → gh/acme/demo" "$T/out"; check "$?" "1" "…the target never moves back to CircleCI"
+gusage 29443 33299 2500; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "false" "every lane out: the share off, the Macs take the whole line"
+rm -f "$T/gh/rsc.json" "$PLOG"; setvar CI_LINUX_ELSEWHERE false
+echo '{"name":"main","protected":true,"protection":{"required_status_checks":{"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":null}]}}}' > "$T/gh/branch.json"
+gusage 29443 33299 2; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "true" "the protection endpoint refused (not an admin), the branch's own read names check-linux: the share comes on (logbook #6)"
+rm -f "$T/gh/branch.json"; setvar CI_LINUX_ELSEWHERE false; rm -f "$PLOG"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "main's required checks unread" "$T/out"; check "$?" "0" "neither read answers: said unread"
+check "$(share)" "false" "…never taken for required, the share stays off"
+echo '{"name":"main","protected":true,"protection":{"enabled":false,"required_status_checks":{"enforcement_level":"off","contexts":[],"checks":[]}}}' > "$T/gh/branch.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "main's required checks unread" "$T/out"; check "$?" "0" "the branch's read lists nothing (a ruleset, or protection it cannot see): the protection endpoint judges, unread here"
+check "$(share)" "false" "…never read as \"not required\""
+rm -f "$T/gh/branch.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][3]["projects"]={"acme/demo":"gh/acme/demo"}; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "an Actions lane whose target is a CircleCI project: refused"
+grep -q "lane gha's \`projects\` maps" "$T/out"; check "$?" "0" "…naming the lane"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][3]["projects"]={"acme/demo":"actions"}; d["lanes"][0]["projects"]={"acme/demo":"actions"}; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a self-hosted lane naming the share: refused (GitHub's hosted runners only)"
+grep -q "lane gha's" "$T/out"; check "$?" "1" "…and not for the Actions lane, which is valid again"
+echo '{"at": 9999999999, "repo": "acme/demo", "variable": "CI_CIRCLECI_PROJECT", "from": "a", "to": "b"}' > "$PLOG"
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); print(c.last_flip("acme/demo"))' "$CP")" \
+  "0" "a log row under the variable's old name (CI_CIRCLECI_PROJECT) is no runs-on flip either"
+cp "$T/lanes.gha" "$LANES"; cp "$T/budgets.gha" "$BUDGETS"; mv "$T/gh/rsc.gha" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG"
+# .circleci/ is private (off the allowlist): the twin has no share.sh, and says skip
+if [ -f "$M/../../.circleci/share.sh" ]; then
+  bash "$M/../../.circleci/share.sh" linux-ids > "$T/out" 2>&1 || true
+  check "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(isinstance(v, list) and "plugin" in v and "helm" in v)' "$T/out" 2>&1)" "True" "share.sh linux-ids: the Linux list as one JSON array, the Actions road's matrix"
+  bash "$M/../../.circleci/share.sh" linux-ids HEAD > "$T/out" 2>&1 || true
+  check "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(isinstance(v, list) and "plugin" in v)' "$T/out" 2>&1)" "True" "share.sh linux-ids BASE: a JSON array of the ids reached (nothing changed: the whole list)"
+else
+  echo "  skip the twin has no .circleci/share.sh"
+fi
+
+echo "check-linux.yml's trigger: the project variable, else the file, each org's road (ci-two-orgs)"
+# The workflow's own step run under a stand-in curl, against a scratch checkout. .github/workflows/check-linux.yml
+# is private (off the allowlist): the twin has none, and says skip.
+WF="$M/../../.github/workflows/check-linux.yml"
+if [ -f "$WF" ]; then
+  W="$T/ciwf"; mkdir -p "$W/bin" "$W/tmp"
+  cat > "$W/extract.py" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+at = next(i for i, l in enumerate(lines) if l.strip() == "run: |")
+pad = len(lines[at + 1]) - len(lines[at + 1].lstrip())
+# the trigger's step only: up to the next job key (two spaces, a name, a colon), never the jobs after it
+end = next((i for i in range(at + 1, len(lines)) if lines[i][:2] == "  " and lines[i][2:3].isalpha() and lines[i].rstrip().endswith(":")), len(lines))
+open(sys.argv[2], "w").write("\n".join(l[pad:] for l in lines[at + 1:end]) + "\n")
+PY
+  python3 "$W/extract.py" "$WF" "$W/step.sh"
+  cat > "$W/bin/curl" <<'PY'
+#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+url = next(x for x in a if x.startswith("https://"))
+post = "-X" in a and a[a.index("-X") + 1] == "POST"
+if "api.github.com" in url and not post:
+    ans, code = '{"statuses":[]}', "200"
+elif post:
+    body = "".join(sys.stdin.read().split())
+    open(os.environ["CURL_LOG"], "a").write("%s %s\n" % (url, body))
+    ans, code = ('{}' if "api.github.com" in url else '{"id":"p-1","number":7}'), "201"
+    if os.environ.get("CURL_NO_PIPELINE"):
+        ans, code = '{"message":"Ignoring pipeline due to CI skip in the commit"}', "200"
+else:
+    ans, code = '{"state":"created"}', "200"
+if "-o" in a:
+    open(a[a.index("-o") + 1], "w").write(ans)
+else:
+    sys.stdout.write(ans)
+if "-w" in a:
+    sys.stdout.write(code)
+PY
+  chmod +x "$W/bin/curl"
+  git init -q --bare "$W/origin.git"
+  git clone -q "$W/origin.git" "$W/co" 2>/dev/null
+  mkdir -p "$W/co/.circleci"
+  printf 'parameters:\n  check_linux:\n    type: boolean\n' > "$W/co/.circleci/config.yml"
+  printf '# the default\ngh/acme/demo\n' > "$W/co/.circleci/project-slug"
+  printf 'case "$1" in linux-ids) echo %s ;; *) echo "RUN a stand-in scope" ;; esac\n' "'[\"helm\"]'" > "$W/co/.circleci/share.sh"
+  git -C "$W/co" checkout -q -b b; git -C "$W/co" add -A; git -C "$W/co" -c user.name=t -c user.email=t@t commit -qm x
+  git -C "$W/co" push -q origin b 2>/dev/null
+  step() { # step <PROJECT>: the workflow's step, as GitHub runs it; prints its exit code
+    : > "$W/calls"
+    : > "$W/ghout"
+    (cd "$W/co" && env PATH="$W/bin:$PATH" CURL_LOG="$W/calls" RUNNER_TEMP="$W/tmp" GH_TOKEN=x CIRCLECI_TOKEN=tok ELSEWHERE=true \
+      PROJECT="$1" REPO=acme/demo SHA="$(git rev-parse HEAD)" BRANCH=b BASE=main GITHUB_OUTPUT="$W/ghout" \
+      RUN_URL=https://github.com/acme/demo/actions/runs/1 ACTIONS_RUNS=https://github.com/acme/demo/actions/runs/ \
+      bash -e "$W/step.sh" > "$W/out" 2>&1); echo "$?"; }
+  grep -q 'gather:' "$W/step.sh"; check "$?" "1" "the extracted step stops at the next job"
+  bash -n "$W/step.sh"; check "$?" "0" "…and parses as bash"
+  check "$(step actions)" "0" "the Actions road"
+  check "$(tr '\n' ' ' < "$W/ghout")" 'road=actions ids=["helm"] ' "…its outputs: the road and share.sh's scoped list"
+  grep -q '"state":"pending","context":"ci/circleci:check-linux"' "$W/calls"; check "$?" "0" "…check-linux pending on the head first"
+  check "$(step '')" "0" "the variable unset"
+  check "$(cat "$W/calls")" 'https://circleci.com/api/v2/project/gh/acme/demo/pipeline {"branch":"b","parameters":{"check_linux":true}}' "…the file's project, an OAuth project's road"
+  check "$(step gh/acme/other)" "0" "the variable on an OAuth project"
+  check "$(cat "$W/calls")" 'https://circleci.com/api/v2/project/gh/acme/other/pipeline {"branch":"b","parameters":{"check_linux":true}}' "…takes the variable over the file"
+  check "$(step circleci/ORG/PROJ)" "0" "the variable on a GitHub App project"
+  check "$(cat "$W/calls")" 'https://circleci.com/api/v2/project/circleci/ORG/PROJ/pipeline/run {"config":{"branch":"b"},"checkout":{"branch":"b"},"parameters":{"check_linux":true}}' "…the Trigger Pipeline road, which alone takes one"
+  grep -q 'pipeline p-1 created' "$W/out"; check "$?" "0" "…and the job waits for it as on the OAuth road"
+  export CURL_NO_PIPELINE=1; check "$(step circleci/ORG/PROJ)" "1" "a 200 on that road, no pipeline created: the job fails"
+  unset CURL_NO_PIPELINE
+  grep -q 'CircleCI started no pipeline: Ignoring pipeline due to CI skip' "$W/out"; check "$?" "0" "…saying so, not 'refused'"
+  printf '# only a comment\n' > "$W/co/.circleci/project-slug"; git -C "$W/co" add -A; git -C "$W/co" -c user.name=t -c user.email=t@t commit -qm y; git -C "$W/co" push -q origin b 2>/dev/null
+  check "$(step '')" "1" "no variable, and a file with no slug: the job fails"
+  check "$(cat "$W/calls")" "" "…nothing triggered"
+  grep -q "'' is no project slug" "$W/out"; check "$?" "0" "…in one line, not silently"
+  check "$(step 'gh/acme')" "1" "a variable that is no project slug: the job fails"
+  check "$(cat "$W/calls")" "" "…nothing triggered"
+  grep -q "'gh/acme' is no project slug" "$W/out"; check "$?" "0" "…in one line"
+  grep -q 'PROJECT: ${{ vars.CI_LINUX_TARGET }}' "$WF"; check "$?" "0" "the step's env takes the repository variable"
+  check "$(grep -cF '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "$WF" "$CP" | cut -d: -f2 | tr '\n' ' ')" "1 1 " "the trigger and the pick read a project slug alike"
+else
+  echo "  skip the twin has no check-linux.yml"
+fi
+
 echo "the pick's trust refusals: every flip to a self-hosted lane"
 R="$T/pk3"; pickrepo "$R"; usage ok 100
 echo true > "$T/gh/forkpr"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
@@ -1429,6 +1933,18 @@ grep -q 'lane mac: refused, acme/demo runs fork pull requests' "$T/out"; check "
 check "$(varval)" "unset" "…a macOS repo then has no lane, and nothing is written"
 echo fail > "$T/gh/forkpr"; "$CP" "$R" --pick > "$T/out" 2>&1
 grep -q 'lane mac: refused, could not read whether acme/demo runs fork' "$T/out"; check "$?" "0" "fork PRs' setting unread: refused"
+echo adm1n > "$T/gh/forkpr.admin"; rm -f "$T/gh/tokcalls"
+WHARF_READ_TOKEN=wrong "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "lane mac: refused, could not read whether acme/demo runs fork pull requests' workflows (HTTP 404; WHARF_READ_TOKEN: HTTP 404)" "$T/out"; check "$?" "0" "…a read token that cannot read it either: still refused, both answers said"
+WHARF_READ_TOKEN=adm1n "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: eligible' "$T/out"; check "$?" "0" "the login cannot read it, the desk's read token can (the 404 on every pass, 2026-11-02): the Mac lane eligible"
+check "$(sort -u "$T/gh/tokcalls")" "api repos/acme/demo/actions/permissions/fork-pr-workflows-private-repos
+api repos/acme/demo/actions/runners" "…the token used for the two admin reads (the setting, the runner list), never for another call"
+check "$([ -e "$T/gh/leak" ] && echo leaked || echo none)" "none" "…and WHARF_READ_TOKEN reaches no child: ci-provider pops it at its start"
+echo false > "$T/gh/forkpr"; rm -f "$T/gh/tokcalls"
+WHARF_READ_TOKEN=adm1n "$CP" "$R" --pick > "$T/out" 2>&1
+check "$(cat "$T/gh/tokcalls" 2>/dev/null)" "api repos/acme/demo/actions/runners" "…a login that reads the setting itself: the token only where the login could not"
+rm -f "$T/gh/forkpr.admin" "$T/gh/tokcalls" "$T/gh/leak"
 echo false > "$T/gh/forkpr"; echo fail > "$T/gh/private"; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "privacy unread: the whole pick refused"
 grep -q 'could not read whether acme/demo is private' "$T/out"; check "$?" "0" "…saying so"
 echo false > "$T/gh/private"; printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": []}\n' > "$R/.github/ci.json"
@@ -1507,9 +2023,487 @@ R="$T/pk10"; pickrepo "$R"; usage ok 100; setmac; touch "$T/gh/runners.fail"
 R="$T/pk11"; pickrepo "$R"; usage ok 100; printf '{"at": 1, "repo": "acme/de\n' > "$PLOG"; echo '{"at": 5, "repo": "acme/demo"}' >> "$PLOG"
 check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); o=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(o); print(o.last_flip("acme/demo"))' "$CP")" "5" "a torn line in ci-pick.jsonl costs that line only"
 cp "$T/lanes.keep" "$LANES"
+R="$T/pk20"; pickrepo "$R" '["macos", "browser"]'; usage ok 100
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "a capability no lane names: no lane takes the repo"
+grep -q 'lane mac: not eligible, the repo needs browser, the lane runs macos' "$T/out"; check "$?" "0" "…the Mac lane lacks it"
+grep -q 'lane hosted: not eligible, the repo needs browser, macos' "$T/out"; check "$?" "0" "…a hosted image carries no capability"
+sed 's/"macOS", "laptop"/"macOS", "browser"/' "$T/lanes.keep" > "$LANES"
+echo '{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"browser"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a lane whose label list names the capability"
+grep -q '  pick: mac (\["self-hosted","macOS","browser"\])' "$T/out"; check "$?" "0" "…takes the repo"
+R="$T/pk21"; pickrepo "$R" '["macos", "BROWSER"]'; usage ok 100
+echo '{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"browser"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "…in any case, as GitHub compares labels"
+R="$T/pk22"; pickrepo "$R" '["linux", "macOS"]'; usage ok 100
+sed 's/"runs": \["macos"\]/"runs": ["macos", "linux"]/' "$T/lanes.keep" > "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: eligible' "$T/out"; check "$?" "0" "a lane word in a capital reads as the lane word, never a capability"
+R="$T/pk23"; pickrepo "$R" '["macos", "guest"]'; usage ok 100; cp "$T/lanes.keep" "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: not eligible, the repo needs guest' "$T/out"; check "$?" "0" "a label of another lane's list is no capability of this one"
+cp "$T/lanes.keep" "$LANES"
+R="$T/pk25"; pickrepo "$R" '["linux"]'; usage ok 100
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'lane mac: not eligible, the repo needs linux' "$T/out"; check "$?" "0" "an OS the lane's list names and its runs does not: not met by the list"
+R="$T/pk24"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; usage ok 100
+rm -rf "$T/gh/vars" "$T/gh/queued.json" "$PLOG" "$T/logs/ops.jsonl"; echo true > "$T/gh/private"; echo true > "$T/gh/forkpr"; echo "$MACRUN" > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "the literal form, [self-hosted, macOS], fork PRs on: exit 3"
+grep -q '⚠ current lane mac fails' "$T/out"; check "$?" "0" "…its lane is the one whose list holds it, so the desk still cards it"
+sed 's/"macOS", "laptop"/"macOS", "browser"/' "$T/lanes.keep" > "$LANES"
+sed 's/runs-on: .*/runs-on: [self-hosted, macOS, browser]/' "$R/.github/workflows/check.yml" > "$T/pk.yml"; cp "$T/pk.yml" "$R/.github/workflows/check.yml"
+printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": ["macos", "browser"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "a literal of capabilities: exit 3 too"
+echo false > "$T/gh/forkpr"; cp "$T/lanes.keep" "$LANES"
+R="$T/pk26"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; usage ok 100
+sed 's/"macOS", "laptop"/"macOS", "browser"/' "$T/lanes.keep" > "$LANES"; echo "$MACRUN" > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a literal served by a runner the lane's list asks more of: no card"
+grep -q 'current lane' "$T/out"; check "$?" "1" "…the lane not called failing"
+cp "$T/lanes.keep" "$LANES"
+echo '{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"offline","labels":[{"name":"self-hosted"},{"name":"macOS"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "…and with no runner serving the literal, the card stands"
+sed 's/"self-hosted", "linux", "guest"/"self-hosted", "browser", "guest"/' "$T/lanes.keep" > "$LANES"
+python3 - "$LANES" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["lanes"][0], d["lanes"][1] = d["lanes"][1], d["lanes"][0]
+d["lanes"][1]["runs_on"] = ["self-hosted", "macOS", "browser"]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+R="$T/pk27"; newrepo "$R"; printf '{"provider": "actions", "check": "sh check.sh", "needs": ["macos", "browser"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1; usage ok 100
+sed 's/runs-on: .*/runs-on: [self-hosted, browser]/' "$R/.github/workflows/check.yml" > "$T/pk.yml"; cp "$T/pk.yml" "$R/.github/workflows/check.yml"
+echo '{"total_count":1,"runners":[{"id":7,"name":"laptop","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"browser"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a literal two lanes hold, a Linux one first: no false card"
+grep -q 'lane mac$\|: lane mac' "$T/out"; check "$?" "0" "…it sits on the lane the repo fits"
+cp "$T/lanes.keep" "$LANES"
 R="$T/pk6"; newrepo "$R"; "$CP" "$R" --to circleci > /dev/null 2>&1
 "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a repo on circleci: refused, the pick moves an Actions check only"
 "$CP" "$R" --apply > /dev/null 2>&1; check "$?" "2" "--apply without --pick: a usage error"
+
+echo "capabilities: a runner's custom labels from wharf/ci-runner-caps.json (2026-10-31)"
+CAPS="$REGATTA_CONFIG/wharf/ci-runner-caps.json"
+R="$T/cap1"; newrepo "$R"; mkdir -p "$R/.helloworld"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+printf 'jobs:\n  merge:\n    runs-on: ${{ fromJSON(vars.CI_RUNS_ON_AUTOMERGE || vars.CI_RUNS_ON) }}\n' > "$R/.github/workflows/automerge.yml"
+rm -rf "$T/gh/runners.fail" "$T/gh/vars"; mkdir -p "$T/gh/vars"
+RO='{"name":"self-hosted","type":"read-only"},{"name":"macOS","type":"read-only"}'
+cat > "$T/gh/runners.json" <<EOF
+{"total_count":3,"runners":[{"id":21,"name":"fast","status":"online","labels":[$RO,{"name":"box1","type":"custom"}]},{"id":22,"name":"slow","status":"offline","labels":[$RO,{"name":"old-check","type":"custom"}]},{"id":23,"name":"spare","status":"online","labels":[$RO,{"name":"keep-me","type":"custom"}]}]}
+EOF
+echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"box1\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+cat > "$T/customs.py" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(" ".join("%s=%s" % (r["name"], ",".join(l["name"] for l in r["labels"] if l.get("type") == "custom")) for r in d["runners"]))
+EOF
+customs() { python3 "$T/customs.py" "$T/gh/runners.json"; }
+rm -f "$CAPS"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "no ci-runner-caps.json: refused"
+grep -q 'no capabilities: write .*ci-runner-caps.json' "$T/out"; check "$?" "0" "…naming the file"
+echo '{"fast": ["macOS"]}' > "$CAPS"
+"$CP" "$R" --runner caps > /dev/null 2>&1; check "$?" "2" "an automatic label in the table: refused"
+echo '{"fast": ["bad label"]}' > "$CAPS"
+"$CP" "$R" --runner caps > /dev/null 2>&1; check "$?" "2" "a capability that is no label: refused"
+echo '{"fast": "browser"}' > "$CAPS"
+"$CP" "$R" --runner caps > /dev/null 2>&1; check "$?" "2" "a runner's capabilities not a list: refused"
+echo '{"fast": ["browser", "whole-line"], "slow": []}' > "$CAPS"; : > "$T/gh/calls"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "dropping the label a variable routes on: refused"
+grep -q 'variable CI_RUNS_ON asks for .*box1.*which fast carries now and no runner would after' "$T/out"; check "$?" "0" "…naming the variable and the runner"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"
+echo '{"fast": ["box1", "browser", "whole-line"], "slow": [], "gone": ["x"]}' > "$CAPS"; : > "$T/gh/calls"
+"$CP" "$R" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "the old label kept beside the new: --dry-run"
+grep -qF "would set runner fast's capabilities: box1 → box1, browser, whole-line" "$T/out"; check "$?" "0" "…says the change"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…and writes nothing"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "0" "--runner caps"
+check "$(customs)" "fast=box1,browser,whole-line slow= spare=keep-me" "…fast PUT, slow cleared, spare untouched"
+grep -q 'runner spare: not in ci-runner-caps.json, left at keep-me' "$T/out"; check "$?" "0" "…an unlisted runner said, left"
+grep -q 'ci-runner-caps.json lists gone: acme/demo has no runner of that name' "$T/out"; check "$?" "0" "…a listed name with no runner said"
+grep -q 'variable CI_RUNS_ON_AUTOMERGE' "$T/out"; check "$?" "1" "…an unset variable judged by nothing"
+grep -qF "rollback: echo '{\"labels\": [\"box1\"]}' | gh api -X PUT repos/acme/demo/actions/runners/21/labels --input -" "$T/out"; check "$?" "0" "…the PUT that undoes it printed"
+check "$(grep -c -- '-X DELETE repos/acme/demo/actions/runners/22/labels' "$T/gh/calls")" "1" "…an empty list is GitHub's DELETE"
+echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"browser\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+echo '{"fast": ["browser", "whole-line"], "slow": []}' > "$CAPS"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "0" "the variable moved to a capability: the old label dropped"
+check "$(customs)" "fast=browser,whole-line slow= spare=keep-me" "…fast carries its capabilities alone"
+grep -qF 'variable CI_RUNS_ON (["self-hosted","macOS","browser"]): fast' "$T/out"; check "$?" "0" "…the variable served by fast, said"
+: > "$T/gh/calls"; "$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "0" "a second run"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…writes nothing"
+grep -q 'runner fast: already browser, whole-line' "$T/out"; check "$?" "0" "…says each runner already right"
+echo '{"fast": ["gpu"], "spare": []}' > "$CAPS"
+"$CP" "$R" --runner caps --name spare > "$T/out" 2>&1; check "$?" "0" "--name: one runner only"
+check "$(customs)" "fast=browser,whole-line slow= spare=" "…spare cleared, fast left though the table differs"
+touch "$T/gh/labels.fail"; echo '{"fast": ["browser"]}' > "$CAPS"
+"$CP" "$R" --runner caps > /dev/null 2>&1; check "$?" "2" "GitHub refusing the PUT: exit 2"
+rm -f "$T/gh/labels.fail"
+"$CP" "$R" --runner caps --host x --name fast > "$T/out" 2>&1; check "$?" "2" "--runner caps with --host: a usage error"
+grep -q 'do not go with it' "$T/out"; check "$?" "0" "…caps' own guard, not --host's"
+"$CP" "$R" --runner caps --name nosuch > "$T/out" 2>&1; check "$?" "2" "--name naming no runner: refused"
+grep -q 'has no runner named nosuch: nothing written' "$T/out"; check "$?" "0" "…saying so"
+echo '{"fast": ["Browser", "browser", "whole-line"]}' > "$CAPS"; : > "$T/gh/calls"
+"$CP" "$R" --runner caps --name fast > "$T/out" 2>&1; check "$?" "0" "a capability spelt twice in two cases"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…one label, as GitHub keeps it: nothing written"
+echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"
+"$CP" "$R" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "install with the runner in the table"
+grep -q 'config.sh --name laptop --labels browser,whole-line;' "$T/out"; check "$?" "0" "…registers its capabilities, not the Mac's own label"
+echo '{"laptop": []}' > "$CAPS"
+"$CP" "$R" --runner install --dry-run > /dev/null 2>&1; check "$?" "2" "install of a runner listed with no capabilities: refused"
+R2="$T/cap2"; newrepo "$R2"; mkdir -p "$R2/.github/workflows"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$R2/.github/workflows/check.yml"
+echo '{"fast": ["whole-line"]}' > "$CAPS"; : > "$T/gh/calls"
+"$CP" "$R2" --runner caps > "$T/out" 2>&1; check "$?" "2" "dropping the label a literal runs-on routes on: refused"
+grep -q "check.yml's runs-on asks for .*browser.*which fast carries now and no runner would after" "$T/out"; check "$?" "0" "…naming the file and the runner"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"
+echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "install on a literal runs-on of capabilities, the runner in the table"
+grep -q 'config.sh --name laptop --labels browser,whole-line;' "$T/out"; check "$?" "0" "…registers them: the table carries what the literal asks for"
+grep -q 'would not carry' "$T/out"; check "$?" "1" "…with nothing to warn of"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, laptop]\n' > "$R2/.github/workflows/check.yml"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "install on a literal naming the labels key's label"
+grep -q 'config.sh --name laptop --labels browser,whole-line,laptop;' "$T/out"; check "$?" "0" "…keeps the key's label beside the capabilities, never instead of them"
+grep -q 'laptop keeps laptop beside its capabilities' "$T/out"; check "$?" "0" "…said"
+echo '{}' > "$CAPS"; printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$R2/.github/workflows/check.yml"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "install of a runner the table lacks, a literal of capabilities"
+grep -q "⚠ a runs-on asks for browser, which runner laptop would not carry" "$T/out"; check "$?" "0" "…warns that the job would queue"
+
+echo "capabilities: a literal runs-on judged like a variable, whatever its shape (2026-10-31)"
+# a runner named after its Mac, and that name its one custom label: the shape caps would strip
+RO='{"name":"self-hosted","type":"read-only"},{"name":"macOS","type":"read-only"}'
+echo "{\"total_count\":1,\"runners\":[{\"id\":31,\"name\":\"box1\",\"status\":\"online\",\"labels\":[$RO,{\"name\":\"box1\",\"type\":\"custom\"}]}]}" > "$T/gh/runners.json"
+keep_runners=$(cat "$T/gh/runners.json")
+echo '{"box1": ["browser", "whole-line"]}' > "$CAPS"
+R3="$T/cap3"; newrepo "$R3"; mkdir -p "$R3/.github/workflows"; WF3="$R3/.github/workflows/check.yml"; rm -f "$R3/.github/workflows/automerge.yml"
+stranded() { # stranded <label> <the job's runs-on, as the file's lines>: refused, by name, and no write
+  : > "$T/gh/calls"; printf 'jobs:\n  check:\n%b\n' "$2" > "$WF3"
+  "$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "$1: refused, in a dry run too"
+  grep -q "check.yml's runs-on asks for .*box1.*which box1 carries now and no runner would after: nothing written" "$T/out"; check "$?" "0" "…naming the runs-on and the runner"
+  "$CP" "$R3" --runner caps > /dev/null 2>&1; check "$?" "2" "…and for real"
+  check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"; }
+stranded "[self-hosted, macOS, <the runner's name>]" '    runs-on: [self-hosted, macOS, box1]'
+stranded "with no self-hosted in it, [macOS, <the name>]" '    runs-on: [macOS, box1]'
+stranded "the label alone" '    runs-on: box1'
+stranded "quoted, and a comment after it" "    runs-on: ['self-hosted', \"box1\"]  # the Mac"
+stranded "a block list" '    runs-on:\n      - self-hosted\n      - macOS\n      - box1\n    steps: []'
+stranded "a block list at the key's own indent" '    runs-on:\n    - self-hosted\n    # the Mac\n    - box1'
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$WF3"; : > "$T/gh/calls"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "the same runner once check.yml asks for a capability: --dry-run passes"
+grep -qF "would set runner box1's capabilities: box1 → browser, whole-line" "$T/out"; check "$?" "0" "…says the change"
+grep -qF "check.yml's runs-on ([self-hosted, macOS, browser]): box1" "$T/out"; check "$?" "0" "…and who serves the runs-on after it"
+"$CP" "$R3" --runner caps > "$T/out" 2>&1; check "$?" "0" "…and the write"
+check "$(customs)" "box1=browser,whole-line" "…the runner carries its capabilities alone"
+echo "$keep_runners" > "$T/gh/runners.json"; : > "$T/gh/calls"
+printf 'jobs:\n  check:\n    runs-on: ubuntu-latest\n  mac:\n    runs-on: macos-14\n' > "$WF3"
+"$CP" "$R3" --runner caps > "$T/out" 2>&1; check "$?" "0" "hosted images in runs-on: nothing to strand"
+grep -q 'ubuntu-latest\|macos-14' "$T/out"; check "$?" "1" "…and nothing said of them"
+echo "$keep_runners" > "$T/gh/runners.json"
+printf 'jobs:\n  check:\n    runs-on: ${{ matrix.os }}\n  two:\n    runs-on: { group: g }\n  three:\n    runs-on:\n      group: g\n    steps: []\n' > "$WF3"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "shapes no reader here can judge, naming no label going: not refused"
+check "$(grep -c "⚠ check.yml's runs-on .*not judged" "$T/out")" "3" "…each said, not passed in silence"
+
+echo "the literal form from ci.json's needs: capabilities, never a host name (2026-10-31)"
+needs() { printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": %s}\n' "$2" > "$1/.github/ci.json"; }
+runson() { grep '^ *runs-on:' "$1/.github/workflows/check.yml" | sed 's/^ *//'; }
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"; rm -f "$CAPS"
+R="$T/n1"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "no needs: --to self-hosted"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS]" "…macOS alone, as an absent needs reads everywhere"
+check "$(grep -ci laptop "$R/.github/workflows/check.yml")" "0" "…and no line of the file names the labels key's machine"
+needs "$R" '["macos", "browser", "git-2.43"]'
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a capability added to needs: the re-run is the tool's own, no --force"
+grep -q 'any runner carrying these takes the job' "$T/out"; check "$?" "1" "…a change that narrows the job says nothing of widening"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser, git-2.43]" "…each capability asked for"
+grep -q 'until one labelled self-hosted, macOS, browser, git-2.43 is online' "$T/out"; check "$?" "0" "…and the next step names them"
+check "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['needs'])" "$R/.github/ci.json")" "['macos', 'browser', 'git-2.43']" "…ci.json keeps needs"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "…a further re-run"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser, git-2.43]" "…holds"
+"$CP" "$R" --to actions > /dev/null 2>&1; check "$?" "0" "away to actions"
+check "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['needs'])" "$R/.github/ci.json")" "['macos', 'browser', 'git-2.43']" "…needs crosses a switch: it is the repo's"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser, git-2.43]" "…and back asks for the same"
+needs "$R" '["browser", "macOS", "public", "Browser", "BROWSER"]'
+"$CP" "$R" --to self-hosted --force > /dev/null 2>&1; check "$?" "0" "needs in any order, with public and a repeat"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser]" "…the OS first, each label once, public no label"
+for os in '["macos", "linux"]' '["linux"]' '["windows", "browser"]'; do
+  needs "$R" "$os"; "$CP" "$R" --to self-hosted --force > "$T/out" 2>&1; check "$?" "2" "needs $os: refused in the literal form, a Mac's"
+  grep -q 'the literal form asks for a runner Mac' "$T/out"; check "$?" "0" "…saying why"
+  check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser]" "…nothing written"
+done
+needs "$R" '["macos", "linux"]'
+"$CP" "$R" --to self-hosted --force --runs-on-var POOL > /dev/null 2>&1; check "$?" "0" "…the variable form takes them: a lane decides"
+for bad in '"macos"' '["bad label"]' '["evil]\nrun: x"]' '[1]' '["-x"]'; do
+  R="$T/n2"; rm -rf "$R"; newrepo "$R"; printf '{"provider": "actions", "check": "sh check.sh", "needs": %s}\n' "$bad" > "$R/.github/ci.json"; cp "$R/.github/workflows/check.yml" "$T/n2.yml"
+  "$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "2" "needs $bad: refused"
+  grep -q "must list some of" "$T/out"; check "$?" "0" "…saying what it may hold"
+  check "$(cmp -s "$T/n2.yml" "$R/.github/workflows/check.yml" && echo same)" "same" "…check.yml untouched"
+done
+R="$T/n3"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; needs "$R" '["macos", "browser"]'
+sed 's/runs-on: \[self-hosted, macOS\]/runs-on: [self-hosted, macOS, laptop]/' "$R/.github/workflows/check.yml" > "$T/n3.yml" && mv "$T/n3.yml" "$R/.github/workflows/check.yml"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a literal as this tool wrote it before: the labels key's labels, no --force"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser]" "…a re-run moves it to capabilities"
+sed 's/runs-on: \[self-hosted, macOS, browser\]/runs-on: [self-hosted, macOS, gpu]/' "$R/.github/workflows/check.yml" > "$T/n3.yml" && mv "$T/n3.yml" "$R/.github/workflows/check.yml"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "2" "a label neither needs nor the key names: a hand edit, held"
+grep -q "its runs-on, \[self-hosted, macOS, gpu\], is not this tool's: that is .self-hosted., the OS" "$T/out"; check "$?" "0" "…saying what it may name"
+R="$T/n4"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1; needs "$R" '["macos", "browser"]'; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+mkdir -p "$R/.helloworld"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "a literal of capabilities, .helloworld/ added: a re-run"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser]" "…keeps the literal form, as a literal on the runner Mac did"
+: > "$T/gh/calls"; "$CP" "$R" --runner install --dry-run > "$T/out" 2>&1
+grep -q "names the labels itself (the literal form)" "$T/out"; check "$?" "0" "…--runner install says why it sets no variable"
+
+echo "the landing review of 2026-11-01: what still routes, and what stays a hand edit"
+# a change caps judges on what GitHub runs, not only on this checkout
+R="$T/rv1"; newrepo "$R"; WF="$R/.github/workflows/check.yml"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, box1]\n' > "$WF"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm main; git -C "$R" update-ref refs/remotes/origin/main HEAD
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$WF"
+echo "$keep_runners" > "$T/gh/runners.json"; echo '{"box1": ["browser"]}' > "$CAPS"; : > "$T/gh/calls"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "a branch that moved its literal, main still naming the label: refused"
+grep -q "origin/main:check.yml's runs-on asks for .*box1.*which box1 carries now" "$T/out"; check "$?" "0" "…naming main's file"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm moved; git -C "$R" update-ref refs/remotes/origin/main HEAD
+"$CP" "$R" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "the move on main: the label may go"
+git -C "$R" update-ref -d refs/remotes/origin/main; : > "$T/gh/calls"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "origin/main unreadable: refused, a write would follow"
+grep -q "could not read origin/main's workflows" "$T/out"; check "$?" "0" "…saying so"
+check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"
+git -C "$R" update-ref refs/remotes/origin/main HEAD; touch "$T/gh/fetch.fail"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "origin unreachable: refused"
+grep -q 'could not reach origin' "$T/out"; check "$?" "0" "…saying so"
+rm -f "$T/gh/fetch.fail"
+echo master > "$T/gh/default"; git -C "$R" update-ref refs/remotes/origin/master HEAD
+"$CP" "$R" --runner caps --dry-run > /dev/null 2>&1; check "$?" "0" "a default branch of another name: fetched by the name origin gives"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, box1]\n' > "$R/.github/workflows/old.yml"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm old; git -C "$R" update-ref refs/remotes/origin/master HEAD
+rm "$R/.github/workflows/old.yml"; "$CP" "$R" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "…and judged"
+grep -q "origin/master:old.yml's runs-on asks for" "$T/out"; check "$?" "0" "…by that name"
+echo none > "$T/gh/default"
+"$CP" "$R" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "an origin with no branch yet: it runs nothing"
+grep -q 'origin has no default branch yet' "$T/out"; check "$?" "0" "…said"
+rm -f "$T/gh/default"; git -C "$R" update-ref refs/remotes/origin/main HEAD
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, box1]\n' > "$R/.github/workflows/nächtlich.yml"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm umlaut; git -C "$R" update-ref refs/remotes/origin/main HEAD
+rm "$R/.github/workflows/nächtlich.yml"; "$CP" "$R" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "a workflow on origin with a name git quotes: read, and judged"
+git -C "$R" checkout -q -- .github/workflows; rm "$R/.github/workflows/nächtlich.yml"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm gone; git -C "$R" update-ref refs/remotes/origin/main HEAD
+git -C "$R" rev-parse HEAD:.github/workflows/check.yml > "$T/blob"; BLOB=$(cat "$T/blob")
+OBJ="$R/.git/objects/$(cut -c1-2 "$T/blob")/$(cut -c3- "$T/blob")"; mv "$OBJ" "$T/blob.keep"
+"$CP" "$R" --runner caps > "$T/out" 2>&1; check "$?" "2" "a workflow on origin/main that cannot be read: refused, never read as empty"
+mv "$T/blob.keep" "$OBJ"
+# a runs-on no reader here can judge
+unjudged() { # unjudged <label> <rc> <the job's lines>
+  printf 'jobs:\n  check:\n%b\n' "$3" > "$WF3"; echo "$keep_runners" > "$T/gh/runners.json"; : > "$T/gh/calls"
+  "$CP" "$R3" --runner caps > "$T/out" 2>&1; check "$?" "$2" "$1"
+  [ "$2" = 0 ] || check "$(grep -c -- '-X PUT\|-X DELETE' "$T/gh/calls")" "0" "…before any write"; }
+unjudged "a runner group's mapping naming the label going: refused" 2 '    runs-on: { group: g, labels: [box1] }'
+unjudged "a block mapping naming it: refused" 2 '    runs-on:\n      group: g\n      labels: [box1]'
+unjudged "a matrix over it: refused" 2 '    strategy:\n      matrix:\n        os: [box1]\n    runs-on: ${{ matrix.os }}'
+unjudged "a quoted expression: refused" 2 '    strategy:\n      matrix:\n        os: [box1]\n    runs-on: "${{ matrix.os }}"'
+unjudged "an expression in a flow list: refused" 2 '    strategy:\n      matrix:\n        h: [box1]\n    runs-on: [self-hosted, "${{ matrix.h }}"]'
+unjudged "a quoted expression in a block list: refused" 2 '    strategy:\n      matrix:\n        h: [box1]\n    runs-on:\n      - self-hosted\n      - "${{ matrix.h }}"'
+unjudged "an anchor: refused" 2 '    runs-on: &mac [self-hosted, box1]'
+unjudged "a space before the colon: refused" 2 '    runs-on : box1'
+unjudged "a block scalar: refused" 2 '    runs-on: >-\n      box1'
+unjudged "a YAML tag: refused" 2 '    runs-on: !!seq [box1]'
+unjudged "a label that only starts alike is no mention" 0 '    strategy:\n      matrix:\n        os: [box10, my-box1]\n    runs-on: ${{ matrix.os }}'
+grep -q "⚠ check.yml's runs-on .*not judged" "$T/out"; check "$?" "0" "…said, not judged"
+echo "{\"total_count\":1,\"runners\":[{\"id\":32,\"name\":\"arm\",\"status\":\"online\",\"labels\":[$RO,{\"name\":\"macos-arm\",\"type\":\"custom\"}]}]}" > "$T/gh/runners.json"
+echo '{"arm": ["browser"]}' > "$CAPS"; printf 'jobs:\n  check:\n    runs-on: macos-arm\n' > "$WF3"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "a runner's label shaped like a hosted image: judged, refused"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, caf\xe9-box]\n' > "$WF3"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; grep -q 'Traceback' "$T/out"; check "$?" "1" "a workflow byte that is not UTF-8: no traceback"
+# --runner install asks the same judge as caps
+R2="$T/cap6"; newrepo "$R2"; WF2="$R2/.github/workflows/check.yml"; echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"
+installs() { # installs <label> <the --labels it should register> <check.yml's job> [nightly.yml's job]
+  printf 'jobs:\n  check:\n%b\n' "$3" > "$WF2"; rm -f "$R2/.github/workflows/nightly.yml"
+  [ -z "${4:-}" ] || printf 'jobs:\n  n:\n%b\n' "$4" > "$R2/.github/workflows/nightly.yml"
+  "$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "$1"
+  grep -q "config.sh --name laptop --labels $2;" "$T/out"; check "$?" "0" "…registers $2"; }
+KEPT=browser,whole-line,laptop
+installs "a block list naming the key's label" "$KEPT" '    runs-on:\n      - self-hosted\n      - laptop'
+installs "another workflow naming it" "$KEPT" '    runs-on: [self-hosted, macOS]' '    runs-on: [self-hosted, macOS, laptop]'
+installs "a second job naming it" "$KEPT" '    runs-on: [self-hosted, macOS, browser]\n  two:\n    runs-on: [self-hosted, macOS, laptop]'
+installs "a file it cannot read naming it" "$KEPT" '    strategy:\n      matrix:\n        os: [laptop]\n    runs-on: ${{ matrix.os }}'
+installs "a literal only another runner serves: no reason to keep the key's label" browser,whole-line '    runs-on: [macOS, gpu]'
+grep -q "⚠ a runs-on asks for gpu, which runner laptop would not carry" "$T/out"; check "$?" "0" "…warned"
+installs "a matrix naming no label of the key's" browser,whole-line '    runs-on: ${{ matrix.os }}'
+grep -q "⚠ check.yml's runs-on .*not judged" "$T/out"; check "$?" "0" "…said, not judged"
+installs "hosted images: nothing asked" browser,whole-line '    runs-on: ubuntu-latest'
+grep -q 'would not carry' "$T/out"; check "$?" "1" "…nothing warned of"
+echo '{"laptop": []}' > "$CAPS"; printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$WF2"
+"$CP" "$R2" --runner install --dry-run > /dev/null 2>&1; check "$?" "2" "a table row with no capabilities: refused whatever the workflows say"
+printf 'self-hosted\nmacOS\nmacos-arm\n' > "$T/rv.labels"; cp "$REGATTA_CONFIG/wharf/ci-runner-labels" "$T/rv.labels.keep"; cp "$T/rv.labels" "$REGATTA_CONFIG/wharf/ci-runner-labels"
+echo '{"macos-arm": ["browser"]}' > "$CAPS"; printf 'jobs:\n  check:\n    runs-on: macos-arm\n' > "$WF2"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name macos-arm --labels browser,macos-arm;' "$T/out"; check "$?" "0" "the key's label shaped like a hosted image: kept, as caps judges it"
+cp "$T/rv.labels.keep" "$REGATTA_CONFIG/wharf/ci-runner-labels"
+rm -f "$R2/.github/workflows/nightly.yml"
+# the variable form beside what caps cannot read: capabilities registered, the variable left on them
+echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"; rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"
+echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"browser\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+VARON="\${{ fromJSON(vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}"
+printf 'jobs:\n  check:\n    runs-on: %s\n' "$VARON" > "$WF2"; printf 'jobs:\n  n:\n    runs-on: ${{ matrix.os }}\n' > "$R2/.github/workflows/nightly.yml"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name laptop --labels browser,whole-line;' "$T/out"; check "$?" "0" "the variable form, a hosted matrix beside it: capabilities registered"
+grep -q 'already routes to .*laptop carries its labels' "$T/out"; check "$?" "0" "…the variable left on them"
+printf 'jobs:\n  n:\n    runs-on: [self-hosted, laptop]\n' > "$R2/.github/workflows/nightly.yml"; rm -f "$T/gh/vars/CI_RUNS_ON.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name laptop --labels browser,whole-line,laptop;' "$T/out"; check "$?" "0" "the variable form, a literal naming the key's label: kept"
+grep -q 'would create variable CI_RUNS_ON: None → \["self-hosted","macOS","browser","whole-line"\]' "$T/out"; check "$?" "0" "…the kept label never reaches the variable"
+# a variable beside the one install moves: read, as a fresh registration meets no other judge
+echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"; rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"
+echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"browser\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+echo '{"name":"CI_RUNS_ON_FULL","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON_FULL.json"
+printf 'jobs:\n  check:\n    runs-on: %s\n' "\${{ fromJSON(github.event_name != 'pull_request' && vars.CI_RUNS_ON_FULL || vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}" > "$WF2"; rm -f "$R2/.github/workflows/nightly.yml"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name laptop --labels browser,whole-line,laptop;' "$T/out"; check "$?" "0" "a split form's _FULL naming the key's label: kept"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS]\n' > "$WF2"
+printf 'jobs:\n  m:\n    runs-on: %s\n' "\${{ fromJSON(vars.CI_RUNS_ON_AUTOMERGE || vars.CI_RUNS_ON || '\"ubuntu-latest\"') }}" > "$R2/.github/workflows/automerge.yml"
+rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON_AUTOMERGE","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON_AUTOMERGE.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name laptop --labels browser,whole-line,laptop;' "$T/out"; check "$?" "0" "a literal check.yml, automerge's variable naming it: kept"
+echo '{"name":"CI_RUNS_ON_AUTOMERGE","value":"[\"self-hosted\",\"macOS\",\"gpu\"]"}' > "$T/gh/vars/CI_RUNS_ON_AUTOMERGE.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q "⚠ a runs-on asks for gpu, which runner laptop would not carry" "$T/out"; check "$?" "0" "…one it would not carry: warned"
+echo '{"name":"CI_RUNS_ON_AUTOMERGE","value":"{\"group\":\"g\",\"labels\":[\"laptop\"]}"}' > "$T/gh/vars/CI_RUNS_ON_AUTOMERGE.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'config.sh --name laptop --labels browser,whole-line,laptop;' "$T/out"; check "$?" "0" "a variable holding a mapping that names the key's label: kept"
+rm -rf "$T/gh/vars"; rm -f "$R2/.github/workflows/automerge.yml"
+# no table, or --labels: no write rests on origin's workflows, so an unreachable origin stops nothing
+rm -f "$CAPS"; touch "$T/gh/fetch.fail"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "0" "no table, origin unreachable: an install is not stopped"
+"$CP" "$R2" --runner install --dry-run --host h2 --name box2 --labels self-hosted,macOS,shared > /dev/null 2>&1; check "$?" "0" "…nor a fleet Mac's, by --labels"
+echo '{"laptop": ["browser"]}' > "$CAPS"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1; check "$?" "2" "a listed runner, origin unreachable: refused, a write rests on it"
+rm -f "$T/gh/fetch.fail"
+echo '{"laptop": ["browser", "whole-line"]}' > "$CAPS"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, laptop]\n' > "$WF2"; printf '{"provider": "self-hosted", "check": "sh check.sh"}\n' > "$R2/.github/ci.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q "names the labels itself (the literal form)" "$T/out"; check "$?" "0" "the old literal on a capped runner: still read as the literal form"
+rm -f "$R2/.github/ci.json"
+# a real install on a configured runner: its labels PUT, and the wait for them met
+LCFG='{"total_count":1,"runners":[{"id":41,"name":"laptop","status":"online","labels":[{"name":"self-hosted","type":"read-only"},{"name":"macOS","type":"read-only"},{"name":"laptop","type":"custom"}]}]}'
+fakerunner "$RD" nested; touch "$RD/.runner"; echo "$LCFG" > "$T/gh/runners.json"; rm -f "$R2/.github/workflows/nightly.yml"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, laptop]\n' > "$WF2"
+"$CP" "$R2" --runner install > "$T/out" 2>&1; check "$?" "0" "a real install, configured, a literal naming the key's label"
+check "$(customs)" "laptop=browser,whole-line,laptop" "…capabilities PUT beside the label the literal asks for"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$WF2"; echo "$LCFG" > "$T/gh/runners.json"
+"$CP" "$R2" --runner install > "$T/out" 2>&1; check "$?" "0" "a real install, configured, a literal of capabilities"
+check "$(customs)" "laptop=browser,whole-line" "…the runner carries its capabilities alone"
+printf 'jobs:\n  check:\n    runs-on: %s\n' "$VARON" > "$WF2"; echo "$LCFG" > "$T/gh/runners.json"; mkdir -p "$T/gh/vars"
+echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+"$CP" "$R2" --runner install > "$T/out" 2>&1; check "$?" "0" "a real install, configured, the variable naming the key's label"
+check "$(customs)" "laptop=browser,whole-line,laptop" "…the label stays until the variable has moved"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_RUNS_ON.json")" '["self-hosted","macOS","browser","whole-line"]' "…which it then has"
+"$CP" "$R2" --runner caps > "$T/out" 2>&1; check "$?" "0" "…and --runner caps drops it"
+check "$(customs)" "laptop=browser,whole-line" "…leaving the capabilities"
+rm -rf "$T/gh/vars"
+printf 'self-hosted\nmacOS\nlaptop\n' > "$REGATTA_CONFIG/wharf/ci-runner-labels"
+printf 'jobs:\n  check:\n    runs-on: [self-hosted, macOS, browser]\n' > "$WF2"
+printf 'buildbox\n' > "$REGATTA_CONFIG/wharf/ci-runner-kind"; printf '{"provider": "buildbox", "check": "sh check.sh"}\n' > "$R2/.github/ci.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'no repository variable set' "$T/out"; check "$?" "0" "install on a ci.json naming the old kind: read as the kind"
+rm -f "$REGATTA_CONFIG/wharf/ci-runner-kind" "$R2/.github/ci.json"
+# a variable holding one label: a fleet's, read as caps reads it
+echo '{"laptop": ["browser"]}' > "$CAPS"; rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"; printf 'jobs:\n  check:\n    runs-on: %s\n' "$VARON" > "$WF2"
+echo '{"name":"CI_RUNS_ON","value":"\"shared\""}' > "$T/gh/vars/CI_RUNS_ON.json"
+echo '{"total_count":1,"runners":[{"id":42,"name":"box1","status":"online","labels":[{"name":"self-hosted","type":"read-only"},{"name":"macOS","type":"read-only"},{"name":"shared","type":"custom"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R2" --runner install --dry-run > "$T/out" 2>&1
+grep -q 'variable CI_RUNS_ON left at "shared": registered runner box1 carries its labels' "$T/out"; check "$?" "0" "a variable of one label another runner carries: never re-routed to the newcomer"
+# a variable caps cannot read
+rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"; echo '{"box1": ["browser"]}' > "$CAPS"
+echo '{"name":"RUNNER","value":"box1"}' > "$T/gh/vars/RUNNER.json"
+unjudged "a variable holding one plain label: refused" 2 '    runs-on: ${{ vars.RUNNER }}'
+grep -q "variable RUNNER asks for box1, which box1 carries now" "$T/out"; check "$?" "0" "…naming the variable"
+unjudged "the same in another case: GitHub's contexts ignore it" 2 '    runs-on: ${{ VARS.RUNNER }}'
+unjudged "a variable in a block list: refused" 2 '    runs-on:\n      - self-hosted\n      - ${{ vars.RUNNER }}'
+unjudged "a quoted key: refused" 2 '    "runs-on": [self-hosted, box1]'
+echo '{"name":"RUNNER","value":"\"ubuntu-latest\""}' > "$T/gh/vars/RUNNER.json"
+unjudged "a variable holding a hosted image: nothing to judge" 0 '    runs-on: ${{ vars.RUNNER }}'
+grep -q "not judged\|no registered runner carries it" "$T/out"; check "$?" "1" "…nothing said"
+echo "{\"total_count\":1,\"runners\":[{\"id\":33,\"name\":\"arm\",\"status\":\"online\",\"labels\":[$RO,{\"name\":\"macos-arm\",\"type\":\"custom\"}]}]}" > "$T/gh/runners.json"
+echo '{"name":"RUNNER","value":"\"macos-arm\""}' > "$T/gh/vars/RUNNER.json"; echo '{"arm": ["browser"]}' > "$CAPS"
+printf 'jobs:\n  check:\n    runs-on: ${{ fromJSON(vars.RUNNER) }}\n' > "$WF3"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "a variable holding a runner's label shaped like a hosted image: judged, refused"
+echo '{"box1": ["browser"]}' > "$CAPS"
+# a label moving between runners leaves the fleet no poorer
+echo "{\"total_count\":2,\"runners\":[{\"id\":34,\"name\":\"box1\",\"status\":\"online\",\"labels\":[$RO,{\"name\":\"gpu\",\"type\":\"custom\"}]},{\"id\":35,\"name\":\"box2\",\"status\":\"online\",\"labels\":[$RO,{\"name\":\"gpu\",\"type\":\"custom\"}]}]}" > "$T/gh/runners.json"
+printf 'jobs:\n  check:\n    strategy:\n      matrix:\n        os: [gpu]\n    runs-on: ${{ matrix.os }}\n' > "$WF3"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "0" "a label a matrix names leaving one runner of two: not refused"
+echo '{"box1": ["browser"], "box2": ["browser"]}' > "$CAPS"
+"$CP" "$R3" --runner caps --dry-run > "$T/out" 2>&1; check "$?" "2" "…leaving both: refused"
+grep -q "takes off every runner" "$T/out"; check "$?" "0" "…saying so"
+echo '{"box1": ["browser"]}' > "$CAPS"
+echo '{"name":"RUNNER","value":"{\"group\":\"g\",\"labels\":[\"self-hosted\",\"box1\"]}"}' > "$T/gh/vars/RUNNER.json"
+unjudged "a variable holding a runner group's mapping: refused, by what it names" 2 '    runs-on: ${{ fromJSON(vars.RUNNER) }}'
+grep -q "variable RUNNER's runs-on .* is no label list or variable this tool reads" "$T/out"; check "$?" "0" "…naming the variable"
+echo '{"name":"RUNNER","value":"box1"}' > "$T/gh/vars/RUNNER.json"
+unjudged "a variable's name in lower case: GitHub's is upper" 2 '    runs-on: ${{ vars.runner }}'
+unjudged "a variable mixed with a label: refused" 2 '    runs-on: [self-hosted, box1, "${{ vars.EXTRA }}"]'
+unjudged "a label as an unset variable's default: refused" 2 "    runs-on: \${{ vars.UNSET || 'box1' }}"
+unjudged "a fromJSON default naming it: refused" 2 "    runs-on: \${{ fromJSON(vars.POOL || '[\"self-hosted\",\"box1\"]') }}"
+unjudged "an expression choosing it: refused" 2 "    runs-on: \${{ github.event_name == 'push' && 'box1' || vars.CI_RUNS_ON }}"
+unjudged "a chain of variables to a hosted image: routed_vars' alone" 0 "    runs-on: \${{ fromJSON(vars.A_AUTOMERGE || vars.A || '\"ubuntu-latest\"') }}"
+grep -q "not judged" "$T/out"; check "$?" "1" "…nothing said"
+rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"
+# what stays a hand edit, and what `needs` says
+rm -f "$CAPS"
+R="$T/rvA"; newrepo "$R"; printf '{"check": "sh check.sh", "needs": ["macos", "browser"]}\n' > "$R/.github/ci.json"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+printf '{"check": "sh check.sh", "needs": ["macos", "browser"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'self-hosted (inferred' "$T/out"; check "$?" "0" "a capability literal, ci.json with needs and no provider: self-hosted, inferred"
+R="$T/rvD"; newrepo "$R"; printf '{"provider": "self-hosted", "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+printf 'jobs:\n  check:\n    runs-on: [macOS, browser]\n' > "$R/.github/workflows/check.yml"
+echo '{"total_count":1,"runners":[{"id":7,"name":"box","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"browser"}]}]}' > "$T/gh/runners.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "status on a literal with no self-hosted, a runner carrying it: no false alarm"
+printf 'jobs:\n  check:\n    runs-on:\n      - self-hosted\n      - browser\n' > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "…nor on a block list"
+printf 'jobs:\n  check:\n    runs-on: ${{ matrix.os }}\n' > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "…nor on one it cannot read: nothing claimed"
+for shape in '${{ vars.RUNNER }}' '${{ fromJSON(vars.A || vars.B) }}' '[self-hosted, macOS, "${{ matrix.pool }}"]'; do
+  printf 'jobs:\n  check:\n    runs-on: %s\n' "$shape" > "$R/.github/workflows/check.yml"
+  "$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "status on $shape: nothing claimed"
+done
+printf 'jobs:\n  n:\n    runs-on: [macOS, browser]\n    steps:\n      - run: sudo make\n' > "$R/.github/workflows/nightly.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'nightly.yml:.* runs sudo on the runner Mac' "$T/out"; check "$?" "0" "the host-write scan reads a capability literal with no self-hosted in it"
+printf 'jobs:\n  n:\n    runs-on:\n      - macOS\n      - browser\n    steps:\n      - run: sudo make\n' > "$R/.github/workflows/nightly.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'nightly.yml:.* runs sudo on the runner Mac' "$T/out"; check "$?" "0" "…and a block list"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+for empty in '[]' '["public"]'; do
+  R="$T/rvB"; rm -rf "$R"; newrepo "$R"; printf '{"provider": "actions", "check": "sh check.sh", "needs": %s}\n' "$empty" > "$R/.github/ci.json"
+  "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "needs $empty"
+  check "$(runson "$R")" "runs-on: [self-hosted, macOS]" "…macOS, never a bare [self-hosted] a Linux runner would take"
+  "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "…a re-run is its own"
+done
+echo '{"laptop": ["browser"]}' > "$CAPS"; R="$T/rvC"; newrepo "$R"; printf '{"provider": "actions", "check": "sh check.sh", "needs": ["linx"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --to self-hosted --runs-on-var POOL > "$T/out" 2>&1; check "$?" "0" "a mistyped word, the variable form"
+grep -q "⚠ no runner in ci-runner-caps.json lists linx" "$T/out"; check "$?" "0" "…warned there too"
+rm -f "$CAPS"; R="$T/rv2"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+for lit in '[self-hosted, linux]' '[self-hosted, Linux]' '[self-hosted, windows]' '[self-hosted]' 'self-hosted'; do
+  sed "s/runs-on: .*/runs-on: $lit/" "$R/.github/workflows/check.yml" > "$T/rv.yml"; cp "$T/rv.yml" "$R/.github/workflows/check.yml"
+  "$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "2" "$lit, ci.json needing macOS: held as a hand edit, as on main"
+  "$CP" "$R" --to actions > /dev/null 2>&1; check "$?" "2" "…by --to actions too"
+done
+"$CP" "$R" --to self-hosted --force > /dev/null 2>&1; needs "$R" '["linux"]'
+sed "s/runs-on: .*/runs-on: [self-hosted, Linux]/" "$R/.github/workflows/check.yml" > "$T/rv.yml"; cp "$T/rv.yml" "$R/.github/workflows/check.yml"
+"$CP" "$R" --to actions > /dev/null 2>&1; check "$?" "0" "[self-hosted, Linux] where needs says linux: the tool's own, --to actions takes it"
+"$CP" "$R" --to self-hosted --runs-on-var POOL > /dev/null 2>&1; check "$?" "0" "…and the variable form carries a Linux need"
+R="$T/rv2b"; newrepo "$R"; needs "$R" '["macos", "browser"]'; "$CP" "$R" --to self-hosted > /dev/null 2>&1; needs "$R" '["macos"]'
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "2" "a capability dropped from needs: held"
+grep -q "a label just dropped from .needs. leaves the line to edit by hand" "$T/out"; check "$?" "0" "…saying how to go on"
+R="$T/rv3"; newrepo "$R"; setruns "$R" "[self-hosted, linux]"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'actions (inferred' "$T/out"; check "$?" "0" "[self-hosted, linux], no ci.json: not the runner Mac, as on main"
+R="$T/rv4"; newrepo "$R"; printf '{"provider": "actions", "check": "sh check.sh", "needs": ["browser"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --to self-hosted > /dev/null 2>&1; check "$?" "0" "a capability with no OS beside it"
+check "$(runson "$R")" "runs-on: [self-hosted, macOS, browser]" "…reads as macOS, as an absent needs does"
+R="$T/rv5"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+sed "s/runs-on: .*/runs-on: [self-hosted, macOS, laptop]/" "$R/.github/workflows/check.yml" > "$T/rv.yml"; cp "$T/rv.yml" "$R/.github/workflows/check.yml"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a re-run off the labels key's literal"
+grep -qF 'runs-on [self-hosted, macOS, laptop] → [self-hosted, macOS]' "$T/out"; check "$?" "0" "…says what it widens"
+R="$T/rv6"; newrepo "$R"; echo '{"laptop": ["browser"]}' > "$CAPS"; printf '{"provider": "actions", "check": "sh check.sh", "needs": ["macos", "browsr"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --to self-hosted > "$T/out" 2>&1; check "$?" "0" "a mistyped capability"
+grep -q "⚠ no runner in ci-runner-caps.json lists browsr" "$T/out"; check "$?" "0" "…warned, as needs is open to any label"
+R="$T/rv7"; newrepo "$R"
+"$CP" "$R" --to self-hosted --runs-on-var CI_RUNS_ON > "$T/out" 2>&1
+grep -q 'sets CI_RUNS_ON to \["self-hosted","macOS","browser"\]' "$T/out"; check "$?" "0" "the variable form's next step: what install will set, not the labels key's"
+rm -f "$CAPS"; R="$T/rv8"; newrepo "$R"; printf '{"provider": ["x"], "check": "sh check.sh"}\n' > "$R/.github/ci.json"
+"$CP" "$R" --to actions > "$T/out" 2>&1; grep -q 'Traceback' "$T/out"; check "$?" "1" "a provider that is no string, on --to: no traceback"
+
+rm -f "$CAPS"; rm -rf "$T/gh/vars"; echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 
 echo "the review of 2026-10-21: the suite's own git config (15)"
 check "$(git config --global --list 2>/dev/null | wc -l | tr -d ' ')" "0" "git reads the suite's global config, not the caller's (15)"

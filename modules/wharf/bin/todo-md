@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+"""todo-md — the ids of a repo's TODO.md items: lint them, list them, delete one, migrate a numbered list.
+
+  todo-md lint [<repo>] [--base <ref>]   fail on an item without an id, a duplicate id, a numbered
+                                         citation anywhere, a citation of an id TODO.md lacks in a live
+                                         file, or no `TODO.md merge=union` in .gitattributes; with --base,
+                                         also an item done on <ref> that a union merge brought back
+  todo-md list [<repo>]                  one line per item: its id, a tab, its title
+  todo-md check-id <id> [<repo>]         exit 0 when <id> may name a new item: the shape, not in the list,
+                                         never in it before (a done id is never reused)
+  todo-md done <id> [<repo>]             delete the item (git history is the record) and name each live
+                                         file that still cites it; a number is refused with a pointer
+  todo-md migrate [<repo>] [--ids FILE] [--dry-run]
+                                         a numbered TODO.md (from before 2026-10-31) to ids: each item's
+                                         head, every numbered citation in the repo, the .gitattributes line
+
+<repo> defaults to the current directory. Exit 0 ok, 1 a finding (lint) or nothing to act on, 2 usage.
+
+The shape (wharf's /todo skill, "Shape of an item"): an item is a line at column 0 that opens a list
+item, and must read `- [<id>] <what> — <where the context lives>`, continuation lines indented. An id is
+lower-case letters and digits in hyphen-joined words, at most 24 characters, unique in its file, picked
+at `add` from the item's subject. A citation anywhere in the repo is `TODO.md [<id>]`, one form; another
+repo's item is cited with its path (`<the repo>/TODO.md [<id>]`), which this repo's lint does
+not judge. A placeholder (`TODO.md [<id>]`) is not a citation.
+
+Why ids and the union line (the owner, 2026-10-31: "let's go the unnumbered items way, but add some easy
+identifiers so we can still refer to the items somehow"): each landing appended the next number, so two
+branches that each added an item conflicted, and each rebase restarted an hour-long check (regatta#316,
+twice in one afternoon). Dropping the numbers alone does not end it: two appends at the same end of file
+still conflict in git's three-way merge (probed 2026-10-31). `merge=union` keeps both sides' lines,
+which is right for a list of independent items. Union never drops a line; what it gets wrong is keeping
+one too many, and the lint catches two of the three shapes: both sides editing one item's head (a
+duplicate id), and an item done on main that a branch's rebase brings back beside its own append or edit
+(`--base`, which the core's check passes as origin/main). The third, both sides rewording one continuation
+line, keeps both lines with no finding: read `git diff <base> -- TODO.md` after a rebase that touched it
+(round 1's review, probed: git 2.50.1). An item a branch did that main edited meanwhile comes back the
+same way and stays listed: a done that did not take, which /todo's honesty check meets.
+Two more shapes pass with no finding, and they are the everyday ones, since every landing appends (the
+landing review, probed: git 2.54.0): a branch's done of the *last* item comes back when main appended
+meanwhile, and a line a branch added under the last item lands under main's appended item. All of these
+are union's; a repo whose `merge.union.driver` is wharf's `list-merge` (sync.py sets it) merges TODO.md
+and CHANGELOG.md by item instead, and gets none of them (bin/list-merge's header). Where git merges without
+it (GitHub's server, a CI runner), read the TODO.md diff after a rebase.
+
+Live and record: a file under `docs/` (bar `docs/handoff/`), a CHANGELOG.md, a log.md or a file named
+with a date is a record, written once and kept as written, so it may cite an item since done, and keeps a
+numbered citation as written: its number named the item the list held that day, and lists renumbered as
+items were done, so today's id for it is often another item (the rollout, 2026-11-02). Any other file is
+live: its citations must name an item TODO.md has, and a numbered one fails, as the numbers are gone.
+
+Stdlib only; reads git's file list when <repo> is a git checkout, else walks it.
+"""
+import os
+import re
+import subprocess
+import sys
+
+# At least one letter (an all-digit id would read as the number `done` refuses, round 1's review) and two
+# characters (a task list's `- [x]` is a checkbox, not an id, round 2's).
+ID_RE = r"(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]{2})[a-z0-9]+(?:-[a-z0-9]+)*"
+ID_MAX = 24
+# An item head: a column-0 list marker. Only `- [id] ` is the shape; the others are found to be failed.
+HEAD_RE = re.compile(r"^(?:(\d+)[.)]|[-*+])( +)")
+ID_HEAD_RE = re.compile(r"^- \[(" + ID_RE + r")\] ")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
+# Whitespace with at most one line break: a citation wrapped by a reflow is still one.
+_WS = r"(?:[ \t]+\n?[ \t]*|\n[ \t]*)"
+# A citation of an id. The character before must not be `/` or a word character: a path names another
+# repo's TODO.md, which this repo cannot judge. `TODO.md [text](link)` is a link, not a citation.
+CITE_RE = re.compile(r"(?<![/\w.])`?TODO\.md`?" + _WS + r"\[([^\]\s]+)\](?!\()")
+# A numbered citation. A number takes no letter after it ("item 3a" is no item 3) and a range takes its
+# end ("items 1-2", read and left for a hand). A list goes on after `and` ("items 1, 2 and 4 are obsolete"),
+# but a number after a bare comma counts only where a citation ends (a bracket, a stop, `'s`, ` (`, ` and `,
+# the line's end), so "TODO item <n>, 10 minutes left" is item <n> alone (rounds 3 and 4 of the review).
+_END = r"(?=[ \t]*(?:[)\],.;:]|'s\b|\(|\n|$)|\s+and\s)"
+_N = r"\d+(?:-\d+(?![\d-]))?(?![\d\w-]|\.\d)"
+# A separator never crosses a line break: the next line's `4. Run it` is a list marker, no cited number
+# (round 5's review).
+_LIST_BODY = r"(?:,[ \t]*" + _N + _END + r"|,?[ \t]+and[ \t]+(?:items?[ \t]+)?" + _N + r")*"
+_LIST = "(" + _LIST_BODY + ")"
+# A list that ends on `and <n>` is a citation by its shape, wherever it stops: "TODO 1, 2 and 3 are done."
+# keeps its 3 (the todo-ids landing review: the end rule backtracked it away, and migrate said nothing).
+_LIST_AND = r"(?:,[ \t]*" + _N + _END + r")*,?[ \t]+and[ \t]+(?:items?[ \t]+)?" + _N
+
+
+def _num_re(name):
+    """The two roads: with the word item (TODO item N, TODO.md's items N and M, TODO.md: item N, a line
+    break anywhere), or right after `name` (`TODO.md` #N, TODO.md N), ending where a citation ends. A bare
+    TODO takes no `:` or `,` before `item`: `# TODO: item 2 of the RFC` is a code comment (the same review)."""
+    return re.compile(r"(?<![/\w.])(?:(?:`?TODO\.md`?(?:'s)?[,:]?|`?TODO`?(?:'s)?)" + _WS + r"items?" + _WS
+                      + "(" + _N + ")" + _LIST
+                      + r"|`?" + name + r"`?[ \t]+#?(" + _N + ")((?:" + _LIST_AND + ")|" + _LIST_BODY + _END + "))")
+
+
+# The lint's: a bare `TODO N` or `TODO #N` is a code comment's (an issue number, "TODO 2 things") as often as
+# a citation, and the lint reads every file, so the second road needs the file's own name.
+NUM_RE = _num_re(r"TODO\.md")
+# migrate's, wider: also a bare TODO N and TODO #N, the forms regatta's docs used ("TODO 36", "TODO 29 (c)").
+# It prints every rewrite with the words before it, for the reader to judge.
+NUM_WIDE_RE = _num_re(r"TODO(?:\.md)?")
+
+def num_parts(m):
+    """A NUM_RE match's first number and the list after it, whichever road matched."""
+    return (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+STOP = set("the a an of and on in to for from its it is s with by once when there at as or be this that "
+           "follow ups follow-ups review reviews review's landing finish finish's leftovers named not fixed "
+           "carried findings".split())
+MAX_FILE = 2_000_000
+
+
+def die(msg, code=2):
+    print(f"todo-md: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def is_record(rel):
+    # a handoff brief is a run's input, read when the run starts, and never lands on main (/finish drops it):
+    # live, so a brief citing an item since done fails (round 2's review)
+    if rel.startswith("docs/handoff/"):
+        return False
+    name = os.path.basename(rel)
+    # a dated file (`sextant/2026-09-28.md`) and a log are history too, wherever they sit (the rollout, 2026-11-02)
+    return (rel.startswith("docs/") or name in ("CHANGELOG.md", "log.md")
+            or bool(re.search(r"\d{4}-\d{2}-\d{2}", name)))
+
+
+def read_todo(tp):
+    """TODO.md's text, or a stop: one read_text refuses (not UTF-8, a NUL, a link, over 2 MB) must never
+    read as an empty list, which migrate would write back and lint would judge every citation against
+    (round 2's review: a stray byte emptied the file)."""
+    t = read_text(tp)
+    if t is None:
+        die(f"{tp} is unreadable here (not UTF-8, a NUL byte, a symbolic link, or over {MAX_FILE} bytes)", 1)
+    return t
+
+
+_NAMES = {}
+
+
+def repo_name(repo):
+    """The repo's own name, the same from any of its worktrees: origin's, else the main checkout's folder.
+    A worktree's folder (`todo-ids`) or a CI checkout's (`project`) is no name (round 3's review)."""
+    if repo not in _NAMES:
+        def git(*a):
+            r = subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        url = git("remote", "get-url", "origin")
+        name = re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]) if url else ""
+        if not name:
+            common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+            name = os.path.basename(os.path.dirname(common)) if common else ""
+        _NAMES[repo] = name or os.path.basename(os.path.realpath(repo))
+    return _NAMES[repo]
+
+
+def repo_owner(repo):
+    """origin's owner on GitHub, or "" when origin is elsewhere or absent."""
+    r = subprocess.run(["git", "-C", repo, "remote", "get-url", "origin"], capture_output=True, text=True)
+    m = re.search(r"github\.com[:/]([^/]+)/", r.stdout) if r.returncode == 0 else None
+    return m.group(1) if m else ""
+
+
+def link_target(text, start, end):
+    """The target of the Markdown link whose text holds text[start:end], or None: an opening `[` before it
+    on its line with no `]` between, and `](` after it with no bracket between (round 3's review: the text
+    may go on past the number, `[TODO item <n> (ssh runs)](…)`)."""
+    line0 = text.rfind("\n", 0, start) + 1
+    before = text[line0:start]
+    if before.rfind("[") <= before.rfind("]"):
+        return None
+    m = re.match(r"[^\[\]\n]*\]\(\s*<?([^)\s>]+)>?", text[end:])
+    return m.group(1) if m else None
+
+
+def own_target(target, repo, rel):
+    """Whether a link target is this repo's TODO.md: a relative path that resolves to the root's from the
+    file's folder; an absolute one (`file://` too, `~` expanded) whose folder has this repo's name, or that
+    is this checkout's file (a doc written on another Mac names its own home); a GitHub blob of it."""
+    t = bare_target(target)
+    gh = re.match(r"https?://github\.com/([^/]+)/([^/]+)/blob/.+/TODO\.md$", t)  # a branch may hold slashes
+    if gh:
+        owner = repo_owner(repo)  # a fork's list is not this one's (round 5's review)
+        return gh.group(2) == repo_name(repo) and (not owner or gh.group(1).lower() == owner.lower())
+    t = os.path.expanduser(t)
+    if os.path.basename(t) != "TODO.md":
+        return False
+    if os.path.isabs(t):
+        return (os.path.basename(os.path.dirname(t)) == repo_name(repo)
+                or os.path.realpath(t) == os.path.realpath(os.path.join(repo, "TODO.md")))
+    return os.path.normpath(os.path.join(os.path.dirname(rel), t)) == "TODO.md"
+
+
+def foreign_link(text, start, end, repo, rel):
+    """True when text[start:end] sits in the text of a link to another repo's TODO.md: that repo's numbered
+    citation, which neither migrate nor the lint may read as this repo's. A link to any file that is no
+    TODO.md is not foreign: its numbered text is judged as written (round 3's review)."""
+    t = link_target(text, start, end)
+    if not t:
+        return False
+    return bare_target(t).endswith("TODO.md") and not own_target(t, repo, rel)
+
+
+def bare_target(target):
+    """A link target without its scheme `file://`, its query and its fragment."""
+    return re.split(r"[?#]", re.sub(r"^file://(localhost)?", "", target), maxsplit=1)[0]
+
+
+def repo_files(repo):
+    """Paths relative to repo: git's tracked files (and untracked, not ignored) or a walk."""
+    try:
+        out = subprocess.run(["git", "-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                             capture_output=True, check=True).stdout.decode()
+        return sorted({p for p in out.split("\0") if p and os.path.isfile(os.path.join(repo, p))})
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        found = []
+        for d, dirs, files in os.walk(repo):
+            dirs[:] = [x for x in dirs if x not in (".git", "node_modules") and not
+                       (x == "worktrees" and os.path.basename(d) == ".claude")]
+            for f in files:
+                found.append(os.path.relpath(os.path.join(d, f), repo))
+        return sorted(found)
+
+
+def read_text(path):
+    try:
+        if os.path.getsize(path) > MAX_FILE or os.path.islink(path):
+            return None
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if b"\0" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def parse(text):
+    """The items of a TODO.md: [(start, end, id or None, number or None, marker width)], line indexes.
+
+    An item runs from its head to the line before the next head or heading (or the end); fenced code
+    is never a head."""
+    lines = text.split("\n")
+    heads, fence = [], None
+    for i, ln in enumerate(lines):
+        m = FENCE_RE.match(ln)
+        if m:
+            fence = None if fence == m.group(1) else (fence or m.group(1))
+            continue
+        if fence:
+            continue
+        if ln.startswith("#"):
+            heads.append((i, "heading", None, None, 0))
+            continue
+        h = HEAD_RE.match(ln)
+        if h:
+            idm = ID_HEAD_RE.match(ln)
+            heads.append((i, "item", idm.group(1) if idm else None, h.group(1), len(h.group(0))))
+    items = []
+    for k, (i, kind, iid, num, width) in enumerate(heads):
+        if kind != "item":
+            continue
+        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
+        # a paragraph at column 0 after a blank line is the file's, not the item's (a closing note)
+        for j in range(i + 1, end):
+            if lines[j][:1] not in ("", " ", "\t") and lines[j - 1].strip() == "":
+                end = j
+                break
+        items.append((i, end, iid, num, width))
+    return lines, items
+
+
+def title_of(line):
+    m = re.search(r"\*\*(.+?)\*\*", line)
+    t = m.group(1) if m else re.sub(r"^(?:\d+[.)]|[-*+]) +(?:\[[^\]]*\] +)?", "", line)
+    return t.strip()[:100]
+
+
+def todo_path(repo):
+    return os.path.join(repo, "TODO.md")
+
+
+def union_ok(repo, rel="TODO.md"):
+    """Whether <rel> merges by union (which list-merge, where a machine has it, turns into a merge by
+    item). git's own answer where there is git (`*.md merge=union`, a later `-merge`, .git/info/attributes
+    all count, round 5's review); the root .gitattributes read as text where there is none (the twin's file
+    set), its bytes never a crash."""
+    r = subprocess.run(["git", "-C", repo, "check-attr", "merge", "--", rel], capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip().endswith(": merge: union")
+    name = os.path.basename(rel)
+    try:
+        with open(os.path.join(repo, ".gitattributes"), encoding="utf-8", errors="replace") as fh:
+            for ln in fh:
+                parts = ln.split("#", 1)[0].split()
+                if parts and parts[0] in (name, "/" + rel) and "merge=union" in parts[1:]:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def changelogs_without_union(repo):
+    """The repo's CHANGELOG.md files that do not merge by union (the owner, 2026-11-02: release notes as
+    TODO.md, so a branch's line under `## Unreleased` merges with main's and never lands under a release)."""
+    return [rel for rel in repo_files(repo)
+            if os.path.basename(rel) == "CHANGELOG.md" and not union_ok(repo, rel)]
+
+
+def line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def done_on(repo, ref):
+    """Ids done on <ref> by the point this checkout last took from it: TODO.md at the merge-base of HEAD
+    and <ref> once had them and has no more. The merge-base, not the ref (round 2's review): a branch
+    behind a main that did an item still lists it, rightly, and only a branch that has taken main's done
+    (a rebase or a merge moves the merge-base past it) and holds the item again had it brought back.
+    Empty when git cannot say (no such ref, a shallow clone's missing history): the guard judges nothing."""
+    def git(*a):
+        r = subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else None
+    mb = (git("merge-base", "HEAD", ref) or "").strip()
+    if not mb:
+        print(f"todo-md: --base {ref}: git cannot read it here; done items not judged", file=sys.stderr)
+        return set()
+    # `./`: relative to <repo>, as the log's pathspec is, so a subfolder with its own list reads that list
+    now = git("show", f"{mb}:./TODO.md")
+    ever = ever_ids(repo, mb)
+    if now is None or ever is None:
+        return set()
+    return ever - {it[2] for it in parse(now)[1] if it[2]}
+
+
+def done_on_branch(repo, ref):
+    """Ids this branch did: in TODO.md at its merge-base with <ref>, gone from it now. A handoff brief may
+    still cite one (the build it starts did the item; /finish drops the brief), the landing review."""
+    r = subprocess.run(["git", "-C", repo, "merge-base", "HEAD", ref], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return set()
+    s = subprocess.run(["git", "-C", repo, "show", f"{r.stdout.strip()}:./TODO.md"], capture_output=True, text=True)
+    if s.returncode != 0:
+        return set()
+    then = {it[2] for it in parse(s.stdout)[1] if it[2]}
+    tp = todo_path(repo)
+    now = {it[2] for it in parse(read_todo(tp))[1] if it[2]} if os.path.isfile(tp) else set()
+    return then - now
+
+
+def for_other_repos(rel):
+    """A module's templates: files copied into other repos, whose citations name those repos' items, never
+    this one's. Skills are this repo's own live text and stay judged (the landing review: a skill citing a
+    done item would pass)."""
+    return bool(re.match(r"(modules/[^/]+/)?templates/", rel))
+
+
+def ever_ids(repo, *revs):
+    """Every id a TODO.md item ever had up to any of <revs> (one log over them all): the item heads its
+    history added outside a code fence (the landing review: a fenced `- [dimmer-floor] …` example read as
+    done, and dropping every fenced id let a done id the example later borrowed read as never used). Each
+    commit's diff is read with the whole file as context, so a fence is known wherever a head is added; a
+    byte that is not UTF-8 is replaced, never a crash. None when git cannot say."""
+    r = subprocess.run(["git", "-C", repo, "log", "--no-color", "--no-ext-diff", "--format=%x00", "-p",
+                        "--unified=1000000", *revs, "--", "TODO.md"], capture_output=True, encoding="utf-8",
+                       errors="replace")
+    if r.returncode != 0:
+        return None
+    ever = set()
+    for commit in r.stdout.split("\0"):
+        fence = None
+        for ln in commit.splitlines():
+            if not ln[:1] in (" ", "+") or ln.startswith("+++"):
+                if ln.startswith("@@"):
+                    fence = None  # one hunk holds the whole file: a fence starts afresh with it
+                continue
+            body = ln[1:]
+            m = FENCE_RE.match(body)
+            if m:
+                fence = None if fence == m.group(1) else (fence or m.group(1))
+                continue
+            if ln[0] == "+" and not fence:
+                idm = ID_HEAD_RE.match(body)
+                if idm:
+                    ever.add(idm.group(1))
+    return ever
+
+
+def cmd_check_id(repo, iid):
+    """Whether <iid> may name a new item: the shape, not in the list now, never in it before (a done id is
+    never reused; `lint --base` would find it only at the check, the landing review)."""
+    if not re.fullmatch(ID_RE, iid) or len(iid) > ID_MAX:
+        print(f"todo-md: [{iid}] is no id: lower-case words and digits joined by hyphens, a letter among them, "
+              f"2 to {ID_MAX} characters")
+        return 1
+    tp = todo_path(repo)
+    if os.path.isfile(tp) and iid in {it[2] for it in parse(read_todo(tp))[1] if it[2]}:
+        print(f"todo-md: [{iid}] is in use: an item in TODO.md has it")
+        return 1
+    shas = []
+    for rev in ("HEAD", "origin/HEAD", "origin/main"):
+        r = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", f"{rev}^{{commit}}"],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip() not in shas:
+            shas.append(r.stdout.strip())
+    used = (ever_ids(repo, *shas) or set()) if shas else set()  # one log over every ref's history
+    if iid in used:
+        print(f"todo-md: [{iid}] was used before and is done: pick another (a done id is never reused)")
+        return 1
+    print(f"todo-md: [{iid}] is free")
+    return 0
+
+
+def cmd_lint(repo, base=None):
+    fails = []
+    gone = done_on(repo, base) if base else set()
+    done_here = done_on_branch(repo, base) if base else set()
+    ids, n_items = set(), 0
+    tp = todo_path(repo)
+    have_todo = os.path.isfile(tp)
+    if have_todo:
+        text = read_todo(tp)
+        lines, items = parse(text)
+        n_items = len(items)
+        for start, _end, iid, num, _w in items:
+            where = f"TODO.md:{start + 1}"
+            if iid is None:
+                why = "a numbered item" if num else "an item without an id"
+                fails.append(f"{where}: {why}; the shape is `- [<id>] <what>`. In a list with ids it is either a copy "
+                             "a merge kept from before the migration (carry any edit into the id'd copy, then delete it) "
+                             "or an item written "
+                             "the old way (todo-md migrate gives it an id)")
+            elif len(iid) > ID_MAX:
+                fails.append(f"{where}: id [{iid}] is longer than {ID_MAX} characters")
+            elif iid in ids:
+                fails.append(f"{where}: id [{iid}] is a duplicate (a union merge of two edits to one item's head leaves both)")
+            elif iid in gone:
+                fails.append(f"{where}: [{iid}] was done on {base} and is back: a union merge keeps an item one side "
+                             "deleted when the other edited it or appended beside it, so delete it again; if it is a new "
+                             "item, give it another id (a done id is never reused)")
+            if iid:
+                ids.add(iid)
+        if not union_ok(repo):
+            fails.append(".gitattributes: no `TODO.md merge=union` line, so two branches that each add an item conflict")
+    # only where the repo keeps a list: the public twin has the modules' CHANGELOGs and neither a TODO.md nor a
+    # .gitattributes, and the core's suite runs this lint there (the landing review)
+    for rel in (changelogs_without_union(repo) if have_todo else [])[:1]:
+        fails.append(f".gitattributes: no `CHANGELOG.md merge=union` line ({rel} merges by text), so two branches "
+                     "that each add a line under `## Unreleased` conflict (todo-md migrate adds it)")
+    n_cites = 0
+    for rel in repo_files(repo):
+        text = read_text(os.path.join(repo, rel))
+        if not text or "TODO" not in text:
+            continue
+        # a record keeps a numbered citation as written: its number named the item the list held that day, and
+        # lists renumbered as items were done, so today's id for that number is often another item (the rollout
+        # to the other repos, 2026-11-02: a September record's third item was not today's third)
+        for m in ([] if is_record(rel) else NUM_RE.finditer(text)):
+            if foreign_link(text, m.start(), m.end(), repo, rel):
+                continue  # [TODO 2](../other/TODO.md): another repo's number, not this lint's
+            fails.append(f"{rel}:{line_of(text, m.start())}: a numbered citation ({' '.join(m.group(0).split())}); "
+                         "cite an item as TODO.md [<id>] (todo-md list names them)")
+        for m in CITE_RE.finditer(text):
+            iid = m.group(1)
+            if iid[:1] in ("<", "{", "$"):
+                continue  # a placeholder: TODO.md [<id>], or a template's TODO.md [{iid}], [$id]
+            if not re.fullmatch(ID_RE, iid):
+                fails.append(f"{rel}:{line_of(text, m.start())}: TODO.md [{iid}] is no id (lower-case words and "
+                             "digits joined by hyphens, a letter among them, two characters at least)")
+                continue
+            n_cites += 1
+            if is_record(rel) or not have_todo or for_other_repos(rel):
+                continue
+            if iid not in ids and not (rel.startswith("docs/handoff/") and iid in done_here):
+                fails.append(f"{rel}:{line_of(text, m.start())}: TODO.md [{iid}] names no item in TODO.md")
+    for f in fails:
+        print(f"  FAIL {f}")
+    note = "" if have_todo else " (no TODO.md: citations judged for their form only)"
+    print(f"todo-md: {n_items} items, {n_cites} citations, {len(fails)} findings{note}")
+    return 1 if fails else 0
+
+
+def cmd_list(repo):
+    tp = todo_path(repo)
+    if not os.path.isfile(tp):
+        die(f"no TODO.md in {repo}", 1)
+    lines, items = parse(read_todo(tp))
+    for start, _e, iid, num, _w in items:
+        print(f"{iid or ('#' + num if num else '?')}\t{title_of(lines[start])}")
+    return 0
+
+
+def cmd_done(repo, iid):
+    if re.fullmatch(r"#?\d+", iid):
+        die(f"items have ids since 2026-10-31, not numbers: `todo-md list {repo}` names them; "
+            "a list still numbered is converted with `todo-md migrate`")
+    tp = todo_path(repo)
+    if not os.path.isfile(tp):
+        die(f"no TODO.md in {repo}", 1)
+    lines, items = parse(read_todo(tp))
+    hit = [it for it in items if it[2] == iid]
+    if not hit:
+        die(f"no item [{iid}] in {tp}", 1)
+    start, end, *_ = hit[0]
+    block = lines[start:end]
+    trail = 0
+    while trail < len(block) and block[len(block) - 1 - trail].strip() == "":
+        trail += 1
+    cut_end = end - trail
+    # keep one blank line between what was before and what follows, never two
+    if trail and (start == 0 or lines[start - 1].strip() == ""):
+        cut_end = end
+    if end == len(lines) and start > 0 and lines[start - 1].strip() == "":
+        start -= 1
+    new = lines[:start] + lines[cut_end:]
+    text = "\n".join(new)
+    if not text.endswith("\n"):
+        text += "\n"
+    with open(tp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(f"done: [{iid}] deleted from {tp} ({end - start} lines)")
+    left = []
+    for rel in repo_files(repo):
+        if is_record(rel):
+            continue
+        t = read_text(os.path.join(repo, rel))
+        if t and "TODO.md" in t:
+            for m in CITE_RE.finditer(t):  # a citation a reflow wrapped included
+                if m.group(1) == iid:
+                    left.append(f"{rel}:{line_of(t, m.start())}")
+    for w in left:
+        print(f"  still cited (live, the lint fails it until it changes): {w}")
+    return 0
+
+
+def auto_id(title, taken):
+    t = re.sub(r"`[^`]*`", lambda m: m.group(0) if "/" not in m.group(0) else " ", title)
+    t = re.sub(r"\(.*?\)", " ", t)
+    words = [w for w in re.split(r"[^a-z0-9]+", t.lower().replace("'s", "")) if w and w not in STOP
+             and not re.fullmatch(r"\d{4}|\d{1,2}", w)]
+    out = ""
+    for w in words[:3]:
+        cand = f"{out}-{w}" if out else w
+        if len(cand) > ID_MAX:
+            break
+        out = cand
+    if len(out) < 2 or not re.search(r"[a-z]", out):  # "404 page" alone: an id needs a letter (round 2's review)
+        out = f"item-{out}" if out else "item"
+    base, n = out, 2
+    while out in taken:
+        suffix = f"-{n}"
+        out = base[:ID_MAX - len(suffix)].rstrip("-") + suffix
+        n += 1
+    return out
+
+
+def load_ids(path):
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            m = json.load(fh)
+    except (OSError, ValueError) as e:
+        die(f"--ids {path}: {e}")
+    if not isinstance(m, dict) or not all(isinstance(v, str) for v in m.values()):
+        die(f"--ids {path}: a JSON object of item number (or the auto id of an unnumbered item) to id")
+    return {str(k): v for k, v in m.items()}
+
+
+def cmd_migrate(repo, ids_file, dry):
+    tp = todo_path(repo)
+    if not os.path.isfile(tp):
+        die(f"no TODO.md in {repo}", 1)
+    text = orig = read_todo(tp)
+    lines, items = parse(text)
+    chosen = load_ids(ids_file) if ids_file else {}
+    taken = {it[2] for it in items if it[2]}
+    # the ids --ids names are reserved before any auto id is given: the owner's pick wins over a heuristic
+    reserved = set(chosen.values())
+    # An unnumbered item's key in --ids is its auto id among the other auto ids alone, so a dry run without
+    # --ids prints the key a later run with --ids still computes, whatever the picks change (round 2's review).
+    keys = set(taken)
+    by_num, renamed = {}, 0
+    for start, end, iid, num, width in items:
+        if iid:
+            continue
+        key = auto_id(title_of(lines[start]), keys)
+        keys.add(key)
+        new = chosen.get(num) if num else chosen.get(key)
+        if not new:
+            new = key if key not in taken | reserved else auto_id(title_of(lines[start]), taken | reserved)
+        if not re.fullmatch(ID_RE, new) or len(new) > ID_MAX:
+            die(f"id {new!r} for TODO.md:{start + 1} is not lower-case hyphen-joined words of at most {ID_MAX}")
+        if new in taken:
+            die(f"id [{new}] for TODO.md:{start + 1} is taken already")
+        taken.add(new)
+        if num:
+            by_num[num] = new
+        body = lines[start][width:]
+        lines[start] = f"- [{new}] {body}"
+        # The continuation lines keep their indent (Markdown reads 3 or 4 spaces under `- ` the same): a
+        # branch forked before the migration that edits one then changes it on its side only, where a
+        # re-indented line would be an edit on both sides, which union keeps twice (round 5's review).
+        renamed += 1
+        print(f"  item TODO.md:{start + 1}  {('#' + num) if num else '(unnumbered, --ids key ' + key + ')'} -> [{new}]")
+    changed = {"TODO.md": "\n".join(lines)}
+    # numbered citations, everywhere, the TODO.md just rewritten included
+    left, rewrites, links = [], [], []
+
+    def sub(m, rel, text, line=None):
+        """One numbered citation to ids; `line` when `text` is a link's text, not the file's."""
+        where = f"{rel}:{line or line_of(text, m.start())}"
+        if line is None and foreign_link(text, m.start(), m.end(), repo, rel):
+            left.append(f"{where}: {' '.join(m.group(0).split())} (another repo's, by its link: check by hand)")
+            return m.group(0)
+        first, rest = num_parts(m)
+        nums = [first] + re.findall(r"\d+(?:-\d+)?", rest or "")
+        if not all(n in by_num for n in nums):  # a number with no item, or a range: a hand's
+            left.append(f"{where}: {' '.join(m.group(0).split())}")
+            return m.group(0)
+        seps = re.findall(r"(?:,[ \t]*|,?[ \t]+and[ \t]+(?:items?[ \t]+)?)(?=\d)", rest or "")
+        out = f"TODO.md [{by_num[nums[0]]}]"
+        for sep, n in zip(seps, nums[1:]):
+            sep = re.sub(r"[ \t]*items?[ \t]+$", " ", sep)
+            out += f"{sep}TODO.md [{by_num[n]}]"
+        if text[m.end():m.end() + 1] == "(":
+            out += " "  # a number glued to `(a)` would become a Markdown link `[arm-yard](a)`, no citation to the lint
+        # each rewrite with the words before it: "<repo> TODO item <n>" names another repo's item, which only a
+        # reader can tell, and this repo's number would be the wrong one
+        before = " ".join(text[max(0, m.start() - 40):m.start()].split()[-4:])
+        rewrites.append(f"{where}: …{before} {' '.join(m.group(0).split())} -> {out}")
+        return out
+
+    # A link to this repo's TODO.md whose text is a numbered citation ([TODO <n>](…)) or whose target is a
+    # line of it (…/TODO.md#L472) goes stale with the numbers: it becomes its text, the number rewritten
+    # there and then, since outside the brackets a bare "TODO 2 for details" is no citation any more (round
+    # 3's review). A plain link to the file, or one to another repo's list, stays.
+    link_re = re.compile(r"\[(`?TODO(?:\.md)?`?[^\]]*)\]\(<?([^)\s>]*TODO\.md(?:\?[^)#\s>]*)?(#L\d+)?)>?\)")
+
+    def unwrap(m, rel, text):
+        if not own_target(m.group(2), repo, rel):
+            return m.group(0)
+        line = line_of(text, m.start())
+        held, held_r = len(left), len(rewrites)
+        body = NUM_WIDE_RE.sub(lambda mm: sub(mm, rel, m.group(1) + "\n", line), m.group(1) + "\n")[:-1]
+        if len(left) > held or (body == m.group(1) and not m.group(3)):
+            del rewrites[held_r:]  # nothing in a kept link was rewritten
+            return m.group(0)  # a number with no item keeps its link, for the hand that fixes it
+        links.append(f"{rel}:{line}: {m.group(0)} -> {body}")
+        return body
+
+    n_cites = 0
+    for rel in repo_files(repo):
+        if is_record(rel) and rel not in changed:
+            continue  # a record's numbers named the list as it stood that day: kept as written (is_record)
+        text = changed.get(rel) if rel in changed else read_text(os.path.join(repo, rel))
+        if not text or "TODO" not in text:
+            continue
+        before = len(rewrites)
+        new = link_re.sub(lambda m: unwrap(m, rel, text), text)
+        new = NUM_WIDE_RE.sub(lambda m: sub(m, rel, new), new)
+        n_cites += len(rewrites) - before
+        if new != text:
+            changed[rel] = new
+    want = [ln for ln, need in (("TODO.md merge=union", not union_ok(repo)),
+                                ("CHANGELOG.md merge=union", bool(changelogs_without_union(repo)))) if need]
+    if want:
+        ga = os.path.join(repo, ".gitattributes")
+        old = read_text(ga) if os.path.lexists(ga) else ""
+        if old is None:  # a link (to a shared file), a binary or a huge one: never rewritten from nothing
+            die(f"{ga} is a link or unreadable here: add {' and '.join(f'`{w}`' for w in want)} to it by hand, "
+                "then run migrate again", 1)
+        changed[".gitattributes"] = old + ("" if not old or old.endswith("\n") else "\n") + "".join(w + "\n" for w in want)
+    for w in links:
+        print(f"  link {w}")
+    for w in rewrites:
+        print(f"  cite {w}")
+    for w in dict.fromkeys(left):  # a link's number is judged in its text and again in the file: once
+        print(f"  left (a number with no item, or another repo's: fix by hand): {w}")
+    if not dry:
+        for rel, t in changed.items():
+            with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+                fh.write(t)
+    print(f"todo-md migrate: {renamed} items given ids, {n_cites} citations rewritten, {len(dict.fromkeys(left))} left"
+          + (" (dry run: nothing written)" if dry else ""))
+    return 0 if changed.get("TODO.md") != orig or len(changed) > 1 else 1
+
+
+def top(path):
+    """The checkout's root when <repo> is a folder inside one, so a lint from a subfolder judges the repo's
+    TODO.md rather than finding none (round 4's review); the path itself otherwise. A path that is no folder
+    stops: a mistyped repo would otherwise lint nothing and pass (the landing review)."""
+    if not os.path.isdir(path):
+        die(f"{path}: no such folder")
+    if os.path.isfile(os.path.join(path, "TODO.md")):
+        return path  # a folder with a list of its own is that list's repo (round 5's review: a template's)
+    r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else path
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.split("\n\n")[0] + "\n" + __doc__.split("\n\n")[1])
+        return 0 if argv else 2
+    verb, rest = argv[0], argv[1:]
+    if verb == "lint":
+        base, pos = None, []
+        it = iter(rest)
+        for a in it:
+            if a == "--base":
+                base = next(it, None) or die("--base needs a ref")
+                if base.startswith("-"):
+                    die(f"--base {base}: a ref, not a flag")
+            elif a.startswith("-"):
+                die(f"unknown flag {a}")
+            else:
+                pos.append(a)
+        if len(pos) > 1:
+            die("lint takes one repo")
+        return cmd_lint(top(pos[0] if pos else "."), base)
+    if verb == "check-id" and 1 <= len(rest) <= 2:
+        return cmd_check_id(top(rest[1] if len(rest) > 1 else "."), rest[0])
+    if verb == "list" and len(rest) <= 1:
+        return cmd_list(top(rest[0] if rest else "."))
+    if verb == "done" and 1 <= len(rest) <= 2:
+        return cmd_done(top(rest[1] if len(rest) > 1 else "."), rest[0])
+    if verb == "migrate":
+        ids, dry, pos = None, False, []
+        it = iter(rest)
+        for a in it:
+            if a == "--ids":
+                ids = next(it, None) or die("--ids needs a file")
+            elif a == "--dry-run":
+                dry = True
+            elif a.startswith("-"):
+                die(f"unknown flag {a}")
+            else:
+                pos.append(a)
+        if len(pos) > 1:
+            die("migrate takes one repo")
+        return cmd_migrate(top(pos[0] if pos else "."), ids, dry)
+    die(f"usage: todo-md lint|list [<repo>] | check-id <id> [<repo>] | done <id> [<repo>] | migrate [<repo>] [--ids FILE] [--dry-run]")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

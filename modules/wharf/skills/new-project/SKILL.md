@@ -51,13 +51,13 @@ denies the write too, but this skill should never get that far.
 ## 2. Ask what only the owner knows — one question
 
 With `AskUserQuestion`: the one-line purpose, and the `check` command if one exists (tests,
-build, lint, a script). "None yet" is allowed; it becomes TODO #1.
+build, lint, a script). "None yet" is allowed; it becomes the first TODO item, `- [check] …`.
 
 ## 3. Lay down the files
 
 Copy from the template, replacing `{{PROJECT}}`, `{{ONE_PARAGRAPH}}`, `{{COMMAND}}` with
 what the owner said; anything unknown stays as a visible `{{…}}` for the first real session.
-`AGENTS.md`, `CLAUDE.md`, `TODO.md`, `.gitignore`, `.claude/settings.json`, and the whole
+`AGENTS.md`, `CLAUDE.md`, `TODO.md`, `.gitattributes` (`TODO.md merge=union`, which `/todo` needs), `.gitignore`, `.claude/settings.json`, and the whole
 `.github/` — CI and automerge (`docs/ci-automerge-rollout-2026-10-06.md` in the layer). The
 `{{COMMAND}}` in `.github/workflows/check.yml` is the same `check:`; left unfilled, the job
 fails on purpose, so once step 4's protection requires it nothing automerges unproved. A check that reads a macOS tool changes
@@ -79,9 +79,9 @@ It matches the keys step 4 writes. A new repo with a real check starts at `"all"
 2026-10-11: "autofinish everything"; since 2026-10-14 for new repos), with `docs/` and `TODO.md`
 as its records. **Without one** — step 2's "None yet", `{{COMMAND}}` still in the contract — it
 starts at `"records"`, and the line above reads `- autofinish: records until the check exists
-(TODO #1), then all — …`: nothing would check a code branch, and on the laptop `bin/pr merge`
+(its TODO.md's `[check]` item), then all — …`: nothing would check a code branch, and on the laptop `bin/pr merge`
 runs with the owner's admin token, which passes the required CI check by (the owner, 2026-10-14: "secure it
-through tests on CI" holds only where there are tests). TODO #1 raises it to `"all"`; a repo narrows it with `"records"` or `"small"`, or adds `autofinish_exclude` for files
+through tests on CI" holds only where there are tests). The [check] item raises it to `"all"`; a repo narrows it with `"records"` or `"small"`, or adds `autofinish_exclude` for files
 a branch must never change unwatched (autofinish-everything-2026-10-11, D1-A). The exclude
 starts with `.claude/workflow.json` itself, so no unwatched branch can widen the next one's
 rules (`GATES` holds it for the layer, the vault lists it). The line points at
@@ -177,7 +177,7 @@ the vault's `memory/<name>/` and links it back, so Aurora's dream sees it.
 
 ## 6. Report
 
-What was created or kept, the `check` command (or that there is none — TODO #1), the two
+What was created or kept, the `check` command (or that there is none — its TODO.md's `[check]` item), the two
 Remote Control hosts (or the line that left one missing), and the next step: the first working session in this project creates its own worktree when it first
 writes (the hook says how). If the project has a `.env`, that session links it into the
 worktree.

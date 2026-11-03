@@ -74,7 +74,9 @@ jobs:
     # A push, the nightly run and a hand start take CI_RUNS_ON_FULL's labels where it is set: they
     # run the whole line (below), which a slower runner taking only a pull request's macOS share
     # cannot (a 2016 laptop: the share in 41 min, the whole line in 95, 2026-10-27). wharf's
-    # ci-provider reads and keeps this form as its own; CI_RUNS_ON_FULL is set by hand.
+    # ci-provider reads and keeps this form as its own; CI_RUNS_ON_FULL is set by hand. Each variable
+    # lists capabilities, never a machine (`whole-line`, `browser` …; wharf's README, "Capabilities"):
+    # a runner's capabilities sit in config and `ci-provider --runner caps` sets them at once.
     runs-on: ${{ fromJSON(github.event_name != 'pull_request' && vars.CI_RUNS_ON_FULL || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # The job ran 40.45 min on the idle build Mac (run 40012393574, 2026-10-23: keel 8.2, wharf-runs
     # 13.5) and 51.5 min beside its sessions (runs 40121322251 and 40121340160, 2026-10-24), so 60
@@ -133,14 +135,33 @@ jobs:
           node-version: 22
       # Into setup-node's own Node in the runner's tool cache, first on this job's PATH only: on
       # a self-hosted runner it never touched the runner login's claude (read back 2026-10-21).
+      # The CLI leaves its stdout pipe O_NONBLOCK when it exits (probed: `claude plugin validate`, 2.1.302;
+      # plain node does not), and the flag is the pipe's, so every suite after the line's first command
+      # wrote to a non-blocking pipe: on a loaded runner a write met a full pipe and failed EAGAIN, and
+      # wharf-runs' lane printouts stopped at 64 KiB, its failing case unprinted (regatta#388;
+      # docs/runner-interference-2026-11-02.md). A wrapper first on the job's PATH runs the CLI, then
+      # makes stdout and stderr blocking again, so the line stays as it is: stderr as fd 3, a copy of it, since
+      # python's own 2>/dev/null would clear /dev/null's flag, not the pipe's (the landing review, probed).
       - name: claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.302
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.302
+          real="$(command -v claude)"
+          mkdir -p "$RUNNER_TEMP/claude-blocking"
+          cat > "$RUNNER_TEMP/claude-blocking/claude" <<EOF
+          #!/bin/bash
+          "$real" "\$@"
+          rc=\$?
+          python3 -c 'import fcntl, os; [fcntl.fcntl(f, fcntl.F_SETFL, fcntl.fcntl(f, fcntl.F_GETFL) & ~os.O_NONBLOCK) for f in (1, 3)]' 3>&2 2>/dev/null
+          exit \$rc
+          EOF
+          chmod +x "$RUNNER_TEMP/claude-blocking/claude"
+          echo "$RUNNER_TEMP/claude-blocking" >> "$GITHUB_PATH"
       - name: a git identity for the suites' scratch commits
         run: |
           git config --global user.name "CI"
           git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
-      # CI_LINUX_ELSEWHERE `true` (a repo whose Linux-proven suites run on CircleCI's check-linux, which
+      # CI_LINUX_ELSEWHERE `true` (a repo whose Linux-proven suites run in check-linux, on GitHub Actions or CircleCI, which
       # main's protection then requires too): on a pull request this runner takes only the rest, the
       # macOS share (.circleci/share.sh). A push, the nightly run and a hand start run the whole line,
       # so the suites' Darwin branches are still run on a Mac each day. Unset, as in the twin and
@@ -152,4 +173,4 @@ jobs:
       - name: check
         if: vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request'
         run: |
-          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; }
+          claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; } && { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }

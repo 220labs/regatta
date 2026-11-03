@@ -19,6 +19,13 @@ the shims an old path keeps while its file moves. Stdlib, Python 3.9.
                                 whether this host runs weekly job <job> (common.weekly_host): its notes,
                                 then its line; exit 0 run, 3 skip, 4 refuse, 5 closed (a scope's
                                 registry does not read) — never 1, a crash's code. The installers ask it
+    regatta limit list|get|set|unset …
+                                a fleet limit (a run cap, check slots, headroom, the load rule, the week
+                                ceiling) on one host or all, live on each host's next read (libexec/limit)
+    regatta session-name [--lead] <verb> <topic…>
+                                the name to give a session (common.session_name): `<verb>-<topic>`, fitted
+                                to regatta/session-name-max (27 by default, a soft target); --lead lets a
+                                topic that opens with a verb keep it. `regatta session-name --verbs` lists them
     regatta <name> [args…]      run a tool kept off PATH (C1: `pr`, `helm`) from its module
 
 Why a CLI and not one more name on PATH per tool: a plugin's `bin/` is appended last to the Bash
@@ -190,7 +197,8 @@ def module_problems():
     overlay = common.overlay_installed()
     out = []
     for k in module_keys():
-        lines, why = common.config_read(k)
+        # the config file alone: a live line (regatta limit) must not hide a key the overlay never wrote
+        lines, why = common._config_file(common.CONFIG / k)
         if why:
             out.append("%s unreadable (%s)" % (k, why))
         elif lines is None and overlay:
@@ -409,6 +417,8 @@ def check():
     refused = {x.split()[0] for x in problems}   # said once, below, never also `ok`
     if common.CONFIG.is_dir():
         for p in sorted(common.CONFIG.glob("*/*")):
+            if p.relative_to(common.CONFIG).parts[0] == common.LIVE:   # the live layer: its own notes, below
+                continue
             if str(p.relative_to(common.CONFIG)) in refused:
                 continue
             if p.is_symlink():
@@ -418,6 +428,16 @@ def check():
                 bad += 0 if ok else 1
             elif p.is_file():
                 print("  ok  %s" % p.relative_to(common.CONFIG))
+        # the live layer (`regatta limit`, live-limits 2026-11-01): a note per key, never a finding — each one
+        # stands over what the overlay wrote, so a reader of this check sees why a host reads another value
+        for p in sorted(common.CONFIG.glob(common.LIVE + "/*/*")):
+            if p.is_file() and not p.name.startswith("."):
+                key = str(p.relative_to(common.CONFIG / common.LIVE))
+                if key not in common.live_keys():
+                    print("  ..  %s: read by nobody (no module's limits declares %s)" % (p.relative_to(common.CONFIG), key))
+                    continue
+                lines, why = common._config_file(p)
+                print("  ..  %s: %s (regatta limit; over %s)" % (p.relative_to(common.CONFIG), why or " ".join(lines or []), key))
     for problem in problems:   # the private values (README): each one the core or its module refuses
         print("  --  %s (your overlay's bootstrap.sh --config)" % problem)
         bad += 1
@@ -477,7 +497,16 @@ def main(argv):
         return shim(rest[0])
     if cmd == "shim" and len(rest) == 2 and rest[0] in ("--hook", "--deny", "--deny-prompt"):
         return shim(rest[1], rest[0])
-    if cmd in ("root", "has", "which", "check", "shim", "weekly-host"):
+    if cmd == "session-name" and rest == ["--verbs"]:
+        for verb, what in common.SESSION_VERBS.items():
+            print("%-7s %s" % (verb, what))
+        print("cap: %d characters (regatta/session-name-max)" % common.session_name_max())
+        return 0
+    lead = cmd == "session-name" and rest[:1] == ["--lead"]
+    if cmd == "session-name" and len(rest) >= 2 + lead and rest[lead]:
+        print(common.session_name(rest[lead], " ".join(rest[1 + lead:]), lead=lead))
+        return 0
+    if cmd in ("root", "has", "which", "check", "shim", "weekly-host", "session-name"):
         print("regatta %s: wrong arguments — `regatta help`" % cmd, file=sys.stderr)
         return 2
     p = common.tool(cmd)

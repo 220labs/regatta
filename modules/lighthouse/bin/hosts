@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""hosts — the fleet's hosts, one row each, for the Engine room page (S2 of docs/fleet-page-2026-11-01.md).
+
+    hosts sample [--put [--refresh]] [--host H] [--cap N]
+                     this host's row (host-row.schema.json): its load, memory and headroom's verdict, its limits,
+                     its slots, its live runs with their login (fenced, below) and its stale peer records; printed
+                     as JSON, or with --put handed to `dispatch-queue hosts put`, which writes it to
+                     refs/regatta/hosts only when it changed (--refresh, the sweep's: whatever it says).
+                     dispatch-queue starts it detached from the sweep and at each claim (its sample_soon); never a
+                     session's job
+    hosts [read] [--json]
+                     every host's row merged with the fleet's queue, the logins and this host's peer records: the
+                     page's state. This host's row is sampled here, never pushed; every other host with a row on the
+                     ref is the ref's, `no_sample` where that row does not parse (a host that never put one is not
+                     listed, and a retired host's row stays until removed by hand). Without --json, a line per host
+
+Where the numbers come from. The runs: the run record files (run-seed-runs/*.json), read in process through
+dispatch-rc's live() with no reaping — never `dispatch-rc status`, whose status() ends a running orphan
+(the design's review, finding 12). The memory and its limits: `headroom --json --no-log`. The slots:
+`dispatch --slots` and `dispatch-queue reserved`. The logins: `account limits --all --parked --json --cached`,
+whose rows map a record's `config_dir` to its label: a run's login is the record's `login` (dispatch's pick, the
+default login's included), else its `config_dir`'s label; a record with neither reads `login: null`.
+
+The fence (the review's finding 1). A row leaves the host, so: the core's registry_unreadable() first — a
+registry that does not read drops every run (`runs: null`, `fence.unreadable`); else each run's repo is judged
+by the core's scope_resolver over every confidential scope (target() by its checkout, and the run's worktree by
+its path), and a run in any of them, or split between them, is a count in `fence.confined`, never a row. The
+reader keeps the fleet store (a finish is a fleet entry like a build since finish-as-task), drops every
+`local=*` store and any `confined` entry, and passes an entry's names and numbers only (no args, env, note or
+caller). A row carries numbers and registry names: a repo is its registry key (a path outside the projects
+folder is its last part), every text is cut of anything that reads as a path, and dispatch-queue refuses a
+row holding one. Exit 0; 2 for a usage error or no core; 6 when --put could not write. Python 3.9, stdlib only.
+"""
+import argparse
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+HISTORY = 48            # samples kept in a row: about 8 h at the sweep's 10 min
+HISTORY_STEP = 9 * 60   # s between kept samples: a claim samples every 30 s at most, and its point replaces the last
+                        # one inside this step, so the 48 points stay about 8 h whatever the claims do
+NEAR = 0.3              # a rule within 30 % of its limit is `near`
+KEEP_STORES = ("fleet",)   # the reader's store: a scope's local queue never leaves its host (a finish is a fleet entry since finish-as-task)
+ENTRY_KEYS = ("key", "topic", "state", "priority", "kind", "host", "prefer", "prefer_off", "running_on", "queued_at",
+              "put_at", "claimed_at", "claimed_by", "attempts", "needs", "last_refusal", "refused_by")
+LOGIN_KEYS = ("label", "eligible", "enabled", "primary", "provider", "parked", "why", "sampled", "overage")
+LIMIT_KEYS = ("plan", "five_hour", "five_hour_resets", "seven_day", "seven_day_resets", "fable_week", "fable_week_resets",
+              "locked", "extra_usage")
+PATHISH = re.compile(r"(?:^|(?<=[\s(\[\"'=,:`<|]))(?:~/|/[A-Za-z])[^\s,;)\]\"'`>|]*")   # dispatch-queue's PATHISH, the gate
+URLISH = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|git@\S+")   # a git error quotes the home's URL: owner and repo
+ADDRISH = re.compile(r"[^\s@()<>\"',;]+@[^\s@()<>\"',;]+")   # account's judge() quotes a login's address in `why`
+TIMEOUT = 60
+PUT_TIMEOUT = 480       # s for `hosts put`: three tries of a 45 s lock wait, a 30 s fetch and a 60 s push, with room
+
+
+def now():
+    return int(os.environ.get("HOSTS_NOW") or time.time())   # the suite moves the clock
+
+
+def scrub(text, n=200):
+    """TEXT cut to N and cleared of anything that reads as a path, a URL or an address: a reason may quote a file
+    the probe read, and a login's `why` its address (account's same-login line)."""
+    return ADDRISH.sub("<address>", PATHISH.sub("<path>", URLISH.sub("<url>", str(text or ""))))[:n]
+
+
+def peer(name):
+    """A peer tool's path: this checkout's module first (the version this file was built with), then the core's
+    lookup; HOSTS_TOOL_<NAME> (dashes as underscores) stands one in for the suite."""
+    v = os.environ.get("HOSTS_TOOL_" + name.upper().replace("-", "_"))
+    if v:
+        return Path(v)
+    mod = {"dispatch": "wharf-runs", "dispatch-queue": "wharf-runs", "dispatch-rc": "wharf-runs", "headroom": "wharf-runs",
+           "account": "lighthouse"}.get(name)
+    if mod:
+        p = Path(__file__).resolve().parents[2] / mod / "bin" / name
+        if p.is_file():
+            return p
+    return common.tool(name)
+
+
+def run(name, *args, input=None, env=None, timeout=TIMEOUT):
+    """(exit, stdout) of peer NAME, or (None, "") when it is absent, would not start or ran past TIMEOUT."""
+    p = peer(name)
+    if not p:
+        return None, ""
+    cmd = ([sys.executable] if name != "dispatch" else ["bash"]) + [str(p)] + list(args)
+    try:
+        r = subprocess.run(cmd, input=input, capture_output=True, text=True, timeout=timeout,
+                           env=dict(os.environ, **(env or {})))
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    return r.returncode, r.stdout
+
+
+def run_json(name, *args, env=None):
+    rc, out = run(name, *args, env=env)
+    try:
+        return json.loads(out) if out.strip() else None
+    except ValueError:
+        return None
+
+
+def history_file():
+    return Path.home() / "Library" / "Caches" / "lighthouse" / "hosts-history.json"
+
+
+def records_dir():
+    return Path.home() / "Library" / "Logs" / "claude-weekly" / "run-seed-runs"
+
+
+_RC = []
+
+
+def rc_mod():
+    """dispatch-rc as a module, loaded once (dispatch-queue's rc_mod): live() reads the record files with no reaping."""
+    if not _RC:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        p = peer("dispatch-rc")
+        if not p or not p.is_file():
+            return None
+        ld = SourceFileLoader("dispatch_rc_hosts", str(p))
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+        ld.exec_module(m)
+        m.CLAIM_AT_END = False
+        _RC.append(m)
+    return _RC[0]
+
+
+# ---- the logins ----------------------------------------------------------------------------------------
+
+def login_rows():
+    rows = run_json("account", "limits", "--all", "--parked", "--json", "--cached")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def login_map(rows):
+    """{a config dir's real path: its label}; the row's `home` is a path, read here and never passed on."""
+    out = {}
+    for r in rows:
+        if isinstance(r.get("home"), str) and isinstance(r.get("label"), str):
+            out[os.path.realpath(os.path.expanduser(r["home"]))] = r["label"]
+    return out
+
+
+def login_of(rec, logins):
+    """REC's login: the label dispatch recorded at its pick (`login`, which names the default login too), else the
+    registry label of its config_dir; None when the record has neither or no login row names the dir."""
+    # a registry label: no address, no path (an `@` would put an address on the shared ref)
+    if isinstance(rec.get("login"), str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,60}", rec["login"]):
+        return rec["login"]
+    d = rec.get("config_dir")
+    if not isinstance(d, str) or not d:
+        return None
+    return logins.get(os.path.realpath(os.path.expanduser(d)))
+
+
+def logins_view(rows):
+    """The logins as the page shows them: names and numbers, never a home folder or an address."""
+    out = []
+    for r in rows:
+        v = {k: r.get(k) for k in LOGIN_KEYS if k in r}
+        if "why" in v:
+            v["why"] = scrub(v["why"])
+        lim = r.get("limits") if isinstance(r.get("limits"), dict) else {}
+        v["limits"] = {k: lim[k] for k in LIMIT_KEYS if k in lim}
+        out.append(v)
+    return out
+
+
+# ---- the fence -----------------------------------------------------------------------------------------
+
+def repo_name(repo):
+    """A run's repo as a row names it: its registry key, a path outside the projects folder by its last part."""
+    k = common.repo_key(repo) or ""
+    return os.path.basename(k.rstrip("/")) if k.startswith(("/", "~")) else k
+
+
+def fence(recs):
+    """(kept, confined, unreadable): the records whose repo and worktree are in no confidential scope, the count
+    of those that are, and whether the registry would not read (then kept is None: every run dropped). Every
+    scope walked (scope_resolver); a run split between scopes counts as confined, the safe side, and so does a
+    run whose record names a scope's own store (`queue=local=<scope>:…`, `local=_spawn`) or an `origin` scope."""
+    reg, torn = common.read_registry()
+    if torn:
+        return None, 0, True
+    resolve = common.scope_resolver(reg)
+    kept, confined = [], 0
+    for st in recs:
+        # a record with no repo is unknown, and unknown is never listed (the core's gather_fence): a count
+        scopes, split = resolve.target(st.get("repo")) if st.get("repo") else (frozenset(), "no repo")
+        # a run claimed from a scope's own store (a node's queue, a spawn out of a scope) or with an origin scope
+        # is that scope's, whatever repo it runs in: queue_view drops the same entry as confined
+        q = str(st.get("queue") or "")
+        own = bool(st.get("origin")) or q.startswith("local=")
+        if own or scopes or split or (st.get("wt") and resolve.scopes(st.get("wt"))):
+            confined += 1
+        else:
+            kept.append(st)
+    return kept, confined, False
+
+
+def run_rows(m, live, logins):
+    out = []
+    for st in live:
+        state = "warm" if m.warm(st) else "waiting" if m.parked(st) else "busy"
+        row = {"topic": str(st.get("topic") or "?")[:80], "repo": repo_name(st.get("repo")), "login": login_of(st, logins),
+               "started": int(st.get("started") or 0) if isinstance(st.get("started"), (int, float)) else 0,
+               "state": state, "session": str(st.get("session") or "")[:8]}
+        if st.get("prio") in ("low", "normal", "high", "force"):
+            row["prio"] = st["prio"]
+        out.append(row)
+    return out
+
+
+# ---- this host -----------------------------------------------------------------------------------------
+
+def host_here(h=None):
+    return (h or os.environ.get("DISPATCH_HOST") or common.host_name() or "").lower()
+
+
+def role(h):
+    try:
+        if h == (common.LAPTOP or "").lower():
+            return "laptop"
+        if h in {v.lower() for v in common.scope_yards().values()}:
+            return "scope host"
+        if h == ((common.config_lines("wharf-runs/dispatch-host") or [""])[0].strip().lower()):
+            return "dispatch host"
+    except Exception:   # noqa: BLE001 — a role is a label; none is no failure
+        return None
+    return "linux node" if platform.system() == "Linux" else None
+
+
+def machine():
+    """(cores, ram_gb, swap_total_gb): what the OS says, None where it says nothing."""
+    cores, ram, swap = os.cpu_count(), None, None
+    try:
+        if platform.system() == "Darwin":
+            ram = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5).stdout) / 1024 ** 3
+            m = re.search(r"total = ([\d.]+)([KMG])", subprocess.run(["sysctl", "vm.swapusage"], capture_output=True, text=True, timeout=5).stdout)
+            swap = float(m.group(1)) / {"K": 1024 ** 2, "M": 1024, "G": 1}[m.group(2)] if m else None
+        else:
+            info = {l.split(":")[0]: int(l.split()[1]) for l in Path("/proc/meminfo").read_text().splitlines() if l.endswith("kB")}
+            ram, swap = info.get("MemTotal", 0) / 1024 ** 2, info.get("SwapTotal", 0) / 1024 ** 2
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        pass
+    return cores, (round(ram, 1) if ram else None), (round(swap, 2) if swap is not None else None)
+
+
+def load_max():
+    try:
+        return float(((common.config_lines("wharf-runs/load-max") or ["1.5"])[0].split() or ["1.5"])[0])
+    except ValueError:
+        return 1.5   # berth's DEFAULTS
+
+
+def peer_records():
+    """{stale, oldest_days}: this host's records of runs sent to a peer with no end here (run-seed-runs/peer/*.json),
+    read from the files, never dispatch-rc status."""
+    stale, oldest = 0, None
+    for p in sorted((records_dir() / "peer").glob("*.json")):
+        try:
+            rec = json.loads(p.read_text())
+            import datetime
+            started = datetime.datetime.fromisoformat(rec["started"]).timestamp()
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if rec.get("ended"):
+            continue
+        stale += 1
+        oldest = started if oldest is None else min(oldest, started)
+    return {"stale": stale, "oldest_days": int((now() - oldest) // 86400) if oldest else 0}
+
+
+def near(mem, lim, load_pc, lmax, slots):
+    out = []
+    for k, mk, side in (("avail", "avail", "min"), ("swap", "swap_gb", "max"), ("rate", "rate", "max")):
+        if k in lim and isinstance(mem.get(mk), (int, float)) and lim[k]:
+            if (side == "min" and mem[mk] < lim[k] * (1 + NEAR)) or (side == "max" and mem[mk] > lim[k] * (1 - NEAR)):
+                out.append(k)
+    if isinstance(slots.get("busy"), int) and slots.get("cap") and slots["busy"] >= slots["cap"] * (1 - NEAR):
+        out.append("cap")
+    if load_pc is not None and lmax and load_pc >= lmax * (1 - NEAR):
+        out.append("load")
+    return out
+
+
+def history(row, append=True):
+    """The row's history: the samples kept here, this one appended (APPEND: the reader's own sample is never
+    kept), at most HISTORY."""
+    f = history_file()
+    try:
+        old = json.loads(f.read_text())
+        old = [x for x in old if isinstance(x, list) and len(x) >= 2 and isinstance(x[0], (int, float))] if isinstance(old, list) else []
+    except (OSError, ValueError):
+        old = []
+    # a reading the sample lacks stays null: a 0 would draw a drop to no free memory that never happened
+    point = [row["at"], row["load"].get("per_core_5m"), row["mem"].get("avail"), row["mem"].get("rate")]
+    try:
+        # the newest kept point is provisional while it sits inside a step of the one before it: this one replaces it
+        if len(old) >= 2 and old[-1][0] - old[-2][0] < HISTORY_STEP:
+            old = old[:-1]
+    except TypeError:
+        old = []
+    hist = (old + [point])[-HISTORY:]
+    if not append:
+        return hist
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+        tmp.write_text(json.dumps(hist))
+        os.replace(tmp, f)
+    except OSError:
+        pass
+    return hist
+
+
+def sample(h=None, cap=None, logins=None, keep_history=True):
+    h = host_here(h)
+    env = {"DISPATCH_HOST": h}
+    cores, ram, swap_total = machine()
+    try:
+        l1, l5, l15 = os.getloadavg()
+    except OSError:
+        l1 = l5 = l15 = None
+    load = {"l1": round(l1, 2), "l5": round(l5, 2), "l15": round(l15, 2),
+            "per_core_5m": round(l5 / (cores or 1), 2)} if l5 is not None else {}
+    hr = run_json("headroom", "--json", "--no-log", env=env) or {}
+    smp = hr.get("sample") if isinstance(hr.get("sample"), dict) else {}
+    # headroom's `swap` is the schema's `swap_gb` (the prototype draws that key)
+    mem = {{"swap": "swap_gb"}.get(k, k): smp[k] for k in ("avail", "swap", "rate") if isinstance(smp.get(k), (int, float))}
+    if swap_total is not None:
+        mem["swap_total_gb"] = swap_total
+    lim = {k: v for k, v in (hr.get("limits") or {}).items() if k in ("avail", "swap", "rate") and isinstance(v, (int, float))}
+    # `dispatch --slots` prints `<busy> <cap>`: the cap's one home (wharf-runs/run-cap per host) in the same call;
+    # busy counts the queue's reservations too, which `reserved` names apart
+    rc, out = run("dispatch", "--slots", env=env)
+    bits = out.split()
+    busy = int(bits[0]) if rc == 0 and bits and bits[0].isdigit() else None
+    if cap is None and rc == 0 and len(bits) > 1 and bits[1].isdigit():
+        cap = int(bits[1])
+    lmax = load_max()
+    limits = dict(lim, cap=cap, load_max=lmax)
+    rc, out = run("dispatch-queue", "reserved", "--host", h, env=env)
+    reserved = int(out.strip()) if rc == 0 and out.strip().isdigit() else None
+    slots = {"busy": busy, "cap": cap, "reserved": reserved}
+    m = rc_mod()
+    live = [st for _, st in m.live(None, None, False)] if m else []
+    kept, confined, torn = fence(live)
+    # no dispatch-rc here: the runs are unknown, never none (a busy host would read idle beside its slots)
+    unread = m is None
+    logins = login_map(login_rows()) if logins is None else logins
+    row = {"host": h, "os": {"Darwin": "macOS"}.get(platform.system(), platform.system()), "cores": cores, "ram_gb": ram, "at": now(), "load": load, "mem": mem,
+           "limits": limits,
+           "headroom": {"room": hr.get("room"), "reason": scrub(hr.get("reason") or "no reading"),
+                        "near": near(mem, lim, load.get("per_core_5m"), lmax, slots)},
+           "slots": slots, "fence": dict({"confined": confined, "unreadable": torn}, **({"runs_unread": True} if unread else {})),
+           "runs": None if torn or unread else run_rows(m, kept, logins), "records": peer_records()}
+    r = role(h)
+    if r:
+        row["role"] = r
+    row["history"] = history(row, append=keep_history)
+    return row
+
+
+def sample_lock(wait=0):
+    """One `sample --put` at a time on this host: a claim's exits at once when another holds it, so samplers never
+    pile up behind a peer that hangs (each would take the queue clone's lock in turn); the sweep's (--refresh) waits
+    up to WAIT seconds, as its put is the row's refresh. None when another holds it past the wait."""
+    import fcntl
+    p = history_file().with_name("hosts-sample.lock")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        f = open(p, "w")
+    except OSError:
+        return None
+    end = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() >= end:
+                f.close()
+                return None
+            time.sleep(1)
+
+
+def cmd_sample(a):
+    lock = sample_lock(wait=PUT_TIMEOUT if a.refresh else 0) if a.put else True
+    if not lock:
+        print("hosts: another sample is putting this host's row; this one stops")
+        return 0
+    row = sample(a.host, a.cap)
+    if not a.put:
+        print(json.dumps(row, indent=1, sort_keys=True))
+        return 0
+    # no --host: the put judges the row against its own host (dispatch-queue's host_name), so a row naming another
+    # host is refused on this road too
+    rc, out = run("dispatch-queue", "hosts", "put", *(["--refresh"] if a.refresh else []), input=json.dumps(row, sort_keys=True),
+                  timeout=PUT_TIMEOUT)
+    print(out.strip() or "hosts: dispatch-queue hosts put printed nothing (exit %s)" % rc)
+    return 0 if rc == 0 else 6
+
+
+# ---- the reader ----------------------------------------------------------------------------------------
+
+def queue_view(d):
+    """The fleet's queue as the page shows it: the fleet store only, no `confined` entry, an entry's names and
+    numbers only (never its args, env, note, caller or paths). Every kept entry's repo is judged as a run's is, so
+    the store alone is no fence; a registry that does not read drops every entry."""
+    out, dropped = [], 0
+    reg, torn = common.read_registry()
+    target = None if torn else common.scope_resolver(reg).target
+    for e in (d or {}).get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        store = str(e.get("qid") or "").partition(":")[0]
+        if store not in KEEP_STORES or e.get("confined") or target is None or e.get("state") == "ended":
+            dropped += 1
+            continue
+        word = str(e.get("repo") or "")
+        scopes, split = target(word if word.startswith("/") else str(common.PROJECTS / word)) if word else (frozenset(), "no repo")
+        if scopes or split:
+            dropped += 1
+            continue
+        v = {k: e[k] for k in ENTRY_KEYS if k in e}
+        v["qid"] = e.get("qid")
+        v["repo"] = repo_name(e.get("repo"))
+        for k in ("last_refusal",):
+            if k in v:
+                v[k] = scrub(v[k], 160)
+        after = e.get("after") if isinstance(e.get("after"), list) else []
+        v["after"] = [common.branch_topic(x.get("branch")) or "?" for x in after if isinstance(x, dict) and x.get("branch")]
+        out.append(v)
+    return {"entries": out, "dropped": dropped, "fence_unreadable": torn,
+            "unreadable": bool((d or {}).get("unreadable")) if d is not None else True}
+
+
+def read():
+    h = host_here()
+    rows = login_rows()
+    got = run_json("dispatch-queue", "hosts", "get") or {"rows": {}, "unreadable": "dispatch-queue hosts get did not answer"}
+    hosts = {}
+    for name, row in sorted((got.get("rows") or {}).items()):
+        if name == re.sub(r"[^a-z0-9._-]", "_", h):   # the ref names a row as dispatch-queue's row_name does
+            continue
+        hosts[name] = dict(row, source="ref") if isinstance(row, dict) else {"host": name, "no_sample": "its row does not parse"}
+    try:
+        hosts[h] = dict(sample(h, logins=login_map(rows), keep_history=False), source="here")
+    except Exception as x:   # noqa: BLE001 — the page shows the others
+        hosts[h] = {"host": h, "no_sample": scrub("%s: %s" % (type(x).__name__, x))}
+    queue = queue_view(run_json("dispatch-queue", "list", "--all", "--json"))
+    return {"at": now(), "here": h, "hosts": hosts, "queue": queue, "logins": logins_view(rows),
+            "records": peer_records(),
+            "ref": {"unreadable": ref_word(got.get("unreadable")), "offline": "the queue home did not answer; its last fetch shown"
+                    if got.get("offline") else None}}
+
+
+def ref_word(why):
+    """What the page says of an unreadable ref: fixed words, never git's own line (it quotes the home's address)."""
+    if not why:
+        return None
+    return why if str(why).startswith("no queue home here") else "the hosts ref does not read"
+
+
+def cmd_read(a):
+    d = read()
+    if a.json:
+        print(json.dumps(d, sort_keys=True))
+        return 0
+    for name, row in d["hosts"].items():
+        # a peer's row is data another host wrote: a field of the wrong shape costs that line, never the listing
+        hr = row.get("headroom") if isinstance(row.get("headroom"), dict) else {}
+        ld = row.get("load") if isinstance(row.get("load"), dict) else {}
+        fn = row.get("fence") if isinstance(row.get("fence"), dict) else {}
+        if row.get("no_sample"):
+            print("%-14s no sample (%s)" % (name, row["no_sample"]))
+            continue
+        at = row.get("at")
+        age = max(0, d["at"] - int(at)) // 60 if isinstance(at, (int, float)) and not isinstance(at, bool) else -1
+        runs = row.get("runs")
+        print("%-14s %s · load %s/core · %s runs%s · %d min ago" % (
+            name, hr.get("reason", "?"), ld.get("per_core_5m", "?"), len(runs) if isinstance(runs, list) else "?",
+            " (+%s confined)" % fn["confined"] if fn.get("confined") else "", age))
+    q = d["queue"]
+    print("queue: %d entries%s" % (len(q["entries"]), ", unreadable" if q["unreadable"] else ""))
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="hosts", description=__doc__.split("\n\n")[0])
+    ap.add_argument("verb", nargs="?", default="read", choices=("read", "sample"))
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--put", action="store_true")
+    ap.add_argument("--refresh", action="store_true", help="with --put: put the row whatever it says (the sweep's)")
+    ap.add_argument("--host")
+    ap.add_argument("--cap", type=int)
+    a = ap.parse_args(argv)
+    if a.verb == "sample":
+        return cmd_sample(a)
+    return cmd_read(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

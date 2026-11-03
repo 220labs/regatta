@@ -429,6 +429,35 @@ def workflow_faults(top):
     return [] if "memory" in ip else [f"{f} has no memory/ in in_place — add it, or every memory write on main is denied"]
 
 
+def pass_faults(top):
+    """What the knowledge repo's .claude/workflow.json lacks for its scope's weekly pass: `dreams/` in
+    in_place, where the session writes its dream and draft on main (aurora's scope-pass `where` refuses
+    without it; Evolve S2's landing review, finding 15). The pull request record opens lands the dream:
+    no `records` entry is needed."""
+    f = top / ".claude" / "workflow.json"
+    try:
+        w = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []   # workflow_faults names it
+    ip = [e.strip("/") for e in (w.get("in_place") or []) if isinstance(e, str)]
+    return [] if "dreams" in ip else [f"{f} has no dreams/ in in_place — add \"dreams/\" to its \"in_place\" list "
+                                      f"on a claude/* branch of {top.name}, or the scope's pass is not ready"]
+
+
+def merge_faults(top):
+    """An anchor on GitHub whose main has no `.github/workflows/automerge.yml`: scope-pass's records pull
+    request is made ready, and proof says WAITING for it every night, but nothing merges it (the S2
+    landing's third review). A note, never a fault: the owner may merge by hand."""
+    url = git(top, "remote", "get-url", "origin").stdout.strip()
+    if not url or not common.repo_slug(url):
+        return []
+    rel = ".github/workflows/automerge.yml"
+    if any(git(top, "cat-file", "-e", f"{ref}:{rel}").returncode == 0 for ref in ("origin/main", "main")):
+        return []
+    return [f"{top.name} has no {rel} on its main: its records pull requests wait for a hand merge, while "
+            f"scope-pass proof says WAITING each night"]
+
+
 def cmd_init(sname, dry=False):
     reg = registry()
     if reg is None:
@@ -485,7 +514,7 @@ def cmd_init(sname, dry=False):
         wrote.append(".gitignore")
     for rel in wrote:
         say(f"  {pre} {top / rel}" if fresh else f"  ✗ {top / rel} is missing — add it on a claude/* branch of {anchor}")
-    bad = [] if fresh or ".claude/workflow.json" in wrote else workflow_faults(top)
+    bad = [] if fresh or ".claude/workflow.json" in wrote else workflow_faults(top) + pass_faults(top)
     if not fresh:   # written by an earlier run whose commit failed: present, never committed
         bad += [f"{top / rel} is not committed — commit it on a claude/* branch of {anchor}"
                 for rel in [*files, ".gitignore"] if rel not in wrote and (top / rel).exists()
@@ -541,6 +570,8 @@ def cmd_check(dirs=(), vault=None):
             faults.append(f"{top} has no memory/ — `{PROG} init {sname}`")
         else:
             faults += [f"{sname}: {b}" for b in workflow_faults(top)]
+            notes += [f"{sname}: {b}" for b in pass_faults(top)]   # its pass, not its memory: a note
+            notes += [f"{sname}: {b}" for b in merge_faults(top)]
             dm = docs_map(top)
             if dm and dm[1]:
                 (faults if dm[0] == "live" else notes).append(

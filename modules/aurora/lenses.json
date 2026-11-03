@@ -1,0 +1,114 @@
+{
+ "version": 1,
+ "about": "Evolve's fourteen lenses (docs/self-improvement-scope-pass-2026-10-30.md): one question of one kind of evidence each, the sources each reads, and the collectors a quiet receipt rests on. Ring 1, on autofinish_exclude: `evolve coverage` builds the register from this file and the scope's profile (<config>/aurora/scopes/<scope>.json), and `evolve conformance` reads lens 11's rules. A source's `at` is a path under {log} (the core's LOG_DIR), {config} (the regatta config dir), {anchor} (the scope's first repo) or {repo} (each member repo, `need` any or all); kind `verb` is a peer tool by name, kind `git` each member's checkout. `reader` is who reads it into a lens: `pass` the scope pass's section where that section names the source (its id, its verb, or its file), a tool's name, or null (nothing reads it yet: `unread`). `fresh_days`: older is `stale`; a log written only when something happens (the fence log, ops' verdicts) has none, so a quiet week is not a stale one. `wakes`: a new record there is a change a quiet receipt may not sleep through — the default for the scope's own ({anchor}, {repo}, git), and for a shared log only where it says so (an ops verdict, the night's research), since a shared ledger moves every hour. No host, login or person here.",
+ "outcome_classes": {
+  "code": {"observation_days": 28, "exercise_check_days": 28, "hit_band": [0.65, 0.85], "gate": false, "about": "the code class's defaults: tripwires, never gates"},
+  "safeguard": {"observation_days": 0, "graded_by": "test", "about": "graded by its test passing"},
+  "milestone": {"observation_days": 28, "about": "a dated deliverable reached"},
+  "approved_cut": {"observation_days": 14, "about": "a film cut the owner approved"},
+  "delivery": {"observation_days": 28, "about": "a delivery accepted by its recipient"},
+  "reliability": {"observation_days": 28, "error_budget_weeks": 4, "about": "a live scope's misfires under its 4-week error budget"},
+  "attention": {"observation_days": 28, "about": "owner minutes or asks fewer"}
+ },
+ "collectors": [
+  {"id": "git", "required": true, "sources": ["repo-git"], "about": "git and worktrees"},
+  {"id": "digest", "required": true, "sources": ["week-digest"], "about": "the week's sessions, fenced before open"},
+  {"id": "research", "required": false, "sources": ["research"], "about": "sextant's research of the night; stale is recorded `outside: stale`, never blocks"},
+  {"id": "ops", "required": true, "sources": ["ops-log", "ops-verdicts"], "about": "ops intake and its verdicts"},
+  {"id": "health", "required": true, "sources": ["fence-log"], "about": "the guards' and fences' log"},
+  {"id": "goals", "required": true, "sources": ["north-star"], "about": "the venture and goal sensors: the North Star"},
+  {"id": "carried", "required": false, "sources": ["carried-findings"], "about": "last cycles' findings, reconciled first"}
+ ],
+ "surface": {
+  "roots": ["log", "config"],
+  "ignore": ["config:home", "config:*/*.bak-*", "log:*.lock", "log:*/*.lock"],
+  "about": "every registry repo, each top-level entry of the log dir and each key of the config dir, minus what any declared source reads: what is left is the surface nothing reads"
+ },
+ "lenses": [
+  {"id": "strategy", "n": 1, "name": "strategy and ventures", "levels": ["PS"], "outcome": "goals met", "stakeholder": "the owner", "activity": "choosing what to build",
+   "question": "Which goal or venture has no bar, an expired time box, or no movement?",
+   "sources": [
+    {"id": "north-star", "kind": "path", "at": "{config}/sextant/north-star.json", "fresh_days": 90, "reader": "pass", "wakes": true},
+    {"id": "principles", "kind": "path", "at": "{repo}/PRINCIPLES.md", "need": "any", "fresh_days": 180, "reader": "pass"}]},
+  {"id": "commercial", "n": 2, "name": "commercial", "levels": ["CM"], "outcome": "contacts and revenue", "stakeholder": "customers", "activity": "selling",
+   "question": "What does the inbox, the intake and the public twin say about demand?",
+   "sources": [
+    {"id": "ops-intake", "kind": "path", "at": "{log}/intake.jsonl", "fresh_days": 14, "reader": "ops"},
+    {"id": "beacon", "kind": "verb", "name": "beacon", "reader": "ops"}]},
+  {"id": "product", "n": 3, "name": "product and live surfaces", "levels": ["UX"], "outcome": "surfaces that work", "stakeholder": "the owner and users", "activity": "using what shipped",
+   "question": "Which live surface fails before the owner meets it?",
+   "sources": [
+    {"id": "probes", "kind": "path", "at": "{log}/aurora/evolve/probes.jsonl", "fresh_days": 2, "reader": "evolve"},
+    {"id": "todo", "kind": "path", "at": "{repo}/TODO.md", "need": "any", "fresh_days": 30, "reader": "pass"},
+    {"id": "board", "kind": "verb", "name": "keel", "reader": "pass"}]},
+  {"id": "engineering", "n": 4, "name": "engineering", "levels": ["EN"], "outcome": "code that holds", "stakeholder": "the builders", "activity": "building and reviewing",
+   "question": "Where do reviews find wrong code, and which pin or tier earns it?",
+   "sources": [
+    {"id": "review-gate", "kind": "path", "at": "{log}/review-gate.jsonl", "fresh_days": 7, "reader": "pass"},
+    {"id": "build-review", "kind": "path", "at": "{log}/build-review.jsonl", "fresh_days": 7, "reader": "pass"},
+    {"id": "trim", "kind": "verb", "name": "trim", "reader": "pass"}]},
+  {"id": "tools", "n": 5, "name": "tools and harness", "levels": ["TH"], "outcome": "runs that start and finish", "stakeholder": "the fleet", "activity": "dispatching runs",
+   "question": "Which runs never reached a first turn, stalled, or waited on a host or a login?",
+   "sources": [
+    {"id": "helm", "kind": "verb", "name": "helm", "reader": "pass"},
+    {"id": "dispatch", "kind": "verb", "name": "dispatch", "reader": "pass"},
+    {"id": "account", "kind": "verb", "name": "account", "reader": "pass"}]},
+  {"id": "process", "n": 6, "name": "process and workflow", "levels": ["PW"], "outcome": "work that flows", "stakeholder": "the owner", "activity": "handing work between sessions",
+   "question": "Where does work wait, and what interrupts the owner the same way again?",
+   "sources": [
+    {"id": "week-digest", "kind": "verb", "name": "week-digest", "reader": "pass"},
+    {"id": "interruptions", "kind": "verb", "name": "interruptions", "reader": "pass"},
+    {"id": "repo-git", "kind": "git", "at": "{repo}", "need": "all", "reader": "pass"}]},
+  {"id": "people", "n": 7, "name": "people and collaborators", "levels": ["PE"], "outcome": "collaborators unblocked", "stakeholder": "collaborators", "activity": "waiting on people",
+   "question": "Who waits on whom, and for how long? Only what the owner wrote or committed.",
+   "sources": [
+    {"id": "people", "kind": "path", "at": "{config}/helm/people", "fresh_days": 90, "reader": null, "wakes": true}]},
+  {"id": "meetings", "n": 8, "name": "meetings", "levels": ["PE"], "outcome": "commitments kept", "stakeholder": "the owner", "activity": "meeting",
+   "question": "Which meeting had no pre-brief, and which commitment has no date? Committed notes only, never a recording.",
+   "sources": [
+    {"id": "meeting-notes", "kind": "path", "at": "{anchor}/meetings", "fresh_days": 14, "reader": "pass"}]},
+  {"id": "money", "n": 9, "name": "money and capacity", "levels": ["CB"], "outcome": "spend inside the ceilings", "stakeholder": "the owner", "activity": "spending",
+   "question": "Where does the week's spend go, and which ceiling or quota comes near?",
+   "sources": [
+    {"id": "usage-report", "kind": "verb", "name": "usage-report", "reader": "pass"},
+    {"id": "gate-log", "kind": "path", "at": "{log}/gate.jsonl", "fresh_days": 7, "reader": "pass"},
+    {"id": "ci-usage", "kind": "path", "at": "{log}/ci-usage.json", "fresh_days": 7, "reader": "pass"}]},
+  {"id": "attention", "n": 10, "name": "attention", "levels": ["UX", "PW"], "outcome": "owner minutes per outcome", "stakeholder": "the owner", "activity": "reading and answering",
+   "question": "What costs the owner minutes that a card, a default or a mechanism would save?",
+   "sources": [
+    {"id": "crew-report", "kind": "verb", "name": "crew-report", "reader": "pass"},
+    {"id": "overrules", "kind": "path", "at": "{log}/plumb/asks/overrules.jsonl", "fresh_days": 14, "reader": "asks"}]},
+  {"id": "knowledge", "n": 11, "name": "knowledge and conformance", "levels": ["KL"], "outcome": "rules that hold", "stakeholder": "every session", "activity": "following the rules",
+   "question": "Which rule is dead, which workaround keeps succeeding, which rule holds?",
+   "sources": [
+    {"id": "knowledge-numbers", "kind": "verb", "name": "knowledge-numbers", "reader": "pass"},
+    {"id": "agents-md", "kind": "path", "at": "{repo}/AGENTS.md", "need": "any", "fresh_days": 90, "reader": "pass"},
+    {"id": "conformance-rules", "kind": "path", "at": "{config}/aurora/conformance.json", "fresh_days": 180, "reader": "evolve", "wakes": true}]},
+  {"id": "reliability", "n": 12, "name": "reliability, privacy and recovery", "levels": ["TH", "EN"], "outcome": "nothing leaks, everything restores", "stakeholder": "the owner", "activity": "guarding and restoring",
+   "question": "What did the fences and guards deny, and when was a restore last proved?",
+   "sources": [
+    {"id": "fence-log", "kind": "path", "at": "{log}/fence.log", "reader": "pass"},
+    {"id": "health", "kind": "verb", "name": "health", "reader": "pass"},
+    {"id": "ops-log", "kind": "path", "at": "{log}/ops.jsonl", "fresh_days": 2, "reader": "ops"},
+    {"id": "ops-verdicts", "kind": "path", "at": "{log}/ops-verdicts.jsonl", "reader": "ops", "wakes": true}]},
+  {"id": "outside", "n": 13, "name": "outside", "levels": ["PS", "TH"], "outcome": "no surprise from outside", "stakeholder": "the owner", "activity": "watching vendors and peers",
+   "question": "What changed outside that changes what we run?",
+   "sources": [
+    {"id": "research", "kind": "path", "at": "{log}/sextant/research", "fresh_days": 7, "reader": "pass", "wakes": true},
+    {"id": "soundings", "kind": "verb", "name": "soundings", "reader": "pass"}]},
+  {"id": "loop", "n": 14, "name": "the loop", "levels": ["LP"], "outcome": "asks anticipated", "stakeholder": "the owner", "activity": "improving the system",
+   "question": "Which asks did the loop miss, which cell is silent, did the week's run land?",
+   "sources": [
+    {"id": "asks-ledger", "kind": "path", "at": "{log}/plumb/asks/asks.jsonl", "fresh_days": 8, "reader": "asks"},
+    {"id": "asks-themes", "kind": "path", "at": "{log}/plumb/asks/themes.json", "fresh_days": 8, "reader": "asks"},
+    {"id": "asks-runs", "kind": "path", "at": "{log}/plumb/asks/runs.jsonl", "fresh_days": 8, "reader": "asks"},
+    {"id": "coverage-log", "kind": "path", "at": "{log}/aurora/evolve/coverage.jsonl", "fresh_days": 8, "reader": "evolve"},
+    {"id": "carried-findings", "kind": "path", "at": "{anchor}/evolve", "fresh_days": 8, "reader": "pass", "wakes": false},
+    {"id": "scope-pass-md", "kind": "path", "at": "{anchor}/.claude/scope-pass.md", "fresh_days": 365, "reader": "pass"}]}
+ ],
+ "conformance": {
+  "workaround_min": 3,
+  "workaround_sessions": 2,
+  "about": "Lens 11's read of work-as-imagined (rules) against work-as-done (the transcripts' tool calls), zero tokens. Rules live in the overlay ({config}/aurora/conformance.json) and in a scope's profile, never here: each {id, ref, tool (a regex over the tool's name, default Bash), when (the rule applies), breach (the deviation)}. A breach that succeeded `workaround_min` times in `workaround_sessions` sessions is a workaround that keeps succeeding — a candidate for promotion, not punishment."
+ }
+}

@@ -48,7 +48,8 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         last poll's rows, marked `carried`, and asks.json's `partial` names it (the lookout keeps watching).
         Every pass runs under one deadline, ASK_POLL_BUDGET (20 min): each peer's job gets what is left
         of it, capped by its own limit, and starts none with under a minute left. In order:
-        `hail subs --fulfil` (the `--when idle` subscriptions) first, on every host (crosstalk S6, F7);
+        `hail subs --fulfil` (the `--when idle` subscriptions) and `hail mail --pull` (this host's rows
+        in each peer's mailbox; the charterer design's S2) first, on every host (crosstalk S6, F7);
         the repos' scan; on the laptop and on a host some scope's `yard` names (skipper-resilience S8),
         a real run's `helm tick --json` (orchestration B4), its stall
         count cached in ~/Library/Caches/ask/stalls.json for the statusline's `stalled N`; then on the laptop
@@ -715,6 +716,10 @@ def append_report(rest):
         return False, "a REPORT line that is not JSON: dropped"
     if not isinstance(ev, dict):  # `REPORT [1]` or `REPORT "x"`: a line, never a traceback
         return False, "a REPORT whose JSON is not an object (%s): dropped" % type(ev).__name__
+    # a charter is the yard's own verb's (helm charter, with its refusals): never a REPORT's (charterer S1's
+    # review). Dropped before the replay key, so a body that differs only in them is the same message
+    for k in ("charter", "charterer", "charterer_host"):
+        ev.pop(k, None)
     key = wire_key(ev)
     pid = ev.pop("plan", None) or helmlib.env("ship") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not isinstance(pid, str) or not pid or not helmlib.load_plan(pid):
@@ -861,6 +866,23 @@ def open_items(m, text, where=""):
     return [i for i in items if not (i.get("answer") or "").strip()]
 
 
+def decision_fields(m, text, where="", unread=False):
+    """{item id: the fields the board's Decide feed reads} for a doc's open items (helm-board-ux S2:
+    helmlib.doc_decisions — the item's section, its options, line, the steps that wait on it, its hash —
+    with the doc's title and Summary). A doc that will not read gives {}: the rows keep their old fields."""
+    try:
+        doc, items = helmlib.doc_decisions(m, text)
+    except Exception as e:
+        print("ask poll: %s sections skipped (%s: %s)" % (where or "a doc", type(e).__name__, str(e)[:120]), file=sys.stderr)
+        return {}
+    out = {k: dict(v, doc_title=doc["title"][:160], summary=doc["summary"]) for k, v in items.items()}
+    if unread:   # K6, failing closed: guarded() may have missed a confidential repo
+        out = {k: {f: x for f, x in v.items() if f not in helmlib.DOC_TEXT} for k, v in out.items()}
+    return out
+
+
+
+
 def remote_heads(mirror):
     """{ref: sha} of origin's branches, one `ls-remote` round trip; RuntimeError when it fails."""
     r = subprocess.run(["git", "-C", str(mirror), "ls-remote", "--heads", "origin"], capture_output=True, text=True, timeout=60)
@@ -923,6 +945,8 @@ def scan_repo(repo, m, dry=False, ended=None):
     # a branch before it lands, so a landed one still reads as unmerged against main). Matched in this
     # repo's own PRs: branch names repeat across repos. GitHub unread: every branch is scanned, as before.
     prs = helmlib.repo_prs(repo)
+    trees = helmlib.branch_worktrees(repo)   # the VS Code link's worktree on this host (S2), read from the checkout
+    unread = helmlib.guard_unread()          # S2 carries a doc's words: none of them while the guard list may be short
     refs = git(mirror, "for-each-ref", "--format=%(committerdate:unix) %(objectname) %(refname:short)", "refs/heads/claude/", check=False)
     for row in refs.splitlines():
         ts, _, rest = row.partition(" ")
@@ -934,6 +958,7 @@ def scan_repo(repo, m, dry=False, ended=None):
                 ended.append({"repo": name, "src": str(repo), "branch": ref})
             continue
         t = int(ts) if ts.isdigit() else 0
+        wt = trees.get(ref)
         files = git(mirror, "diff", "--name-only", "--diff-filter=AM", "%s...%s" % (base, ref), "--", "*.md", check=False).splitlines()
         for f in files:
             # a template's D-items and a test's fixture ask nobody
@@ -942,10 +967,15 @@ def scan_repo(repo, m, dry=False, ended=None):
             text = git(mirror, "show", "%s:%s" % (ref, f), check=False)
             if "➤ Answer" not in text:
                 continue
-            for it in open_items(m, text, "%s %s:%s" % (name, ref, f)):
-                out.append({"repo": name, "src": str(repo), "branch": ref, "rel": f, "item": it["id"], "title": it["title"][:100],
-                            "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
-                            "key": "%s:%s:%s#%s" % (name, ref, f, it["id"]), "t": t, "sha": sha})
+            where = "%s %s:%s" % (name, ref, f)
+            opened = open_items(m, text, where)
+            fields = decision_fields(m, text, where, unread) if opened else {}
+            for it in opened:
+                out.append(dict(fields.get(it["id"]) or {}, **{
+                    "repo": name, "src": str(repo), "branch": ref, "rel": f, "item": it["id"], "title": it["title"][:100],
+                    "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
+                    "key": "%s:%s:%s#%s" % (name, ref, f, it["id"]), "t": t, "sha": sha,
+                    "worktree": None if unread else wt}))   # a path's folders: home while the guard list may be short
         # `Ask: <doc>#Dn` trailers: a cloud brief's commit (bin/ask is not there). A trailer counts
         # only while its item is open in the doc at the branch's tip (finding 16): an answered one,
         # or one the doc does not hold, would ring every five minutes for as long as the branch lives.
@@ -958,12 +988,14 @@ def scan_repo(repo, m, dry=False, ended=None):
                 rel, _, did = v.partition("#")
                 if helmlib.not_an_ask(rel):
                     continue
-                it = next((i for i in open_items(m, git(mirror, "show", "%s:%s" % (ref, rel), check=False), "%s %s:%s" % (name, ref, rel))
-                           if i["id"] == did), None)
+                text = git(mirror, "show", "%s:%s" % (ref, rel), check=False)
+                where = "%s %s:%s" % (name, ref, rel)
+                it = next((i for i in open_items(m, text, where) if i["id"] == did), None)
                 if it:
-                    out.append({"repo": name, "src": str(repo), "branch": ref, "rel": rel, "item": did, "title": it["title"][:100],
-                                "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
-                                "key": key, "via": "Ask: trailer on %s" % line.partition(" ")[0][:7], "t": t, "sha": sha})
+                    out.append(dict(decision_fields(m, text, where, unread).get(did) or {}, **{
+                        "repo": name, "src": str(repo), "branch": ref, "rel": rel, "item": did, "title": it["title"][:100],
+                        "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
+                        "key": key, "via": "Ask: trailer on %s" % line.partition(" ")[0][:7], "t": t, "sha": sha, "worktree": wt}))
     return out
 
 
@@ -985,7 +1017,7 @@ def notify(title, body):
 def notify_row(kind, host=None):
     """The backends of `notify.<host>` that carry KIND, in order (host: surfaces.host() unless named)."""
     h = host or surfaces.host()
-    return h, [b for b in (surfaces.load()["notify"].get(h) or []) if kind in CARRIES.get(b, ())]
+    return h, [b for b in surfaces.host_row(surfaces.load()["notify"], h) if kind in CARRIES.get(b, ())]
 
 
 def stall_road(host=None):
@@ -1026,6 +1058,61 @@ def notice(title, body, kind="ask", labels=("stall",), host=None):
                 return {"road": b, "issue": n, "said": "issue #%d" % n}
             failed.append("github-issue: %s" % why)
     return {"road": "none", "issue": None, "said": "; ".join(failed)}
+
+
+# The ladder's channels (charterer S3; surfaces.CHANNELS): what each rung of notify.<kind> calls. A channel
+# with no road yet says why, and the stall road records that once per message, never calling anything:
+NOT_BUILT = {
+    "charterer": "no road yet: the charter pass hails charterers (charterer S4)",
+    "vscode-question": "no road yet: the charterer asks it while the owner is at the Mac (charterer S5)",
+    "claude-app": "no road yet: the charterer's call that makes the Claude app notify (charterer S5)",
+    # the S3 probe (2026-11-01, Orca 1.4.245): `orca --help`, `orca agent-context` and the orchestration
+    # guide (`orca skills get orchestration --full`) name no notify verb; `orchestration ask` asks the Run's
+    # coordinator, an agent, and blocks until it answers — no tick may wait on it, and nothing says the app
+    # shows it to the owner. Not probed: `orchestration gate-create --task --question`, which does not block
+    # and whose gates Orca's app can resolve (wharf-runs' wharf files them); whether the app notifies on one
+    # needs a live Run and the owner's eyes. A road lands here once a call is seen to notify.
+    "orca-app": "no road: Orca's CLI names no call that notifies the app (probed on 1.4.245)",
+    "telegram": "no sender here (a word the row may hold)",
+    "spacesheep-app": "not built: reserved until the spacesheep app exists",
+}
+
+
+def rung_road(via):
+    """(True, None) when the ladder's channel VIA can deliver here — a banner where osascript is, a
+    github-issue with a readable logbook-repo value — else (False, why). Reads the config only."""
+    if via == "banner":
+        ok = os.path.exists(os.environ.get("ASK_OSASCRIPT", "/usr/bin/osascript"))
+        return (True, None) if ok else (False, "banner: no osascript on this host")
+    if via == "github-issue":
+        repo, why = logbook()
+        return (True, None) if repo else (False, "github-issue: %s" % why)
+    return False, "%s: %s" % (via, NOT_BUILT.get(via, "unknown channel"))
+
+
+def push(via, title, body, labels=("stall",)):
+    """{"road", "issue", "said"}: one rung of the ladder through its channel VIA alone (notice() walks a
+    host's row; a rung names one channel). road `none` with `said` naming why when it did not deliver."""
+    ok, why = rung_road(via)
+    if not ok:
+        return {"road": "none", "issue": None, "said": why}
+    if via == "banner":
+        r = banner(title, body)
+        return {"road": "banner" if r == "banner" else "none", "issue": None, "said": r}
+    if via != "github-issue":   # a channel given a road later (S4, S5) brings its own sender here, never an issue
+        return {"road": "none", "issue": None, "said": "%s: no sender in push()" % via}
+    n, why = issue_open(title, body, labels)
+    if n:
+        return {"road": via, "issue": n, "said": "issue #%d" % n}
+    return {"road": "none", "issue": None, "said": "github-issue: %s" % why}
+
+
+def withdraw(via, row):
+    """Take back what rung ROW (an escalations row of channel VIA) put in front of the owner, once its
+    question is answered: a string saying what was done, or None when the channel holds nothing to take
+    back (a banner fades by itself). The github-issue rung's issue is the stall road's own to close; the
+    charterer's settled-question hail is charterer S4's."""
+    return None
 
 
 def banner(title, body):
@@ -1166,10 +1253,29 @@ def cmd_poll(a):
         seen_p.write_text(json.dumps(sorted(seen | {f["key"] for f in found})))
         # stalls.poll_asks reads a WAITING run on these branches as asked, as it did while their rows were
         # here: dropping the rows alone raised a new S6 for each dead run the board now hides (S1 review)
+        # `asked`: when this poll first saw the item (repo, doc, item; any branch), its branch tip's time at the
+        # first sight — kept from poll to poll, so a later commit to the branch never makes a waiting decision
+        # young (the Decide feed's "oldest first", S2) nor a new board version
+        try:
+            before = json.loads((cache_dir() / "asks.json").read_text()).get("asks") or []
+        except (OSError, ValueError, AttributeError):
+            before = []
+        seen_at = {}
+        for r in before if isinstance(before, list) else ():
+            # a hand-edited row (a list where a name was) is skipped: a raise here would stop every later poll
+            if isinstance(r, dict) and isinstance(r.get("asked"), (int, float)) and \
+                    all(isinstance(r.get(x), str) for x in ("repo", "rel", "item")):
+                k = (r["repo"], r["rel"], r["item"])
+                seen_at[k] = min(seen_at.get(k, r["asked"]), r["asked"])
+        for f in found:
+            f["asked"] = seen_at.get((f.get("repo"), f.get("rel"), f.get("item"))) or f.get("t") or int(time.time())
         d = {"t": int(time.time()), "asks": found, "ended": ended + carry_forward(failed, "ended")}
         if failed:
             d["partial"] = sorted({r.name for r in failed})
-        (cache_dir() / "asks.json").write_text(json.dumps(d, indent=1, ensure_ascii=False))
+        # whole or not at all: the statusline and keel's lookout read it at any time
+        tmp = cache_dir() / ("asks.json.%d.tmp" % os.getpid())
+        tmp.write_text(json.dumps(d, indent=1, ensure_ascii=False))
+        os.replace(str(tmp), str(cache_dir() / "asks.json"))
     print("ask poll: %d open, %d new%s" % (len(found), len(new), ", %d carried from the last poll" % len(carried) if carried else ""))
     if not a.dry_run:
         poll_tick(deadline)
@@ -1306,7 +1412,8 @@ def poll_jobs(a):
     Never on a dry run or an explicit --repos (a test's or a hand run's scope).
     - first, before the repos' fetches (S6 landing review, 21): `hail subs --fulfil`, the `--when
       idle` subscriptions, on every host (crosstalk S6, F7: each host's own sessions are fulfilled
-      where they sit).
+      where they sit); then `hail mail --pull`, this host's rows in each peer's mailbox, posted here
+      (the charterer design's S2: the road for a peer whose ssh cannot reach this host).
     - then on the laptop only: the stand sweep (entry S3; bin/keel keeps the hourly limit and the arm
       switch) and the pages' drain (crew design S6; keel keeps its 6 hours).
     - last, on every host: the lookout's pass (crosstalk S6; the build Mac's lookout acts on its own
@@ -1314,7 +1421,8 @@ def poll_jobs(a):
       on a scope's yard (S8); the stand sweep and the drain stay the laptop's."""
     if a.dry_run or a.repos:
         return [], []
-    first = [("the subscriptions' fulfil", "hail", ["subs", "--fulfil"], 300)]
+    first = [("the subscriptions' fulfil", "hail", ["subs", "--fulfil"], 300),
+             ("the mailbox's pull", "hail", ["mail", "--pull"], 300)]
     rest = []
     if surfaces.host() == laptop_name():
         rest += [("the stand sweep", "keel", ["stand", "--sweep", "--if-armed"], 1200),
@@ -1341,7 +1449,8 @@ def run_jobs(jobs, deadline):
     loop and one absent-peer rule where sweep() and lookout_hail() had two). An absent peer is one
     line naming every job it skips; a job is not started with less than MIN_LEFT left; a failure or a
     timeout is one line, and the next job still runs. Each child is offered its own kill time as
-    ASK_POLL_DEADLINE (epoch seconds); nothing reads it yet (keel's starts detach instead, S11a)."""
+    ASK_POLL_DEADLINE (epoch seconds); `hail mail --pull` reads it to start no post it cannot finish
+    (keel's starts detach instead, S11a)."""
     tools = {name: peer_tool(name) for _, name, _, _ in jobs}  # resolved once: reported and run alike
     absent = {}
     for what, name, _, _ in jobs:
@@ -1433,6 +1542,8 @@ def cmd_backends(a):
             raise SystemExit("ask backends: %s" % e)
         print("set %s → %s (commit settings/surfaces.json: a switch is reviewed and dated)" % (a.set.split("=")[0], v))
     print(surfaces.describe())
+    for problem in surfaces.problems():
+        print("  ! %s" % problem)
     for b in asklib.BACKENDS.values():
         print("  %s" % b.describe())
     return 0

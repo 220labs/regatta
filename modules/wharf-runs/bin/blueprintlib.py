@@ -41,6 +41,8 @@ decision) with what this module computes: the order, the spec each Task carries,
         done_when: {marker: "docs/x.md#B6a"}   one of marker, pr_merged, check, memo_answered, file
         timeout_seconds: 7200
         retries: 2                       0–2: B3's two; Orca's own breaker fires at three (R4)
+        lines: 800                       optional: the block's expected code lines (the block rule,
+                                         BLOCK_LINES below); `wharf check` warns past its top
       - id: d-runtime
         kind: decision                   a memo doc's items, compiled to one gated Task
         doc: docs/orchestration-orca-2026-10-15.md
@@ -142,6 +144,14 @@ DONE_WHEN = ("marker", "pr_merged", "check", "memo_answered", "file")
 LAUNCH = ("autofinish", "finish")
 MAX_RETRIES = 2
 DEEP = 4   # Orca's guide: "prefer parallel waves over chains deeper than three or four steps" (F2)
+# The block rule's size window, in expected code lines, tests included, docs and data not
+# (docs/self-tuning-2026-10-26.md, "Granularity", S4): a block — a blueprint block, or a step of a Course
+# doc's Action plan — is sized inside 300–999, merged below 300, split past 1,000. This is the pin trim
+# re-reads: trim S3's window PR is to target these numbers (trim reads nothing here yet), and a merge is
+# the one thing that moves them. The architects' shared body states the same numbers as prose, and
+# test_wharf.sh fails when the two disagree. (The review gate's LARGE is its own number in its own unit:
+# a diff over 1,000 inserted lines, docs included, reviews at xhigh.)
+BLOCK_LINES = (300, 1000)   # (merge below, split above): a size over the second is warned of, never refused
 # The handoff shape (docs/handoff/*.md): a brief Orca or dispatch is handed whole
 BRIEF_LINES = ("Task", "Tier", "Why", "Start here", "Done means", "Not this")
 BRIEF_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?(%s)(?:\*\*)?:" % "|".join(BRIEF_LINES), re.M)
@@ -151,7 +161,8 @@ MERGE = {True: "yes", False: "no", "yes": "yes", "no": "no"}   # YAML 1.1 reads 
 MODES = ("default", "ask", "dnd", "yolo")   # helmlib.MODES: the same four words (skipper-modes S1)
 COMMON = {"id", "kind", "depends_on", "title"}
 WORK = COMMON | {"provider", "agent", "host", "tier", "model", "effort", "physical", "done_when",
-                 "timeout_seconds", "retries", "account", "yolo", "command", "launch", "branch", "owns", "live"}
+                 "timeout_seconds", "retries", "account", "yolo", "command", "launch", "branch", "owns", "live",
+                 "lines"}
 DECISION = COMMON | {"doc", "items", "options"}
 # What each provider refuses outright (the rest of WORK is open to every provider)
 # (Yolo is --dangerously-skip-permissions: stays off on Orca, Q3. An Orca worker's login is the
@@ -384,6 +395,8 @@ def _check_block(s, i, problems, hosts=None, yards=None, yard_problems=None):
         if "timeout_seconds" in s and not (isinstance(s["timeout_seconds"], int) and not isinstance(s["timeout_seconds"], bool)
                                            and s["timeout_seconds"] > 0):
             problems.append("%s: timeout_seconds is a positive whole number" % where)
+        if s.get("lines") is not None and not (isinstance(s["lines"], int) and not isinstance(s["lines"], bool) and s["lines"] >= 0):
+            problems.append("%s: lines is the block's expected code lines, a whole number such as 1200 (no comma or ~)" % where)
         dw = s.get("done_when")
         if dw is not None:
             if not (isinstance(dw, dict) and len(dw) == 1 and next(iter(dw)) in DONE_WHEN):
@@ -527,6 +540,12 @@ def load(path, text=None, key=None, accepted=()):
                     elif not bt and st["raw"].get("provider") == "claude-code":
                         problems.append("line %d: `## %s` names no tier on its Tier: line; dispatch runs a claude-code block at "
                                         "what that line says — name %s there" % (st["line"], st["id"], kt))
+                # the builder rotation (trim S6): dispatch reads a claude-code block's specced-ness from its section's
+                # Tier: line alone, so a `tier: worker` key over a line that is not specced never joins the coin
+                if kt == "worker" and st["raw"].get("provider") == "claude-code" and not brief_specced(st["section"]):
+                    warnings.append("line %d: `## %s` has tier: worker, but its Tier: line names neither worker nor Sonnet: "
+                                    "dispatch reads the line, so the builder rotation never draws for it — say worker there"
+                                    % (st["line"], st["id"]))
     w = []
     if not problems:
         try:
@@ -544,6 +563,12 @@ def load(path, text=None, key=None, accepted=()):
         raise BlueprintError(problems)
     if len(w) > DEEP:
         warnings.append("%d waves deep; Orca's guide: \"prefer parallel waves over chains deeper than three or four steps\"" % len(w))
+    work = [st for st in blocks if st["kind"] == "block"]
+    warnings += size_warnings([(st["id"], st["raw"].get("lines")) for st in work], "block")
+    if len(work) >= 2 and not chained(work, by_id):
+        warnings.append("%d work blocks and none waits on another (depends_on, directly or through a decision): "
+                        "nothing orders their work — a chain names each block's predecessor in depends_on (the block rule: the "
+                        "driver is a blueprint with depends_on); siblings meant to run in parallel may ignore this" % len(work))
     return {"path": str(path), "meta": meta, "name": name, "blocks": blocks, "by_id": by_id, "waves": w,
             "preamble": pre, "sections": sections_text, "warnings": warnings, "yard_warnings": yard_warnings}
 
@@ -714,6 +739,21 @@ def brief_tier(text):
     return t
 
 
+def brief_specced(text):
+    """True for a specced brief, the builder rotation's (S6 of docs/self-tuning-2026-10-26.md): its first Tier:
+    line names `worker`, or Sonnet as its one model and no tier word; `sr-worker`, a principal tier, an unclear principal line and
+    any other tier are not (brief_tier reads the tier word, longest first)."""
+    t = brief_tier(text)
+    m = TIER_LINE_RE.search(text or "")
+    if t is not None:
+        # `worker` beside another model (`Opus 5.5 high (worker)`) is no spec for Sonnet: today's choice stands
+        return t == "worker" and not re.search(r"\b(opus|haiku|fable)\b", m.group(1) if m else "", re.I)
+    # a word boundary, so the full id (`claude-sonnet-5-5`) reads as Sonnet too; and Sonnet the one model the line
+    # names, so `Opus 5.5 high (not Sonnet)` or `Haiku, Sonnet if it fails` is not specced
+    line = m.group(1) if m else ""
+    return bool(re.search(r"\bsonnet\b", line, re.I) and not re.search(r"\b(opus|haiku|fable)\b", line, re.I))
+
+
 def describe(st):
     s = st["raw"]
     if st["kind"] == "decision":
@@ -741,9 +781,105 @@ def describe(st):
         extra.append("timeout %s" % ("%dh" % (t // 3600) if t % 3600 == 0 else "%dm" % (t // 60) if t % 60 == 0 else "%ds" % t))
     if s.get("launch"):
         extra.append("launched by %s" % s["launch"])
+    if s.get("lines") is not None:
+        extra.append("%s lines expected" % format(s["lines"], ","))
     if s.get("physical") and s["physical"] != "none":
         extra.append("physical: %s" % s["physical"])
     return " ".join(b.strip() for b in bits) + (" · " + ", ".join(extra) if extra else "")
+
+
+# ---------------------------------------------------------------------------- the block rule's sizes
+
+# A Course doc's step (keel's STEP_RE, the shape the architects' body teaches) and its `· lines: <n>`
+# field, the step's expected code lines; keel reads after/gate/status and passes the rest by.
+STEP_RE = re.compile(r"^\s*[-*]\s+\*\*(?P<id>S\d+)\s*[—–-]\s*(?P<what>.+?)\*\*(?P<rest>.*)$")
+STEP_LINES_RE = re.compile(r"·\s*lines\s*:\s*([^·]*)")
+PLAN_HEAD_RE = re.compile(r"^(#+)\s+(?:\d+(?:\.\d+)*\.?\s+)?[*_]*action plan\b", re.I)
+
+
+def size_warnings(sized, what):
+    """One warning per (id, lines) past the block rule's window; None (no size given) is no warning."""
+    top = BLOCK_LINES[1]
+    return ["%s %s: %s expected code lines, past the block rule's %s — split it"
+            % (what, i, format(n, ","), format(top, ",")) for i, n in sized if n is not None and n > top]
+
+
+def chained(work, by_id):
+    """True when some work block waits on another, directly or through a decision between them: a ship
+    whose work blocks all start at once (each after nothing, or after a decision alone) is no chain."""
+    ids = {st["id"] for st in work}
+
+    def reaches_work(sid, seen):
+        for d in by_id[sid]["deps"]:
+            if d in seen or d not in by_id:
+                continue
+            seen.add(d)
+            if d in ids or reaches_work(d, seen):
+                return True
+        return False
+    return any(reaches_work(st["id"], set()) for st in work)
+
+
+def _lines_value(v):
+    """A step's `lines:` text as a number: `800`, `~1,200`, `About 600`, `1,200+`, `900 (tests included)`; None
+    for none given (`—`, empty); False for text that is no plain number (`1.2k`, `1 200`, `1,2000`, a range
+    `700 to 1,400`, a sum `700 + 500`, `many`), which is warned of rather than read as its first digits."""
+    v = v.replace("`", "").replace("*", "").strip()
+    if v.lower() in ("", "—", "-", "–", "?", "none", "n/a", "tbd", "unknown"):
+        return None
+    m = re.match(r"^(?:~|about\s+|≈)?\s*(\d{1,3}(?:,\d{3})+|\d+)\+?(?:[,;]?\s+(?![.,+])[^\d]*)?$", v, re.I)
+    return int(m.group(1).replace(",", "")) if m else False
+
+
+def plan_steps(text):
+    """The steps of a Course doc's Action plan, read as keel reads them (its action_plan and sections: the
+    first heading that opens "Action plan", to the next heading of its level or higher or a `---`, fenced
+    lines never steps): ([(id, what, lines or None, line number)], warnings), the warnings one per
+    `lines:` that is no plain number and one per step past the window. None when the doc has no Action plan."""
+    try:
+        import common   # the core's fence rule (CommonMark's, keel's), which bin/wharf has loaded
+    except ImportError:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import core_path   # the core, as bin/wharf finds it; none: one line, exit 2
+        core_path.require()
+        import common
+    lines = text.split("\n")
+    fence = common.fenced(lines)
+    head = lambda k: None if fence[k] else re.match(r"^(#{1,6})\s+(.*)$", lines[k].strip())
+    start = next((k for k in range(len(lines)) if head(k) and PLAN_HEAD_RE.match(lines[k].strip())), None)
+    if start is None:
+        return None
+    level = len(head(start).group(1))
+    steps, warnings = [], []
+    for k in range(start + 1, len(lines)):
+        if fence[k]:
+            continue
+        h = head(k)
+        if (h and len(h.group(1)) <= level) or lines[k].strip() == "---":
+            break
+        m = STEP_RE.match(lines[k])
+        if not m:
+            continue
+        f = STEP_LINES_RE.search(m.group("rest"))
+        n = _lines_value(f.group(1)) if f else None
+        if n is False:
+            warnings.append("step %s (line %d): lines: %r is no plain number of code lines" % (m.group("id"), k + 1, f.group(1).strip()))
+            n = None
+        steps.append((m.group("id"), m.group("what").strip(), n, k + 1))
+    return steps, warnings + size_warnings([(s[0], s[2]) for s in steps], "step")
+
+
+def plan_lines(path, steps, warnings):
+    """`wharf check <doc>`'s print: one line per step with its size, then plan_steps' warnings."""
+    sized = [s for s in steps if s[2] is not None]
+    out = ["doc %s — %d steps in its Action plan, %d with expected code lines" % (path, len(steps), len(sized))]
+    width = max([len(s[0]) for s in steps] or [2])
+    for sid, what, lines, _ in steps:
+        out.append("  %-*s  %s  %s" % (width, sid, ("%s lines" % format(lines, ",")) if lines is not None else "no size",
+                                       what if len(what) <= 70 else what[:69] + "…"))
+    out += ["warning: %s" % w for w in warnings]
+    return out
 
 
 def graph_lines(blueprint, here):
@@ -954,6 +1090,7 @@ def _start_text(blueprint, st, here):
             st["id"], on, s.get("agent", "claude"), mm, br)
     if s["provider"] == "claude-code":
         on = remote_host(s, here) or ("auto" if s.get("host") == "auto" else None)
-        return "dispatch %s%s%s%s" % (br, " --on %s" % on if on else "",
+        # a named host is where the block must run (dispatch-queue S12: --on would only prefer it); auto is berth's pick
+        return "dispatch %s%s%s%s" % (br, (" --on auto" if on == "auto" else " --pin %s" % on) if on else "",
                                       " --account %s" % s["account"] if s.get("account") else "", " --yolo" if s.get("yolo") else "")
     return "sh -c %s, then task-update completed|failed" % json.dumps(s["command"])

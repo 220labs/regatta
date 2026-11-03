@@ -185,6 +185,26 @@ so editing `machine_prompts` starts a new file. No prompt text and no doc text o
 Deleting the folder is always safe. Measured on a week of 1,800 transcript files (6 GB) on a loaded
 Mac: about 90 s with an empty cache, 6 s with a warm one.
 
+## asks
+
+The owner's typed asks as the weekly loop's miss signal: every improvement the owner has to ask for by hand is
+evidence the loop missed something. Aurora's weekly night runs `asks run` once a week after the dream (no session,
+about a dollar of gate calls); `asks numbers` and `knowledge-numbers` print what it found.
+
+```bash
+asks run [--days 7] [--no-model] [--dry-run]   # the week's pass: intake, sieve, gate, themes, match, ledger
+asks numbers [--json]                          # asks per 100 prompts, detectable share, repeat share, recall, cost
+asks baseline [--corpus DIR] [--model]         # replay a labelled corpus; agreement per dimension, counts only
+asks ship <theme> <ref>                        # a mechanism shipped for a theme
+```
+
+`run` reads `week-digest --json` (a confidential scope's sessions are counted and never opened), drops what a launcher
+typed, and classifies every other prompt through the gate's rows `evolve.ask` (target, kind, level, detectability: one
+batched call each), `evolve.theme` (a slug naming the need) and `evolve.match` (a detectable ask against the findings
+dated before it, idle until a findings folder exists). The ledger in plumb's state dir (`asks/`, or `ASKS_STATE`) holds
+ids, labels, counts, model theme slugs and short unsalted word hashes, never a prompt's text (a word list can reverse a hash: the state dir is the owner's alone); a prompt from a guarded repo (jev's GUARDED) is refused per repo and keeps the sieve's labels; with a gate row off or failing the sieve's labels stand and each row
+says so. The prompts and label set are the owner's to change, not the loop's.
+
 ## Private values
 
 Nothing here names a host, a login, an account or a person. What is private reaches the module as
@@ -197,6 +217,7 @@ writes them. Each keeps the environment override it had; an override is never ex
 | --- | --- | --- | --- | --- |
 | `plumb/usage.json` | usage-report's settings: per host the renderer, its pulls and pushes, the notifier, the data folder; the NAS share, the reports folder, the plan (a link) | `usage-report` | `USAGE_CONFIG` | every host collects, none renders, pulls, pushes or sends; where the overlay is installed, one line on stderr |
 | `plumb/dispatch-host` | `<host>:<ssh alias>`, the Mac dispatch runs on, whose logs G3 reads | `knowledge-numbers` | — | the first line of `wharf-runs/ssh`, said on stderr; neither: G3 not measured |
+| `plumb/widget-hide` | labels whose card the limits widget leaves out, one a line: a login's label or an Orca agent's name (`cursor`); a hidden registry login is not probed, so its cached reading ages for every `--cached` reader (pick probes for itself); a line `<agent>:<family>` (`antigravity:Claude/GPT`) drops one bucket family of that card from the widget's call (account's `--hide`), its 5h and week taken from the rest; nothing else passes it | `widgets/claude-limits.jsx` (passed as `account limits --hide`) | — | every card shown |
 | `plumb/tier-rules` | where the tier table lives, as the tier hint names it (its words, one per line) | `tier_check.py` | — | "your model-routing rules" |
 | `regatta/log-dir` | the core's log folder: usage data, the attention log, the benches' data | every tool | `USAGE_DATA`, `ATTENTION_LOG_DIR`, `BENCH` | `~/.local/state/regatta` |
 | `regatta/projects`, `regatta/guarded` | the projects folder; the repos whose text never leaves the Mac (the core's) | `interruptions`, `knowledge-numbers`, the benches, `crew-report` (its fence), `usage-report` (a confidential scope's anchor, where its node report goes) | `INTERRUPTIONS_PROJECTS`, `CORPUS_ROOT` | the home folder's `projects`; none guarded |

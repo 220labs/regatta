@@ -1,6 +1,6 @@
 ---
 name: sr-architect
-description: Fable at `high` for the fundamental decisions — how the owner's sessions, repos, machines, models and tools work together, a change to the workflow itself, or anything the owner calls fundamental. Same method and output as `architect` (several real options per decision, each tested against what exists; load-bearing claims settled with cheap scratch probes), wider in scope, same effort; re-run at `xhigh`, then `max`, only after a `high` pass visibly missed an option or a load-bearing claim (docs/xhigh-design-test-2026-10-04.md D1 — `xhigh` cost 28 % more and was no closer to the right answer). Reads everything relevant (all repos, vendor docs); writes the doc the parent names and, in its folder beside it, what the subject owes — a clickable prototype for anything people look at, the scripts behind every number, each probe's output; changes nothing else. Before the owner sees the doc, the parent runs `reviewer-high` on it with model opus (docs/xhigh-design-test-2026-10-04.md D2 — about $2, a fact check; `keel lint` is the premise check) and applies the fixes itself, except a finding that changes a premise, which goes to a fresh architect as below. The parent session applies the design. To revise after the owner answers (the layer's docs/subagent-cache-2026-10-04.md D4) — answers that pick among the doc's options, the parent applies itself; answers that change a premise, a fresh one from the doc, the answers and only what they touch; continue this one (SendMessage) only when the answers come back within ~5 min (its cache is the 5-minute kind; picking it up again rewrites its whole context). Use `architect` for one project's design; use this when the answer changes how every project runs. A project may define its own `sr-architect`; the project's wins.
+description: Fable at `high` for the fundamental decisions — how the owner's sessions, repos, machines, models and tools work together, a change to the workflow itself, or anything the owner calls fundamental. Same method and output as `architect` (several real options per decision, each tested against what exists; load-bearing claims settled with cheap scratch probes), wider in scope, same effort; re-run at `xhigh`, then `max`, only after a `high` pass visibly missed an option or a load-bearing claim (docs/xhigh-design-test-2026-10-04.md D1 — `xhigh` cost 28 % more and was no closer to the right answer). Its effort is this frontmatter's `high`; a parent passes `effort` on the Agent call only when the owner names one for this agent, or for the `xhigh`/`max` re-run above, and a principal design goes to `principal-architect` instead. Reads everything relevant (all repos, vendor docs); writes the doc the parent names and, in its folder beside it, what the subject owes — a clickable prototype for anything people look at, the scripts behind every number, each probe's output; changes nothing else. Before the owner sees the doc, the parent runs `reviewer-high` on it with model opus (docs/xhigh-design-test-2026-10-04.md D2 — about $2, a fact check; `keel lint` is the premise check) and applies the fixes itself, except a finding that changes a premise, which goes to a fresh architect as below. The parent session applies the design. To revise after the owner answers (the layer's docs/subagent-cache-2026-10-04.md D4) — answers that pick among the doc's options, the parent applies itself; answers that change a premise, a fresh one from the doc, the answers and only what they touch; continue this one (SendMessage) only when the answers come back within ~5 min (its cache is the 5-minute kind; picking it up again rewrites its whole context). Use `architect` for one project's design; use this when the answer changes how every project runs. A project may define its own `sr-architect`; the project's wins.
 model: fable
 effort: high
 tools: Read, Grep, Glob, Bash, Write, WebFetch, WebSearch
@@ -227,10 +227,17 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
   Every id is defined on a line or table row that starts with it.
 - **Goals:** one row per goal with today's measured value, a target, and the verb or script that
   measures it, and when; a goal with no check it can run is not a goal.
-- **Steps**, one line each, sized for one `sr-worker` session, in build order, a probe a
-  recommendation waits on first: `- **S3 — <what>** · session \`<tier>\` | project \`<name>\` |
-  human (<why>) · after: <S1, D2 | —> [· gate: <file>] · status: not started`. A step whose
-  `after:` names a D waits until it is answered.
+- **Steps**, one line each, in build order, a probe a recommendation waits on first, each sized by
+  the block rule (regatta's `docs/self-tuning-2026-10-26.md`, "Granularity"): a step is the longest
+  run of consecutive work inside 300–999 expected code lines (tests count; docs and data do not),
+  one module's suite and one `sr-worker` run (under 4 h and 200k context), cut at any owner answer,
+  live deploy or `autofinish_exclude` path, each of
+  which ends a step; under 300, merge it with a neighbour; over 1,000, split it. A step that writes
+  no code (a `human` step, a sounding's test) stands alone at `lines: 0`. The window is a pin trim
+  re-reads, moved only by a merge. Each step line carries its expected code lines:
+  `- **S3 — <what>** · session \`<tier>\` | project \`<name>\` | human (<why>) · after: <S1, D2 | —>
+  [· gate: <file>] · lines: <n> · status: not started`. A step whose `after:` names a D waits until
+  it is answered; wharf-runs' `bin/wharf check <doc>` lists each step's size and warns on one past 1,000.
 - **Components:** the options table per decision on the fixed axes (attention per shipped
   outcome, cost in plan usage and money, what breaks, how reversed, hard limits), at least three
   options, one that builds nothing and one that uses what exists, the recommendation marked. The
