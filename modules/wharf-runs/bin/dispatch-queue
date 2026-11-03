@@ -1197,7 +1197,9 @@ def apply_op(entries, op):
             # (cmd_enqueue sets it unless --replace or a fire-time refusal), replayed from the outbox as written
             g = op.get("guard")
             if g is not None and cur.get("by") and cur.get("by") != g and waiter_live(cur):
-                return False, "busy queued by session %s%s" % (cur["by"][:8], " (a finish)" if cur_fin and fin else "")
+                # "(a finish)" is "in hand" to autofinish-run's enqueue: only for the same tip. A finish of another tip
+                # held by another session is a plain busy, refused, never dropped as in hand (the landing review, 2026-11-03)
+                return False, "busy queued by session %s%s" % (cur["by"][:8], " (a finish)" if cur_fin and fin and not fresh_tip else "")
             # a later dispatch replaces a queued entry and keeps its place, its refusals and the host
             # whose run of the branch is live (the one-branch-one-host rule)
             new["queued_at"] = min(int(cur.get("queued_at") or new["queued_at"]), int(new["queued_at"]))
