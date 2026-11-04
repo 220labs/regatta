@@ -1202,6 +1202,17 @@ check "$(grep -c " start sw $third A$" "$LS")" "1" "  logged as <iso> start <rep
 out=$(AUTOFINISH_RUNNER="$T/runner" SW --sweep 2>&1)
 check "$out" "" "every start-ready tip tried: the sweep starts nothing more"
 check "$(wc -l < "$T/runner.calls" | tr -d ' ')" "1" "  the runner ran once in all"
+# armed, last: each repo's `pr restack --all`, from its main checkout, its PR lines printed and logged
+printf '#!/bin/sh\necho "$(pwd -P) $*" >> "%s"\necho "pr restack #7 claude/t/x: restacked — pushed a → b"\necho "noise"\n' \
+  "$T/restack.calls" > "$T/restack"; chmod +x "$T/restack"
+out=$(AUTOFINISH_RUNNER="$T/runner" AUTOFINISH_RESTACK="$T/restack" SW --sweep 2>&1)
+check "$out" "restack sw #7 claude/t/x: restacked — pushed a → b" "armed: the sweep runs pr restack --all and prints its PR lines"
+check "$(cat "$T/restack.calls")" "$(cd "$T/projects/sw" && pwd -P) restack --all" "  in the repo's main checkout"
+check "$(grep -c ' restack sw #7 claude/t/x: restacked' "$LS")" "1" "  logged as <iso> restack <repo> #<n> <branch>: …"
+$AF disarm > /dev/null; rm -f "$T/restack.calls"
+AUTOFINISH_RESTACK="$T/restack" SW --sweep > /dev/null 2>&1
+check "$([ -e "$T/restack.calls" ] && echo ran || echo none)" "none" "  disarmed: no restack"
+$AF arm --by tester > /dev/null
 # R7: origin moves between the sweep's dry run and its start → the start judges again and skips
 mk sw r7 docs/r7.md "x"; ghjson
 git clone -q "$T/origin-sw.git" "$T/sw-elsewhere" && git -C "$T/sw-elsewhere" checkout -q "$(br r7)"
