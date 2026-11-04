@@ -5,14 +5,16 @@ working tools on, a blind cross-examination, and a Receipt read from what the ar
     council run --home REPO --brief FILE [--files PATH,…] [--commit REF] [--out DIR] [--research]
                 [--arms opus,codex,antigravity,antigravity-claude] [--approved VENDOR=QUOTE]…
                 [--claude-config DIR] [--timeout S] [--json]
-        One position paper per arm on the brief, each arm blind to the others. Prints the run dir.
+        One complete design per arm on the brief, each arm blind to the others, on the pen's mandate (the
+        principal tier's revision of 2026-10-30: every model designs). Prints the run dir.
         --research: the brief asks for the web, so each arm's proxy admits any public host once its login is
         withdrawn, and each arm has its web tools (agy's through our hook); off: its vendor's hosts alone, no web
         tool, and an arm where one ran fails (F5).
     council examine --run DIR --draft FILE [--research] [--timeout S] [--json]
         Each arm that answered reads the draft and every paper, authorship stripped and shuffled per
-        arm (labels A, B, …; the key is in run.json for the pen), and names each one's weakest claim,
-        its missing option and where they disagree.
+        arm (labels A, B, …; the key is in run.json for the pen), and names what it adopts from each, each one's
+        weakest claim and missing option, and its stand where they disagree (concede, hold with evidence, or a
+        compromise): one agreement round, which the pen's synthesis writes up.
     council review --home REPO [--base main] [--head HEAD] [--out DIR] [--approved VENDOR=QUOTE]…
                    [--timeout S] [--json]
         The principal build path's `codex exec review` (moved from S5): HEAD's change against its merge
@@ -157,15 +159,21 @@ CLAUDE_TOOLS = ("Bash", "Read", "Glob", "Grep", "Write", "Edit", "WebFetch", "We
 CLAUDE_WEB_TOOLS = ("WebFetch", "WebSearch")
 STUB = "STUB_"            # a stand-in CLI's own variables: passed into an arm only beside a stand-in (the suite)
 
-PAPER = """You are one arm of a council on a design question. Write a position paper, independently:
-you do not see the other arms or the draft. {where}
+PAPER = """You are one arm of a council on a design question. Design it yourself, in full and independently:
+you do not see the other arms or the draft, and you have the same brief, tools and mandate as the pen who writes
+the doc, what the subject owes included (a probe, a script, a prototype in your copy). Your copy is deleted when
+you end and only your answer is kept: put each probe's command and what it printed, and any script or prototype
+the design rests on, in the answer itself. {where}
 
-Answer in Markdown, these sections:
-1. Recommendation — one paragraph.
-2. Options weighed — each real option, why it wins or loses.
-3. Load-bearing claims — each claim the recommendation rests on, with its evidence (a file and line, or "unverified").
-4. What to probe — the cheapest checks that would settle the open claims.
-5. Risks — what would make the recommendation wrong.
+Answer in Markdown, a complete design, these sections:
+1. Recommendation — one paragraph: what to build or decide, and why.
+2. The design — how it works: the parts, what each does, what changes where.
+3. Options weighed — each real option, why it wins or loses.
+4. Load-bearing claims — each claim the design rests on, with its evidence (a file and line, a probe you ran and
+   what it printed, or "unverified").
+5. What to probe — the cheapest checks that would settle the open claims.
+6. Risks — what would make the design wrong.
+7. Owner decisions — only what the owner alone can decide, each with its options and your pick.
 
 The brief:
 
@@ -173,12 +181,15 @@ The brief:
 {files}"""
 WHERE_COPY = ("The home repo at commit {commit} is the current directory, a copy of your own: read, search and run "
               "what you need; write only inside it.")
-EXAMINE = """You are one arm of a council cross-examining papers on one brief. Authorship is stripped:
-the papers are labelled {labels}, in an order shuffled for you; one may be your own. {where}
+EXAMINE = """You are one arm of a council working toward one agreed design: you cross-examine the designs on one
+brief. Authorship is stripped: the papers are labelled {labels}, in an order shuffled for you; one may be your
+own. {where}
 
-For each paper, a section: its weakest claim (quote it) and why it is weak; the strongest option it
-misses. Then a section "Disagreements": each point where the papers disagree, which side the evidence
-favours, and the probe that would settle it.
+For each paper, a section: what you adopt from it (where it is better than yours), its weakest claim (quote it)
+and why it is weak, and the strongest option it misses. Then a section "Agreement": each point where the papers
+disagree and your stand on it — concede (the other side's evidence is better), hold (with the evidence that keeps
+you there) or a compromise — and the probe that would settle what stays open. Then "Owner decisions": what is
+left that only the owner can decide.
 
 The brief:
 
@@ -850,7 +861,7 @@ def run_claude(rec, row, prompt, d, box, timeout, cfg, research):
         raise Refused("the MCP gate did not read: %s" % why)
     tools = [t for t in CLAUDE_TOOLS if (t != "Bash" or servers == []) and (research or t not in CLAUDE_WEB_TOOLS)]
     rec["gate"] = {"claude mcp list": servers if servers is not None else why, "tools": tools}
-    agent = {"principal-arm": {"description": "One blind arm of a council: a position paper from its own copy.",
+    agent = {"principal-arm": {"description": "One blind arm of a council: a complete design from its own copy.",
                                "prompt": "You are one arm of a council. Work in the current directory, a copy of your "
                                          "own; never outside it. Answer with the paper the user asks for, in Markdown."}}
     f = Fenced("claude", d, box, home_env, ro, claude_bin(), research, extra, cred)

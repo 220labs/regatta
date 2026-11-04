@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+- `council run` asks each arm for a complete design on the pen's mandate, not a position paper, and `council
+  examine` for an agreement round: what each arm adopts from each paper, and its stand where they disagree (concede,
+  hold with evidence, or a compromise), then what only the owner can decide (the principal tier's revision of
+  2026-10-30, under S4: "the other 2 models should design as well, not just consult. then they try to agree").
 - `scopes set SCOPE --yard HOST` (scopes-node-yard): a confidential scope's own node is a yard too (the core's
   `scope_yard_hosts`), judged with the flag the same write leaves, so `scopes set SCOPE --yard <name>-agent` passes
   on the Mac holding the node's folder and on the node itself; an open scope naming a node, another scope's node,
   the shared node and a host nothing knows are refused, each said why.
 
+- `principal-architect`'s Receipt bullet names its completion line (`Completion: **<state>** — <why>`), a flagged
+  judgement, the council's rows taken as given, and `keel lint --strict`'s principal rule; test_council.sh runs
+  sextant's `bin/principal` on its stand-ins (off macOS: every arm refused, the Receipt saying so; on macOS: a paper
+  and a critique per arm that answered).
 - `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
   nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
   table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged
