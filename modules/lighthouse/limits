@@ -1,7 +1,7 @@
 # The limits `regatta limit` changes live (modules/regatta/libexec/limit; live-limits, 2026-11-01): see wharf-runs'
 # `limits` for the columns. The week ceiling is a login's (`<login>:<pct>`, `*:` for any login), read by account's
 # ceiling() over the registry's rules.week_max and budgets.json's (a `*:` line only over a row that sets neither); a
-# reserve still judges first.
+# reserve still judges first (on a row budgets.json tightens, a tighter own line caps it: budgets-edges).
 lighthouse/week-max  login  -  bin/account week-max {login}
 # reef's bounds (bin/reef; 2026-11-04): `mode=on|advise|off,run=<floor>-<ceiling>,check=<floor>-<ceiling>` per host,
 # a `*:` line (a host without its own) only in the base file, as `regatta limit set` takes `<host>:` or `--all`; within

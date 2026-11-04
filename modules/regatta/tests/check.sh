@@ -1224,7 +1224,7 @@ for r in acme-one app privy; do git init -q "$GHM/projects/$r"; done
 printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}\n' > "$GC/lighthouse/accounts.json"
 printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}\n' > "$GD/tenants.json"
 printf '{"logins":{"work":{"email":"z@example.com"}},"share":{"design":[{"email":"pat@example.com"}]}}\n' > "$GD/logins.json"
-printf '{"lab":{"week_max":95}}\n' > "$GD/budgets.json"
+printf '{"lab":{"week_max":95},"acct-ghost":{"week_max":50}}\n' > "$GD/budgets.json"   # a label no row has: KnownLabels reads the logins key
 for f in tenants logins budgets; do ln -s "$GD/$f.json" "$GC/lighthouse/$f.json"; cp "$GD/$f.json" "$GC/lighthouse/.$f.json.last"; done
 printf '{"oauthAccount":{"accountUuid":"u-z","emailAddress":"z@example.com"}}\n' > "$GHM/orca/pz/.claude.json"
 ln -s "$GD/_secrets" "$GC/regatta/secrets"; echo 'A=1' > "$GD/_secrets/app.env"; echo 'A=' > "$GHM/projects/app/.env.example"

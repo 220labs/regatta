@@ -187,11 +187,19 @@ drive (refresh makes that link, below), one edit reaches every host whose key li
 in every way: absent (and with no `budgets.json` beside the tenants link's target to link), the registry's own rules stand; torn, its last good copy holds, else the
 registry's rules; a value that is no number from 0 to 100, or an unknown key, is skipped. Each but the
 absent file is said on stderr — a typo must never fail every pick. Outside claude-host, with no copy
-yet, the hooks never open the link to seed one (unlike the tenants file, a missing budget fails safe):
-the registry's rules stand until `refresh` writes it. A ceiling it sets says `week ceiling, budgets.json`.
+yet, the hooks never open the link to seed one: the registry's rules stand until `refresh` writes it, which
+fails open for a budget that tightens a row (a new host before its first tick, or a copy refresh dropped)
+for up to the tick's 15 min — the trade taken so that no hook ever blocks on an ungranted drive. A ceiling it sets says `week ceiling, budgets.json`.
+An owner's cap is a cap (budgets-edges, 2026-11-02): inside a row's `reserve` window (`day` or `last_hours`) a
+budgeted `week_max` that tightens the row (below the registry's own `week_max`) and is lower than the reserve's
+own reads in its place, said `<the window>, capped by budgets.json`; a loosening budget leaves the reserve's, and the login's
+own live line, where one stands, takes the budget's place (a tighter one caps the reserve, said so); a row
+budgets.json does not tighten judges as before, a live line with no budget included. A label no row has changes nothing and is said on stderr (outside
+--json, and not for a label the logins file lists for another host only) and by doctor: a fix, or info where
+the logins file lists that login for another host only.
 The key's link is made by `refresh` itself (budgets-link, 2026-11-01), not by an overlay line; by hand only where refresh refuses (doctor says why):
 where `budgets.json` is neither a file nor a link, `tenants.json` is a link, and a `budgets.json` sits beside
-that link's real target, refresh links the key to it (`budgets_link_text`: the folder of the tenants link's
+that link's real target, refresh links the key to it (`budgets_candidate`: the folder of the tenants link's
 target as the kernel resolves it, every hop followed, so nothing names a drive or a host). It never replaces
 a file or a link, and resolves the tenants link only past its own claude-host gate (a person's `--force`, the
 usage tick, or a tenants link outside any drive); refresh, not setup, because the tick reaches every host and
@@ -199,7 +207,15 @@ config dir within 15 min with no hand, a rebuilt one included. So deleting the k
 the registry's rules where a sibling sits: a plain `{}` does, as refresh never replaces a file. doctor names
 a key that refresh would link and has not, a sibling it refuses (refresh's own line says why too: itself a link, or one the core's
 drive_backed() would judge otherwise than the tenants link), and a budgets link that leads nowhere (refresh
-keeps that link, and the hooks its last copy, until a person removes it).
+keeps that link until a person removes it). A removed source leaves no stale copy in force: past its gate,
+refresh removes the copy where the key is gone, or its link leads nowhere while the target's folder is there
+(the file removed; a stat error that is not "no such file" is no removal), unless a budgets.json reads beside
+the tenants link's target (the vault moved: the copy holds until a person relinks, budgets_drop_due); a folder
+that is not there is a drive away, and the copy holds. Outside claude-host, where a key links into a drive, nothing changes: refresh
+still refuses, and doctor says once that the copy refreshes only under claude-host
+where an edit not yet copied would look stale, and names a copy with no source. Not changed: a link refresh
+made stays on the old vault's file after the tenants key is relinked (refresh never replaces a link; doctor's
+info line offers the relink).
 
 Codex rows (E7) read their limits from Codex's own `codex app-server`: `account/rateLimits/read`
 on the row's CODEX_HOME, no model call, $0, about 1 s (probed 2026-10-16, figures equal to Orca's).
@@ -642,12 +658,14 @@ def load_logins(local=False, keep=True):
 BUDGET_KEYS = ("week_max", "window_max", "free_below")
 
 
-def load_budgets(keep=True):
+def load_budgets(keep=True, labels=None):
     """→ {label: {rule: number}}, the budgets file's overrides of the registry rows' rules (header, "The
     budgets file"). Optional: absent, unreadable or malformed reads as {} with one stderr line, so the
     registry's own ceilings stand; a value that is not a number, or a key outside BUDGET_KEYS, is dropped
     the same way (AGENTS.md's optional-key trap: a bad edit must never fail every pick). Drive-backed like
-    the logins file: outside claude-host the local copy answers first."""
+    the logins file: outside claude-host the local copy answers first. labels (load_registry's KnownLabels: this host's
+    rows, and another host's logins) names a label outside it on stderr too, a cap that reaches nothing (budgets-edges);
+    doctor names it as well."""
     p = BUDGETS
     got = None
 
@@ -691,7 +709,45 @@ def load_budgets(keep=True):
                 budget_warn(f"account: {p}: {label}.{k} {v!r} is not one of {', '.join(BUDGET_KEYS)} as a number from 0 to 100; skipped")
                 continue
             out.setdefault(label, {})[k] = v
+    for label in sorted(out):
+        if labels is not None and label not in labels:   # a typo, or a row gone: no row changes, never silent
+            budget_warn(f"account: {p} names {label}, which no login row has; its rules reach nothing")
     return out
+
+
+def login_elsewhere(entry, mac):
+    """Is a logins-file entry another host's login: listed for some Mac, never for `mac`?"""
+    macs = entry.get("macs") if isinstance(entry, dict) else None
+    macs = [str(m) for m in macs] if isinstance(macs, list) else ([str(macs)] if macs else [])
+    return bool(macs) and mac not in macs, macs
+
+
+class KnownLabels:
+    """load_budgets' `labels`: this host's rows, then, read only for a label none has, a login the logins file's local
+    copy lists for another host only — an Orca login synced there only (budgets-edges). A hook reads this: a link into a
+    drive is never opened, its copy answers; a plain file reads as it is."""
+    def __init__(self, rows):
+        self.rows, self.other = rows, None
+
+    def __contains__(self, label):
+        if label in self.rows:
+            return True
+        if self.other is None:
+            p = logins_path() or CONFIG / "lighthouse" / "logins.json"
+            got = None
+            if not drive_link(p):   # a plain file (or a link outside a drive) reads as it is, as load_logins reads it
+                try:
+                    got = json.loads(p.read_text())
+                except (OSError, ValueError):
+                    got = None
+            got = (got if isinstance(got, dict) else None) or read_copy(local_copy(p)) or {}
+            logins = got.get("logins") if isinstance(got.get("logins"), dict) else {}
+            try:
+                mac = this_mac()
+            except Exception:   # no core, no host name: none is known to be another host's
+                mac = None
+            self.other = {l for l, e in logins.items() if mac and login_elsewhere(e, mac)[0]}
+        return label in self.other
 
 
 def save_logins(p, logins):
@@ -751,9 +807,16 @@ def load_registry():
         a.setdefault("enabled", True)
         a["parked"] = a.get("label") in parked
         a.setdefault("rules", {})
-    budgets = load_budgets(keep=not READ_LINKS)   # doctor's read leaves the copy it judges as it was
+    labels = {a.get("label") for a in reg.get("accounts") or []}
+    # a label no row here has: said on stderr, unless the logins file's local copy names it (a login another host
+    # holds, an Orca one synced there only: budgets-edges) or doctor runs, which names it itself
+    known = KnownLabels(labels)
+    budgets = load_budgets(keep=not READ_LINKS, labels=None if READ_LINKS else known)   # doctor's read keeps the copy as it was
+    reg["budgets_unmatched"] = sorted(l for l in budgets if l not in labels)   # doctor judges each (doctor_local)
     for a in reg.get("accounts") or []:
         mine = budgets.get(a.get("label")) or {}
+        if mine and isinstance(a["rules"], dict) and "week_max" in a["rules"]:
+            a["registry_week_max"] = a["rules"]["week_max"]   # ceiling(): does a budget tighten the row?
         if mine:
             a["rules"] = {**(a["rules"] if isinstance(a["rules"], dict) else {}), **mine}
             a["budgeted"] = sorted(mine)
@@ -951,30 +1014,22 @@ def tenants_read(write=True):
     return got, "file", None
 
 
-def budgets_link_text():
-    """→ the text `refresh` links the budgets key to, or None (header, "The budgets file"): only where the key
-    is neither a file nor a link, the tenants key is a link, and a file `budgets.json` sits in the folder of
-    that link's real target. realpath, not the first hop's text: a chain (a local link into the drive) or a
-    `..` after a linked folder resolves as the kernel reads it, never lexically (the build's round 1). The target
-    is derived from the tenants link alone, so it names no drive. It resolves into what may be a drive:
-    callers are refresh past its gate and doctor (a person's)."""
-    if BUDGETS.is_symlink() or BUDGETS.exists():
-        return None
-    return budgets_sibling()
-
-
 def budgets_sibling():
     """→ the budgets file the key belongs linked to, or None — refresh's link and doctor's judgement of a link
-    share this one rule (the build's round 3); budgets_candidate says why one was refused."""
+    share this one rule (budgets-link, #401); budgets_candidate says why one was refused."""
     return budgets_candidate()[0]
 
 
 def budgets_candidate():
     """→ (the sibling's text, None), or (None, why it is refused) where one sits but may not be linked, or
-    (None, None). The tenants key is a link in the budgets key's own folder (one key overridden alone, a
-    caller's TENANTS_FILE, never links the other config dir's key: the build's round 2), its real target is a file, and a
+    (None, None): the text `refresh` links a missing budgets key to (header, "The budgets file"; link_budgets).
+    realpath, not the first hop's text: a chain (a local link into the drive) or a `..` after a linked folder
+    resolves as the kernel reads it, never lexically (budgets-link, #401). The target is derived from the tenants
+    link alone, so it names no drive. It resolves into what may be a drive: callers are refresh past its gate and
+    doctor (a person's). The tenants key is a link in the budgets key's own folder (one key overridden alone, a
+    caller's TENANTS_FILE, never links the other config dir's key: budgets-link, #401), its real target is a file, and a
     plain file `budgets.json` sits beside that target. Refused: a sibling that is itself a link (it may lead
-    into a drive the gate never judged: the build's round 3), and one whose link the core's drive_backed() would judge
+    into a drive the gate never judged: budgets-link, #401), and one whose link the core's drive_backed() would judge
     otherwise than the tenants link (a folder link on the way: the realpath text leaves, or enters, the drive
     roots the tenants link's own text is judged by), as the hooks would then open one key and copy the other
     (AGENTS.md Traps, a Drive link opened outside claude-host; landing review, 2026-11-02)."""
@@ -991,14 +1046,14 @@ def budgets_candidate():
         if not os.path.isfile(text):
             return None, None
         tenants_drive = drive_link(TENANTS)
-        try:   # a scratch link that cannot be made is said, never a silent no-link (landing review 2, 2026-11-02)
+        try:   # a scratch link that cannot be made is said, never a silent no-link (budgets-link's landing review, #401)
             judged = link_judged(text)
         except OSError as e:
             return None, f"a link to {text} could not be judged against the drive roots ({e}); the next pass tries again"
         if judged != tenants_drive:
             side = ("inside", "outside") if tenants_drive else ("outside", "inside")
             # a hand link must read as the tenants link does, or it splits the verdict again; no path is named, as
-            # one built from a chain's first hop may be another file (landing review 3, 2026-11-02). Where the
+            # one built from a chain's first hop may be another file (budgets-link's landing review, #401). Where the
             # tenants link reads as outside, its real target is in a drive all the same: the tenants link is what
             # slipped past drive_backed, so the advice is to relink it by its real path, never to copy the slip
             # onto the budgets key (the /finish review, 2026-11-02)
@@ -1023,16 +1078,15 @@ def link_judged(text):
 
 
 def link_budgets():
-    """refresh's half that makes the budgets key's link (budgets_link_text); → (the line it prints or None,
-    refresh's exit for it: 1 when the link could not be made). A key another refresh made meanwhile is kept."""
-    text = budgets_link_text()
-    if not text:
-        if not (BUDGETS.is_symlink() or BUDGETS.exists()):
-            why = budgets_candidate()[1]   # a refused sibling is said in the tick's log too (landing review 3)
-            if why:
-                return f"refresh: {BUDGETS.name} not linked: {why}", 0
+    """refresh's half that makes the budgets key's link (budgets_candidate's rule); → (the line it prints or None,
+    refresh's exit for it: 1 when the link could not be made). A key another refresh made meanwhile is kept.
+    budgets_candidate runs once per pass: its answer and its refusal are one read (budgets-link's review, #401)."""
+    if BUDGETS.is_symlink() or BUDGETS.exists():
         return None, 0
-    try:   # the parent is TENANTS's own folder (budgets_link_text), so it exists
+    text, why = budgets_candidate()
+    if not text:   # a refused sibling is said in the tick's log too (budgets-link's landing review, #401)
+        return (f"refresh: {BUDGETS.name} not linked: {why}", 0) if why else (None, 0)
+    try:   # the parent is TENANTS's own folder (budgets_candidate), so it exists
         os.symlink(text, BUDGETS)
     except FileExistsError:   # another refresh, or a person, made the key meanwhile: theirs stands
         return None, 0
@@ -1087,17 +1141,75 @@ def cmd_refresh(force=False):
     if said:
         print(said)
     rc = rc or failed
+    copy = local_copy(BUDGETS)
     if BUDGETS.is_symlink() or BUDGETS.exists():
         try:
             got = json.loads(BUDGETS.read_text())
             if not isinstance(got, dict):
                 raise ValueError("not a JSON object")
-            keep_copy(local_copy(BUDGETS), got)
-            print(f"refresh: {BUDGETS.name} → {local_copy(BUDGETS).name}")
+            keep_copy(copy, got)
+            print(f"refresh: {BUDGETS.name} → {copy.name}")
         except (OSError, ValueError) as e:
-            rc = 1
-            print(f"refresh: {BUDGETS.name} did not read ({e}); {local_copy(BUDGETS).name} holds as it was")
+            rc_before, rc = rc, 1
+            gone = isinstance(e, FileNotFoundError) and budgets_drop_due()   # a stat error is no removal
+            if gone and drop_copy(copy):
+                print(f"refresh: {BUDGETS.name} did not read ({e}), and its folder is there, so its file was removed: "
+                      f"{copy.name} removed, the registry's rules stand")
+            elif not copy.is_file():   # a later pass, or none ever made: nothing holds (budgets-edges)
+                if gone:   # removed on purpose and its copy already dropped: settled, so the tick's log keeps exit 1 for a real outage (budgets-edges' /finish review)
+                    rc = rc_before
+                print(f"refresh: {BUDGETS.name} did not read ({e}); no {copy.name}, the registry's rules stand")
+            else:
+                moved = (" (a budgets.json reads beside tenants.json's target: the vault moved, and `account doctor` "
+                         "offers the relink)") if isinstance(e, FileNotFoundError) and budgets_source_gone() else ""
+                print(f"refresh: {BUDGETS.name} did not read ({e}); {copy.name} holds as it was{moved}")
+    elif drop_copy(copy):   # the key gone (a person's rm): no reader takes the copy, and none is left to mislead
+        print(f"refresh: {BUDGETS.name} is not there; {copy.name} removed, the registry's rules stand")
     return rc
+
+
+def budgets_source_gone():
+    """Is the budgets key's source gone for good, not away? The key absent, or a link whose target is missing
+    while the target's folder is there (the drive mounted, the file removed: budgets-edges, 2026-11-02). A
+    folder that is not there is a drive away, whose last copy holds (header). It opens the link's folder:
+    callers are refresh past its gate and doctor (a person's), never a hook (AGENTS.md Traps)."""
+    if not BUDGETS.is_symlink():
+        return not BUDGETS.exists()
+    try:
+        real = os.path.realpath(BUDGETS)
+        try:
+            os.stat(real)
+            return False
+        except FileNotFoundError:   # only a missing file: EPERM or a placeholder's error is no removal (budgets-edges)
+            pass
+        return os.path.isdir(os.path.dirname(real))
+    except (OSError, ValueError):
+        return False
+
+
+def budgets_drop_due():
+    """Is the budgets copy to be dropped? budgets_source_gone(), unless a sibling reads beside the tenants link's
+    target (budgets_sibling): then the vault moved, or the file was renamed in it, and the copy holds the owner's
+    cap until a person relinks the key (doctor's rm line), as refresh never replaces a link. Dropping it there
+    would leave a tightening cap off until a person acted (budgets-edges' /finish review, 2026-11-04)."""
+    if not budgets_source_gone():
+        return False
+    if not BUDGETS.is_symlink():
+        return True
+    sib = budgets_sibling()
+    return not (sib and os.path.isfile(sib))
+
+
+def drop_copy(copy):
+    """Remove a local copy; → True when one was there and is gone."""
+    try:
+        copy.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        print(f"refresh: {copy.name} could not be removed ({e}); it holds", file=sys.stderr)
+        return False
+    return True
 
 
 # The providers a tenant's `logins` may name. A Claude row is a seat (the guard, `run`, VS Code profiles); a Codex or
@@ -2402,22 +2514,50 @@ def live_week_max(label):
 def ceiling(a, lim, t):
     """The week ceiling now, and why. `reserve.day` (D2: Saturday) is a local weekday;
     `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets. A reserve
-    judges first; then a live ceiling (live_week_max) over the row's `rules.week_max`."""
+    judges first (on a row budgets.json tightens, the row's cap — its own live line, else the budget — caps it
+    where lower); then a live ceiling (live_week_max) over the row's
+    `rules.week_max`."""
     rules = a["rules"]
     res = rules.get("reserve") or {}
+    budget = rules.get("week_max") if "week_max" in (a.get("budgeted") or ()) else None
+    live = src = None
+
+    def read_live():   # read only where it judges: a bad line's warning names the registry's rule (budgets-edges' /finish review)
+        nonlocal live, src
+        live, src, _ = live_week_max(a.get("label"))
+
+    def reserve(why):
+        # an owner's cap is a cap (budgets-edges, 2026-11-02): on a row budgets.json tightens (its week_max below the
+        # registry's own), the row's cap — the login's own live line where one stands (it stands over budgets.json on
+        # any day), else the budget — caps the reserve's ceiling where it still tightens the row and is lower. Any
+        # other row judges as on main, a live line with no budget included (lighthouse/limits: the reserve first)
+        cap = res.get("week_max", 100)
+        own = a.get("registry_week_max", 100)   # a registry ceiling that is no number reads as none (rule_num's rule)
+        own = own if isinstance(own, (int, float)) and not isinstance(own, bool) and math.isfinite(own) else 100
+        if budget is None or not budget < own:   # no tightening budget: the reserve's own, as on main
+            return cap, why
+        read_live()
+        own_live = live is not None and not src.endswith(" *:")
+        owner, by = (live, WEEK_MAX_KEY) if own_live else (budget, "budgets.json")
+        tightens = owner < own
+        if tightens and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap)
+                         or owner < cap):
+            return owner, f"{why}, capped by {by}"
+        return cap, why
+
     if res.get("day") and dt.datetime.fromtimestamp(t).strftime("%A").lower() == res["day"].lower():
-        return res.get("week_max", 100), f"{res['day']} reserve"
+        return reserve(f"{res['day']} reserve")
     end = lim.get("seven_day_resets") if lim else None
     if res.get("last_hours") and end and 0 <= end - t <= res["last_hours"] * 3600:
-        return res.get("week_max", 100), f"last {res['last_hours']} h of the week"
-    live, src, _ = live_week_max(a.get("label"))
+        return reserve(f"last {res['last_hours']} h of the week")
     # a login's own live line stands over its registry ceiling and budgets.json's, both (the owner's word on that
     # host, newest by being set there); `*:` only over a row that sets none in either, so a ceiling set low on
     # purpose (a seat kept for its owner) is never raised by a fleet-wide line (the reviews); `regatta limit set`
     # says so at each login's set (lighthouse/limits)
+    read_live()
     if live is not None and (not src.endswith(" *:") or "week_max" not in rules):
         return live, "week ceiling, live"
-    return rules.get("week_max", 100), ("week ceiling, budgets.json" if "week_max" in (a.get("budgeted") or ()) else "week ceiling")
+    return rules.get("week_max", 100), ("week ceiling, budgets.json" if budget is not None else "week ceiling")
 
 
 def rule_num(a, key, default):
@@ -3972,7 +4112,9 @@ def stale_copies(peer=None):
     outside claude-host (header, Drive-backed reads) — is missing, or differs from the file and was not
     refreshed for STALE_AFTER. Either says the usage tick's `account refresh` is not running through
     claude-host on this Mac: a missing copy has the hooks open the link, a stale one has them judge by an
-    old tenancy. Only a file that reads now is compared; one that does not is tenancy_state's to report."""
+    old tenancy. Only a file that reads now is compared; one that does not is tenancy_state's to report. The budgets
+    file adds two info lines (budgets-edges): a copy with no key to come from, and, outside claude-host, a copy that
+    differs from its file and is younger than STALE_AFTER (an edit the tick has not copied yet)."""
     pairs = []   # only a link into a drive: a plain file is read as it is, and needs no copy (S4 finish review)
     if drive_link(TENANTS):
         got, source, _ = tenants_read(write=False)
@@ -3992,15 +4134,19 @@ def stale_copies(peer=None):
     out = []
     fix = (wrap_peer(f"{BIN / 'account'} refresh --force", peer)
            + "   (the usage tick runs it through claude-host every 15 min; its log says why it did not)")
-    sib_text = budgets_link_text()
-    if sib_text:   # a plain file, or no tenants link, says nothing: a host with no drive
-        out.append(("-", "fix", f"{BUDGETS.name}: no link; refresh links it to {sib_text} "
-                    "(until then the hooks judge by the registry's ceilings alone)", fix))
-    elif not (BUDGETS.is_symlink() or BUDGETS.exists()):
-        why = budgets_candidate()[1]   # a sibling refresh refuses: never silent (landing review, 2026-11-02)
-        if why:
+    if not (BUDGETS.is_symlink() or BUDGETS.exists()):
+        sib_text, why = budgets_candidate()   # once: the link refresh would make, or why it makes none
+        if sib_text:   # a plain file, or no tenants link, says nothing: a host with no drive
+            out.append(("-", "fix", f"{BUDGETS.name}: no link; refresh links it to {sib_text} "
+                        "(until then the hooks judge by the registry's ceilings alone)", fix))
+        elif why:   # a sibling refresh refuses: never silent (budgets-link's landing review, #401)
             out.append(("-", "info", f"{BUDGETS.name}: no link, and refresh makes none: {why} "
                         "(until then the hooks judge by the registry's ceilings alone)", None))
+        if not sib_text and local_copy(BUDGETS).is_file():
+            # a copy with no source: no hook reads it without the key, and refresh removes it (budgets-edges); where
+            # refresh would link a sibling it rewrites the copy instead (budgets-edges)
+            out.append(("-", "info", f"{local_copy(BUDGETS).name} is a copy with no {BUDGETS.name} to come from: no hook "
+                        "reads it, and the next refresh removes it", None))
     else:
         out.extend(budgets_link_state(peer))
     for f, last, got in pairs:
@@ -4015,15 +4161,21 @@ def stale_copies(peer=None):
             continue
         if read_copy(last) != got and old >= STALE_AFTER:
             out.append(("-", "fix", f"the hooks read {last.name}, which differs from {f.name} (last refreshed {age(old)} ago)", fix))
+        elif read_copy(last) != got and f == BUDGETS and not on_host():
+            # an edit not copied yet: from a person's shell it would look stale, and refresh here refuses (exit 3)
+            out.append(("-", "info", f"the hooks read {last.name}, which differs from {f.name}: the copy refreshes only "
+                        "under claude-host (the usage tick, every 15 min), so an edit reaches the hooks at its next pass",
+                        None))   # no fix offered: the tick copies it within 15 min, so a young difference needs no hand
     return out
 
 
 def budgets_link_state(peer=None):
-    """→ doctor's lines on a budgets link refresh will not touch (it never replaces a link, the build's round 2): one that
+    """→ doctor's lines on a budgets link refresh will not touch (it never replaces a link, budgets-link, #401): one that
     leads nowhere, and one that no longer sits beside the tenants link's target (the tenants key relinked).
     `rm` is advised only where refresh would link the key again (budgets_sibling), checked first: a fix where
     the dead link points into the sibling's own folder, an info line (the rm offered) where it points elsewhere,
-    as that may be the owner's own link into a drive of its own that is away (landing review, 2026-11-02); with no sibling and the folder away (the drive unmounted) the link reads again once it mounts, and with no sibling an `rm` would only drop the key
+    as that may be the owner's own link into a drive of its own that is away (landing review, 2026-11-02), and a
+    fix there too once that folder is there (the vault moved: the copy holds until the relink, budgets_drop_due); with no sibling and the folder away (the drive unmounted) the link reads again once it mounts, and with no sibling an `rm` would only drop the key
     and with it the hooks' copy (load_budgets reads no copy without a key)."""
     if not BUDGETS.is_symlink():
         return []
@@ -4031,30 +4183,34 @@ def budgets_link_state(peer=None):
         text, real = os.readlink(BUDGETS), os.path.realpath(BUDGETS)
     except OSError:
         return []
-    held = ("the hooks hold its last copy" if local_copy(BUDGETS).is_file()
-            else "the hooks judge by the registry's ceilings alone")
+    has_copy = local_copy(BUDGETS).is_file()
+    held = "the hooks hold its last copy" if has_copy else "the hooks judge by the registry's ceilings alone"
+    if has_copy and not os.path.exists(real) and budgets_drop_due():   # a dangling link only: the live one needs no stat
+        held = "the hooks hold its last copy until the next refresh removes it (its folder is there, so its file was removed)"
     sib = budgets_sibling()
     relink = (wrap_peer(f"rm {shlex.quote(str(BUDGETS))} && {shlex.quote(str(BIN / 'account'))} refresh --force", peer)
               + f"   (refresh links it again to {sib})") if sib else None
     if not os.path.exists(real):
         if sib and os.path.dirname(real) == os.path.dirname(sib):   # into the tenants target's own folder: a fix
             return [("-", "fix", f"{BUDGETS.name} links to {text}, which is not there: {held}, and refresh keeps the link", relink)]
-        if sib:   # elsewhere: the vault moved, or the owner's own link into a drive of its own, away (landing review 2): info
-            return [("-", "info", f"{BUDGETS.name} links to {text}, which is not there, outside the folder of "
+        if sib:   # elsewhere: the vault moved, or the owner's own link into a drive of its own, away (budgets-link's landing review, #401): info;
+            # a fix where its folder is there: the vault moved, and the copy holds the cap only until a person relinks (budgets-edges' /finish review)
+            return [("-", "fix" if budgets_source_gone() else "info", f"{BUDGETS.name} links to {text}, which is not there, outside the folder of "
                      f"{TENANTS.name}'s target (the vault moved, or a drive of its own away): {held}, and refresh "
                      "keeps the link", relink)]
         if not os.path.isdir(os.path.dirname(real)):
             return [("-", "info", f"{BUDGETS.name} links to {text}, whose folder is not there (the drive away?): "
                      f"{held}, and the link reads again once it mounts", None)]
-        # an rm would drop the key, and with it the copy, and refresh would make nothing (the build's round 3)
-        # and a removed key is linked again once a sibling is back: a plain {} is the lasting opt-out (landing review 2)
+        # an rm would drop the key, and with it the copy, and refresh would make nothing (budgets-link, #401)
+        # and a removed key is linked again once a sibling is back: a plain {} is the lasting opt-out (budgets-link's landing review, #401)
         return [("-", "info", f"{BUDGETS.name} links to {text}, which is not there: {held}; put a "
                  f"{os.path.basename(text)} back there, or make the key a plain {{}} to drop the owner's ceilings", None)]
     try:   # a link whose text reads as outside a drive while its file is in one: every hook opens the drive
         # outside claude-host (AGENTS.md Traps); a hand link refresh refused, or the 2026-10-31 ones (the /finish review)
         split = not drive_link(BUDGETS) and link_judged(real)
-    except OSError:
-        split = False
+    except OSError as e:   # a scratch link that cannot be made is said, as budgets_candidate says it (budgets-edges)
+        return [("-", "info", f"{BUDGETS.name} links to {text}, whose drive verdict could not be judged ({e}); "
+                 "doctor tries again at its next run", None)]
     if split:
         return [("-", "fix", f"{BUDGETS.name} links to {text}, which reads as outside a drive while its file ({real}) "
                  "is in one: the hooks open it outside claude-host, where an ungranted app blocks on it; relink it by its real path",
@@ -4456,6 +4612,17 @@ def doctor_local(reg, logins, peer=None, record=True):
         f(*t)
     for t in stale_copies(peer):   # the hooks' copies of the Drive-backed files (S4)
         f(*t)
+    for label in reg.get("budgets_unmatched") or []:   # a cap that reaches nothing: a typo, or a row gone (budgets-edges)
+        elsewhere, macs = login_elsewhere(logins.get(label), mac)
+        if elsewhere:   # a login another host holds (an Orca one synced there only): info (budgets-edges)
+            f("-", "info", f"{BUDGETS.name} names {label}, which no login row here has; the logins file lists it for "
+              f"{', '.join(macs)}")
+        elif mac and mac in macs:   # the logins file has it for this host: the row is what is missing (budgets-edges' /finish review)
+            f("-", "fix", f"{BUDGETS.name} names {label}, which no login row has",
+              f"add {label}'s row to {REGISTRY} (`account orca-sync` for an Orca login): the logins file lists it for this host")
+        else:
+            f("-", "fix", f"{BUDGETS.name} names {label}, which no login row has",
+              f"correct the label in {BUDGETS} to a row's of {REGISTRY}, or drop it")
     if peer is None and any(not is_default(a) for a in claude_rows if a["home"].is_dir()):
         f("-", "info", "credential expiry: the keychain is not read here (it would prompt)")
     known = {a["home"] for a in reg["accounts"]}

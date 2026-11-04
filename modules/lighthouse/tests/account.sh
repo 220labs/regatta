@@ -145,6 +145,87 @@ check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a tor
 A pick > /dev/null
 has "$T/out" "the registry's ceilings stand" "…said on stderr, outside --json"
 rm -f "$BF" "$(dirname "$BF")/.$(basename "$BF").last"
+echo "budgets — an owner's cap is a cap: it caps the reserve too (budgets-edges, 2026-11-02)"
+reset; use "$S1" "10 75"; use "$P1" "10 10"
+echo '{"spare": {"week_max": 60}}' > "$BF"
+check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 main" "75% on spare's Saturday reserve (100) with budgets.json's week_max 60 → the primary"
+has "$T/out" "week 75% ≥ 60% (Saturday reserve, capped by budgets.json)" "…the reason naming both"
+reset; use "$S1" "10 75"
+echo '{"spare": {"week_max": 100}}' > "$BF"
+check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 spare" "a budget no tighter than the reserve leaves the reserve's 100"
+has "$T/out" "week 75% < 100% (Saturday reserve)" "…named as the reserve alone"
+reset; use "$S1" "10 90"
+echo '{"spare": {"week_max": 85}}' > "$BF"
+check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 spare" \
+  "a loosening budget (85 over the registry's 70) is no cap: 90% on the Saturday reserve still runs under its 100"
+has "$T/out" "week 90% < 100% (Saturday reserve)" "…named as the reserve alone"
+check "$(python3 - "$B/account" <<'PY2' 2>&1
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_res", sys.argv[1]).load_module()
+t = 1_800_000_000
+row = {"label": "acct-res", "rules": {"week_max": 50, "reserve": {"last_hours": 24, "week_max": 100}}}
+print(a.ceiling(dict(row, budgeted=["week_max"]), {"seven_day_resets": t + 3600}, t),
+      a.ceiling(row, {"seven_day_resets": t + 3600}, t),
+      a.ceiling(dict(row, budgeted=["week_max"]), {"seven_day_resets": t + 90000}, t))
+print(a.ceiling(dict(row, budgeted=["week_max"], registry_week_max=40), {"seven_day_resets": t + 3600}, t),
+      a.ceiling({"label": "acct-res", "budgeted": ["week_max"], "rules": {"week_max": 50, "reserve": {"last_hours": 24, "week_max": float("nan")}}},
+                {"seven_day_resets": t + 3600}, t))
+low = {"label": "acct-res", "budgeted": ["week_max"], "registry_week_max": 70, "rules": {"week_max": 60, "reserve": {"last_hours": 24, "week_max": 50}}}
+print(a.ceiling(low, {"seven_day_resets": t + 3600}, t))
+lr = dict(row, budgeted=["week_max"], registry_week_max=70)
+a._WEEK_MAX = {"acct-res": "95"}
+print(a.ceiling(lr, {"seven_day_resets": t + 3600}, t), a.ceiling(lr, {"seven_day_resets": t + 90000}, t))
+a._WEEK_MAX = {"acct-res": "25"}
+print(a.ceiling(lr, {"seven_day_resets": t + 3600}, t), a.ceiling(lr, {"seven_day_resets": t + 90000}, t))
+loose = dict(row, budgeted=["week_max"], registry_week_max=40)   # the budget's 50 loosens the registry's 40
+a._WEEK_MAX = {"acct-res": "30"}
+print(a.ceiling(loose, {"seven_day_resets": t + 3600}, t), a.ceiling(row, {"seven_day_resets": t + 3600}, t))
+PY2
+)" "(50, 'last 24 h of the week, capped by budgets.json') (100, 'last 24 h of the week') (50, 'week ceiling, budgets.json')
+(100, 'last 24 h of the week') (50, 'last 24 h of the week, capped by budgets.json')
+(50, 'last 24 h of the week')
+(100, 'last 24 h of the week') (95, 'week ceiling, live')
+(25, 'last 24 h of the week, capped by lighthouse/week-max') (25, 'week ceiling, live')
+(100, 'last 24 h of the week') (100, 'last 24 h of the week')" \
+  "last_hours: a tightening budget caps the reserve inside its window; unbudgeted, the reserve's own; outside it, the budget; a loosening budget (over the registry's 40) no cap; a NaN reserve capped; a reserve below the budget stands; a login's own live line takes the budget's place, a looser one no cap, a tighter one the cap; on a loosening budget's row, or a row with none, a live line leaves the reserve as on main"
+echo "budgets — a label no row has is named, never silent (budgets-edges)"
+reset; use "$S1" "10 10"
+echo '{"acct-gone": {"week_max": 50}, "spare": {"week_max": 70}}' > "$BF"
+check "$(ACCOUNT_NOW=$WED A pick) $(ACCOUNT_NOW=$WED A pick --json; field "['account']")" "0 0
+spare" "a budgets label that matches no row changes no row's pick"
+ACCOUNT_NOW=$WED A pick > /dev/null
+has "$T/out" "names acct-gone, which no login row has; its rules reach nothing" "…said on stderr, outside --json"
+ACCOUNT_NOW=$WED A pick --json > /dev/null
+hasnt "$T/out" "acct-gone" "…and quiet under --json"
+echo '{"logins": {"acct-gone": {"macs": ["mac-b"]}}}' > "$T/.bl-logins.json.last"
+ACCOUNT_HOST=mac-here ACCOUNT_LOGINS="$T/bl-logins.json" ACCOUNT_NOW=$WED A pick > /dev/null
+hasnt "$T/out" "acct-gone" "…and quiet for a label the logins file's copy lists for another host"
+echo '{"logins": {"acct-gone": {"macs": ["mac-here"]}}}' > "$T/.bl-logins.json.last"
+ACCOUNT_HOST=mac-here ACCOUNT_LOGINS="$T/bl-logins.json" ACCOUNT_NOW=$WED A pick > /dev/null
+has "$T/out" "names acct-gone, which no login row has" "…but said for one it lists for this host (its row is missing here)"
+rm -f "$T/.bl-logins.json.last"; echo '{"logins": {"acct-gone": {"macs": ["mac-b"]}}}' > "$T/bl-logins.json"
+ACCOUNT_HOST=mac-here ACCOUNT_LOGINS="$T/bl-logins.json" ACCOUNT_NOW=$WED A pick > /dev/null
+hasnt "$T/out" "acct-gone" "…a plain logins file, with no copy, read as it is"
+rm -f "$T/bl-logins.json"
+check "$(ACCOUNT_HOST=mac-here python3 - "$B/account" <<'PY2' 2>/dev/null
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_unm", sys.argv[1]).load_module()
+reg = a.load_registry()
+print(reg["budgets_unmatched"])
+for lg in ({}, {"acct-gone": {"macs": ["mac-b"]}}, {"acct-gone": {"macs": ["mac-here"]}}, {"acct-gone": {"macs": [1, 2]}}):
+  for x in a.doctor_local(reg, lg, record=False):
+    if "names" in x["text"]:
+        print(x["level"], x["text"], "|", " ".join((x.get("fix") or "None").split()[:3]))
+PY2
+)" "['acct-gone']
+fix accounts.json.budgets names acct-gone, which no login row has | correct the label
+info accounts.json.budgets names acct-gone, which no login row here has; the logins file lists it for mac-b | None
+fix accounts.json.budgets names acct-gone, which no login row has | add acct-gone's row
+info accounts.json.budgets names acct-gone, which no login row here has; the logins file lists it for 1, 2 | None" \
+  "doctor names it as a fix, or as info where the logins file lists that login for another Mac"
+rm -f "$BF" "$(dirname "$BF")/.$(basename "$BF").last"
 
 echo "exhaustion — cooldown and margin (D6)"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
@@ -1815,6 +1896,13 @@ rm "$T/bl/budgets.json"; ln -s "$T/gone/budgets.json" "$T/bl/budgets.json"
 check "$(bd)" "info budgets.json links to $T/gone/budgets.json, which is not there, outside the folder of tenants.json's target (the vault moved, or a drive of its own away): the hooks hold its last copy, and refresh keeps the link" \
   "doctor: a dead link outside the sibling's folder while the sibling reads (the vault moved, or the owner's own drive away): info…"
 check "$(bdfix)" "rm $T/bl/budgets.json && $B/account refresh --force   (refresh links it again to $BD/budgets.json)" "…offering the rm refresh follows with the sibling's link"
+mkdir -p "$T/gone"
+check "$(bd)" "fix budgets.json links to $T/gone/budgets.json, which is not there, outside the folder of tenants.json's target (the vault moved, or a drive of its own away): the hooks hold its last copy, and refresh keeps the link" \
+  "  …a fix once its folder is there: the vault moved, and the copy holds the cap only until a person relinks"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -f "$T/bl/.budgets.json.last" && echo kept || echo gone)" "1 kept" \
+  "  …and refresh keeps the copy while a sibling reads: a vault move never drops a tightening cap (budgets-edges' /finish review)"
+has "$T/out" "holds as it was (a budgets.json reads beside tenants.json's target: the vault moved" "  …saying why, and where the relink is"
+rmdir "$T/gone"
 mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
 check "$(bd)" "info budgets.json links to $T/gone/budgets.json, whose folder is not there (the drive away?): the hooks hold its last copy, and the link reads again once it mounts" \
   "doctor: a link whose folder is away and no sibling reads gets no rm (it would drop the key and the hooks' copy)"
@@ -1840,7 +1928,7 @@ ln -s "$T/bdrive/tenants.json" "$T/bmid/tenants.json"; ln -s "$T/bmid/tenants.js
 check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" \
   "a chained tenants link (a local link into the drive): the sibling of the last target, never the middle folder's"
 mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
-check "$(bd)" "info budgets.json links to $BD/budgets.json, which is not there: the hooks hold its last copy; put a budgets.json back there, or make the key a plain {} to drop the owner's ceilings" \
+check "$(bd)" "info budgets.json links to $BD/budgets.json, which is not there: the hooks hold its last copy until the next refresh removes it (its folder is there, so its file was removed); put a budgets.json back there, or make the key a plain {} to drop the owner's ceilings" \
   "doctor: a budgets link that leads nowhere, with no sibling to relink: info, no rm (refresh would make nothing)"
 check "$(bdfix)" "none" "…no rm offered"
 echo '{}' > "$T/bdrive/budgets-new.json"; rm "$T/bl/budgets.json"; ln -s "$T/bdrive/budgets-gone.json" "$T/bl/budgets.json"; mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"
@@ -1848,10 +1936,19 @@ check "$(bd)" "fix budgets.json links to $T/bdrive/budgets-gone.json, which is n
   "doctor: a dangling link with a sibling to relink: a fix…"
 check "$(bdfix)" "rm $T/bl/budgets.json && $B/account refresh --force   (refresh links it again to $BD/budgets.json)" "…whose rm refresh follows with a link"
 rm "$T/bl/budgets.json"; ln -s "$T/bdrive/budgets-new.json" "$T/bl/budgets.json"
-check "$(bd)" "info budgets.json links to $T/bdrive/budgets-new.json, not to the budgets.json beside tenants.json's target ($BD/budgets.json); refresh never replaces a link" \
-  "doctor: another file in the target's own folder is named too"
+check "$(bd)" "info budgets.json links to $T/bdrive/budgets-new.json, not to the budgets.json beside tenants.json's target ($BD/budgets.json); refresh never replaces a link
+info the hooks read .budgets.json.last, which differs from budgets.json: the copy refreshes only under claude-host (the usage tick, every 15 min), so an edit reaches the hooks at its next pass" \
+  "doctor: another file in the target's own folder is named too (and, outside claude-host, the copy not refreshed yet: budgets-edges)"
+check "$(REGATTA_CLAUDE_HOST=1 bd)" "info budgets.json links to $T/bdrive/budgets-new.json, not to the budgets.json beside tenants.json's target ($BD/budgets.json); refresh never replaces a link" \
+  "  …under claude-host, where the tick refreshes the copy, no such note"
 rm "$T/bl/budgets.json" "$T/bdrive/budgets-new.json"; ln -s "$BD/budgets.json" "$T/bl/budgets.json"; mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
 check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(readlink "$T/bl/budgets.json")" "1 $BD/budgets.json" "…and refresh keeps it (exit 1, did not read)"
+has "$T/out" "and its folder is there, so its file was removed: .budgets.json.last removed, the registry's rules stand" \
+  "…while its file is removed from a folder that is there, the copy goes: no stale cap in force (budgets-edges)"
+check "$(test -e "$T/bl/.budgets.json.last" && echo kept || echo gone)" "gone" "  …gone from disk"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh)" 0 "  …and a later pass, the removal settled, exits 0 (the tick's exit 1 stays a real outage's)…"
+has "$T/out" "budgets.json did not read" "  …"
+has "$T/out" "no .budgets.json.last, the registry's rules stand" "  …says no copy holds, never that one does"
 mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"; rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
 mv "$T/bdrive/tenants.json" "$T/bdrive/tenants.json.away"
 check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -L "$T/bl/budgets.json" || test -e "$T/bl/budgets.json" || echo none)" "1 none" \
@@ -1887,6 +1984,57 @@ check "$(REGATTA_DRIVE_ROOTS="$T/bdrive" bdfix)" "ln -sfn $BD/budgets.json $T/bl
 rm "$T/bl/tenants.json"; ln -s "$T/bdrive/tenants.json" "$T/bl/tenants.json"; rm -f "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
 check "$(REGATTA_DRIVE_ROOTS="$T/elsewhere" BL refresh) $(readlink "$T/bl/budgets.json")" "0 $BD/budgets.json" \
   "a tenants link outside every drive root: refresh links it without claude-host"
+echo "the budgets key: a removed source leaves no stale copy in force (budgets-edges, 2026-11-02)"
+cpb="$T/bl/.budgets.json.last"
+rm "$T/bl/budgets.json"; ln -s "$T/bgone/budgets.json" "$T/bl/budgets.json"; echo '{"acct-x": {"week_max": 10}}' > "$cpb"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -e "$cpb" && echo kept || echo gone)" "1 kept" \
+  "a budgets link whose folder is not there (the drive away): its copy holds"
+has "$T/out" "refresh: budgets.json did not read" "…and refresh says the link did not read"
+if [ "$(id -u)" != 0 ]; then   # root stats through a closed folder
+  mkdir -p "$T/bclosed"; ln -sfn "$T/bclosed/budgets.json" "$T/bl/budgets.json"; echo '{}' > "$T/bclosed/budgets.json"; chmod 000 "$T/bclosed"
+  check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -e "$cpb" && echo kept || echo gone)" "1 kept" \
+    "a budgets file that will not stat for another reason than a missing file (EACCES): no removal, the copy holds"
+  chmod 755 "$T/bclosed"
+fi
+rm "$T/bl/budgets.json"
+check "$(bd)" "fix budgets.json: no link; refresh links it to $BD/budgets.json (until then the hooks judge by the registry's ceilings alone)" \
+  "doctor: a copy with no key where refresh would link a sibling is not called sourceless (refresh rewrites it)"
+mv "$T/bdrive/budgets.json" "$T/bdrive/budgets.json.away"
+check "$(bd)" "info .budgets.json.last is a copy with no budgets.json to come from: no hook reads it, and the next refresh removes it" \
+  "doctor: a copy whose key is gone is named"
+check "$(BL refresh) $(test -e "$cpb" && echo kept || echo gone)" "3 kept" "outside claude-host refresh still refuses, and the copy stays (no Drive link opened)"
+check "$(REGATTA_CLAUDE_HOST=1 BL refresh) $(test -e "$cpb" && echo kept || echo gone)" "0 gone" "under claude-host refresh removes a copy whose key is gone"
+has "$T/out" "refresh: budgets.json is not there; .budgets.json.last removed, the registry's rules stand" "…saying so"
+check "$(bd)" "" "doctor: then quiet"
+mv "$T/bdrive/budgets.json.away" "$T/bdrive/budgets.json"
+cat > "$T/blrace.py" <<'PY2'
+import os, sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_race", sys.argv[1]).load_module()
+real = a.budgets_candidate
+def racing():   # another refresh, or a person, makes the key between the check and the symlink
+    got = real()
+    print("candidate", got[0])
+    os.symlink(sys.argv[2], str(a.BUDGETS))
+    return got
+a.budgets_candidate = racing
+print(a.link_budgets(), os.readlink(str(a.BUDGETS)))
+os.unlink(str(a.BUDGETS))
+a.budgets_candidate = real
+def no_scratch(text):
+    raise OSError("no scratch")
+a.link_judged = no_scratch
+print(a.link_budgets())
+os.symlink(os.path.join(os.path.dirname(os.path.realpath(str(a.TENANTS))), "budgets.json"), str(a.BUDGETS))
+a.drive_link = lambda p: False   # the key's text reads as outside a drive, so the split check asks the scratch link
+print(a.budgets_link_state())
+PY2
+check "$(TENANTS_FILE="$T/bl/tenants.json" ACCOUNT_BUDGETS="$T/bl/budgets.json" ACCOUNTS_FILE="$ACCOUNTS_FILE.tf" ACCOUNT_LOGINS="$T/no-logins.json" python3 "$T/blrace.py" "$B/account" "$T/theirs.json" 2>&1)" \
+  "candidate $BD/budgets.json
+(None, 0) $T/theirs.json
+('refresh: budgets.json not linked: a link to $BD/budgets.json could not be judged against the drive roots (no scratch); the next pass tries again', 0)
+[('-', 'info', 'budgets.json links to $BD/budgets.json, whose drive verdict could not be judged (no scratch); doctor tries again at its next run', None)]" \
+  "link_budgets: a key made meanwhile (FileExistsError) stands, theirs; a scratch link that cannot be made is said, and the next pass tries; doctor's split check says it too"
 rm -f "$T/bl/tenants.json" "$T/bl/.tenants.json.last" "$T/bl/budgets.json" "$T/bl/.budgets.json.last"
 ACCOUNT_LOGINS="$T/logins-link.json" python3 - "$B/account" "$T" > "$T/s4f.out" 2>&1 <<'PY2'
 import json, os, sys

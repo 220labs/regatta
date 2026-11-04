@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- The budgets file's edges (budgets-edges, 2026-11-02, from #360 and #401): an owner's cap is a cap — inside a row's
+  `reserve` window (`day` or `last_hours`) a budgeted `week_max` that tightens the row (below the registry's own
+  `week_max`) and is lower than the reserve's reads in its place, named `<the window>, capped by budgets.json`
+  (before, the reserve lifted a tightening budget). The session's pick, reversible: the brief's min() is taken for a
+  tightening budget only, so a loosening one (the live file's two rows) keeps its reserve as before, and on a row the
+  budget tightens, a login's own live line (`regatta limit`) takes the budget's place there as on any day (a tighter
+  one caps the reserve, a looser one leaves it); a row no budget tightens judges as before, a live line included. A label no row has is said on stderr outside
+  `--json` (not for one the logins file lists for another host only) and by `doctor` (`budgets.json names <label>, which no login row
+  has`: a fix, or info where the logins file lists that login for another host); no row changes. A removed source
+  leaves no stale copy in force: past its gate, `refresh` removes `.budgets.json.last` where the key is gone, or its
+  link's file is missing ("no such file", never another stat error) from a folder that is there; a drive away keeps
+  the copy, and outside claude-host, where a key links into a drive, refresh still refuses. `doctor` names a copy with
+  no source, and, outside claude-host, a copy that differs from its file and was refreshed within 30 min (an edit the
+  tick has not copied yet: it copies only under claude-host). `budgets_candidate` runs once per pass
+  (`budgets_link_text` folded into it); cases for `link_budgets`' FileExistsError race and the scratch link's OSError;
+  comments cite #401 for "the build's round N". Not changed: a budgets link refresh made stays on the old vault's file
+  after the tenants key is relinked (refresh never replaces a link; `doctor`'s info line offers the relink), and a
+  file Drive deletes and recreates during a tick drops the copy until the next one. From the landing review: a
+  later refresh that finds the source still removed and no copy left exits 0 (the tick's exit 1 stays a real
+  outage's); doctor's dangling-link line outside the tenants target's folder is a fix where that folder is there
+  (the vault moved); doctor's unmatched label listed for this host says to add its
+  row; the not-copied-yet line offers no `refresh --force` (from a shell it opens the link outside claude-host);
+  the live line is read in a reserve window only on a row a budget tightens, so a bad line's warning no longer
+  names the registry's rule where the reserve judges; the core's G4 fixture names a label no row has. From the
+  `/finish` review: a link whose file is gone while a budgets.json reads beside the tenants link's target (the vault
+  moved) keeps its copy, so a tightening cap holds until a person relinks; refresh's line says so.
 - reef (2026-11-04): each host tunes its own check slots and run cap from its measured load, within the owner's
   `lighthouse/reef` bounds (a live limit); the sweep's `hosts sample --put --refresh` starts `reef apply` on a host
   with a line. Hosts at 2-6× their load limit while a new node idled was the cause (the owner, 2026-11-04).
@@ -33,7 +59,7 @@
   neither a file nor a link, `tenants.json` is a link, and a `budgets.json` sits beside that link's target, it links
   the key there, past its own claude-host gate, so a new host or a rebuilt config dir reads the owner's budgets within
   the usage tick's 15 min with no hand-made link and no overlay line. It never replaces a file or a link; `doctor`
-  names a key it would link (`budgets_link_text`), a sibling it refuses (itself a link, or one `drive_backed()` would
+  names a key it would link (`budgets_candidate`), a sibling it refuses (itself a link, or one `drive_backed()` would
   judge otherwise than the tenants link), a budgets link that leads nowhere (an `rm` offered only where refresh would
   link it again, a fix only where the dead link pointed into that target's own folder) or no longer sits beside that
   target, a live link whose text reads as outside a drive while its file is in one (the hooks would open the drive
