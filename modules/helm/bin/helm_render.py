@@ -64,10 +64,43 @@ def _write(p, text):
     tmp.replace(p)
 
 
+def snapshot(state):
+    """The state as a script block's JSON: every `<` as \\u003c, so neither `</script>` nor a `<!--` then `<script` in a
+    card's text can end or swallow the block (a doc title holding both left the board blank: S3's round-1 review)."""
+    return json.dumps(state, ensure_ascii=False, sort_keys=True).replace("<", "\\u003c")
+
+
 def page(state, title):
     """The one page: its script, its first snapshot (for an Artifact or a file:// open)."""
-    snap = json.dumps(state, ensure_ascii=False, sort_keys=True).replace("</", "<\\/")
+    snap = snapshot(state)
     return PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{STATE}}", snap)
+
+
+# helm-board-ux S3: the board's shell is three files beside this one (board.html, board.css, board.js), read at every
+# render, with keel's foundation (tokens, art, fx: helm-ui S10) inlined at {{FOUNDATION}}, so the page stays one file
+# for the local server, a spacesheep deploy and an Artifact. One pass fills every slot: a file's own text is never
+# scanned again, so a `{{STATE}}` inside board.js stays text. Without keel or a file that will not read, the board
+# falls back to PAGE, said on stderr at every render, never a traceback: the tick deploys the board unattended.
+BOARD_FILES = ("board.html", "board.css", "board.js")
+BOARD_SLOT = re.compile(r"\{\{(TITLE|FOUNDATION|BOARD_CSS|BOARD_JS|STATE)\}\}")
+
+
+def board_page(state, title):
+    """The board: board.html with board.css, board.js, keel's foundation and the first snapshot inlined."""
+    k = _keel()
+    try:
+        tpl, css, js = ((HERE / n).read_text(encoding="utf-8") for n in BOARD_FILES)
+        head = k.foundation_head() if k and hasattr(k, "foundation_head") else None
+    except Exception as e:   # noqa: BLE001 — keel's Stop is its own class; any miss is the old page
+        print("helm: board shell unreadable (%s: %s): the plain page" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
+        return page(state, title)
+    if not head:
+        print("helm: keel's foundation not found: the plain page", file=sys.stderr)
+        return page(state, title)
+    fill = {"TITLE": html.escape(title), "FOUNDATION": head, "BOARD_CSS": css.replace("</", "<\\/"),
+            "BOARD_JS": js.replace("</script", "<\\/script"),
+            "STATE": snapshot(state)}
+    return BOARD_SLOT.sub(lambda m: fill[m.group(1)], tpl)
 
 
 # ---------------------------------------------------------------------------- the plan page
@@ -1588,9 +1621,13 @@ def overview_state():
     cols = [{"name": n, "cards": [c for c in cards if c["column"] == n]} for n in board_columns()]
     today_cost = sum(t.get("cost") or 0 for st in states for t in st["tasks"] if _today(t.get("updated")))
     ops = ops_row()
+    try:   # the board prints effective prices only ($0.07e, S3): the week's list-to-effective ratio, None when unread
+        ratio = helmlib._common().cost_ratio()[0]
+    except Exception:   # noqa: BLE001 — no core: the page says list prices as such
+        ratio = None
     return {"kind": "overview", "as_of": time.time(), "host": helmlib.host(), "columns": cols,
             # needs_owner: a snoozed or done card (Later) needs no one now
-            "header": {"needs_owner": len(cols[0]["cards"]) - len(later), "owner":helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(),
+            "header": {"needs_owner": len(cols[0]["cards"]) - len(later), "owner":helmlib.display(helmlib.people()[0]), "today_cost": round(today_cost, 4), "week": week_line(), "ratio": ratio,
                        "stalled": None if "error" in judged else len(stalled),
                        "stalls_old": (judged.get("hidden") or {}).get("old") or 0,
                        "stalls_oldest": (judged.get("hidden") or {}).get("oldest"),
@@ -1640,7 +1677,7 @@ def overview(deploy=False, as_json=False):
         return json.dumps(st, ensure_ascii=False, sort_keys=True)
     d = cache_root() / "overview"
     _write(d / "state.json", json.dumps(st, ensure_ascii=False, sort_keys=True))
-    _write(d / "index.html", page(st, "Helm · board"))
+    _write(d / "index.html", board_page(st, "Helm · board"))
     out = ["overview: %s — %d need %s" % (d / "index.html", st["header"]["needs_owner"], st["header"]["owner"])]
     if deploy and not os.environ.get("PLAN_NO_DEPLOY"):
         pin = cache_root() / "overview-space.txt"
@@ -1664,7 +1701,7 @@ def overview(deploy=False, as_json=False):
         now = st.get("header", {}).get("sheep")
         if now != before:   # the crossing (the deployed page says it, the log once) or the resume
             _write(d / "state.json", json.dumps(st, ensure_ascii=False, sort_keys=True))
-            _write(d / "index.html", page(st, "Helm · board"))
+            _write(d / "index.html", board_page(st, "Helm · board"))
         if held:
             # the poll's log says the pause once, at the crossing; a hand-run says why nothing deployed
             if now != before or not os.environ.get("HELM_BOARD_POLL"):

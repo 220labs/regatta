@@ -39,10 +39,10 @@ vscode() {
   mkdir "$O/vscode-build" && tar -C "$M/vscode" --exclude=./node_modules --exclude=./out --exclude='*.vsix' -cf - . \
     | tar -C "$O/vscode-build" -xf - && cd "$O/vscode-build" && npm ci --no-audit --no-fund --ignore-scripts && npm run check
 }
-for s in test_ask test_helm; do bash "$D/$s.sh" > "$O/$s" 2>&1 & pids+=($!); done
+for s in test_ask test_helm test_board; do bash "$D/$s.sh" > "$O/$s" 2>&1 & pids+=($!); done
 vscode > "$O/vscode" 2>&1 & pids+=($!)
 i=0
-for s in test_ask test_helm vscode; do
+for s in test_ask test_helm test_board vscode; do
   wait "${pids[$i]}" || rc=1; i=$((i+1))
   echo "== $s"; cat "$O/$s"; rm -f "$O/$s"
 done
