@@ -408,6 +408,12 @@ RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq 
 # fixVolumePermissions, read)
 RUN useradd -m -d /runner -s /bin/bash runner && mkdir -p /runner/actions-runner /state && \\
     chown runner:runner /state
+# the kick socket's websockets, as linux-tools.sh installs it on a hosted runner: that road runs sudo, and here a job has none
+RUN ws=websockets-15.0.1-py3-none-any.whl && \\
+    curl -fsSL --retry 3 "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/$ws" -o "/tmp/$ws" && \\
+    echo "f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f  /tmp/$ws" | sha256sum -c - && \\
+    python3 -m zipfile -e "/tmp/$ws" "$(python3 -c 'import site; print(site.getsitepackages()[0])')" && rm -f "/tmp/$ws" && \\
+    python3 -c 'from websockets.sync.client import connect'
 COPY runner.tar.gz /tmp/runner.tar.gz
 RUN tar xzf /tmp/runner.tar.gz -C /runner/actions-runner && rm -f /tmp/runner.tar.gz && \\
     /runner/actions-runner/bin/installdependencies.sh >/dev/null && rm -rf /var/lib/apt/lists/* && \\
