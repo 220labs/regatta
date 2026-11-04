@@ -30,7 +30,7 @@ done
 p=$(python3 "$M/../regatta/bin/regatta" which pr)
 [ "$p" = "$M/libexec/pr" ] && echo "  ok   regatta which pr: $p" || { echo "  FAIL regatta which pr: $p"; rc=1; }
 
-for s in peers test_pr test_review_gate test_repos test_ci_provider test_ci_circleci test_scopes test_finish_stuck_rebase test_todo_md test_list_merge test_agents test_council test_checkpoint; do
+for s in peers test_pr test_restack test_review_gate test_repos test_ci_provider test_ci_circleci test_scopes test_finish_stuck_rebase test_todo_md test_list_merge test_agents test_council test_checkpoint; do
   echo "== $s"
   bash "$D/$s.sh" || rc=1
 done
