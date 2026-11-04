@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `autofinish-run` no longer lets the landing ladder pin a mode or hand-over finish to a host that cannot claim one:
+  where this host lacks `finish-queue` (off a Mac with no feature line), that pin is dropped, the entry goes to the
+  fleet, and a hold the ladder judged here rides in its rights as a ready PR. A node's handed landing waited for a
+  person before (principal tier S4, 2026-11-04). A typed `--on here`, a ship, a brief and a chain that resolved to
+  another launch stay pinned and still wait there (TODO.md [finish-ladder]), as does dispatch-queue's own pin at the
+  put (`held_here`).
+
 - orca adapter: knows a Linux Orca. `_app_up()` looked only for the Mac bundle's binary, so on the yard node (`orca-ide
   serve --pairing-address …`, which runs as `/opt/Orca/orca-ide …/out/cli/index.js serve …`) `wharf apply` over ssh said
   "Orca is not running here" and exited 3 before the first compile, and the tick's `--once` apply then refused the plan
