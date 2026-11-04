@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `yard-node`'s named-node payload writes `wharf-runs/node/scope`, the scope the node serves (empty on a shared
+  node): the core's `nodes_here` reads it to tell the node as its scope's own yard (scopes-node-yard).
+
 - finish-as-task (the owner's D3 of node-lands: "The finish should be handled like any other task"): a `/finish` is
   one fleet entry of kind `finish` under its branch's own key, carrying its tip and its rights (by, rule, merge, hold,
   from, a ship's digest; `finish_bad()` reads each, never a prompt or an allow list). `autofinish-run` puts it through
