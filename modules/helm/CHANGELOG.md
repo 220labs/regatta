@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The board's shell (helm-board-ux S3), to the helm council's round-6 prototype: `bin/board.html`, `board.css` and
+  `board.js` beside `helm_render.py`, which `board_page()` fills in one pass with keel's foundation (S10) and the
+  first snapshot; `helm board` writes and deploys it, and falls back to the plain page, said on stderr, without keel
+  or a shell file. The sky strip with its horizon carries a sloop per ship at the share of its steps done (a boat
+  per tenth of the course past twelve), the time, the host, the week and today's spend; the views down the left
+  with a count each (a tab bar below 1100 px), find, the theme, the `?` keys sheet, the save strip (drafts in this
+  browser until S4) and the Engine room's nav slot; each view's head keeps the sheep, talk and stall notes. Until
+  their own steps the views hold the board's cards in the new look. The 30 s poll reconciles each region by key and
+  never replaces a focused field or one holding a draft, kept even when its card left. Prices are effective only
+  (`$0.07e`, a spend `spent/total`), from the header's new `ratio`. `tests/test_board.sh`: the page's slots, the
+  fallback, and under headless Chrome the shell at 1440, 720 and a true 390 in both themes and the reconcile case.
 - The board's state for the Decide feed and the ship ladder (helm-board-ux S2): ask poll carries each open
   item's own section (the heading, the prose above, its options table, the item), its options, line, the steps
   that wait on it, a content hash, the worktree on this host and the doc's title and Summary; `helm board --json`
