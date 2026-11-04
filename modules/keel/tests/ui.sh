@@ -21,7 +21,7 @@ echo "keel ui check"
 # seen on macOS's Chrome alone, and a Linux runner's Chrome would judge them unseen (the S10 landing review).
 if [ "$(uname -s)" = Darwin ]; then "$B/keel" ui check > "$T/check.out" 2>&1
 else KEEL_CHROME="$T/no-chrome" "$B/keel" ui check > "$T/check.out" 2>&1; fi; check "$?" "0" "the foundation passes its check"
-has "$T/check.out" ", 0 failed (file 23, contrast 104" "every file, 104 contrast pairs"
+has "$T/check.out" ", 0 failed (file 25, contrast 104" "every file, 104 contrast pairs"
 if command -v node >/dev/null 2>&1; then has "$T/check.out" "art 20" "…and the drawings against art.js"; else echo "  skip the drawings: no node"; fi
 if grep -q 'skipped the frames' "$T/check.out"; then echo "  skip the frames: no headless Chrome here (keel's chrome_path)"
 else has "$T/check.out" "frame " "a frame per effect read"
@@ -95,7 +95,7 @@ check "$("$B/keel" ui list | grep -c '^art/.*\.svg$')" "18" "…then the eightee
 "$B/keel" ui cat tokens.css > "$T/tokens.css"; check "$(cmp -s "$T/tokens.css" "$U/tokens.css" && echo same)" "same" "cat prints a file as it is"
 "$B/keel" ui cat ../bin/keel > /dev/null 2>"$T/cat.err"; check "$?" "1" "cat refuses a name off the list"
 has "$T/cat.err" "no foundation file ../bin/keel" "…and says so"
-"$B/keel" ui write "$T/out" > "$T/write.out"; has "$T/write.out" "23 foundation files written" "write hands every file over"
+"$B/keel" ui write "$T/out" > "$T/write.out"; has "$T/write.out" "25 foundation files written" "write hands every file over"
 n=0; for f in $("$B/keel" ui list); do cmp -s "$T/out/$f" "$U/$f" || n=$((n+1)); done; check "$n" "0" "…each the same as ui/'s"
 : > "$T/afile"; "$B/keel" ui write "$T/afile" > "$T/w2.out" 2>&1; check "$?" "1" "write into a file refuses"
 has "$T/w2.out" "keel ui write: cannot write to" "…in one line"; lacks "$T/w2.out" "Traceback" "…never a traceback"

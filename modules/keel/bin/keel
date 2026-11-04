@@ -110,11 +110,13 @@ would be overwritten (/finish step 5 takes it in and step 11 refuses to push ove
 The form, on request (`/keel --form`; 2026-09-22, retired 2026-09-25, back 2026-09-29 as
 the second path): `build` renders the whole memo (a Markdown subset — headings, paragraphs,
 lists, tables, quotes, code, bold, code spans, links; everything else escaped, never HTML),
-each decision a card with its answer in a textarea (old shape: pre-filled with the
-recommendation; new shape: empty, the Recommended line read-only above it, the options as
-buttons), one feedback box, one Save, and — when any item has a Recommended line — Accept all
-recommendations: every empty answer becomes `= recommended (accept all)`, then it saves (D5 of
-docs/subagent-cache-2026-10-04.md; the marker tells a bulk click from a per-card take). Any paragraph, bullet, table row, heading or code block
+each decision drawn by the decision component (decision_html, helm-ui S8: its tier, the options as
+buttons with the recommended one flagged, the owner's own words as the last row, one answer per
+decision; old shape: the words pre-filled with the recommendation), one feedback box, one Save, and —
+when any item has a Recommended line — Accept all recommendations: every empty safe one-letter pick
+becomes `= recommended (accept all)`, the irreversible ones after one confirm, then it saves (D5 of
+docs/subagent-cache-2026-10-04.md, narrowed by helm-board-ux actions D1-C; the marker tells a bulk
+click from a per-card take). Any paragraph, bullet, table row, heading or code block
 takes a note (2026-10-03, the owner: "let me add comment at any line"): it carries `data-at`, its
 source line, and `data-q`, that line's text; `merge` writes the note under the line as
 `**<owner>, <date>:** …` at the block's indent, or into the feedback when the line moved.
@@ -1907,6 +1909,10 @@ def render_md(lines, base=None, shift=0, ctx=None, pick=False):
             i += 1
             continue
         opts, end = option_run(lines, i)
+        if opts and callable(pick):  # the decision component draws the group (decision_html's option_group)
+            out.append(pick([(letter, inline(text)) for letter, text, _, _ in opts]))
+            i = end
+            continue
         if opts:
             o = ['<div class="opts">']
             for letter, text, _, last in opts:
@@ -2987,7 +2993,7 @@ def render(doc, out=None, style=None, force=False, palette=None):
 # drawings against art.js, and under headless Chrome a frame per effect at 1440 and the still sheet at 720 and a true
 # 390, both themes and under reduced motion.
 UI_DIR = Path(os.environ.get("KEEL_UI_DIR") or Path(__file__).resolve().parent.parent / "ui")
-UI_FILES = ("tokens.css", "fx.css", "theme.js", "art.js", "fx.js")
+UI_FILES = ("tokens.css", "fx.css", "theme.js", "art.js", "fx.js", "decision.css", "decision.js")
 UI_ART_RE = r"art/[a-z][a-z0-9-]*\.svg"
 FX_SHOWS = {"press": 300, "fireworks": 1200, "settle": 250, "save": 150, "tick": 200}   # each frozen at its instant
 UI_PAIRS = ([("ink", "ground"), ("ink-2", "ground"), ("graphite", "ground"), ("graphite", "wash"), ("graphite", "wash-2"),
@@ -3035,6 +3041,171 @@ def foundation_head(layer=None):
     """What a page's head carries: the theme before first paint, the tokens and the fx CSS, the drawings and fx."""
     return "<script>%s</script>\n<style>%s</style>\n<script>%s</script>" % (
         ui_asset("theme.js").replace("</script", "<\\/script"), foundation_css(layer), foundation_js())
+
+
+# ----------------------------------------------------------------------------- the decision component (helm-ui S8)
+# One decision as the board and the Course page both draw it: decision_html(item, ctx) the markup, decision_css() and
+# decision_js() (ui/decision.css, ui/decision.js) its look and its controller, which the page loads after its own CSS
+# and before its own JS. The ids, the anchors and the Save stay the page's: `card-D<n>` with `data-ss-id`, a hidden
+# `ans-D<n>` box that Save, Copy and the draft read, `chip-`, `take-`, `reset-`. The tier is the words dnd_held reads,
+# fail-closed; the repo's `physical:` line is read where the caller knows the doc's checkout (`build`, `serve`, the
+# spacesheep page: ctx["physical"]), and a doc out of any checkout is tiered on its own lines alone.
+DECISION_HELD_WORDS = {"money in an option": "money", "a deletion": "deletion", "a public publish": "publish",
+                       "a third party's answer": "third party"}
+DECISION_TIER_SAYS = {"safe": "Reversible: yes — auto, dnd and yolo would take it",
+                      "irreversible": "Reversible: no — dnd and yolo would take it; your pick asks for its confirm",
+                      "held": "held — only yolo would take it; your pick asks for its confirm",
+                      "yours": "yours — no mode takes it",
+                      "unmarked": "yours — dnd holds it; plain yolo takes it"}
+# a letter as keel yolo's LETTER_RE reads one (`B`, `**B**`, `B — why`, `B, why`, `B.`), never the article in "A simple …"
+REC_LETTER_RE = re.compile(r"^[*_]*([A-Z])[*_]*(?:$|\s*[—–:,.;-])")
+REC_TAKEN_RE = re.compile(r"^=\s*recommended(?:\s*\(accept all\))?$", re.I)
+
+
+def decision_css():
+    return ui_asset("decision.css").replace("</", "<\\/")
+
+
+def decision_js():
+    return ui_asset("decision.js").replace("</script", "<\\/script")
+
+
+def decision_tier(it, lines, physical=False):
+    """(tier, class): `yours` for anything unclear (reopened, no pick, conditional, unmarked, the older pre-filled
+    shape), `held` with dnd_held's class (money, deletion, publish, third party), `irreversible` for `Reversible: no`,
+    else `safe` — the four the modes take by (auto safe; dnd safe and irreversible; plain yolo all but yours, an
+    unmarked one too, and nothing while an open one is reopened, conditional or has no pick: keel yolo's stops)."""
+    if it["shape"] != "new":
+        return "yours", "pre-filled"
+    rec = " ".join((it["recommended"] or "").split())
+    if reopened(it, lines):
+        return "yours", "reopened"
+    if not rec:
+        return "yours", "no pick"
+    if CONDITIONAL_RE.search(rec):
+        return "yours", "conditional"
+    if it["reversible"] is None:
+        return "yours", "unmarked"
+    # `physical` False: not read (a caller that knows no doc path); None (no checkout, no line) or anything but none
+    # holds, as dnd_held does
+    if physical is not False and not (physical or "").startswith("- physical: none"):
+        return "held", "physical"
+    own = it["answer_line"] if it["answer_line"] is not None and it["answer_line"] > it["start"] else it["end"]
+    body = MODEL_COST_RE.sub(" ", "\n".join(lines[it["start"]:own]))
+    for why, rx in DND_HOLDS:
+        if rx.search(body):
+            return "held", DECISION_HELD_WORDS.get(why, why)
+    return ("irreversible" if it["reversible"] == "no" else "safe"), ""
+
+
+def page_physical(p):
+    """The `physical:` line a page tiers by (decision_tier): doc_physical's, as `yolo --dnd` reads it — the line, or
+    None for a doc in no checkout or a contract without one, which holds every item as dnd_held does (fail-closed)."""
+    return doc_physical(p)
+
+
+def pick_letter(it):
+    """The option letter the recommendation names (`B`, `B — why`), else '' (prose, a condition, no options)."""
+    m = REC_LETTER_RE.match(" ".join((it["recommended"] or "").split()))
+    return m.group(1) if m and m.group(1) in dict(it["options"]) and not CONDITIONAL_RE.search(it["recommended"]) else ""
+
+
+def decision_html(it, ctx):
+    """One decision's markup: its number, question and tier; the doc's lines with the options as the component's
+    rows (the recommended one flagged beside its letter) and the owner's words as the last row; the recommendation
+    where it is more than a letter; the confirm a one-way pick fills; the chip and Take; the folded line a mode
+    shows. `ctx` is page_parts' (its lines, anchors, and `ss` on the spacesheep page)."""
+    lines = ctx["lines"]
+    tier, cls = decision_tier(it, lines, ctx.get("physical", False))
+    rl, i, new = pick_letter(it), it["id"], it["shape"] == "new"
+    ans = it["answer"] if it["answer"] is not None else ""
+    a = ans.strip()
+    picked = (rl if REC_TAKEN_RE.match(a) else a if re.fullmatch(r"[A-Z]", a) and a in dict(it["options"]) else "") if a else ""
+    mine = ans if not new else ("" if picked or REC_TAKEN_RE.match(a) else ans)
+    flag = '<span class="recflag" role="img" title="recommended" data-art="flag"></span>'
+    bare = ctx.get("bare")   # the page goes without decision.js: the answer box itself is the field, no words row
+    free = "" if bare else ('<div class="opt free%s%s" role="button" tabindex="0" title="Your own words, instead of a letter"><span class="kcw">'
+            '<span class="kc">✎</span></span><span class="ot"><textarea id="free-%s" rows="2" placeholder="%s" title="Your answer to %s, in '
+            'your words">%s</textarea></span><span class="tick"></span></div>'
+            % ("" if new else " open", " pick" if mine.strip() else "", i,
+               "In your words — instead of a letter" if new else "Your answer", i, html.escape(mine, quote=False)))
+    drawn = []
+
+    def group(opts):   # the words row goes into the last group drawn (WORDS_AT), filled in once all are
+        rows = []
+        for letter, text in opts:
+            rows.append('<button type="button" class="opt%s%s" data-letter="%s"><span class="kcw"><span class="kc">%s</span>%s</span>'
+                        '<span class="ot">%s</span><span class="tick"></span></button>'
+                        % (" rec" if letter == rl else "", " pick" if letter == picked else "", letter, letter,
+                           flag if letter == rl else "", text))
+        rows.append("\x00WORDS\x00")
+        drawn.append(1)
+        plain = [html.unescape(re.sub(r"<[^>]+>", "", t)) for _, t in opts]
+        short = len(opts) >= 3 and max(len(t) for t in plain) <= 44
+        return '<div class="opts%s" role="group" title="Options for %s"%s>%s</div>' % (
+            " grid" if short else "", i, ' style="--cols:%d"' % (2 if len(opts) == 4 else min(3, len(opts))) if short else "",
+            "".join(rows))
+    # the older pre-filled shape keeps its options as anchored lines (notes, spacesheep comments), never picks
+    body = card_body(it, lines, ctx, pick=group if new else False)
+    mid = between(it, lines)
+    mid = render_md(mid, it["rec_end"], 0, ctx, pick=group if new else False) if any(l.strip() for l in mid) else ""
+    if drawn:
+        at = (mid or body).rfind("\x00WORDS\x00")   # mid is drawn after body: its group, where it has one, is the last
+        if mid and at >= 0:
+            mid = mid[:at] + free + mid[at:]
+        else:
+            at = body.rfind("\x00WORDS\x00")
+            body = body[:at] + free + body[at:]
+        body, mid = body.replace("\x00WORDS\x00", ""), mid.replace("\x00WORDS\x00", "")
+    rec = " ".join((it["recommended"] or "").split())
+    cond = ""
+    if new and cls == "conditional":
+        cond = '<span>Recommended: %s <em>— conditional, so no mode takes it</em></span>' % rec_html(it)
+    elif new and not rec:
+        cond = "<span>No recommended pick <em>— the author left it to you</em></span>"
+    elif new and rec != rl:
+        cond = "<span>Recommended: %s</span>" % rec_html(it)
+    if cond:
+        cond = '<div class="dq-cond"><span class="flagmark" data-art="flag"></span>%s</div>' % cond
+    word = tier + (" · " + cls if cls else "")
+    what = html.escape(plain(dict(it["options"]).get(rl, rec)), quote=False)
+    foot = ('<span class="chip" id="chip-%s">open</span>' % i + ("" if bare or tier == "yours" else '<button type="button" class="btn ghost sm" id="take-%s" '
+            'title="Take the recommendation (R)">Take the recommendation <span class="k">R</span></button>' % i) if new else
+            '<span class="chip" id="chip-%s">recommendation</span><button type="button" class="btn ghost sm" id="reset-%s" hidden>'
+            'Back to the recommendation</button>' % (i, i))
+    return (
+        '<section class="dq t-%(tier)s%(ans)s" id="card-%(id)s" data-id="%(id)s" data-item data-shape="%(shape)s" data-tier="%(tier)s" '
+        'data-cls="%(cls)s" data-rec="%(rl)s"%(ss)s>'
+        '<header class="dq-h"><span class="dq-n">%(id)s</span><h3 class="dq-t">%(title)s</h3><span class="dq-m">%(reo)s'
+        '<span class="tier %(tier)s" title="%(says)s"><span class="tb" data-buoy="%(tier)s"></span>%(word)s</span></span></header>'
+        '<div class="dq-ctx body">%(body)s</div>%(cond)s%(mid)s%(free)s'
+        '%(confirm)s<footer class="dq-f">%(foot)s%(hint)s</footer>'
+        '<textarea id="ans-%(id)s" rows="2"%(hid)s>%(val)s</textarea>%(fold)s'
+        '</section>' % {
+            "tier": tier, "ans": " answered" if a else "", "id": i, "shape": it["shape"], "cls": html.escape(cls, quote=True),
+            "rl": rl, "ss": ' data-ss-id="%s"' % i if "ss" in ctx else "", "title": inline(it["title"]),
+            "reo": '<span class="reopened">reopened</span>' if cls == "reopened" else "",
+            "says": html.escape(DECISION_TIER_SAYS["unmarked" if cls == "unmarked" else tier] + (" (%s)" % cls if cls else ""), quote=True), "word": html.escape(word, quote=False),
+            "body": body, "cond": cond, "mid": ('<div class="body">%s</div>' % mid) if mid else "",
+            "free": "" if drawn or not free else '<div class="opts">%s</div>' % free, "foot": foot,
+            "val": html.escape(ans, quote=False), "what": what,
+            "hid": ' placeholder="A letter, words, or both" title="Your answer to %s"' % i if bare else " hidden",
+            # what only decision.js works: none of it on a page without it
+            "confirm": "" if bare else '<div class="confirm %s"></div>' % tier,
+            "hint": "" if bare or not new else (
+                '<span class="hint"><span class="kc">↑</span><span class="kc">↓</span><span class="kc">←</span>'
+                '<span class="kc">→</span> move · <span class="kc">⏎</span> choose · <span class="kc">R</span> recommended</span>'),
+            "fold": "" if bare or not new else (
+                '<button type="button" class="fold" data-act="unfold" title="Open it to answer it yourself"><span class="dq-n">%s</span>'
+                '<span class="ft">%s</span><span class="takes"><span class="who"></span><span class="what">%s</span></span></button>'
+                % (i, html.escape(plain(it["title"]), quote=False), what))})
+
+
+def decision_modes_html():
+    """The mode switch: the four skipper modes, what the chosen one takes (decision.js fills the words)."""
+    return ('<div class="cmode" id="modes"><span class="cl">Skipper mode</span><span class="modes">%s</span>'
+            '<span class="cm2" id="mode-says"></span></div>' % "".join(
+                '<button type="button" data-mode="%s">%s</button>' % (m, m) for m in ("ask", "auto", "dnd", "yolo")))
 
 
 def ui_tokens():
@@ -3341,14 +3512,10 @@ button.secondary{background:none;color:var(--accent);border:1px solid var(--line
 button:focus-visible,.linkbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button[disabled]{opacity:.5;cursor:default}
 .chip.open{background:var(--warn-bg);color:var(--warn)}
-.rec{margin:.65rem 0 0;padding:.45rem .65rem;border-radius:6px;background:var(--soft);font-size:.93rem}
-.rec .k{font-size:.72rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-right:.45rem}
 .opts{display:flex;flex-direction:column;gap:.3rem;margin:.55rem 0}
 .opt{display:flex;gap:.6rem;align-items:baseline;text-align:left;width:100%;padding:.45rem .65rem;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:inherit;font-size:.95rem}
-button.opt{cursor:pointer}
 .opt .L{font-weight:700;color:var(--accent);min-width:1.1rem}
 .opt .t{flex:1}
-.opt.sel{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--soft)}
 main [data-at]{cursor:text;border-radius:4px}
 @media (hover:hover){main [data-at]:not(.noted):hover{background:var(--soft)}}
 .noted{box-shadow:-6px 0 0 var(--warn)}
@@ -3413,7 +3580,11 @@ JS = r"""
                                                  + (base.tone === "idle" ? "" : " Before that: " + base.text) };
     wordEl.textContent = s.word; stateEl.setAttribute("data-tone", s.tone); status.textContent = s.text;
   }
-  var say = function(t, word, tone){ base = { text: t, word: word || "Note", tone: tone || "idle" }; flashing = null; clearTimeout(flashT); show(); };
+  // tail: a line the Save's own outcome carries (Accept all's "left for you"), so a fast POST cannot wipe it
+  var tail = "";
+  var say = function(t, word, tone){
+    if (tail && (tone || "idle") !== "busy") { t = t + " " + tail; tail = ""; }
+    base = { text: t, word: word || "Note", tone: tone || "idle" }; flashing = null; clearTimeout(flashT); show(); };
   function flash(t, word){
     flashing = { text: t, word: word, tone: stateEl.getAttribute("data-tone") || "idle" };
     clearTimeout(flashT); show();
@@ -3463,33 +3634,19 @@ JS = r"""
     notes = {};
   }
 
-  // ---- options: a tap puts the letter at the head of the answer, keeping any words after it
-  var ACCEPT_ALL = "= recommended (accept all)";
+  // ---- decisions: the component (keel's decision_js, window.KDC, helm-ui S8) draws the picks and owns the keys;
+  // each `ans-D<n>` box stays what Save, Copy and the draft read. One answer per decision: a letter, or words.
   var REC_TAKEN = /^=\s*recommended(?:\s*\(accept all\))?$/i;  // the two markers, never "= recommended, but…"
-  // a letter alone or before a separator ("B", "B - why"), never the "A" or "I" that starts a sentence
-  var LETTER = /^([A-Z])(?=$|\s*[\-—–:,.])/;
-  function lettersOf(id){
-    var out = [], opts = document.querySelectorAll("#card-" + id + " button.opt");
-    for (var i = 0; i < opts.length; i++) out.push(opts[i].getAttribute("data-letter"));
-    return out;
-  }
-  function chosen(id, v){
-    var L = (v.match(LETTER) || [])[1];
-    return L && lettersOf(id).indexOf(L) >= 0 ? L : null;
-  }
-  function pick(opt){
-    var id = opt.closest(".card").getAttribute("data-id"), ta = $("ans-" + id), L = opt.getAttribute("data-letter");
-    var v = ta.value.trim();
-    if (!v || REC_TAKEN.test(v)) ta.value = L;
-    else if (chosen(id, v)) ta.value = L + v.slice(1);
-    else ta.value = L + " - " + v;
-    changed();
-  }
+  // a page without the component (decision_js would not read) draws no Take and no Accept all, whose guard lives
+  // there; an option tapped is its letter in the visible box, as before S8, and Save works
+  var KDC = window.KDC || { click: function(b){ var s = b.closest("[data-item]"); if (!s) return;
+                              $("ans-" + s.getAttribute("data-id")).value = b.getAttribute("data-letter"); changed(); },
+                            syncAll: function(){}, takeRec: function(){}, init: function(){}, acceptAll: function(done){ done(0); } };
 
   main.addEventListener("click", function(e){
     var t = e.target;
     var opt = t.closest("button.opt");
-    if (opt) { pick(opt); return; }
+    if (opt) { KDC.click(opt); return; }
     if (t.closest("a,button,textarea,input,label,.note")) return;
     if (window.getSelection && String(window.getSelection())) return;  // selecting text, not noting
     var el = t.closest("[data-at]");
@@ -3540,10 +3697,7 @@ JS = r"""
       if (it.shape === "new") {
         chip.textContent = v ? "answered" : "open";
         chip.className = "chip" + (v ? "" : " open");
-        $("take-" + it.id).hidden = REC_TAKEN.test(v);
-        var L = chosen(it.id, v);
-        var opts = document.querySelectorAll("#card-" + it.id + " button.opt");
-        for (var i = 0; i < opts.length; i++) opts[i].classList.toggle("sel", opts[i].getAttribute("data-letter") === L);
+        if ($("take-" + it.id)) $("take-" + it.id).hidden = REC_TAKEN.test(v);
       } else {
         var same = v === it.answer.trim();
         chip.textContent = same ? "recommendation" : "edited";
@@ -3566,6 +3720,7 @@ JS = r"""
       if (k + fb) { $("count").appendChild(span("pen", " · ✎" + (k + fb), true)); $("count").appendChild(span("sr", words)); }
       $("count").title = a + " of " + n + " decision" + (n === 1 ? "" : "s") + " answered" + words;
     }
+    KDC.syncAll();
     var cur = JSON.stringify(current());
     var dirty = lastSaved === null || cur !== lastSaved;
     $("save").disabled = !dirty && store !== null;
@@ -3645,24 +3800,25 @@ JS = r"""
   M.items.forEach(function(it){
     var ta = $("ans-" + it.id);
     ta.addEventListener("input", changed);
-    if (it.shape === "new") $("take-" + it.id).addEventListener("click", function(){ ta.value = "= recommended"; changed(); });
+    if (it.shape === "new") { if ($("take-" + it.id)) $("take-" + it.id).addEventListener("click", function(){ KDC.takeRec($("card-" + it.id)); }); }
     else $("reset-" + it.id).addEventListener("click", function(){ ta.value = it.answer; changed(); });
   });
   $("feedback").addEventListener("input", changed);
 
-  // One click to agree with everything (docs/subagent-cache-2026-10-04.md D5): every empty answer
-  // of a new-shape item takes the recommendation, marked ACCEPT_ALL so a later analysis can tell a
-  // bulk click from a per-card "Take the recommendation" (`= recommended`) or a typed letter;
-  // answers already typed stay. Then it saves, as Save would.
+  // Accept all, with the guard (helm-board-ux actions D1, the owner's C, 2026-10-27; it narrows the 2026-10-04
+  // "one click to agree with everything"): the component takes every empty one-letter, unconditional
+  // `Reversible: yes` pick, marked "= recommended (accept all)" so a later analysis tells a bulk click from a
+  // per-card Take (`= recommended`) or a typed letter; then it offers the irreversible ones behind one confirm;
+  // held, conditional and unmarked picks stay the owner's. Then it saves, as Save would.
   if ($("acceptall")) $("acceptall").addEventListener("click", function(){
-    M.items.forEach(function(it){
-      var ta = $("ans-" + it.id);
-      if (it.shape === "new" && !ta.value.trim()) ta.value = ACCEPT_ALL;
+    KDC.acceptAll(function(n, note){
+      // nothing taken: say what was left and why, and save nothing (a Save's own line would cover it at once)
+      if (!n) { flash(note || "Nothing new to accept: every plain pick is filled.", "Nothing taken"); return; }
+      // a disabled Save (store path, nothing new) would swallow the click without a word (review 2026-10-04)
+      if ($("save").disabled) { flash("Nothing new to save.", "Nothing new"); return; }
+      tail = note || "";   // what was left, and why: on the Save's own outcome line
+      $("save").click();
     });
-    changed();
-    // a disabled Save (store path, nothing new) would swallow the click without a word (review 2026-10-04)
-    if ($("save").disabled) { flash("Nothing new to accept: every answer is filled and saved.", "Nothing new"); return; }
-    $("save").click();
   });
 
   // `fail`, where given, replaces the prompt: a sandboxed frame without allow-modals (VS Code's Simple
@@ -3744,6 +3900,7 @@ JS = r"""
     });
   });
 
+  KDC.init({ slug: M.slug, changed: changed, flash: flash, save: function(){ if (!$("save").disabled) $("save").click(); } });
   pristine = JSON.stringify(current());  // the page as the doc stands: a restored draft is Unsaved
   apply(loadDraft());
   refresh();
@@ -3922,7 +4079,7 @@ def ss_anchor(ctx, at, row=None):
     return sid
 
 
-def page_parts(text, page=False, figs=None, draw=True, deadline=None):
+def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False, physical=False):
     """(lines, items, feedback_line, the page's HTML parts, ctx) — `build` renders them, `merge`
     reads ctx["anchors"] to place each note exactly where the page showed it. Every item is a card;
     the feedback section (parse's feedback_section: after the last item) and what follows it are not
@@ -3938,7 +4095,9 @@ def page_parts(text, page=False, figs=None, draw=True, deadline=None):
     the same either way. ctx["mmd_missed"] counts the fences left as source for a passing reason."""
     lines, items, feedback_line = parse(text)
     drawn, missed = mermaid_svgs((t for _, t in mermaid_fences(lines)), deadline) if draw else ({}, 0)
-    ctx = {"lines": lines, "anchors": {}, "figs": figs, "mermaid": drawn, "mmd_missed": missed}
+    ctx = {"lines": lines, "anchors": {}, "figs": figs, "mermaid": drawn, "mmd_missed": missed, "bare": bare}
+    if physical is not False:
+        ctx["physical"] = physical
     if page:
         ctx["ss"] = {}
     # segments: markdown between items, cards for items; the feedback section is never above an item
@@ -3947,51 +4106,30 @@ def page_parts(text, page=False, figs=None, draw=True, deadline=None):
     for it in items:
         parts.append(render_md(lines[pos:it["start"]], pos, 0, ctx))
         pos = it["end"]
-        ans = it["answer"] if it["answer"] is not None else ""
-        v = {"id": it["id"], "title": inline(it["title"]), "body": card_body(it, lines, ctx),
-             "ans": html.escape(ans, quote=False), "ss": ' data-ss-id="%s"' % it["id"] if page else ""}
-        if it["shape"] == "new":
-            v["rec"] = rec_html(it)
-            mid = between(it, lines)
-            v["mid"] = render_md(mid, it["rec_end"], 0, ctx, pick=True) if any(l.strip() for l in mid) else ""
-            parts.append(
-                '<section class="card" id="card-%(id)s" data-id="%(id)s"%(ss)s>'
-                '<div class="eyebrow">%(id)s</div>'
-                '<div class="title">%(title)s</div>'
-                '<div class="body">%(body)s</div>'
-                '<div class="rec"><span class="k">Recommended</span>%(rec)s</div>'
-                '<div class="body">%(mid)s</div>'
-                '<label for="ans-%(id)s">Your answer</label>'
-                '<textarea id="ans-%(id)s" rows="2" placeholder="A letter, words, or both">%(ans)s</textarea>'
-                '<div class="row"><span class="chip" id="chip-%(id)s">open</span>'
-                '<button type="button" class="linkbtn" id="take-%(id)s">Take the recommendation</button></div>'
-                '</section>' % v)
-        else:
-            parts.append(
-                '<section class="card" id="card-%(id)s" data-id="%(id)s"%(ss)s>'
-                '<div class="eyebrow">%(id)s</div>'
-                '<div class="title">%(title)s</div>'
-                '<div class="body">%(body)s</div>'
-                '<label for="ans-%(id)s">Answer</label>'
-                '<textarea id="ans-%(id)s" rows="2">%(ans)s</textarea>'
-                '<div class="row"><span class="chip" id="chip-%(id)s">recommendation</span>'
-                '<button type="button" class="linkbtn" id="reset-%(id)s" hidden>Back to the recommendation</button></div>'
-                '</section>' % v)
+        parts.append(decision_html(it, ctx))
     parts.append(render_md(lines[pos:feedback_line if feedback_line is not None else len(lines)], pos, 0, ctx))
     return lines, items, feedback_line, parts, ctx
 
 
-def build(text, source_name, post=None, figs=None, draw=True):
-    return render_form(text, source_name, post=post, figs=figs, draw=draw)[0]
+def build(text, source_name, post=None, figs=None, draw=True, physical=False):
+    return render_form(text, source_name, post=post, figs=figs, draw=draw, physical=physical)[0]
 
 
-def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None):
+def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None, physical=False):
     """The form as one HTML page; returns (html, ctx). `post`: memo serve's answer URL. `sheep`:
     the spacesheep page's footer facts ({rel, sha, branch, read, edit}) — the same form, anchored
     for comments, its Save sent through spacesheep's page bridge (`window.ss.emit("memo-save",
     doc)`; probed 2026-10-14: an emit reaches live_events in under 2 s, its data intact) for
     `sheep wait` and `sheep pull` to take."""
-    lines, items, feedback_line, parts, ctx = page_parts(text, page=bool(sheep), figs=figs, draw=draw, deadline=deadline)
+    try:  # the decision component (S8), after the page's CSS so its rules win the old card's; its JS before the page's
+        dcss, djs = decision_css(), decision_js()
+    except Stop as e:
+        print("keel: the page goes without the decision component's look and keys — %s" % e, file=sys.stderr)
+        dcss = djs = ""
+    if sheep and "physical" in sheep:
+        physical = sheep["physical"]
+    lines, items, feedback_line, parts, ctx = page_parts(text, page=bool(sheep), figs=figs, draw=draw, deadline=deadline,
+                                                         bare=not djs, physical=physical)
     title = title_of(text, Path(source_name).stem)
     existing_feedback = ""
     if feedback_line is not None:
@@ -4011,7 +4149,7 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
     new = sum(1 for it in items if it["shape"] == "new")
     say = ["%d decision%s." % (n, "" if n == 1 else "s")] if n or not sheep else []
     if new:
-        say.append("The recommendation is fixed; the answer box is yours — a letter, words, or both.")
+        say.append("Pick a letter, or write your own words instead: one answer per decision. A one-way pick asks first.")
     if new < n:
         say.append("%s pre-filled with the recommendation; leave it, or say otherwise."
                    % ("Each answer is" if not new else "Older-style answers are"))
@@ -4037,9 +4175,10 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
     page = [
         "<title>%s</title>" % html.escape(title, quote=False),
         foundation,
-        "<style>%s%s</style>" % (CSS, SHEEP_CSS if sheep else ""),
+        "<style>%s%s\n%s</style>" % (CSS, SHEEP_CSS if sheep else "", dcss),
         "<main>",
         '<p class="meta">%s</p>' % " ".join(say),
+        decision_modes_html() if new and djs else "",
         "\n".join(parts),
         '<section class="card" id="card-feedback"><div class="eyebrow">Open feedback</div>'
         '<div class="title">Anything the decisions above do not cover</div>',
@@ -4053,7 +4192,7 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
         # D4 on the test page). `.more` is the rest of a label, which the spacesheep skin clips out of
         # sight and a screen reader still reads; `.sr` text is for a screen reader alone (no attribute
         # by the accessibility prefix in this file: the publish gate refuses that word, AGENTS.md's trap).
-        '<div class="bar"><div class="in"><span class="nav">'
+        '<div class="bar"><div class="in"><div class="takeall" id="takeall" hidden></div><span class="nav">'
         + ('<button type="button" class="secondary" id="prev" title="Previous decision or note">↑<span class="sr"> Previous decision or note</span></button>'
            '<button type="button" class="secondary" id="next" title="Next decision or note">↓<span class="sr"> Next decision or note</span></button>'
            '<span class="count" id="count" role="status">%d/%d<span class="cw"> answered</span></span>'
@@ -4062,13 +4201,14 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
         '<span class="dot"></span><span class="word" id="state-word">Not saved</span></button>'
         '<span class="pop" id="status" role="status">Nothing saved yet.</span></span></span>'
         + '<span class="acts">'
-        + ('<button type="button" class="secondary" id="acceptall" title="Accept all recommendations">Accept all<span class="more"> recommendations</span></button>' if new else "")
+        + ('<button type="button" class="secondary" id="acceptall" title="Accept all recommendations">Accept all<span class="more"> recommendations</span></button>' if new and djs else "")
         + ('<button type="button" class="secondary" id="weblink" title="Copy browser link" hidden>Copy link<span class="more"> for the browser</span></button>'
            if sheep and sheep.get("site") else "")
         + '<button type="button" class="secondary" id="copy" title="Copy as text">Copy<span class="more"> as text</span></button>'
         '<button type="button" class="primary" id="save" title="Save answers">Save<span class="more"> answers</span></button></span></div></div>',
         receipt_html(sheep.get("receipt")) if sheep else "",
         "<script>window.MEMO = %s;</script>" % json.dumps(data, ensure_ascii=False).replace("</", "<\\/"),
+        "<script>%s</script>" % djs if djs else "",
         "<script>%s</script>" % JS,
     ]
     return "\n".join(p for p in page if p), ctx
@@ -4077,8 +4217,9 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
 # The spacesheep skin (the owner, 2026-10-20). The page wears spacesheep's own neutrals — its --ss-bg,
 # text, border and surface tokens, light and dark, read from the viewer's stylesheet that day — so
 # it sits in the viewer as one of its pages; what the reader acts on is a calm fire orange — the
-# Save, focus rings, a picked option, links, the state pill while sending — and none of it purple,
-# spacesheep's brand: purple on screen is spacesheep's control, orange is the course's. Labels, the
+# Save, focus rings, links, the state pill while sending — and none of it purple,
+# spacesheep's brand: purple on screen is spacesheep's control, orange is the course's (a decision's pick
+# and its keys' ring are the decision component's flag blue and ink since helm-ui S8). Labels, the
 # arrows and the capsule stay neutral, card edges a faint warm line (the owner's D1 on the test page, 2026-10-20: "the orange
 # is too loud"). The buttons take spacesheep's design-language measures (36 px, 13 px at 600, the 6 s
 # gloss sheen of its .ss-btn--gloss) in a pill, not its 6-8 px rectangles, inside a glass capsule
@@ -4105,10 +4246,8 @@ SHEEP_CSS = """
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding-block:0 8rem}
 a{text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent);text-underline-offset:2px}
 .card{border-left:3px solid var(--fire-line);border-radius:10px}
-.card .eyebrow,.rec .k,.opt .L,.foot .k{color:var(--muted)}
+.card .eyebrow,.opt .L,.foot .k{color:var(--muted)}
 .chip{background:var(--soft);color:var(--muted)}
-.opt.sel{border-color:var(--fire-1);box-shadow:inset 0 0 0 1px var(--fire-1);background:var(--fire-tint)}
-@media (hover:hover){button.opt:hover{border-color:var(--fire-line)}}
 textarea:focus{outline-color:var(--focus)}
 button:focus-visible,.linkbtn:focus-visible{outline-color:var(--focus)}
 .bar{left:max(16px,calc((100vw - 42rem) / 2));right:max(84px,calc((100vw - 42rem) / 2));bottom:calc(16px + env(safe-area-inset-bottom,0px));padding:.4rem .45rem;border:1px solid var(--line);border-radius:26px;background:color-mix(in srgb,var(--card) 88%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);backdrop-filter:saturate(1.6) blur(14px);box-shadow:var(--elev)}
@@ -4396,7 +4535,8 @@ def serve(memo, port=0, once=True, idle=110 * 60):
                 return self.send(404, "not found", "text/plain")
             # read the memo on every load: a reload shows what the session changed meanwhile
             try:
-                page = build(path.read_text(), path.name, post=base + "answers", figs=figs_on_disk(path))
+                page = build(path.read_text(), path.name, post=base + "answers", figs=figs_on_disk(path),
+                             physical=page_physical(path.resolve()))
             except (Stop, OSError, ValueError) as e:
                 return self.send(500, "memo serve cannot show %s: %s" % (path.name, e), "text/plain; charset=utf-8")
             record_open(path)  # one row per page that built — the page never polls (E14: `opened`)
@@ -5631,8 +5771,9 @@ DEPLOY_MIN = 6
 # status as spacesheep's live pill (the owner's D1 and D4 on the test page); 7 (2026-10-21) a margin
 # between the count and that pill; 8 (2026-10-22) the counter's notes and feedback as one ✎n beside
 # the tally; 9 (2026-10-26) Mermaid drawn at build time, the library no longer inlined; 10 (2026-10-26)
-# Copy browser link, with the page's own address (`site`, `link_shown`).
-PAGE_FMT = 10
+# Copy browser link, with the page's own address (`site`, `link_shown`); 11 (2026-11-03) the decision component
+# and Accept all's guard (helm-ui S8): a live page keeps the old Accept all, which fills one-way picks, until redeployed.
+PAGE_FMT = 11
 # The receipt (2026-10-20, the owner: "I don't think I've ever seen a receipt"). ss.emit returns nothing,
 # so all a Save could say was "handed over"; nothing ever came back. Now a pull that takes the page's
 # Saves answers on two paths: a live_push `replace` of the page's hidden RECEIPT_ID block, which every
@@ -6264,7 +6405,9 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     # deploy, so a page rendered before it has no Copy browser link (never a guessed one: the address is
     # `/@<user>/<slug>`, which the frame's `<uuid>.localhost` host does not name), and the next deploy
     # call redeploys it once with the pin's `url` (2026-10-26)
-    if (pin.get("sha") == sha and pin.get("url") and pin.get("fmt") == PAGE_FMT
+    # the tiers read the contract's physical line: a changed line redeploys a page whose doc did not change
+    phys = page_physical(Path(p).resolve()) if p else checkout_physical(top)
+    if (pin.get("sha") == sha and pin.get("url") and pin.get("fmt") == PAGE_FMT and pin.get("phys") == phys
             and pin.get("receipt_shown") == pin.get("receipt") and pin.get("link_shown") == pin["url"]
             and not (pin.get("mmd_missed") and mermaid_may_draw())):
         return pin["url"], sha, False
@@ -6274,7 +6417,9 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     view, edit = urls(slug, branch, rel) if slug else ("", "")
     shown, site = pin.get("receipt"), pin.get("url")
     page, ctx = sheep_page(text, name, {"rel": rel, "sha": sha, "branch": branch, "read": view, "edit": edit,
-                                          "receipt": shown, "site": site}, figs=figs_on_disk(p) if p else src.get("figs"),
+                                          "receipt": shown, "site": site,
+                                          "physical": phys},
+                         figs=figs_on_disk(p) if p else src.get("figs"),
                          deadline=deadline)
     import time
     carried, orphans, mcp = {}, [], None
@@ -6367,7 +6512,7 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     def change(pin):
         # every id this page ever had: a comment made on an older version still finds its block
         # by the text it was made on (merge places it by quote, or files it under feedback)
-        pin.update({"space": space, "fmt": PAGE_FMT, "url": res["url"], "sha": sha, "branch": branch, "receipt_shown": shown,
+        pin.update({"space": space, "fmt": PAGE_FMT, "phys": phys, "url": res["url"], "sha": sha, "branch": branch, "receipt_shown": shown,
                     "mmd_missed": ctx.get("mmd_missed", 0),
                     "link_shown": site,
                     "repo_path": str(top) if src else (doc_key(p) or [pin.get("repo_path")])[0],  # where `prune` asks whether the branch lives
@@ -10036,8 +10181,11 @@ def doc_physical(p):
     """The `physical:` line of the contract in the doc's checkout (its primary, as contract_physical
     reads), or None when the doc is in no repo or the contract has no such line."""
     top = git(p.parent, "rev-parse", "--show-toplevel", check=False).stdout.strip()
-    if not top:
-        return None
+    return checkout_physical(top) if top else None
+
+
+def checkout_physical(top):
+    """The `physical:` line for a checkout: its primary's contract (main's, not one a branch rewrote), else its own."""
     gd = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False).stdout.strip()
     primary = str(Path(gd).parent) if gd.endswith("/.git") else top
     return contract_physical(primary) or contract_physical(top)
@@ -13899,7 +14047,7 @@ def main(argv=None):
             return 1 if bad else 0
         if a.cmd == "build":
             out = Path(a.out) if a.out else Path.cwd() / (memo.stem + ".form.html")
-            out.write_text(build(text, memo.name, figs=figs_on_disk(memo)))
+            out.write_text(build(text, memo.name, figs=figs_on_disk(memo), physical=page_physical(memo.resolve())))
             _, items, _ = parse(text)
             print("%s: %d decision%s → %s" % (memo.name, len(items), "" if len(items) == 1 else "s", out))
             return 0
