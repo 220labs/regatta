@@ -300,6 +300,36 @@ check "$(python3 "$T/jget.py" result < "$T/out") $(qget repo--s finish | python3
 DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by typed --on here --dry > "$T/out" 2>&1; check "$?" "0" "--on here --dry: says what it would put"
 has "$T/out" "pinned here: --on here" "  pinned to this host"
+echo "  a ladder pin on a host that cannot claim a finish goes to the fleet (principal tier S4's handed landing, 2026-11-04)"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=darwin \
+  "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  a handed landing on a Mac: --dry exit 0"
+has "$T/out" "pinned here: a --by handed launch is judged by this host's plans" "  pinned to the Mac that judges it, as before"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+  "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  the same off a Mac with no feature line: --dry exit 0"
+has "$T/out" "not pinned here (a --by handed launch is judged by this host's plans (mode ask holds it)): this host cannot claim a finish" "  said why it is not pinned"
+has "$T/out" "any host with room claims it, this one first" "  put for any host, this one preferred"
+hasnt "$T/out" "--pin laptop" "  no --pin in the put"
+echo "laptop: finish-queue" > "$REGATTA_CONFIG/wharf-runs/features"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+  "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1
+has "$T/out" "pinned here: a --by handed launch" "  off a Mac with a finish-queue feature line: pinned here, as on a Mac"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+  "$B/autofinish-run" "$T/wt-u" --by handed --on here --dry > "$T/out" 2>&1
+has "$T/out" "pinned here: --on here" "  a typed --on here stays pinned whatever the host"
+rm -f "$REGATTA_CONFIG/wharf-runs/features"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+  "$B/autofinish-run" "$T/wt-u" --by handed --on here --dry > "$T/out" 2>&1
+has "$T/out" "pinned here: --on here" "  …and with no feature line too (the caller's word: it waits unclaimed, as before)"
+echo "  a ladder hold off a host that cannot claim a finish rides in the rights: held, never a merge"
+mkbranch lh > /dev/null
+git -C "$T/repo" checkout -q "$BR-lh"; printf 'a\000b' > "$T/repo/blob.bin"; git -C "$T/repo" add blob.bin
+git -C "$T/repo" commit -qm "a binary"; git -C "$T/repo" push -q origin "$BR-lh" 2>/dev/null; git -C "$T/repo" checkout -q main
+git -C "$T/repo" worktree add -q "$T/wt-lh" "$BR-lh" 2>/dev/null
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+  "$B/autofinish-run" "$T/wt-lh" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  a held handed landing off a Mac: --dry exit 0"
+has "$T/out" "this host cannot claim a finish (no finish-queue), so any host with room takes it, held at a ready PR" "  said as held, not pinned"
+has "$T/out" '"hold": true, "merge": false' "  the put's rights hold it and carry no merge"
+hasnt "$T/out" "--pin laptop" "  no --pin in the put"
 
 echo "  claimed on its own host past the handover (OWN_FRESH_S), the panel that typed it holding the lock: its session is no refusal"
 python3 - "$GU/claude" <<'PY'

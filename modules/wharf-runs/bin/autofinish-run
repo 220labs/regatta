@@ -17,7 +17,8 @@ the run will have — by, rule, merge, hold, from (this host, whose yes it is: /
 ship's digest. Claimed here at once when this host has room; else any host with room claims it, this one first for a
 grace it gives up the moment its claim finds no room (the queue's --prefer). Pinned here instead when only this host
 can judge or run it: `--on here`; the landing ladder (a hold, a mode, a mode or ship launch, `--by brief|handed`,
-rule M — landing() reads this host's plans; ladder_stay); a tip origin lacks after a push that failed, or a worktree
+rule M — landing() reads this host's plans; ladder_stay; off a host that cannot claim a finish only `--on here`, a
+ship, a brief and a chain resolved to another --by keep that pin, and a ladder hold rides as `hold`); a tip origin lacks after a push that failed, or a worktree
 holding what origin lacks (the queue's held_here at the put). Nothing of the run is written here: no state, no lock,
 no waiter. It prints `queued: QID (a finish of <tip>), …` with the window's name and exits 0 (every caller reads 0
 as the finish in hand, a live finish of the branch (`busy … (a finish)`) included); a put the queue refuses — a
@@ -55,7 +56,8 @@ done `default` build; task-shape S2) is judged as a typed /finish under that des
 it (bin/autofinish's handed_held, an empty HANDED_SLICE), bar a diff or config that will not read, a binary and
 the launcher's own gates, a `.gitattributes` change and a mode that will not read — yet it is no person's yes: mode
 ask holds it, `--merge` is refused, rule M makes it a
-mode launch, and its finish is pinned to the host that put it (ladder_stay); a chain relaunch keeps it. A hold adds `--hold` to the prompt, denies
+mode launch, and its finish is pinned to the host that put it (ladder_stay; off a host that cannot claim a finish it
+goes to the fleet, its hold riding in the rights); a chain relaunch keeps it. A hold adds `--hold` to the prompt, denies
 `bin/pr merge` to the run, writes `"hold": "<why>"` into the state, and a stop at step 11 is recorded
 with gate `held` and the class (`stopped <branch> held held (<why>): …`), which helm's board cards.
 `--by` itself grants nothing: the yes to merge is the mode, which only the owner raises
@@ -2276,10 +2278,25 @@ def ladder_stay(t, args, by):
     return None
 
 
+def finish_runs_here():
+    """Whether this host may claim a finish: dispatch-queue's `finish-queue` need, judged as builtin_met and the feature
+    line judge it for the host itself (a Mac meets it by its code, any other host by a `finish-queue` feature line). A
+    pin to a host that cannot claim a finish is a deadlock: no host may take the entry, and it waits for a person (the
+    node's handed landing of principal tier S4, 2026-11-04: `queue-unclaimed`, cancelled by hand and put again from a
+    Mac). A queue module that will not load reads as yes: the pin as before."""
+    if (os.environ.get("AUTOFINISH_PLATFORM") or sys.platform) == "darwin":
+        return True   # a Mac meets the need by its code: no module load on the typed hand-off's budget
+    try:
+        dq = load_bin("dispatch-queue")
+        return dq.FINISH_NEED in dq.features().get(self_host(), set())
+    except BaseException:   # core_path.require() exits on a missing core
+        return True
+
+
 def enqueue(t, args, by, via):
     """The finish put in the queue (dispatch --queue-finish): one entry of kind finish at this tip, with its rights
     (by, rule, merge, hold, from, digest), claimed here at once with room, else by any host with room — pinned here
-    when only this host can judge or run it (`--on here`, the ladder, a tip origin lacks). The warm run of the branch
+    when only this host can judge or run it (`--on here`, the ladder where this host claims finishes, a tip origin lacks). The warm run of the branch
     here is ended first and the tip pushed when origin lacks it, so the host that claims it lands this tip. Nothing
     of the run is written here: no state, no lock, no waiter (the claiming host's start writes its own)."""
     if not getattr(t, "warm_ended", False):   # the origin gate ended it, to move the tree
@@ -2295,6 +2312,21 @@ def enqueue(t, args, by, via):
             if stop:
                 raise TipMoved(stop)
     pin = "--on here" if args.on == "here" else ladder_stay(t, args, by)
+    # the ladder's pin goes where this host cannot run a finish: the entry goes to the fleet, and a hold the ladder
+    # judged here rides in its rights (a ready PR wherever it is claimed), so no other host merges what this one holds
+    # at the put; a mode changed here later is not seen there. The hold rides as `--hold`, which the claimer records as
+    # the keel's sticky no for that worktree until a hold of its own can travel (TODO.md [finish-ladder]).
+    # Kept pinned, as before (each waits unclaimed there, TODO.md [finish-ladder]): a typed --on here, the caller's own
+    # word; a ship (the claimer's ship_refusal reads the keel's yes from its own plans, and its exit 2 tombstones the
+    # tip `failed`); a brief (its yes file lives in this host's git dir, used up only where the run ends); and a chain
+    # whose launch resolved to another --by here (the rights carry `chain`, which the claimer judges as plain).
+    unpinned = None
+    asked_by = getattr(t, "asked", (args.by,))[0]
+    if (pin and args.on != "here" and by not in ("ship", "brief") and asked_by == by
+            and not finish_runs_here()):
+        unpinned, pin = pin, None
+        print("autofinish-run: not pinned here (%s): this host cannot claim a finish (no finish-queue), so any host "
+              "with room takes it%s" % (unpinned, ", held at a ready PR" if t.ladder[0] or t.ladder[2] else ""))
     pushed_fail = None
     remote = read_origin(t)
     if remote is not None and remote != t.tip:
@@ -2313,7 +2345,10 @@ def enqueue(t, args, by, via):
     by0, merge0, digest0 = getattr(t, "asked", (args.by, bool(args.merge), args.digest))
     if t.ladder[2]:
         merge0 = False   # the keel's sticky no: held, never a merge beside it (finish_bad refuses the pair)
-    rights = {"by": by0, "rule": args.rule, "merge": merge0, "hold": bool(args.hold or t.ladder[2]), "from": self_host()}
+    if unpinned and hold:
+        merge0 = False   # the ladder's hold, judged here, is the entry's own now: a ready PR on the claiming host
+    rights = {"by": by0, "rule": args.rule, "merge": merge0, "hold": bool(args.hold or t.ladder[2] or (unpinned and hold)),
+              "from": self_host()}
     if digest0 and merge0:
         rights["digest"] = digest0
     line = ["--repo", t.primary, "--branch", t.branch, "--tip", t.tip, "--finish", json.dumps(rights, sort_keys=True),
