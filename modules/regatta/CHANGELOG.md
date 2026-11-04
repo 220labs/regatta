@@ -1,6 +1,13 @@
 # Changelog — regatta (the core)
 
 ## Unreleased
+- `regatta limit` carries each limit's history (limit-history): `set` and `unset` take `--why` (required, one line,
+  in the row with the value before and after and the session id), print each host's last change before writing (the
+  fleet's `limits.jsonl` rows and the overlay's last commit to the key's row), and refuse to undo a change under
+  24 h old from another session unless `--over`; `get` and `list` show each value's last change on its line.
+  The guard judges another session's newest change past this session's own, holds a host whose history will not
+  read, and reads the overlay's upstream too (the finish review).
+
 - `scope_yard_hosts(scope)` and `nodes_here(reg)` (scopes-node-yard): the hosts a scope may name as its yard —
   `lighthouse/hosts`, the fleet's Macs, plus, for a confidential scope, its own node: the peer of a
   `wharf-runs/nodes/<name>/` folder here whose `scope` names it and whose `ssh` is set, or this host itself where its

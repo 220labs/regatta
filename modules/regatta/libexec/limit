@@ -4,11 +4,27 @@ no build, no landing, no overlay run. Stdlib, Python 3.9.
 
     regatta limit list [--on H[,H…] | --all]          every limit, each host's value and where it came from
     regatta limit get KEY [--on H[,H…] | --all]       one limit the same way
-    regatta limit set KEY H:VALUE [H:VALUE…]          a host's value, written on that host
-    regatta limit set KEY VALUE --all                 the same value on every host of the fleet
-    regatta limit set KEY LOGIN:VALUE (--on H… | --all)   a login's value (the week ceiling), on those hosts
-    regatta limit unset KEY H [H…] | --all            back to what the config says
-    regatta limit unset KEY LOGIN (--on H… | --all)
+    regatta limit set KEY H:VALUE [H:VALUE…] --why TEXT          a host's value, written on that host
+    regatta limit set KEY VALUE --all --why TEXT                 the same value on every host of the fleet
+    regatta limit set KEY LOGIN:VALUE (--on H… | --all) --why TEXT   a login's value (the week ceiling), on those hosts
+    regatta limit unset KEY H [H…] | --all --why TEXT            back to what the config says
+    regatta limit unset KEY LOGIN (--on H… | --all) --why TEXT
+    (set and unset take --over too: see History)
+
+History (limit-history, 2026-11-02). Every set and unset takes `--why TEXT`, one line, kept in its row with the value
+the host's layer and config give before and after, the session id when one is set (Claude Code's, else Codex's), and
+`over` when `--over` carried it past a refusal. Before it writes, it prints each target's last change: when, from
+which host and session, old → new, and its why, the newest of the rows in `limits.jsonl` on every host of the fleet
+(each read over the same road; one that cannot be read is said) and the overlay's last commit that changed what
+that host reads from the key's row (`<key> <values…>` in the overlay's checkout, the `regatta/overlay` marker, read
+with `git log -G` over HEAD and its upstream as last fetched; skipped when no overlay is named, said when one is
+named and cannot be read). The write is judged against the newest change from another session (an overlay commit
+always is; a row unless its session is this one, or neither has one and it was made from this host), past this
+session's own rows and stopping at its own `--over` row; for a login that reads the `*:` line, a `*:` change counts.
+Where that change is under 24 h old and this write moves the value the other way (both numbers and the other
+direction; where either is no number, any other value), the write is refused with that change quoted (exit 2,
+nothing written), unless `--over`; so is a write to a host whose own `limits.jsonl` will not read. An unset that
+leaves what the host reads as it was is never held. `get` and `list` end each line with its value's last change.
 
 KEY is a key's whole name (`wharf-runs/run-cap`) or its last part (`run-cap`). The limits are what the
 modules declare in their `limits` file (wharf-runs': the run cap, the check slots, the memory headroom,
@@ -46,7 +62,8 @@ in `get` and `list`, each host's own reader is asked what it reads, a peer's ove
 dir's `home` file. After a set, a host whose reader reads another value, refuses, or runs a checkout that predates the
 layer is said with exit 3; a peer with no checkout is said and not failed. `get` and `list` show what each reader
 reads beside the file's value, and exit 3 only on a host they could not reach or a reader that refuses.
-Each change is a row in `limits.jsonl`, in `.local/state/regatta` under the home folder of the host that made it.
+Each change is a row in `limits.jsonl`, in `.local/state/regatta` under the home folder of the host that made it,
+and of the host it changed (since limit-history: a host whose fleet cannot reach the maker still holds its history).
 
 `set` and `unset` refuse an unattended caller (REGATTA_UNATTENDED or CLAUDE_UNATTENDED): a dispatched run
 refused at its host's cap must not raise the cap itself; the owner's word reaches a host through a session the
@@ -236,7 +253,7 @@ def run_ssh(alias, cmd, stdin=None):
     try:
         # no stdin of the caller's: `while read …; do regatta limit set …; done < f` would lose the rest of f to ssh
         r = subprocess.run(ssh_cmd() + ["--", alias, cmd], input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL,
-                           capture_output=True, text=True, timeout=TIMEOUT)
+                           capture_output=True, text=True, errors="replace", timeout=TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise OSError("ssh %s: %s" % (alias, type(e).__name__))
     if r.returncode != 0:
@@ -271,14 +288,319 @@ def write_host(host, alias, key, lines):
             % (REMOTE_DIR, d, b, b, b), stdin=text)
 
 
+STATE = '"$HOME/.local/state/regatta/limits.jsonl"'
+
+
+def log_file():
+    return Path.home() / ".local" / "state" / "regatta" / "limits.jsonl"
+
+
+def log_on(alias, row):
+    """ROW appended to a peer's own limits.jsonl as well, so the host a change was made to holds it wherever it was
+    made from: a host whose fleet cannot reach the maker still sees it (round 1). A failure is said, never fatal."""
+    try:
+        run_ssh(alias, 'mkdir -p "$HOME/.local/state/regatta" && cat >> %s' % STATE,
+                stdin=json.dumps(row, sort_keys=True) + "\n")
+    except OSError as e:
+        print("regatta limit: no log row on %s (%s): its own history lacks this change" % (alias, e), file=sys.stderr)
+
+
 def log(row):
-    f = Path.home() / ".local" / "state" / "regatta" / "limits.jsonl"
+    f = log_file()
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
         with f.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
     except OSError as e:
         print("regatta limit: no log row (%s)" % e, file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------- a key's history
+# Why (limit-history, 2026-11-02): a session read a run-cap line the overlay had dropped on the owner's newer word
+# as drift and wrote it back; for 7.5 h a host ran 5 runs against the owner's 3. Every limit change goes through
+# this verb, so the verb carries the history: each row holds its why and old → new, a set prints the key's last
+# change per host before writing, and refuses to undo a recent one another session made unless told --over.
+
+RECENT = 24 * 3600
+SKEW = 600   # a row this far ahead of the clock still counts as recent; one further ahead is a clock or a hand, never
+             # a change that holds the key for a day past its time (the finish review)
+
+
+def when(text):
+    """An aware datetime from a row's `at` or a commit's %cI; None for anything else."""
+    try:
+        t = dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def fleet_rows(fl):
+    """(rows, notes, unread): every row of limits.jsonl on each host of the fleet (this one's, each peer's over ssh),
+    a row two hosts both hold counted once; a host whose file could not be read is a note and in UNREAD (a file that
+    is there and will not read included, never taken for an empty one: the finish review)."""
+    seen, rows, notes, unread = set(), [], [], set()
+    for h in roadless(fl):
+        notes.append("limits.jsonl on %s not read (no road from here: a change made there is unseen)" % h)
+    for h, alias in fl.items():
+        if alias is None:
+            try:
+                text = log_file().read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                text = ""
+            except OSError as e:
+                notes.append("limits.jsonl on %s not read (%s)" % (h, e))
+                unread.add(h)
+                continue
+        else:
+            try:
+                text = run_ssh(alias, 'f=%s; if [ -e "$f" ]; then cat "$f" 2>/dev/null || echo @@unread; fi; echo @@end'
+                               % STATE)
+            except OSError as e:
+                notes.append("limits.jsonl on %s not read (%s)" % (h, e))
+                unread.add(h)
+                continue
+            if "@@end" not in text or "@@unread" in text:
+                notes.append("limits.jsonl on %s not read (%s)" % (h, "no answer" if "@@end" not in text else
+                                                                   "it is there and will not read"))
+                unread.add(h)
+                continue
+            text = text.rsplit("@@end", 1)[0]
+        for l in text.splitlines():
+            try:
+                r = json.loads(l)
+            except ValueError:
+                continue
+            if not isinstance(r, dict) or when(r.get("at")) is None:
+                continue
+            if any(not isinstance(r.get(f), (str, type(None))) for f in ("by", "host", "key", "word", "session", "why",
+                                                                         "old", "new", "line", "verb")):
+                continue   # a hand-edited row of another shape: skipped, never a crash of every verb (round 1)
+            sig = json.dumps(r, sort_keys=True)
+            if sig not in seen:
+                seen.add(sig)
+                rows.append(r)
+    return rows, notes, unread
+
+
+def same_target(r, key, h, w):
+    """A row for KEY on host H, word W (ANY: any word of a login key)."""
+    if r.get("key") != key or norm_host(r.get("host")) != h:
+        return False
+    return w is ANY or (r.get("word") or None) == (w or None)
+
+
+ANY = object()
+
+
+def row_changes(rows, key, h, w):
+    """[change] for the target, oldest first: {at, by, session, old, new, why, src}. A row from before this change
+    holds no old or new: its new is its line's value (an unset's: the config's, unknown), its old the row before's new.
+    A change that moved nothing (old equal to new: a value set again) is left out: as the last change it would hide
+    the real one under it from the guard (round 1). ANY: each word its own series, their last changes (round 1)."""
+    if w is ANY:
+        words = sorted({r.get("word") or "" for r in rows if same_target(r, key, h, ANY)})
+        lasts = [c for x in words for c in row_changes(rows, key, h, x or None)[-1:]]
+        return sorted(lasts, key=lambda c: c["at"])
+    out, prev = [], None
+    for r in sorted((r for r in rows if same_target(r, key, h, w)), key=lambda r: when(r["at"])):
+        line, word = r.get("line"), r.get("word")
+        new = r["new"] if "new" in r else (None if line is None else (word_of(line)[1] if word else line))
+        old = r["old"] if "old" in r else prev
+        prev = new
+        if old is not None and new is not None and canon(old) == canon(new):
+            continue
+        out.append({"at": when(r["at"]), "by": r.get("by") or "?", "session": r.get("session") or None,
+                    "old": old, "new": new, "why": r.get("why"), "src": "row", "verb": r.get("verb"),
+                    "over": r.get("over") is True})
+    return out
+
+
+_OVERLAY = {}
+
+
+def overlay_commits(key):
+    """(commits newest first, why not read): [(sha, at, subject, old tokens or None, new tokens or None)] for each
+    overlay commit that changed KEY's row (`<key> <values…>`, as the overlay's config table holds it), read with
+    `git log -G` over the files that hold the row today (else every file that ever held it), each dated by when it
+    was committed (%cI: a rebased commit keeps an older author date). (None, why) when an overlay is named but cannot be read;
+    ([], None) when none is named. Cached per key."""
+    if key in _OVERLAY:
+        return _OVERLAY[key]
+    root = common.overlay_root()
+    if root is None:
+        _OVERLAY[key] = ([], None)
+        return _OVERLAY[key]
+    pat = "^%s( |$)" % key   # KEY_RE's characters only: nothing to escape
+    git = ["git", "-C", str(root)]
+    try:
+        # HEAD and its upstream as last fetched: a drop committed on the other Mac and pushed, not yet fast-forwarded
+        # here, is read too (the finish review)
+        u = subprocess.run(git + ["rev-parse", "--verify", "-q", "@{u}"], capture_output=True, text=True,
+                           errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+        revs = ["HEAD"] + (["@{u}"] if u.returncode == 0 and u.stdout.strip() else [])
+        g = subprocess.run(git + ["grep", "-l", "-E", pat] + revs + ["--"], capture_output=True, text=True,
+                           errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+        if g.returncode not in (0, 1):
+            raise OSError((g.stderr.strip().splitlines() or ["exit %d" % g.returncode])[-1][:160])
+        files = sorted({l.split(":", 1)[1] for l in g.stdout.splitlines() if ":" in l})
+        if not files:
+            # no file holds the row today: it may have been dropped whole, the owner's word as much as a changed
+            # value (round 1); the files any commit changed it in, over the whole history (about 1.4 s on the overlay)
+            f = subprocess.run(git + ["log", "--format=", "--name-only", "-G", pat] + revs, capture_output=True,
+                               text=True, errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+            if f.returncode != 0:
+                raise OSError((f.stderr.strip().splitlines() or ["exit %d" % f.returncode])[-1][:160])
+            files = sorted({l.strip() for l in f.stdout.splitlines() if l.strip()})
+        if not files:
+            _OVERLAY[key] = ([], None)
+            return _OVERLAY[key]
+        r = subprocess.run(git + ["log", "-p", "--no-color", "--no-ext-diff", "-U0",
+                                  "--format=@@commit%x09%H%x09%cI%x09%s", "-G", pat] + revs + ["--"] + files,
+                           capture_output=True, text=True, errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+        if r.returncode != 0:
+            raise OSError((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1][:160])
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _OVERLAY[key] = (None, "the overlay's history at %s not read (%s)" % (root, e))
+        return _OVERLAY[key]
+    out = []
+    for l in r.stdout.splitlines():
+        if l.startswith("@@commit\t"):
+            _, sha, at, subject = (l.split("\t", 3) + [""])[:4]
+            out.append([sha, when(at), subject, None, None])
+        elif out and l[:1] in "-+" and re.match(r"^[-+]%s( |$)" % re.escape(key), l):
+            toks = l[1:].split()[1:]
+            out[-1][3 if l[0] == "-" else 4] = toks
+    _OVERLAY[key] = ([tuple(c) for c in out if c[1] is not None], None)
+    return _OVERLAY[key]
+
+
+def row_value(spec, h, w, toks):
+    """What a host reads from the overlay's row TOKENS (None: no row) for word W: its entry, a `*:` entry where the key
+    takes one, else the default."""
+    ents = common.config_entries(toks or [])
+    if spec["shape"] == "plain":
+        return " ".join(v for x, v in ents if x is None) or spec["default"] or "none"
+    if w is ANY:
+        return " ".join(toks or []) or "none"
+    for want in (w, "*") if (spec["star"] or spec["shape"] == "login") else (w,):
+        for x, v in ents:
+            if x == want:
+                return v
+    return spec["default"] or "none"
+
+
+def overlay_change(key, spec, h, w):
+    """(change or None, note or None): the newest overlay commit that moved what host H reads for W."""
+    commits, why = overlay_commits(key)
+    if commits is None:
+        return None, why
+    for sha, at, subject, old, new in commits:
+        o, n = row_value(spec, h, w, old), row_value(spec, h, w, new)
+        if canon(o) != canon(n):
+            return {"at": at, "by": "the overlay's %s" % sha[:8], "session": None, "old": o, "new": n,
+                    "why": subject, "src": "overlay", "verb": "commit"}, None
+    return None, None
+
+
+def last_change(key, spec, h, w, rows):
+    """(the newest change for the target, from the fleet's rows or the overlay, or None; a note or None)."""
+    ch = row_changes(rows, key, h, w)
+    ov, note = overlay_change(key, spec, h, w)
+    cands = ([ch[-1]] if ch else []) + ([ov] if ov else [])
+    return (max(cands, key=lambda c: c["at"]) if cands else None), note
+
+
+def judged(key, spec, h, w, rows, cur, base):
+    """(the change a write to the target is judged against, or None; a note or None): newest first over the target's
+    rows and the overlay's commit, this session's own rows passed over, so its own newer change never hides another
+    session's under it (the finish review: two steps undid it without --over), and its own --over row ends the walk
+    (that row answered what lay under it). A login whose host reads the `*:` line (no line of its own in the layer
+    or the config) is moved by a `*:` change too, so that series counts for it."""
+    cands = list(row_changes(rows, key, h, w))
+    if spec["shape"] == "login" and w not in (None, "*"):
+        if not any(x == w for x, _ in common.config_entries(common.live_merge(cur, base) or [])):
+            cands += row_changes(rows, key, h, "*")
+    ov, note = overlay_change(key, spec, h, w)
+    # newest first, a tie in whole seconds taken in the order the rows were written (sorted is stable; reverse=True
+    # would keep the older of a tie first)
+    for c in reversed(sorted(cands + ([ov] if ov else []), key=lambda c: c["at"])):
+        if another(c):
+            return c, note
+        if c.get("over"):
+            return None, note
+    return None, note
+
+
+def recent(c, now):
+    return -SKEW < (now - c["at"]).total_seconds() < RECENT
+
+
+def age(t):
+    s = max(0, int((dt.datetime.now(dt.timezone.utc) - t).total_seconds()))
+    return "%d min" % (s // 60) if s < 3600 else "%d h" % (s // 3600) if s < 2 * 86400 else "%d d" % (s // 86400)
+
+
+def who(c):
+    if c["src"] == "overlay":
+        return c["by"]
+    return "%s, %s" % (c["by"], "session " + c["session"][:8] if c["session"] else "no session")
+
+
+def show_value(v):
+    return "the config's" if v is None else v
+
+
+def said(c):
+    """One change, whole: when, from whom, old → new, its why."""
+    return "%s (%s ago) by %s: %s → %s — %s" % (
+        c["at"].astimezone().strftime("%Y-%m-%d %H:%M %Z").strip(), age(c["at"]), who(c),
+        "?" if c["old"] is None else c["old"], show_value(c["new"]), c["why"] or "no why recorded")
+
+
+def brief(c):
+    """One change on a list line."""
+    if c is None:
+        return "last: none on record"
+    return "last: %s ago by %s, %s → %s%s" % (age(c["at"]), who(c), "?" if c["old"] is None else c["old"],
+                                              show_value(c["new"]), ", \"%s\"" % c["why"] if c["why"] else "")
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def undoes(c, new):
+    """True when writing NEW moves the value the other way from change C: from C's new value, not from what the host
+    reads now, which may still be the config C replaced (an overlay commit not yet deployed: round 2). Both numbers and
+    the other direction from C's new; else NEW is C's old value back."""
+    if c is None or c["new"] is None or canon(new) == canon(c["new"]):
+        return False
+    a, b, y = num(c["old"]), num(c["new"]), num(new)
+    if None not in (a, b, y):
+        return (b - a) * (y - b) < 0
+    # no direction to read (a login's first line, its old `none`; a rule such as `1.5 log`): any other value moves
+    # it, held as an undo rather than passed blind (the finish review)
+    return True
+
+
+def my_session():
+    """This session's id: Claude Code's, else Codex's (helmlib reads the same), else None (a terminal)."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID") or None
+
+
+def another(c):
+    """Whether change C came from another session than this one: an overlay commit always; a row, unless its
+    session is this one, or neither has a session and it was made from this host (one terminal's two sets)."""
+    if c["src"] == "overlay":
+        return True
+    mine = my_session()
+    if mine or c["session"]:
+        return c["session"] != mine
+    return norm_host(c["by"]) != me()
 
 
 # ---------------------------------------------------------------------------- what a host reads
@@ -492,11 +814,24 @@ def cmd_list(a, tab, keys):
     hosts = hosts_of(a, fl)
     rows, bad = [], 0
     bad |= show(keys, tab, hosts, fl, rows)
+    # each value's last change beside it (limit-history): the fleet's rows read once, the overlay once per key
+    hist, notes, _ = fleet_rows(fl)
+    for n in notes:
+        print("regatta limit: %s" % n, file=sys.stderr)
+    said_notes = set()
+    lasts = []
+    for k, h, _, _ in rows:
+        sh = tab[k]["shape"]
+        c, note = last_change(k, tab[k], h, h if sh == "host" else ANY if sh == "login" else None, hist)
+        if note and note not in said_notes:
+            said_notes.add(note)
+            print("regatta limit: %s" % note, file=sys.stderr)
+        lasts.append(brief(c))
     wk = max([len(r[0]) for r in rows] + [3])
     wh = max([len(r[1]) for r in rows] + [4])
     wv = max([len(r[2]) for r in rows] + [5])
-    for r in rows:
-        print("%-*s  %-*s  %-*s  %s" % (wk, r[0], wh, r[1], wv, r[2], r[3]))
+    for r, last in zip(rows, lasts):
+        print("%-*s  %-*s  %-*s  %s · %s" % (wk, r[0], wh, r[1], wv, r[2], r[3], last))
     return 3 if bad else 0
 
 
@@ -568,17 +903,109 @@ def lock_here():
     return fh
 
 
-def apply(key, fl, plan, verb, spec=None):
-    """Each host's layer rewritten for its items; (done, unreached)."""
+def value_for(spec, h, w, layer, base):
+    """What host H's reader takes for word W (None for a plain key) from LAYER over BASE: a login key's own line,
+    else its `*:` line, else none; any other key as effective() reads it."""
+    if spec["shape"] != "login":
+        return effective(spec, h, layer, base)[0]
+    ents = common.config_entries(common.live_merge(layer, base) or [])
+    for want in (w, "*"):
+        for x, v in ents:
+            if x == want:
+                return v
+    return "none"
+
+
+def edit_layer(layer, items, key=None, h=None):
+    """LAYER with ITEMS [(word, line or None)] applied: a line replaces its word's (a plain key's, the whole layer),
+    None takes it away. With KEY and H, an unset with nothing to take is said."""
+    new = list(layer or [])
+    for w, line in items:
+        if key and line is None and not any((word_of(l)[0] == w) if w else True for l in new):
+            print("regatta limit: %s on %s has no live line%s to unset" % (key, h, " for " + w if w else ""),
+                  file=sys.stderr)
+        if w is None:   # a plain key: the value is the whole layer
+            new = [] if line is None else [line]
+        else:
+            new = [l for l in new if word_of(l)[0] != w] + ([] if line is None else [line])
+    return new
+
+
+def guard(key, spec, fl, plan, verb, over):
+    """Before a set or unset writes: each target's last change printed (when, by whom, old → new, why) from the
+    fleet's limits.jsonl and the overlay's history; refused (exit 2, nothing written) where another session's change
+    under 24 h old (judged()) would be moved the other way, unless OVER. An unset is held by the same rule: taking a
+    recent value away undoes it as a set would; one that changes nothing the host reads is not. A target whose own
+    limits.jsonl will not read is held the same way, never judged blind; one whose layer will not read is not written
+    at all (SKIP), so a read that fails here and answers in apply never writes past the guard (the finish review).
+    (exit or None, SKIP {host: why}, whether --over was used)."""
+    rows, notes, unread = fleet_rows(fl)
+    for n in notes:
+        print("regatta limit: %s" % n, file=sys.stderr)
+    now = dt.datetime.now(dt.timezone.utc)
+    by = {}
+    for h, w, line in plan:
+        by.setdefault(h, []).append((w, line))
+    refused, said_notes, skip = [], set(), {}
+    for h, items in by.items():
+        try:
+            layer, base = read_host(h, fl[h], key)
+        except OSError as e:
+            skip[h] = str(e)   # apply says it could not be reached; the history is still printed
+            layer = base = ()
+        if h in unread and h not in skip:
+            refused.append("%s on %s: its own limits.jsonl could not be read, so a change made there is unseen"
+                           % (key, h))
+        cur = list(layer or [])
+        for w, line in items:
+            target = w if spec["shape"] != "plain" else None
+            c, note = last_change(key, spec, h, target, rows)
+            if note and note not in said_notes:
+                said_notes.add(note)
+                print("regatta limit: %s" % note, file=sys.stderr)
+            print("%s on %s%s: %s" % (key, h, " for " + w if spec["shape"] == "login" else "",
+                                      "last changed " + said(c) if c else "no change on record"))
+            if h in skip:
+                continue
+            nxt = edit_layer(cur, [(w, line)])
+            old, new = value_for(spec, h, w, cur, base), value_for(spec, h, w, nxt, base)
+            j, _ = judged(key, spec, h, target, rows, cur, base)
+            prev, cur = cur, nxt
+            # a write that leaves the layer as it was changes nothing, whatever it reads (an unset with no line); an
+            # unset that leaves the value the host reads as it was is cleanup, never an undo (the finish review)
+            if nxt == prev or (verb == "unset" and canon(old) == canon(new)):
+                continue
+            if j and recent(j, now) and undoes(j, new):
+                refused.append("%s on %s: %s → %s would undo the change of %s" % (key, h, old, new, said(j)))
+    if not refused:
+        return None, skip, False
+    if over:
+        for r in refused:
+            print("regatta limit: --over: %s" % r, file=sys.stderr)
+        return None, skip, True
+    for r in refused:
+        print("regatta limit: refused %s %s — %s; nothing written. Ask whoever made it, or pass --over with a --why "
+              "that answers it" % (verb, key, r), file=sys.stderr)
+    return 2, skip, False
+
+
+def apply(key, fl, plan, verb, spec, why, skip=None, overrode=False):
+    """Each host's layer rewritten for its items; (done, unreached). Each item's row holds WHY, the values its layer
+    and config give before and after (the history guard() reads), and `over` when --over carried it past a refusal.
+    A host in SKIP (guard could not read it) is unreached, never written."""
     by = {}
     for h, w, line in plan:
         by.setdefault(h, []).append((w, line))
     done, unreached = [], []
     for h, items in by.items():
+        if skip and h in skip:
+            unreached.append(h)
+            print("regatta limit: could not reach %s (%s): %s — its value is unchanged" % (h, fl[h], skip[h]),
+                  file=sys.stderr)
+            continue
         held = lock_here() if fl[h] is None else None
         try:
             layer, base = read_host(h, fl[h], key)
-            new = list(layer or [])
             for w, line in items:   # what the value stands over, whole (the header): said, never merged
                 if line is None:
                     continue
@@ -586,14 +1013,12 @@ def apply(key, fl, plan, verb, spec=None):
                 if over and over != ["the config's " + line]:   # its own value again: nothing to say
                     print("regatta limit: %s on %s: %s stands over %s, whole" % (key, h, line, " ".join(over)),
                           file=sys.stderr)
+            moves, cur = [], list(layer or [])
             for w, line in items:
-                if line is None and not any((word_of(l)[0] == w) if w else True for l in new):
-                    print("regatta limit: %s on %s has no live line%s to unset" % (key, h, " for " + w if w else ""),
-                          file=sys.stderr)
-                if w is None:   # a plain key: the value is the whole layer
-                    new = [] if line is None else [line]
-                else:
-                    new = [l for l in new if word_of(l)[0] != w] + ([] if line is None else [line])
+                nxt = edit_layer(cur, [(w, line)], key, h)
+                moves.append((value_for(spec, h, w, cur, base), value_for(spec, h, w, nxt, base)))
+                cur = nxt
+            new = cur
             write_host(h, fl[h], key, new)
         except OSError as e:
             if held:
@@ -604,10 +1029,15 @@ def apply(key, fl, plan, verb, spec=None):
         if held:
             held.close()
         done.append(h)
-        for w, line in items:
-            log({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "by": me(), "host": h,
-                 "key": key, "verb": verb, "line": line, "word": w,
-                 "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None})
+        for (w, line), (old, new) in zip(items, moves):
+            row = {"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "by": me(), "host": h,
+                   "key": key, "verb": verb, "line": line, "word": w, "why": why, "old": old, "new": new,
+                   "session": my_session()}
+            if overrode:
+                row["over"] = True
+            log(row)
+            if fl[h] is not None:
+                log_on(fl[h], row)   # the same row on the host changed, which a fleet read counts once
             print("%s %s on %s: %s" % (verb, key, h, line if line is not None else (w or "the value") + " → the config's"))
     return done, unreached
 
@@ -661,7 +1091,10 @@ def cmd_set(a, tab):
             print("regatta limit: refused %s %s — %s; nothing written" % (key, r.split(" on ", 1)[0], r.split(" on ", 1)[1]),
                   file=sys.stderr)
         return 2
-    done, unreached = apply(key, fl, plan, "set", spec)
+    held, skip, overrode = guard(key, spec, fl, plan, "set", a.over)
+    if held:
+        return held
+    done, unreached = apply(key, fl, plan, "set", spec, a.why, skip, overrode)
     if spec["shape"] == "login" and any(w == "*" for _, w, _ in plan):
         print("regatta limit: a `*:` line serves only a login whose registry row sets no week ceiling of its own; "
               "name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
@@ -697,7 +1130,10 @@ def cmd_unset(a, tab):
             if bad:
                 raise Usage("no road to %s" % ", ".join(bad))
         plan = [(h, h if spec["shape"] == "host" else None, None) for h in hosts]
-    _, unreached = apply(key, fl, plan, "unset")
+    held, skip, overrode = guard(key, spec, fl, plan, "unset", a.over)
+    if held:
+        return held
+    _, unreached = apply(key, fl, plan, "unset", spec, a.why, skip, overrode)
     return 3 if unreached else 0
 
 
@@ -710,14 +1146,25 @@ def main(argv=None):
             s.add_argument("key")
         if name in ("set", "unset"):
             s.add_argument("values", nargs="*")
+            s.add_argument("--why", help="one line: why this change (required; recorded in its row)")
+            s.add_argument("--over", action="store_true",
+                           help="write though it undoes another session's change of the last 24 h")
         g = s.add_mutually_exclusive_group()
         g.add_argument("--on", help="hosts, comma-separated")
         g.add_argument("--all", action="store_true", help="every host of the fleet")
     a = p.parse_args(argv)
-    if a.verb in ("set", "unset") and common.unattended():
+    if a.verb in ("set", "unset") and common.unattended_caller():
+        # an unattended caller never gets --over either: it is refused the whole verb, by the one rule that also
+        # counts peer-start's AUTOFINISH_CALLER_UNATTENDED (the finish review)
         print("regatta limit: %s writes a host's live limits — refused under %s; the owner's session runs it"
-              % (a.verb, common.unattended_label()), file=sys.stderr)
+              % (a.verb, common.unattended_caller()), file=sys.stderr)
         return 2
+    if a.verb in ("set", "unset"):
+        a.why = (a.why or "").strip()
+        if not a.why or "\n" in a.why or "\r" in a.why:
+            print("regatta limit: %s takes --why TEXT, one line saying why: it is recorded with the change, and the "
+                  "next set of this key prints it" % a.verb, file=sys.stderr)
+            return 2
     tab = table()
     try:
         if a.verb == "list":
