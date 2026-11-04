@@ -1,6 +1,11 @@
 # Changelog — regatta (the core)
 
 ## Unreleased
+- `host_name()` reads `wharf-runs/host` first (a builder host's row; absent everywhere else). `launchd_domain()`: `gui/<uid>`, or `user/<uid>` where `DISPATCH_LAUNCHD_DOMAIN` (else
+  `wharf-runs/launchd-domain`) says `user` — a builder user's jobs (the Argon arm's S2). fence.py's builder keychain:
+  `builder_signin_put` / `builder_signin_read` (a keychain file in a builder's home holding agy's item, its random
+  password in a 0600 file beside it, every password and secret on `security -i`'s stdin), and `agy_secret()`, which
+  `_home_agy`'s per-run keychain now reads: the builder keychain where the home has one, else the login's item.
 - `regatta limit` carries each limit's history (limit-history): `set` and `unset` take `--why` (required, one line,
   in the row with the value before and after and the session id), print each host's last change before writing (the
   fleet's `limits.jsonl` rows and the overlay's last commit to the key's row), and refuse to undo a change under

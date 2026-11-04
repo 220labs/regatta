@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A builder host (the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md, "The builder host"): `bin/builder-host`
+  `make VENDOR` (as root, one ssh line; `--dry-run`), `check` (read only) and `probe` (the real user's verdicts:
+  G3's reads of the owner's home, `launchctl bootstrap user/<uid>`, the keychain roads; `--with-model` for agy's
+  `--dangerously-skip-permissions` and `--sandbox` probes) and `keys` (the builder's config keys and what each
+  reveals). make calls `builder-user`, writes only the listed keys, clones regatta over https with wharf's pre-push
+  template, runs vendor-hooks as the builder (hooks.json holds `regatta` alone, GEMINI.md), fills fence's builder
+  keychain, puts the sweep in a LaunchDaemon with `UserName` and `DISPATCH_HOST=<host>-VENDOR`, and prints the
+  owner's side (the registry's hosts line, `wharf-runs/features`, `wharf-runs/slot-share`, `regatta/fleet-ssh`).
+  `builder-user` gains its suite's seams (`BUILDER_USER_STUBS`, `BUILDER_USER_HOMES`) and finds gh on PATH.
 - `yard-node cloud` learns `provider: oci` (free-ci S5): `tofu/oci/` makes one pay-as-you-go `VM.Standard.A1.Flex`
   (4 OCPU / 24 GB, Ubuntu 24.04 aarch64, as Oracle lists no 26.04) with a 150 GB boot volume under `prevent_destroy`,
   its own VCN with ssh from the tailnet only (`ssh-from` opens one address, briefly), the A1 quota pinned to 4 cores and 24 GB and
@@ -57,6 +66,31 @@
   sync clients hang or wait out the close (the landing review). `tests/test_kick_socket.sh` (on the Linux list): the frame road against a stand-in
   socket, the package missing, the space key, and the whole press against a local stub server where the package
   imports. `kick-roads` names `sheep` nowhere until `kick_probe.py --peer` lands a press from each kicker.
+- `wharf-runs/only` (dispatch-queue's `claimable()`, this host's own): a host claims nothing whose needs lack one
+  of its features, and never a finish; a file that names none, or will not read, claims nothing.
+- The launchd domain is a seam: dispatch, dispatch-queue, dispatch-rc and kicklib load jobs into the core's
+  `launchd_domain()` (`user/<uid>` where `wharf-runs/launchd-domain` says `user`, else `gui/<uid>` as before);
+  systemd-launchctl takes both. dispatch-queue's `jobs` leaves the sweep to a builder's LaunchDaemon.
+- One Mac's run cap is shared by its users: `wharf-runs/slot-share` names a root-owned folder holding one folder per
+  user, where each publishes its live runs' pids at each count and each run's watcher start (dispatch-rc's
+  `publish_slots`); the cap counts another user's runs only from its own folder and file (no link, no FIFO), each a
+  live process of that user's uid with its recorded start (`peer_slots`, read by `busy()` and `live`).
+- `wharf-runs/host` names this host's row where it is not the Mac's name (a builder's `<host>-<vendor>`): the core's
+  `host_name()` and dispatch's `local_host` read it first, so a job the builder's sweep claimed fires as that row.
+- builder-host writes nothing under the builder's home as root: every file and folder there is written by the builder
+  itself (a link the builder planted leads only where it could write anyway), root reads there only regular files
+  (O_NOFOLLOW, O_NONBLOCK), the sweep fast-forwards the builder's clone at each pass, and builder-user never runs
+  the builder's CLI as root and writes its copy and its `.zprofile` line as the builder.
+  `check` reads the builder's home only as plain files (a FIFO or a link there fails it, never hangs it), judges the
+  sweep by launchd's `print` as well as the plist (make retries a bootstrap once and removes a plist that will not
+  load), passes the live limits `regatta limit set --all` writes, refuses an owner who is the builder, and, run as the
+  builder, takes its row from `wharf-runs/host` unsuffixed. The sweep's log is opened by its own shell, as the builder.
+  A shared cap's file carries `slots`, the user's whole count (other CLIs' runs, research, the parked overflow), which
+  the other user counts past the pids it verifies, 64 at most; those slots expire after two sweep passes, a claim's
+  reservations ride in them, a headless run publishes after its record, and a blank `ps` for a live pid still counts.
+  make takes the pre-push from its own checkout and reads the owner's live cap before the base.
+- tests/test_builder_host.sh, portable (in `LINUX_OK`). The three files stay off the publish allowlist until a scrub.
+
 - The builder coin draws 3 in 5 Sonnet 5.5 `high` (was 1 in 5), and plain-Opus briefs join it: a `Tier:` line naming Opus alone, no tier word and no effort but `high` (blueprintlib's `brief_rotates`). Plain Opus is the rules' default line and nothing more (`PLAIN_OPUS_RE`: a reason, another model or effort keeps a brief off). The rotation row's `brief_class` says `specced` or `plain` and its `odds` the draw's; `buildercoin.py rotates` reads a brief's class. The owner, 2026-11-03: more Sonnet rows sooner, fewer credits.
 
 - `wharf apply --yard` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a

@@ -466,7 +466,7 @@ core=""; overlay=""; p_account=""; p_trust=""; p_keel=""; p_ask=""; p_helm=""; p
 # themselves, so a missing key is a default and never a broken run. One exception by choice: the spawn
 # gate (confidential-reach S6, spawn_judge) needs the core, and a core that does not load refuses whatever
 # may be a spawn, as a torn registry does (spawn_nocore); a run asked from inside its own repo goes on.
-peers=""; dhost=""; runcaps=""; lprefix="org.regatta.claude"; lprev=""; laptop="laptop"; owner=""; handover=""; pendpre=""; projects="$HOME/projects"; qkeys=""
+peers=""; dhost=""; runcaps=""; lprefix="org.regatta.claude"; lprev=""; ldom="gui"; hostkey=""; laptop="laptop"; owner=""; handover=""; pendpre=""; projects="$HOME/projects"; qkeys=""
 eval "$(python3 - "$here" <<'CORE'
 import os, re, shlex, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
@@ -517,6 +517,8 @@ out["runcaps"] = " ".join("%s:%s" % c for c in caps if c[0])
 out["lprefix"] = first("wharf-runs/label-prefix", "org.regatta.claude")
 out["lprev"] = first("wharf-runs/label-prefix-previous")
 out["lprev"] = "" if out["lprev"] == out["lprefix"] else out["lprev"]
+out["ldom"] = first("wharf-runs/launchd-domain", "gui")   # `user` on a builder host (DOM below)
+out["hostkey"] = first("wharf-runs/host")   # the row of a builder host (local_host below; the core host_name reads it too)
 out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") or first("regatta/laptop", "laptop"))
 out["owner"] = common.OWNER_NAME if common else first("regatta/owner")
 out["handover"] = common.marked("handed", common.HANDOVER_LINE) if common else ""   # ⏳ first: MARKS in the core (no apostrophe: bash 3.2 heredoc)
@@ -569,10 +571,15 @@ LC="${DISPATCH_LAUNCHCTL:-launchctl}"
 # systemd-launchctl, the same verbs over systemd's user manager (its header says why one shim). Every job below
 # goes through $LC and every job's plist stays in $LA, so this line is the whole seam. $OSTYPE, not uname: no fork
 case "${DISPATCH_LAUNCHCTL:-}$OSTYPE" in darwin*) ;; linux*) LC="$here/bin/systemd-launchctl";; esac
+# The launchd domain every job loads into (the core's launchd_domain, read as one word here): a login's `gui/<uid>`,
+# or `user/<uid>` where DISPATCH_LAUNCHD_DOMAIN (else wharf-runs/launchd-domain) says `user` — a builder user has no
+# login session and so no gui domain (the Argon arm's S2). systemd-launchctl takes both.
+DOM="gui/$(id -u)"; [ "${DISPATCH_LAUNCHD_DOMAIN:-$ldom}" = user ] && DOM="user/$(id -u)"
 # this host's name, as the config keys and the queue spell it: macOS's LocalHostName, else the kernel's short one,
 # lower-cased and every character but [a-z0-9-] a hyphen — the core's host_name() exactly, which dispatch-queue
 # reads, so `srv_01` is one host to both (the landing review)
-local_host() { { scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//' -e 's/^$/host/'; }
+# wharf-runs/host first: a builder host's row (`<host>-<vendor>`), as the core's host_name() reads it
+local_host() { { [ -n "$hostkey" ] && echo "$hostkey" || scutil --get LocalHostName 2>/dev/null || hostname -s; } | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//' -e 's/^$/host/'; }
 # BSD date on a Mac, GNU elsewhere (AGENTS.md's date trap), each failing cleanly on the other: an epoch's local
 # time in FORMAT (dateat EPOCH +FORMAT), and a local "YYYY-MM-DD HH:MM" as an epoch (epochof)
 dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
@@ -842,7 +849,7 @@ origin_refuse() {
   fi
   [ -n "$fromq" ] && [ "$dry" = 0 ] \
     && python3 "$Q" refused "$fromq" --label "${DISPATCH_LABEL:-}" --why "its confidential origin does not read in $self_host's registry" "${qctx[@]}" >&2
-  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
+  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "$DOM/$DISPATCH_LABEL" 2>/dev/null; }
   exit 2
 }
 origin_read_back() {   # 0: sets origin_scope and origin_marker from $origin; 1: sets origin_why
@@ -908,7 +915,7 @@ if [ "$finishq" = 1 ]; then
   export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
   python3 "$here/bin/autofinish-run" queued "$fromq" --repo "$repo" --branch "$branch"; rc=$?
   # its job out of launchd last (a build's cleanup does the same): the run's waiter is setsid'd and outlives it
-  "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" > /dev/null 2>&1
+  "$LC" bootout "$DOM/$DISPATCH_LABEL" > /dev/null 2>&1
   exit "$rc"
 fi
 if { [ -n "$landq$qlabel" ] && { [ "$start" = 0 ] || [ -z "$landq" ] || [ -z "$qlabel" ]; }; }; then
@@ -1154,7 +1161,7 @@ spawn_refuse() {   # WHY — a final refusal fails a claimed entry (dropped, car
   fi
   [ -n "$fromq" ] && [ "$dry" = 0 ] \
     && python3 "$Q" "$([ "$spawn_final" = 1 ] && echo failed || echo refused)" "$fromq" --label "${DISPATCH_LABEL:-}" --why "no review here that vouches for its brief (confidential-reach S6)" "${qctx[@]}" >&2
-  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null; }
+  [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "$DOM/$DISPATCH_LABEL" 2>/dev/null; }
   exit 2
 }
 # The tree judged: SREF in SREPO, the --start worktree's HEAD or the branch as this host knows it; SNOFETCH says
@@ -1514,7 +1521,7 @@ rbin='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/mo
 # under the old name, so --cancel and a reschedule still find a job run-seed scheduled
 jobs() { local b; for b in "$base" "$old" $pbase $pold; do ls "$LA/$b.plist" "$LA/$b".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].plist 2>/dev/null; done; }
 # a job whose run is going now; booting it out kills that run (probed: one tab, then this line)
-running() { "$LC" print "gui/$(id -u)/$1" 2>/dev/null | grep -qx $'\tstate = running'; }
+running() { "$LC" print "$DOM/$1" 2>/dev/null | grep -qx $'\tstate = running'; }
 # every job of the branch but one that is running: pending, or a leftover of a run that died
 clear_jobs() {   # KEEP-PLIST VERB
   local p l
@@ -1522,7 +1529,7 @@ clear_jobs() {   # KEEP-PLIST VERB
     [ -n "$p" ] && [ "$p" != "$1" ] || continue
     l=$(basename "$p" .plist)
     if running "$l"; then echo "left $l: its run is going (maybe this very one) — a run is ended, not unscheduled; dispatch --status"
-    else rm -f "$p"; "$LC" bootout "gui/$(id -u)/$l" 2>/dev/null; echo "$2 $l"; fi
+    else rm -f "$p"; "$LC" bootout "$DOM/$l" 2>/dev/null; echo "$2 $l"; fi
   done < <(jobs)
 }
 # fixed when scheduled and handed to the fired run in the plist: a run next Sunday logs where
@@ -2168,7 +2175,7 @@ p["StartCalendarInterval"] = {"Month": t.tm_mon, "Day": t.tm_mday, "Hour": t.tm_
 with open(dst, "wb") as f:
     plistlib.dump(p, f)
 PY2
-  "$LC" bootstrap "gui/$(id -u)" "$LA/$nl.plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "gui/$(id -u)" "$LA/$nl.plist"; } \
+  "$LC" bootstrap "$DOM" "$LA/$nl.plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "$DOM" "$LA/$nl.plist"; } \
     || { rm -f "$LA/$nl.plist"; echo "== launchctl bootstrap of $nl failed: not rescheduled"; return 1; }
   echo "rescheduled $nl for $(dateat "$at" '+%Y-%m-%d %H:%M'): $spawn_why — judged again then, handed back $n of $SPAWN_REARMS (confidential-reach S6)"
 }
@@ -2569,9 +2576,9 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
     clear_jobs "$plist" "replaced the pending" >&2
   fi
   printf '%s\n' "$xml" > "$plist"
-  "$LC" bootout "gui/$(id -u)/$label" 2>/dev/null
+  "$LC" bootout "$DOM/$label" 2>/dev/null
   # bootout returns before the old job is gone (rc-hosts met "5: Input/output error" here): retry once
-  "$LC" bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "gui/$(id -u)" "$plist"; } || { rm -f "$plist"; echo "dispatch: launchctl bootstrap failed (plist removed)" >&2; exit 1; }
+  "$LC" bootstrap "$DOM" "$plist" 2>/dev/null || { sleep 2; "$LC" bootstrap "$DOM" "$plist"; } || { rm -f "$plist"; echo "dispatch: launchctl bootstrap failed (plist removed)" >&2; exit 1; }
   echo "scheduled $label for $at (host-local); log $log"
   branch_entry_yield >&2
   [ "$probe" = 1 ] || mark_dispatched "$self_host"
@@ -2595,7 +2602,7 @@ cleanup() {
     # FAILED line is not this one's (the second review's item 7)
     python3 "$Q" failed "$fromq" --label "${DISPATCH_LABEL:-}" --why "$(tail -c +$((qlog0 + 1)) "$log" 2>/dev/null | grep '^FAILED' | tail -1 | cut -c1-200)" "${qctx[@]}" >> "$log" 2>&1
   fi
-  [ -n "${DISPATCH_LABEL:-}" ] && "$LC" bootout "gui/$(id -u)/$DISPATCH_LABEL" 2>/dev/null
+  [ -n "${DISPATCH_LABEL:-}" ] && "$LC" bootout "$DOM/$DISPATCH_LABEL" 2>/dev/null
 }
 qlog0=0; [ -f "$log" ] && qlog0=$(wc -c < "$log" | tr -d ' ')
 trap cleanup EXIT
@@ -2937,6 +2944,7 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   drop_lock
   arm_row   # after the lock: its registry read and append hold no other start
   queue_started
+  python3 "$here/bin/dispatch-rc" publish 2>/dev/null || true   # the shared run cap: no watcher publishes a headless run
   # the maximum lifetime: a -p session has no idle to wait for, only an end
   # (its sleep dies with it, and neither leaves a "Terminated" line in the log)
   ( trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$max_s" & wait $!

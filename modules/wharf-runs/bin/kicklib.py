@@ -631,6 +631,11 @@ def slug(name):
     return s or "stream"
 
 
+def _domain():
+    """The core's launchd_domain(), or `gui/<uid>` under a core older than the seam (S2's landing review)."""
+    return common.launchd_domain() if hasattr(common, "launchd_domain") else "gui/%d" % os.getuid()
+
+
 def service_label(stream):
     return "dev.spacesheep.stream.%s" % slug(stream)
 
@@ -650,7 +655,7 @@ def listener_loaded(launchctl, stream):
             return None   # no systemctl here: could not tell, never a crash of --roads or status (the S8 review)
         return r.returncode == 0
     try:
-        return subprocess.run([launchctl, "print", "gui/%d/%s" % (os.getuid(), service_label(stream))],
+        return subprocess.run([launchctl, "print", "%s/%s" % (_domain(), service_label(stream))],
                               capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -824,7 +829,7 @@ def watchdog(me, launchctl):
     n = refusal_loop(tail)
     if n < REFUSALS or listener_loaded(launchctl, stream) is not True:
         return None
-    subprocess.run([launchctl, "bootout", "gui/%d/%s" % (os.getuid(), service_label(stream))], capture_output=True)
+    subprocess.run([launchctl, "bootout", "%s/%s" % (_domain(), service_label(stream))], capture_output=True)
     plist = Path.home() / "Library" / "LaunchAgents" / ("%s.plist" % service_label(stream))
     if plist.exists():
         # out of LaunchAgents, not renamed in it: whether launchd skips a name not ending .plist at login is not

@@ -766,6 +766,78 @@ def _keychain_read(service, account, env=None):
     return r.stdout[:-1] if r.stdout.endswith(b"\n") else r.stdout
 
 
+# A builder user's own sign-in for agy (the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md, "agy's sign-in on
+# a Mac"): a keychain file in its home holding agy's item alone, its password a random one in a 0600 file beside it, as
+# a builder has no login session and so no unlocked login keychain. builder-host make fills it once (from the owner's
+# item); each run's per-run keychain is filled from it (agy_secret), so no login password is stored anywhere.
+BUILDER_KC = os.path.join("Library", "Keychains", "builder-agy.keychain-db")
+BUILDER_PW = os.path.join("Library", "Keychains", "builder-agy.pw")
+
+
+def _security_i(cmd, env, timeout=20):
+    """`security -i` with CMD on stdin — a password or a secret never on argv (`ps` shows argv to every account)."""
+    try:
+        return subprocess.run([SECURITY, "-i"], input=cmd.encode(), capture_output=True, env=env, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise FenceError("security: %s" % type(e).__name__)
+
+
+def builder_signin_put(home, secret):
+    """HOME's builder keychain made anew holding agy's item (SECRET, bytes), its password random and kept in BUILDER_PW
+    (0600), run as the builder itself. Replaces an earlier one whole. FenceError on any failure."""
+    kc, pwf = os.path.join(home, BUILDER_KC), os.path.join(home, BUILDER_PW)
+    os.makedirs(os.path.dirname(kc), mode=0o700, exist_ok=True)
+    env = {"HOME": home, "PATH": "/usr/bin:/bin"}
+    if os.path.lexists(kc):
+        _security_i('delete-keychain "%s"\n' % kc, env)
+        if os.path.lexists(kc):
+            os.unlink(kc)
+    pw = os.urandom(24).hex()
+    fd = os.open(pwf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(pw + "\n")
+    r = _security_i('create-keychain -p %s "%s"\n' % (pw, kc), env)
+    if r.returncode or not os.path.exists(kc):
+        raise FenceError("the builder keychain was not made (security exit %d)" % r.returncode)
+    _security_i('set-keychain-settings "%s"\n' % kc, env)   # no lock on a timeout: a run unlocks it each time anyway
+    r = _security_i('add-generic-password -s gemini -a antigravity -T %s -X %s "%s"\n' % (SECURITY, secret.hex(), kc), env)
+    if r.returncode:
+        raise FenceError("agy's item was not put in the builder keychain (security exit %d)" % r.returncode)
+    return kc
+
+
+def builder_signin_read(home):
+    """agy's secret from HOME's builder keychain, unlocked with its password file, or FenceError."""
+    kc, pwf = os.path.join(home, BUILDER_KC), os.path.join(home, BUILDER_PW)
+    try:
+        with open(pwf) as f:
+            pw = f.read().strip()
+    except OSError as e:
+        raise FenceError("the builder keychain's password did not read (%s)" % type(e).__name__)
+    if not re.fullmatch(r"[0-9a-f]{16,128}", pw):
+        raise FenceError("the builder keychain's password file is not ours")
+    env = {"HOME": home, "PATH": "/usr/bin:/bin"}
+    r = _security_i('unlock-keychain -p %s "%s"\n' % (pw, kc), env)
+    if r.returncode:
+        raise FenceError("the builder keychain did not unlock (security exit %d)" % r.returncode)
+    try:
+        r = subprocess.run([SECURITY, "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", kc],
+                           capture_output=True, stdin=subprocess.DEVNULL, timeout=20, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise FenceError("the builder keychain's item did not read (%s)" % type(e).__name__)
+    if r.returncode or not r.stdout.strip():
+        raise FenceError("agy's item is not in the builder keychain (security exit %d)" % r.returncode)
+    return r.stdout[:-1] if r.stdout.endswith(b"\n") else r.stdout
+
+
+def agy_secret():
+    """agy's sign-in: the builder keychain where this home has one (a builder user), else the login's own item."""
+    home = os.path.expanduser("~")
+    if os.path.lexists(os.path.join(home, BUILDER_KC)):
+        return builder_signin_read(home)
+    return _keychain_read("gemini", "antigravity")
+
+
 def claude_source(cfg=None):
     """(config dir, its keychain service, its .claude.json): --claude-config, else the caller's
     CLAUDE_CONFIG_DIR, else the home folder's .claude. Claude Code names a non-default dir's item by the first 8 hex of the
@@ -923,7 +995,7 @@ def _home_agy(box, research=False):
         json.dump({"council": {"PreToolUse": [{"matcher": "*", "hooks": [
             {"type": "command", "command": "%s -I %s%s" % (shlex.quote(hook_python()), shlex.quote(hook),
                                                            " --research" if research else ""), "timeout": 10}]}]}}, x)
-    secret = _keychain_read("gemini", "antigravity")
+    secret = agy_secret()   # a builder user's own keychain, else the login's item
     kc = os.path.join(h, "Library", "Keychains", "login.keychain-db")
     kenv = {"HOME": h, "PATH": "/usr/bin:/bin"}
     try:
