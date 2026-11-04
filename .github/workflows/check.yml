@@ -9,6 +9,17 @@
 # read the names back with `gh pr checks <n>`, never predict them.
 # helloworld's suite makes scratch commits, some in repos with no identity of their own: the
 # runner gets one below, and the full history is not needed (each suite builds its own repos).
+#
+# Two roads, by whether the repo names a runner (free CI's S2, 2026-11-04):
+#   - CI_RUNS_ON or CI_RUNS_ON_FULL set (the private repo, on its own Macs): the `check` job below runs
+#     the whole line, or on a pull request its macOS share (CI_LINUX_ELSEWHERE), as before; the jobs
+#     after it are skipped.
+#   - neither set (the public twin, a fork): the line in shares, so a run takes its slowest suite's
+#     time, about 7 minutes, not the line's 15. `plan` reads the Linux list (.github/ci/linux-ids,
+#     through share.sh), `suite` runs each of its commands as a job of its own on ubuntu-latest,
+#     the `check` job runs the rest of the line as `check (the rest)`, and `gather` reports the whole
+#     verdict as `check`, the name the twin's protection and helloworld's nightly (`twin-check`) read.
+#     A job skipped by its `if` reports its name's expression text, never `check` (the job's notes).
 name: check
 on:
   # A push to main runs the check unless the repository variable CI_SKIP_MAIN_PUSH is `true` (the job's
@@ -59,7 +70,8 @@ jobs:
     # Seen live on a sibling repo's draft head (2026-10-27, `gh api …/commits/<sha>/check-runs`): a job
     # skipped by its `if` is not evaluated, and reports this expression's text as its name; a live
     # run reports `check`. Either way a skipped run is never `check`.
-    name: ${{ github.event.pull_request.draft && 'check (draft)' || 'check' }}
+    # On the shares' road (no runner variable) this job is the rest, and `gather` is `check`.
+    name: ${{ github.event.pull_request.draft && 'check (draft)' || !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL && 'check (the rest)' || 'check' }}
     # Not on a draft: the checkpoint hook pushes one every ~10 min, and those runs were most
     # of the account's minutes (2026-10-17). GitHub reports a skipped job as a passed
     # check, so a merge waits for a run on this head that is not skipped.
@@ -96,7 +108,8 @@ jobs:
       # A private repo with no CI_RUNS_ON would run on ubuntu-latest, which bills the account's minutes
       # past the free quota (another private repo's hosted jobs were refused for billing from 2026-10-19). There the
       # job fails here, at once, saying why: never an `if:` on the job, which GitHub reports as a passed
-      # check (costs S1, docs/host-power-costs-2026-10-24.md). This step's one minute is all it bills.
+      # check (costs S1, docs/host-power-costs-2026-10-24.md). This step's one minute is all this job bills; with no runner
+      # variable, the shares' `plan` fails at its own copy of the guard and `gather` reports it, a minute each.
       # The twin is public and keeps ubuntu-latest, which is free there. Judged by where the job
       # landed, not by CI_RUNS_ON alone: with the split runs-on, a push may take CI_RUNS_ON_FULL's
       # runner while CI_RUNS_ON is unset (review 2026-10-27).
@@ -164,10 +177,11 @@ jobs:
           git config --global init.defaultBranch main
       # CI_LINUX_ELSEWHERE `true` (a repo whose Linux-proven suites run in check-linux, on GitHub Actions or CircleCI, which
       # main's protection then requires too): on a pull request this runner takes only the rest, the
-      # macOS share (.circleci/share.sh). A push, the nightly run and a hand start run the whole line,
-      # so the suites' Darwin branches are still run on a Mac each day. Unset, as in the twin and
-      # forks, the step below runs the whole line. The step keeps its name and its one `run:` block:
-      # twin-linux.sh and ci-provider read the line from it.
+      # macOS share (.github/ci/share.sh). A push, the nightly run and a hand start run the whole line,
+      # so the suites' Darwin branches are still run on a Mac each day. Where no runner variable is set
+      # (the twin, forks), the Linux list runs in the `suite` jobs below and this job only the rest, on
+      # every event. Exactly one of the three steps runs. The `check` step keeps its name and its one
+      # `run:` block: share.sh, twin-linux.sh and ci-provider read the line from it.
       # The carry (wharf's `pr restack`, 2026-11-04): a push whose patch is the previous head's, list files
       # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of the whole line. It is what `pr restack`
       # pushes when GitHub marks a ready PR DIRTY on a list file alone, and the 85-min re-run it would start
@@ -204,9 +218,94 @@ jobs:
           echo "carry: $verdict, green on ${BEFORE:0:8}: not run again"
           echo "carry=true" >> "$GITHUB_OUTPUT"
       - name: check, the macOS share
-        if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request'
-        run: bash .circleci/share.sh macos
+        if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
+        run: bash .github/ci/share.sh macos
+      - name: check, the rest
+        if: ${{ steps.carry.outputs.carry != 'true' && !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL }}
+        run: bash .github/ci/share.sh rest
       - name: check
-        if: steps.carry.outputs.carry != 'true' && (vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request')
+        if: steps.carry.outputs.carry != 'true' && (vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request') && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
         run: |
           claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; } && { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }
+  # The shares' road (the header's second): the jobs below run only where no runner variable is set,
+  # and each condition starts with check's own, so a draft, a closed PR and a skipped main push skip
+  # them too. They run on GitHub's ubuntu-latest, free on a public repo; `plan` refuses a private one
+  # first, as check's first step does, and every job below waits on it.
+  plan:
+    if: >-
+      (github.event_name != 'pull_request' ||
+        (github.event.action != 'closed' && !github.event.pull_request.draft)) &&
+      (github.event_name != 'push' || vars.CI_SKIP_MAIN_PUSH != 'true') &&
+      !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ids: ${{ steps.ids.outputs.ids }}
+    steps:
+      - name: a private repo names its runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          # as check's first step: a visibility that cannot be read fails like a private one
+          [ -n "$PRIVATE" ] || PRIVATE="$(gh api "repos/$GITHUB_REPOSITORY" --jq .private || true)"
+          if [ "$PRIVATE" != false ]; then
+            echo "::error title=CI_RUNS_ON unset::$GITHUB_REPOSITORY is private (or its visibility unreadable: '$PRIVATE') and names no runner, so its suites would bill ubuntu-latest minutes. Set the repository variable CI_RUNS_ON (wharf's ci-provider) and run it again."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      # the whole list, not share.sh's scoped one: the twin's run judges a publish, which may carry
+      # any number of the private repo's landings
+      - name: the Linux list
+        id: ids
+        # a refusal fails here, saying why, never as an empty matrix on the jobs after
+        run: |
+          ids="$(bash .github/ci/share.sh linux-ids)" || { echo "::error::share.sh gave no Linux list"; exit 1; }
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+  suite:
+    # one command of the Linux list; a failure fails this job, and `gather` reads every result
+    needs: plan
+    runs-on: ubuntu-latest
+    # keel's suite runs about 10 minutes, wharf-runs' Linux scripts about as long (check-linux.yml's 50)
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.ids) }}
+    steps:
+      - uses: actions/checkout@v4
+      # what check's setup steps give its job, by the script check-linux.yml's suites use: Node 22,
+      # the pinned claude CLI, PyYAML, a git identity; its PATH in ~/.linux-path, never $BASH_ENV
+      - name: the runner's tools
+        run: bash .github/ci/linux-tools.sh
+      - name: the suite
+        # a step past its timeout fails (the job's own cancels), so `gather` reads it as a failure
+        timeout-minutes: 40
+        env:
+          ID: ${{ matrix.id }}
+        run: |
+          export PATH="$(cat "$HOME/.linux-path")"
+          bash .github/ci/share.sh linux "$ID"
+  gather:
+    # The verdict under `check`: green only when the list was read, every suite passed and the rest
+    # passed. Named by an expression, so a run where this job is skipped (the private repo, a draft)
+    # reports the expression's text, never `check`, which a skipped job would pass. Not on a cancelled
+    # run: a newer push's run judges its own head, and a red here would read as that head's.
+    name: ${{ !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL && 'check' || 'check (gather)' }}
+    needs: [plan, suite, check]
+    if: >-
+      (github.event_name != 'pull_request' ||
+        (github.event.action != 'closed' && !github.event.pull_request.draft)) &&
+      (github.event_name != 'push' || vars.CI_SKIP_MAIN_PUSH != 'true') &&
+      !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every share passed
+        env:
+          PLAN: ${{ needs.plan.result }}
+          SUITE: ${{ needs.suite.result }}
+          REST: ${{ needs.check.result }}
+        run: |
+          echo "the Linux list: $PLAN; its suites: $SUITE; the rest of the line: $REST"
+          [ "$PLAN" = success ] && [ "$SUITE" = success ] && [ "$REST" = success ]

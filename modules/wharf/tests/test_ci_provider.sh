@@ -1833,14 +1833,60 @@ echo '{"at": 9999999999, "repo": "acme/demo", "variable": "CI_CIRCLECI_PROJECT",
 check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); print(c.last_flip("acme/demo"))' "$CP")" \
   "0" "a log row under the variable's old name (CI_CIRCLECI_PROJECT) is no runs-on flip either"
 cp "$T/lanes.gha" "$LANES"; cp "$T/budgets.gha" "$BUDGETS"; mv "$T/gh/rsc.gha" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG"
-# .circleci/ is private (off the allowlist): the twin has no share.sh, and says skip
-if [ -f "$M/../../.circleci/share.sh" ]; then
-  bash "$M/../../.circleci/share.sh" linux-ids > "$T/out" 2>&1 || true
+# share.sh is public since free CI's S2 (.github/ci/, beside its list); a copy without it says skip
+SH="$M/../../.github/ci/share.sh"
+if [ -f "$SH" ]; then
+  bash "$SH" linux-ids > "$T/out" 2>&1 || true
   check "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(isinstance(v, list) and "plugin" in v and "helm" in v)' "$T/out" 2>&1)" "True" "share.sh linux-ids: the Linux list as one JSON array, the Actions road's matrix"
-  bash "$M/../../.circleci/share.sh" linux-ids HEAD > "$T/out" 2>&1 || true
+  bash "$SH" linux-ids HEAD > "$T/out" 2>&1 || true
   check "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(isinstance(v, list) and "plugin" in v)' "$T/out" 2>&1)" "True" "share.sh linux-ids BASE: a JSON array of the ids reached (nothing changed: the whole list)"
+  # the list is linux-ids beside share.sh; CircleCI's static matrix must hold the same ids, where it is
+  S="$T/share"; mkdir -p "$S/.github/ci" "$S/.github/workflows" "$S/.circleci/parts"
+  cp "$SH" "$S/.github/ci/share.sh"; cp "$M/../../.github/workflows/check.yml" "$S/.github/workflows/check.yml"
+  printf '# a comment, then the ids\nplugin\n\n  helm  # trailing words go\n' > "$S/.github/ci/linux-ids"
+  check "$(bash "$S/.github/ci/share.sh" linux-ids 2>&1)" '["plugin", "helm"]' "share.sh reads linux-ids: one id a line, comments and blanks skipped"
+  check "$(bash "$S/.github/ci/share.sh" line "$S" | head -1)" "claude plugin validate --strict ." "share.sh line DIR: DIR's check line, its first command"
+  # the step's block ends at its own column: a job after check's (the shares' road) is no part of the line
+  mkdir -p "$T/share-fx/.github/workflows"
+  printf '%s\n' 'jobs:' '  check:' '    steps:' '      - name: check' '        run: |' '          a && { b || c; }' '' '          && d' \
+    '  plan:' '    if: >-' '      x && y' '    steps:' '      - run: e' > "$T/share-fx/.github/workflows/check.yml"
+  check "$(bash "$S/.github/ci/share.sh" line "$T/share-fx" | tr '\n' '|')" "a|{ b || c; }|d|" "…up to the block's end, never into the job after it"
+  printf '              id: [helm, plugin]\n' > "$S/.circleci/parts/check-linux.yml"
+  check "$(bash "$S/.github/ci/share.sh" linux-ids 2>&1)" '["plugin", "helm"]' "…a CircleCI matrix of the same ids, in any order: the same list"
+  printf '              id: [plugin, helm, keel]\n' > "$S/.circleci/parts/check-linux.yml"
+  bash "$S/.github/ci/share.sh" linux-ids > "$T/out" 2>&1; check "$?" "2" "…a CircleCI matrix of other ids: refused, so the shares cannot drift"
+  grep -q "is not .github/ci/linux-ids" "$T/out"; check "$?" "0" "…saying which file differs"
+  rm -rf "$S/.circleci"; printf 'helm\nplugin # a comment\nhelm\n' > "$S/.github/ci/linux-ids"
+  bash "$S/.github/ci/share.sh" linux-ids > "$T/out" 2>&1; check "$?" "2" "a linux-ids naming one id twice: refused, never two legs of one suite"
+  grep -q "names helm more than once" "$T/out"; check "$?" "0" "…naming it"
+  : > "$S/.github/ci/linux-ids"
+  bash "$S/.github/ci/share.sh" linux-ids > /dev/null 2>&1; check "$?" "2" "an empty linux-ids: refused, never an empty matrix"
+  # check.yml's two roads: the shares' jobs only where no runner variable is set, each behind check's own
+  # condition, and their verdict under `check` only when every share passed (free CI's S2)
+  cat > "$T/roads.py" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+j = d["jobs"]
+base = "(github.event_name != 'push' || vars.CI_SKIP_MAIN_PUSH != 'true')"
+free = "!vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL"
+bad = []
+if list(j)[0] != "check": bad.append("check is not the first job (ci-provider reads its runs-on first)")
+for n in ("plan", "gather"):
+    if base not in j[n]["if"] or free not in j[n]["if"] or "draft" not in j[n]["if"]: bad.append(n + "'s if")
+if j["suite"]["needs"] != "plan": bad.append("suite needs plan")
+if sorted(j["gather"]["needs"]) != ["check", "plan", "suite"]: bad.append("gather's needs")
+if not j["gather"]["name"].startswith("${{") or "'check'" not in j["gather"]["name"]: bad.append("gather's name")
+if "'check (the rest)'" not in j["check"]["name"]: bad.append("check's name on the shares' road")
+steps = {s.get("name"): s.get("if", "") for s in j["check"]["steps"]}
+if "share.sh rest" not in [s.get("run", "") for s in j["check"]["steps"] if s.get("name") == "check, the rest"][0]: bad.append("the rest's step")
+for n in ("check", "check, the macOS share"):
+    if "(vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)" not in steps[n]: bad.append(n + " runs on the shares' road too")
+if "share.sh linux" not in j["suite"]["steps"][-1]["run"]: bad.append("suite's step")
+print(bad or "ok")
+PY
+  check "$(python3 "$T/roads.py" "$M/../../.github/workflows/check.yml" 2>&1)" "ok" "check.yml: the shares' road beside the runner's, one verdict named check"
 else
-  echo "  skip the twin has no .circleci/share.sh"
+  echo "  skip no .github/ci/share.sh in this copy"
 fi
 
 echo "check-linux.yml's trigger: the project variable, else the file, each org's road (ci-two-orgs)"
@@ -1888,7 +1934,8 @@ PY
   mkdir -p "$W/co/.circleci"
   printf 'parameters:\n  check_linux:\n    type: boolean\n' > "$W/co/.circleci/config.yml"
   printf '# the default\ngh/acme/demo\n' > "$W/co/.circleci/project-slug"
-  printf 'case "$1" in linux-ids) echo %s ;; *) echo "RUN a stand-in scope" ;; esac\n' "'[\"helm\"]'" > "$W/co/.circleci/share.sh"
+  mkdir -p "$W/co/.github/ci"
+  printf 'case "$1" in linux-ids) echo %s ;; *) echo "RUN a stand-in scope" ;; esac\n' "'[\"helm\"]'" > "$W/co/.github/ci/share.sh"
   git -C "$W/co" checkout -q -b b; git -C "$W/co" add -A; git -C "$W/co" -c user.name=t -c user.email=t@t commit -qm x
   git -C "$W/co" push -q origin b 2>/dev/null
   step() { # step <PROJECT>: the workflow's step, as GitHub runs it; prints its exit code
@@ -1903,6 +1950,11 @@ PY
   check "$(step actions)" "0" "the Actions road"
   check "$(tr '\n' ' ' < "$W/ghout")" 'road=actions ids=["helm"] ' "…its outputs: the road and share.sh's scoped list"
   grep -q '"state":"pending","context":"ci/circleci:check-linux"' "$W/calls"; check "$?" "0" "…check-linux pending on the head first"
+  mv "$W/co/.github/ci/share.sh" "$W/co/.circleci/share.sh"
+  check "$(step actions)" "0" "a head forked before free CI's S2, share.sh under .circleci/: the same road"
+  check "$(tr '\n' ' ' < "$W/ghout")" 'road=actions ids=["helm"] ' "…its outputs read from the old path"
+  grep -q '"state":"pending","context":"ci/circleci:check-linux"' "$W/calls"; check "$?" "0" "…check-linux pending there too"
+  mv "$W/co/.circleci/share.sh" "$W/co/.github/ci/share.sh"
   check "$(step '')" "0" "the variable unset"
   check "$(cat "$W/calls")" 'https://circleci.com/api/v2/project/gh/acme/demo/pipeline {"branch":"b","parameters":{"check_linux":true}}' "…the file's project, an OAuth project's road"
   check "$(step gh/acme/other)" "0" "the variable on an OAuth project"
