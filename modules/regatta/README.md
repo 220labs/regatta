@@ -75,8 +75,8 @@ As a plugin (the session face): `claude plugin marketplace add <this repo>`, the
 
 ## Limits: changed live, on one host or the fleet
 
-`regatta limit set run-cap buildbox:5`, `regatta limit set check-slots 3 --all`, `regatta limit get run-cap --all`,
-`regatta limit list`, `regatta limit unset run-cap buildbox`: a fleet limit changed on its next read, with no build,
+`regatta limit set run-cap buildbox:5 --why '…'`, `regatta limit set check-slots 3 --all --why '…'`, `regatta limit get run-cap --all`,
+`regatta limit list`, `regatta limit unset run-cap buildbox --why '…'`: a fleet limit changed on its next read, with no build,
 no landing and no overlay run (live-limits, 2026-11-01). The verb writes each host's own **live layer**,
 `<config>/live/<key>`, which `config_read` merges in front of `<config>/<key>`: a layer line `<word>:<value>` (a
 host, a login, `*`) replaces the config's entry for that word, on whatever line, and stands first; a layer line with no word replaces
@@ -88,6 +88,12 @@ would read as anything else is refused, and a host the verb cannot reach is name
   | File | What it holds | Without it |
   | --- | --- | --- |
   | `regatta/fleet-ssh` | the peers `regatta limit` writes over ssh, `<host>:<alias>` a line; read by the verb alone (a node's alias here reaches no other reader) | the peers `wharf-runs/ssh` names |
+
+Every change carries its history (limit-history, 2026-11-02). A set or unset takes `--why`, one line kept in its row
+of `limits.jsonl` with the value before and after and the session id; before it writes it prints each host's last
+change (when, by whom, old → new, why), the newest of the fleet's rows and the overlay's last commit to the key's
+row; and it refuses to undo a change under 24 h old that another session made, quoting it, unless `--over`. `get`
+and `list` end each value's line with its last change.
 
 ## Shims
 
