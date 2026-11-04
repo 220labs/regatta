@@ -452,6 +452,87 @@ out=$(CLAUDE_REPOS_JSON="$T/yd2.json" "$RG" check); check "$?" 1 "  a yard light
 echo "$out" | grep -qx -- "  --  scope one yard: nowhere is not a host lighthouse/hosts lists (laptop, studio)"; check $? 0 "    it names the scope, the host and the list"
 head -c 30 "$T/yd.json" > "$T/yd3.json"
 out=$(CLAUDE_REPOS_JSON="$T/yd3.json" "$RG" check); check "$?:$(echo "$out" | grep -c ' yard: ')" "1:0" "  a torn registry: exit 1, no row read from it"
+# a confidential scope's own node as its yard (scopes-node-yard, 2026-11-03): its node folder here, by the
+# folder's `scope` and `ssh`, or this host as that node by its payload's clones; never another scope's
+# node, never an open scope's; a node no folder here gives is a note, a host nothing knows a finding
+printf '{"repos": {"k": {}, "o": {}, "p": {}, "s": {}},\n "scopes": {"sec": {"file": "s", "repos": ["k"], "confidential": true, "yard": "sec-agent"},\n  "far": {"file": "f", "repos": ["s"], "confidential": true, "yard": "far-agent"}}}\n' > "$T/yn.json"
+printf '{"repos": {"k": {}, "o": {}, "p": {}},\n "scopes": {"sec": {"file": "s", "repos": ["k"], "confidential": true, "yard": "sec-agent"},\n  "oth": {"file": "o", "repos": ["o"], "confidential": true, "yard": "sec-agent"},\n  "opn": {"file": "p", "repos": ["p"], "yard": "sec-agent"}}}\n' > "$T/yn2.json"
+mkdir -p "$T/config/wharf-runs/nodes/sec"; echo sec > "$T/config/wharf-runs/nodes/sec/scope"; echo sec-agent > "$T/config/wharf-runs/nodes/sec/ssh"
+out=$(CLAUDE_REPOS_JSON="$T/yn.json" "$RG" check); check "$?" 0 "  a confidential scope's own node, and a node no folder here gives: exit 0"
+echo "$out" | grep -qx "  ok  scope sec yard: sec-agent (its own node)"; check $? 0 "    its own node folder: ok, said so"
+echo "$out" | grep -qx "  ..  scope far yard: far-agent, a node no folder here gives (judged where its node folder is)"; check $? 0 "    a node no folder here gives: a note, not a finding"
+out=$(CLAUDE_REPOS_JSON="$T/yn2.json" "$RG" check); check "$?:$(echo "$out" | grep -c -- '^  --  scope [a-z]* yard: ')" "1:2" "  another scope's node, an open scope naming a node: two findings"
+echo "$out" | grep -qx -- "  --  scope oth yard: sec-agent is not a host lighthouse/hosts lists (laptop, studio) — the node of sec here"; check $? 0 "    another scope's node: names whose node it is"
+echo "$out" | grep -qx -- "  --  scope opn yard: sec-agent is not a host lighthouse/hosts lists (laptop, studio) — the node of sec here"; check $? 0 "    an open scope naming a node: a finding"
+# the overlay may list the node in lighthouse/hosts too (it did, 2026-11-04): a listed node is still its own scope's only
+printf 'laptop\nstudio\nSec-Agent\n' > "$T/config/lighthouse/hosts"
+out=$(CLAUDE_REPOS_JSON="$T/yn2.json" "$RG" check); check "$?:$(echo "$out" | grep -c -- '^  --  scope [a-z]* yard: ')" "1:2" "  a node lighthouse/hosts lists: another scope's and an open scope's yard on it still two findings"
+echo "$out" | grep -qx "  ok  scope sec yard: sec-agent (its own node)"; check $? 0 "    …its own scope's yard on it: ok"
+echo "$out" | grep -qx -- "  --  scope oth yard: sec-agent is not a host lighthouse/hosts lists (laptop, studio) — the node of sec here"; check $? 0 "    …the list as oth may use it, without the node"
+check "$(CLAUDE_REPOS_JSON="$T/yn2.json" py 'r, t = common.read_registry(); print(common.scope_yard_hosts("oth", r)[0], common.scope_yard_hosts("opn", r)[0], common.scope_yard_hosts("sec", r)[0])')" \
+  "['laptop', 'studio'] ['laptop', 'studio'] ['laptop', 'studio', 'Sec-Agent']" "    scope_yard_hosts: a listed node in no other scope's hosts"
+printf 'laptop\nstudio\n' > "$T/config/lighthouse/hosts"
+rm "$T/config/wharf-runs/nodes/sec/ssh"
+out=$(CLAUDE_REPOS_JSON="$T/yn.json" "$RG" check); check "$?" 1 "  its node folder with no ssh: exit 1"
+echo "$out" | grep -q -- "^  --  scope sec yard: sec-agent is not a host .* nor a node of its told here: .*nodes/sec names scope sec and no ssh"; check $? 0 "    it says the folder has no ssh"
+echo sec-agent > "$T/config/wharf-runs/nodes/sec/ssh"; printf 'x\n' > "$T/config/wharf-runs/nodes/stray"
+out=$(CLAUDE_REPOS_JSON="$T/yn.json" "$RG" check); check "$?" 1 "  a node entry that is no folder: exit 1, no node told (fails closed)"
+echo "$out" | grep -q -- "^  --  scope sec yard: sec-agent .*nodes/stray is not a folder"; check $? 0 "    it names the entry"
+echo "$out" | grep -q -- "^  --  scope far yard: far-agent .*nodes/stray is not a folder"; check $? 0 "    …and no node reads as unknown-here: far's note is a finding too"
+rm "$T/config/wharf-runs/nodes/stray"
+# the round-1 review's cases: another scope's node in capitals, the shared node a Mac drives, a folder it
+# may list but not search
+printf '{"repos": {"k": {}, "o": {}},\n "scopes": {"sec": {"file": "s", "repos": ["k"], "confidential": true, "yard": "sec-agent"},\n  "oth": {"file": "o", "repos": ["o"], "confidential": true, "yard": "SEC-AGENT"}}}\n' > "$T/yn4.json"
+out=$(CLAUDE_REPOS_JSON="$T/yn4.json" "$RG" check)
+echo "$out" | grep -qx -- "  --  scope oth yard: SEC-AGENT is not a host lighthouse/hosts lists (laptop, studio) — the node of sec here"; check $? 0 "  another scope's node in capitals: still a finding (peers matched case-blind, as helm send does)"
+rm -r "$T/config/wharf-runs/nodes"; mkdir -p "$T/config/wharf-runs/node"; echo box > "$T/config/wharf-runs/node/name"
+sed 's/"yard": "sec-agent"/"yard": "box-agent"/' "$T/yn.json" > "$T/yn5.json"
+out=$(CLAUDE_REPOS_JSON="$T/yn5.json" "$RG" check)
+echo "$out" | grep -qx -- "  --  scope sec yard: box-agent is not a host lighthouse/hosts lists (laptop, studio) — the node of no scope here"; check $? 0 "  the shared node this Mac drives as a confidential scope's yard: a finding, never the note"
+rm -r "$T/config/wharf-runs/node"
+mkdir -p "$T/config/wharf-runs/nodes/sec"; echo sec > "$T/config/wharf-runs/nodes/sec/scope"; echo sec-agent > "$T/config/wharf-runs/nodes/sec/ssh"
+if [ "$(id -u)" != 0 ]; then   # root searches any folder
+  chmod 0644 "$T/config/wharf-runs/nodes"
+  check "$(CLAUDE_REPOS_JSON="$T/yn.json" py 'r, t = common.read_registry(); p, w, h = common.nodes_here(r); print(p, "does not read" in (w or ""))' 2>&1)" "{} True" \
+    "  a nodes folder it may list but not search: nothing told, said why, never a raise"
+  chmod 0755 "$T/config/wharf-runs/nodes"
+fi
+# the helper itself: the folder road, the flag a write leaves
+YH() { CLAUDE_REPOS_JSON="$1" py "r, t = common.read_registry(); $2"; }
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("sec", r)[1], common.scope_yard_hosts("oth", r)[1], common.scope_yard_hosts("opn", r)[1])')" \
+  "['sec-agent'] [] []" "  scope_yard_hosts: a confidential scope's own node folder; never another scope's, never an open scope's"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("sec", r, confidential=False)[1], common.scope_yard_hosts("opn", r, confidential=True)[1])')" \
+  "[] []" "    …a write that opens the scope drops its node; one that flags a scope adds no other scope's node"
+echo opn > "$T/config/wharf-runs/nodes/sec/scope"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("opn", r)[1], common.scope_yard_hosts("opn", r, confidential=True)[1])')" \
+  "[] ['sec-agent']" "    …a folder of an open scope: no yard until a write flags the scope confidential"
+# this host as a named node (ME stands in for host_name): its payload's `scope`, else (an older render) its clones
+rm -r "$T/config/wharf-runs/nodes"; mkdir -p "$T/config/wharf-runs/node"; NK="$T/config/wharf-runs/node"
+echo sec > "$NK/scope"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("sec", r, me="box-agent")[1], common.scope_yard_hosts("oth", r, me="box-agent")[1], common.nodes_here(r, me="Box-Agent")[0])')" \
+  "['box-agent'] [] {'box-agent': 'sec'}" "  this host as a node by its payload's scope: that scope's yard, no other's"
+echo opn > "$NK/scope"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("opn", r, me="box-agent")[1], common.scope_yard_hosts("opn", r, confidential=True, me="box-agent")[1])')" \
+  "[] ['box-agent']" "    …an open scope's node: no yard until a write flags that scope (the node's own word binds it)"
+: > "$NK/scope"; printf 'k gh/k\n' > "$NK/clones"
+check "$(YH "$T/yn2.json" 'print(common.nodes_here(r, me="sec-agent")[0], common.scope_yard_hosts("sec", r, me="sec-agent")[1])')" \
+  "{'sec-agent': None} []" "    an empty scope: a shared node, whatever its clones hold"
+rm "$NK/scope"; printf 'k gh/k\np gh/p\n' > "$NK/clones"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("sec", r, me="sec-agent")[1], common.scope_yard_hosts("oth", r, me="sec-agent")[1], common.scope_yard_hosts("opn", r, me="sec-agent")[1])')" \
+  "['sec-agent'] [] []" "  no scope key (an older render): the confidential scope its clones hold, no other, never an open one"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("sec", r, me="me-agent")[1])')" "[]" \
+  "    …only where this host's name is that scope's peer"
+check "$(YH "$T/yn2.json" 'print(common.scope_yard_hosts("opn", r, confidential=True, me="opn-agent")[1])')" "[]" \
+  "    …judged on the registry's own flags: a write that flags a carried repo's scope gets no node"
+printf 'k gh/k\no gh/o\n' > "$NK/clones"
+check "$(YH "$T/yn2.json" 'h, n, w = common.scope_yard_hosts("sec", r, me="sec-agent"); print(n, "several confidential scopes (oth, sec)" in w)')" \
+  "[] True" "    clones of two confidential scopes' repos: no node, said why"
+printf 'p gh/p\n' > "$NK/clones"
+check "$(YH "$T/yn2.json" 'print(common.nodes_here(r, me="me-agent")[0], common.scope_yard_hosts("sec", r, me="me-agent")[1])')" \
+  "{'me-agent': None} []" "    a shared node (no confidential repo cloned): no scope's yard"
+rm -r "$T/config/wharf-runs"
+check "$(YH "$T/yd3.json" 'h, n, w = common.scope_yard_hosts("one"); print(h, n, "does not read" in w)')" "['laptop', 'studio'] [] True" \
+  "  a torn registry: the hosts only, said why"
 rm -r "$T/config/lighthouse"
 # the fleet queue's two rows (dispatch-queue S2): a home, and the queue-sweep job beside it
 mkdir -p "$T/config/wharf-runs"; echo off > "$T/config/wharf-runs/queue-repo"

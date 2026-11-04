@@ -23,7 +23,8 @@
   scopes set SCOPE [--confidential | --open] [--login LABEL | --no-login] [--yard HOST|none] [--dry-run]
                           flag SCOPE confidential (a node nothing outside it reads) or open, name
                           the account label its runs start on, and the host its ships are driven
-                          from (its yard: a host lighthouse/hosts lists, or none — written as
+                          from (its yard: a host lighthouse/hosts lists, a confidential scope's
+                          own node — the core's scope_yard_hosts — or none, written as
                           null); each flag optional, at least one given; writes repos.json in
                           place, its layout kept, and proves the file then parses to exactly that
                           change
@@ -644,11 +645,29 @@ def main(argv):
             print(f"scopes set: no scope {argv[1]} — the registry has {', '.join(scopes)}", file=sys.stderr)
             return 1
         if yard and yard != "none":
-            # a yard is a Mac the fleet knows: the one list of them is lighthouse's, read through the core
-            hosts = common.config_lines("lighthouse/hosts") or []
-            if yard not in hosts:
+            # a yard is a Mac the fleet knows (lighthouse's list, read through the core), or a confidential
+            # scope's own node (the core's scope_yard_hosts: its node folder here, or this host being that node),
+            # judged with the flag this write leaves and from one read of the registry it writes
+            reg, torn = common.read_registry(REGISTRY.resolve())
+            sc = ((reg or {}).get("scopes") or {}).get(argv[1])
+            secret = want if want is not None else isinstance(sc, dict) and sc.get("confidential") is True
+            if torn:
+                hosts, nodes = common.config_lines("lighthouse/hosts") or [], []
+                why = f"the registry {REGISTRY} does not read, so no node of {argv[1]}'s can be told"
+            else:
+                hosts, nodes, why = common.scope_yard_hosts(argv[1], reg=reg or {}, confidential=want)
+            if yard not in hosts and yard.lower() not in nodes:   # a node's peer is matched case-blind
+                if nodes:
+                    node = f", nor {argv[1]}'s own node ({', '.join(nodes)})"
+                elif why:
+                    node = f", nor a node of {argv[1]}'s told here: {why}"
+                elif secret:
+                    node = (f", nor a node of {argv[1]}'s told here (a folder {common.CONFIG / common.NODES_DIR}/<name>/"
+                            f" whose `scope` is {argv[1]} and `ssh` its alias, or this host as that node)")
+                else:
+                    node = f"; {argv[1]} is open, and an open scope's yard is never a node"
                 print(f"scopes set: {yard} is not a host {common.CONFIG / 'lighthouse/hosts'} lists"
-                      f" ({', '.join(hosts) or 'it lists none'}) — a yard is one of them, or none", file=sys.stderr)
+                      f" ({', '.join(hosts) or 'it lists none'}){node} — a yard is one of them, or none", file=sys.stderr)
                 return 1
         why = None if "--dry-run" in rest else primary_main(REGISTRY.resolve())
         if why:

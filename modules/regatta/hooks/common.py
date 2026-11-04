@@ -9,6 +9,7 @@ Hooks must never cost a turn over GitHub being unreachable.
 """
 import base64
 import collections
+import errno
 import fnmatch
 import glob
 import hashlib
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import time
 import urllib.error
@@ -1136,6 +1138,144 @@ def scope_yards(path=None):
     scopes = scope_registry(path)[1]
     out = {n: s.get("yard") for n, s in scopes.items() if isinstance(s, dict)}
     return {n: v for n, v in out.items() if isinstance(v, str) and v}
+
+
+# A confidential scope's yard may be its own node (scopes-node-yard, 2026-11-03): a yard check asks
+# scope_yard_hosts(), never `lighthouse/hosts` alone. The overlay may list a node there too (it listed the
+# first named node on 2026-11-04), so a host that a node here is told as passes only as its own scope's node:
+# a listed host is no licence to another scope's node, nor an open scope's. Where the node is told from, on this host:
+#  * a named node's folder, `<config>/wharf-runs/nodes/<folder>/` (yard-node's `--node`, orca-host's
+#    node_peers, helm send's yard_alias), whose `scope` key names the scope — yard-node's own binding: a
+#    folder with no `scope` is a shared node, no scope's own — and whose `ssh` names the alias this host
+#    reaches it by (helm send refuses a node yard without one). The yard is the node's peer,
+#    `<name>-agent` (`name` defaulting to the folder), the name the node's own host_name() gives, which
+#    the yard rules compare with (weekly_host's, helm's yard_here, send's node match, case-blind).
+#  * this host itself, when it is a named node: its payload's `wharf-runs/node/scope` names the scope it
+#    serves (empty on a shared node). A node rendered before that key (the first named node, 2026-10-28) has only its
+#    `wharf-runs/node/clones`, the registry keys it cloned; yard-node clones no confidential scope's repo
+#    but its own, so the confidential scope holding a cloned key is its scope — judged on the registry's
+#    own flags (never the flag a write is about to set: a shared node's carry would become any scope's it
+#    flags) and only where this host's name is `<scope>-agent`, the name such a node's folder gives.
+# The shared node a Mac drives (`wharf-runs/node/name`, its guest `<name>-agent`) is told too, as no
+# scope's. Either road holds only for a confidential scope (an open scope's yard is a Mac, as before), and
+# a scope never gets another scope's node. Anything that will not read — the registry, a node folder, a
+# key — tells no node, with its reason: the check fails closed, as send's node_peers does.
+NODES_DIR, NODE_ROLE = "wharf-runs/nodes", "agent"   # orca-host's names: a node's peer is `<name>-agent`
+NODE_KEY = "wharf-runs/node/"   # the shared node's keys on a Mac; a named node's payload on the node itself
+
+
+def _node_key(key):
+    """(lines, why) of a node config key, a link whose target moved unreadable (orca-host's rule)."""
+    path = CONFIG / key
+    if os.path.islink(path) and not os.path.exists(path):
+        return None, "is a link whose target moved"
+    return config_read(key)
+
+
+def nodes_here(reg, confidential=None, me=None):
+    """({peer: scope or None}, why, held): every node this host can tell, its peer lower-cased, each with the
+    confidential scope it is the own node of — None for a shared node, an open scope's, or a folder with no
+    `ssh`, which helm send cannot reach (that confidential scope's reason goes in HELD, {scope: why}).
+    Told by the rules above: the node folders, the shared node's `name`, and this host's own name (ME, else
+    host_name()) on a named node. REG: a registry read_registry() parsed (never torn); CONFIDENTIAL:
+    {scope: True|False} for a flag a write is about to change (never on the clones road). WHY: None, or
+    why the nodes here cannot be told — then nothing is told (fails closed: a folder or key that will not
+    read could be any scope's). Never raises."""
+    flagged = dict(confidential_scopes(reg=reg or {}))   # the registry's own flags
+    conf = dict(flagged)
+    for name, flag in (confidential or {}).items():
+        sc = ((reg or {}).get("scopes") or {}).get(name)
+        if flag is True and isinstance(sc, dict):
+            conf[name] = sc
+        elif flag is False:
+            conf.pop(name, None)
+    out, whys, held = {}, [], {}
+
+    def tell(peer, owner):
+        peer = peer.lower()
+        if peer in out and out[peer] != owner:
+            whys.append("two nodes here give the peer %s, of %s and %s" % (peer, out[peer] or "no scope", owner or "no scope"))
+        out[peer] = owner
+
+    root = CONFIG / NODES_DIR
+    try:
+        names = sorted(p.name for p in root.iterdir() if not p.name.startswith(".")) if os.path.lexists(root) else []
+    except OSError as e:
+        return {}, "%s does not read (%s)" % (root, e.strerror or type(e).__name__), {}
+    for name in names:
+        try:   # os.stat, never Path.is_dir: from Python 3.13 that swallows EACCES and reads as "not a folder"
+            folder = stat.S_ISDIR(os.stat(root / name).st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            folder = False
+        except OSError as e:   # a folder it may list but not search; a link loop
+            if e.errno == errno.ELOOP:
+                folder = False
+            else:
+                return {}, "%s does not read (%s)" % (root / name, e.strerror or type(e).__name__), {}
+        if not folder:
+            whys.append("%s is not a folder (a link whose target moved?)" % (root / name))
+            continue
+        got = {}
+        for k in ("scope", "name", "ssh"):
+            got[k], why = _node_key("%s/%s/%s" % (NODES_DIR, name, k))
+            if why:
+                whys.append("%s %s" % (root / name / k, why))
+                break
+        else:
+            owner = (got["scope"] or [None])[0]
+            owner = owner if owner in conf else None
+            if owner and not (got["ssh"] or [""])[0]:
+                held[owner] = "%s names scope %s and no ssh (the Host alias this host reaches it by)" % (root / name, owner)
+                owner = None
+            tell("%s-%s" % ((got["name"] or [name])[0], NODE_ROLE), owner)
+    keys = {}
+    for k in ("name", "scope", "clones"):
+        keys[k], why = _node_key(NODE_KEY + k)
+        if why:
+            return {}, "%s %s" % (CONFIG / (NODE_KEY + k), why), {}
+    if keys["name"]:   # the shared node this Mac drives: no scope's (yard-node's fence)
+        tell("%s-%s" % (keys["name"][0], NODE_ROLE), None)
+    me = (me or host_name()).lower()
+    if keys["scope"] is not None:   # a named node, by its payload's own word: empty is a shared one
+        owner = (keys["scope"] or [None])[0]
+        tell(me, owner if owner in conf else None)
+    elif keys["clones"]:   # a named node rendered before the key: its clones, on the registry's own flags
+        owners = set()
+        for line in keys["clones"]:
+            key = line.split()[0]
+            for n, s in flagged.items():
+                try:
+                    if scope_of_repo(key, reg={"scopes": {n: s}})[0]:
+                        owners.add(n)
+                except TypeError:   # a confidential scope whose repos is no list: nothing is told
+                    return {}, "scope %s's repos is no list" % n, {}
+        if len(owners) > 1:
+            return {}, "this node's %s clones repos of several confidential scopes (%s): no one scope's node" % (
+                CONFIG / (NODE_KEY + "clones"), ", ".join(sorted(owners))), {}
+        owner = next(iter(owners), None)
+        tell(me, owner if owner in conf and me == ("%s-%s" % (owner, NODE_ROLE)).lower() else None)
+    if whys:
+        return {}, "; ".join(whys), {}
+    return out, None, held
+
+
+def scope_yard_hosts(scope, reg=None, confidential=None, me=None):
+    """(hosts, nodes, why): the hosts SCOPE may name as its yard on this host. HOSTS: `lighthouse/hosts`'
+    lines, less any a node here is told as that is not SCOPE's own node. NODES: SCOPE's own node, by the rules above (nodes_here's peers, lower-cased, whose
+    scope is SCOPE); [] for an open scope. WHY: None, or why no node could be told here (nodes_here's, or
+    SCOPE's held folder). REG: a registry read_registry() parsed already (None reads repos_json() once);
+    CONFIDENTIAL: the flag a write is about to leave on SCOPE (scopes set --confidential/--open), else the
+    registry's; ME: this host's name, else host_name(). Never raises."""
+    hosts = config_lines("lighthouse/hosts") or []
+    if reg is None:
+        reg, torn = read_registry()
+        if torn:
+            return hosts, [], "the registry %s does not read, so no scope's node can be told" % repos_json()
+    flag = {} if confidential is None else {scope: confidential}
+    peers, why, held = nodes_here(reg or {}, confidential=flag, me=me)
+    nodes = [p for p, s in peers.items() if s == scope]
+    hosts = [h for h in hosts if peers.get(h.lower(), scope) == scope]   # a listed node: its own scope's only
+    return hosts, nodes, why or (None if nodes else held.get(scope))
 
 
 def confidential_roots(path=None):

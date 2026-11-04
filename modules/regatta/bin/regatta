@@ -227,25 +227,53 @@ def weekly_host_problems():
 
 
 def yard_rows():
-    """One row per scope of the registry: its yard (common.scope_yard), or none. A yard is a host
-    `lighthouse/hosts` lists — the fleet's one list of Macs — else it is a finding: `wharf apply
-    --yard` would send ships to a host nothing else here knows. → the number of findings. No
-    registry, no rows; a registry that does not read is one finding, its rows skipped."""
+    """One row per scope of the registry: its yard (the registry's `yard`), or none. A yard is a host
+    `lighthouse/hosts` lists — the fleet's list of Macs, which may list a node too: a host a node here is
+    told as passes only as its own scope's — or a confidential scope's own node
+    (common.scope_yard_hosts' rule: its node folder here, or this host being it), else it is a finding: `wharf
+    apply --yard` would send ships to a host nothing else here knows. One exception, a note: a
+    confidential scope's yard named as a node's peer (`<name>-agent`) that no node here tells at all (no
+    folder gives that peer, nor the shared node's `name`, this host is not it, and nothing failed to read;
+    peers matched case-blind) — another Mac of the fleet,
+    with no folder of that node, where `scopes set` judged it on writing. → the number of findings. No
+    registry, no rows; a registry that does not read is one finding, its rows skipped. One read of the
+    registry, and one of the node folders, judges every row."""
     p = common.repos_json()
     if not p:
         return 0
-    if common.registry_unreadable():
+    reg, torn = common.read_registry(p)
+    if torn:
         print("  --  scopes: %s does not read, so no scope's yard is checked" % p)
         return 1
+    reg = reg or {}
     hosts = common.config_lines("lighthouse/hosts") or []
+    conf = common.confidential_scopes(reg=reg)
+    peers, why, held = common.nodes_here(reg)
     bad = 0
-    for name in common.scope_registry()[1]:
-        yard = common.scope_yard(name)
-        if yard and yard not in hosts:
-            print("  --  scope %s yard: %s is not a host lighthouse/hosts lists (%s)" % (name, yard, ", ".join(hosts) or "it lists none"))
-            bad += 1
+    for name, sc in (reg.get("scopes") or {}).items():
+        yard = sc.get("yard") if isinstance(sc, dict) else None
+        yard = yard if isinstance(yard, str) and yard else None
+        key = (yard or "").lower()   # a node's peer is matched case-blind, as helm send matches it
+        nodes = [x for x, s in peers.items() if s == name]
+        listed = yard in hosts and peers.get(key, name) == name   # a listed node: its own scope's only
+        if not yard or listed or key in nodes:
+            print("  ok  scope %s yard: %s%s" % (name, yard or "none", " (its own node)" if key in nodes else ""))
+            continue
+        told = why or (None if nodes else held.get(name))
+        if name in conf and not told and key not in peers and key.endswith("-" + common.NODE_ROLE):
+            print("  ..  scope %s yard: %s, a node no folder here gives (judged where its node folder is)" % (name, yard))
+            continue
+        if nodes:
+            more = " nor its own node (%s)" % ", ".join(nodes)
+        elif told and name in conf:
+            more = " nor a node of its told here: %s" % told
+        elif key in peers:
+            more = " — the node of %s here" % (peers[key] or "no scope")
         else:
-            print("  ok  scope %s yard: %s" % (name, yard or "none"))
+            more = ""
+        mine = [h for h in hosts if peers.get(h.lower(), name) == name]   # the list as this scope may use it
+        print("  --  scope %s yard: %s is not a host lighthouse/hosts lists (%s)%s" % (name, yard, ", ".join(mine) or "it lists none", more))
+        bad += 1
     return bad
 
 

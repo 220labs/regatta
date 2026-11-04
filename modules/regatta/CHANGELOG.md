@@ -1,6 +1,15 @@
 # Changelog — regatta (the core)
 
 ## Unreleased
+- `scope_yard_hosts(scope)` and `nodes_here(reg)` (scopes-node-yard): the hosts a scope may name as its yard —
+  `lighthouse/hosts`, the fleet's Macs, plus, for a confidential scope, its own node: the peer of a
+  `wharf-runs/nodes/<name>/` folder here whose `scope` names it and whose `ssh` is set, or this host itself where its
+  payload's `wharf-runs/node/scope` names it (a node rendered before that key: its `wharf-runs/node/clones` on the
+  registry's own flags, and its name `<scope>-agent`). Never another scope's node, never an open scope's, never the
+  shared node; a folder or key that will not read tells no node. `regatta check`'s yard rows read through it: a confidential scope's
+  own node is `ok`, a node no folder here gives is a note (another Mac), another scope's node a finding. A node
+  `lighthouse/hosts` lists too is still its own scope's only.
+
 - `hooks/fence.py`'s seatbelt narrowed by the council's landing reviews: `/dev` to Apple's pty shape (an arm opens its
   own ptys, never the owner's terminals), the OS's db folder to its timezone, the pasteboard's mach service and
   Homebrew's `var` and `etc` denied; F4's probe asks for each.
