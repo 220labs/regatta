@@ -3,3 +3,7 @@
 # ceiling() over the registry's rules.week_max and budgets.json's (a `*:` line only over a row that sets neither); a
 # reserve still judges first.
 lighthouse/week-max  login  -  bin/account week-max {login}
+# reef's bounds (bin/reef; 2026-11-04): `mode=on|advise|off,run=<floor>-<ceiling>,check=<floor>-<ceiling>` per host,
+# a `*:` line (a host without its own) only in the base file, as `regatta limit set` takes `<host>:` or `--all`; within
+# them reef moves wharf-runs' run-cap and check-slots by the host's load.
+lighthouse/reef  host*  mode=advise  REEF_HOST={host} bin/reef bounds

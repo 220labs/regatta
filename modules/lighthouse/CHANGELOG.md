@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- reef (2026-11-04): each host tunes its own check slots and run cap from its measured load, within the owner's
+  `lighthouse/reef` bounds (a live limit); the sweep's `hosts sample --put --refresh` starts `reef apply` on a host
+  with a line. Hosts at 2-6× their load limit while a new node idled was the cause (the owner, 2026-11-04).
+
 - finish-as-task (2026-11-02): `hosts` keeps the fleet store alone, a finish being a fleet entry now; `local=_land`
   is gone with the Mac-local landing queue, and a run claimed from any `local=` store counts as confined.
 
