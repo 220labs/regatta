@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `wharf apply --yard` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
+  `wharf-runs/ssh` row, the key the node fence forbids (2026-11-03).
 - `yard-node`'s named-node payload writes `wharf-runs/node/scope`, the scope the node serves (empty on a shared
   node): the core's `nodes_here` reads it to tell the node as its scope's own yard (scopes-node-yard).
 
