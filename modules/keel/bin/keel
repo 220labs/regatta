@@ -5253,8 +5253,9 @@ def link(memo):
 # `never_mirrored` says so. `github` the read (blob) view, one link, never the
 # edit page; the file name links the absolute path with #L1, which VS Code opens as text, not preview.
 # Other formats (a claude.ai artifact) follow `space` as more `|` links. `line` prints it and
-# `line_findings` is the one reader: bin/paste-paths' Stop hook and hooks/checkpoint.py both
-# call it, so what the hooks demand is exactly what `line` can print. Until 2026-10-07 the spec
+# `line_findings` is the one reader of a line against its doc: bin/paste-paths' Stop hook and
+# hooks/checkpoint.py both call it, so what the hooks demand is exactly what `line` can print
+# (`hands_doc` asks only whether a reply carries the shape, and demands nothing). Until 2026-10-07 the spec
 # lived only in a project's auto-memory, and the hooks demanded the older local + edit shape.
 LINE_LABELS = ("course", "local", "github", "space")
 LINE_LINK_RE = re.compile(r"\[([^\]\n]*)\]\((<[^>\n]+>|[^)\s]+)\)")
@@ -5653,6 +5654,40 @@ def line_findings(reply, path, plan=None):
             + (" (space where a mirror runs; a course link on the internet stands for it)"
                if "course" in want and "space" in want else "")]
     return best
+
+
+# What a reply's prose keeps of a line: a code span quotes (a run of backticks closes on a run as long);
+# a link's own label in backticks does not, group 1, kept.
+LINE_CODE_SPAN_RE = re.compile(r"(\[`[^`\n]*`\])|(?<!`)(`+)(?!`).*?(?<!`)\2(?!`)")
+LINE_DATED_DOC_RE = re.compile(r"-\d{4}-\d{2}-\d{2}\.md$")  # docs/<topic>-<date>.md, what a design or a digest is named
+
+
+def hands_doc(reply):
+    """True when a prose line of `reply` has the hand-over line's own shape: `line`'s file link (an
+    absolute .md path, #L1, its name as the text) ending the line, after a ` | ` chain, ` — ` before it,
+    that holds one of LINE_LABELS at least; or a dated doc's alone on its line, all `line` prints for a new
+    doc on a branch not pushed yet. The shape alone, so no git: paste-paths asks this of a closing line
+    that says nothing is owed (a doc handed with no D-item still waits on the owner's reading). Never
+    looser: a link to github or to a file inside prose is no hand-over, nor a README cited on its own line."""
+    from urllib.parse import unquote
+    lines = (reply or "").split("\n")
+    for raw, inside in zip(lines, fenced(lines)):
+        if inside:
+            continue
+        prose = LINE_CODE_SPAN_RE.sub(lambda c: c.group(1) or "", raw)
+        for m in LINE_LINK_RE.finditer(prose):
+            label, target = m.group(1).strip("`"), unquote(m.group(2).strip("<>"))
+            base, _, frag = target.partition("#")
+            if frag != "L1" or not base.startswith("/") or not base.endswith(".md") or label != os.path.basename(base):
+                continue
+            if raw.strip() == m.group(0) and LINE_DATED_DOC_RE.search(base):
+                return True
+            if prose[m.end():].strip(" *_."):
+                continue
+            chain = LINE_CHAIN_RE.search(prose[:m.start()])
+            if chain and any(a.strip() in LINE_LABELS for a, _ in LINE_LINK_RE.findall(chain.group(1))):
+                return True
+    return False
 
 
 def _chain_findings(prefix, plan, unquote):

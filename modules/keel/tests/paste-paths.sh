@@ -16,6 +16,8 @@ export MEMO_STATE_DIR="$T/state" MEMO_SHEEP_STATE="$T/sheep" MEMO_SHEEP_BIN="$T/
 unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_ENTRYPOINT  # each drops a part of the line; the cases that want one set it
 printf '#!/bin/sh\nexit 9\n' > "$T/spacesheep"; chmod +x "$T/spacesheep"
 unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_HOOK_NO_SHEEP
+unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+for v in $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done   # a dispatched run's, by pattern: a fixed list goes stale
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 form() {  # form <doc>: its spacesheep page — the form since 2026-10-14; unpinned, any page passes
   echo "https://spacesheep.dev/@sam/$(basename "$1" .md)"; }
@@ -378,8 +380,10 @@ if "mid" in flags:
     rows.append({"type": "user", "message": {"content": "<task-notification>done</task-notification>"},
                  "origin": {"kind": "task-notification"}})
 rows += [{"type": "assistant", "message": {"content": [{"type": "text", "text": "Checking:\n```bash\nls"}]}},
-         {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback: …"}},
-         {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}]
+         {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback: …"}}]
+for early in (a[6:] for a in flags if a.startswith("early=")):  # an earlier message of the turn: last_reply stops at the row above
+    rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": early}]}})
+rows.append({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
 open(f, "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
 PY
 }
@@ -531,6 +535,69 @@ for l in "nothing pending; merge the PR when you are happy" "nothing required; t
 done
 tf_ "$T/kn6.jsonl" "plain prompt" 'ls' $'Built.\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — '
 check "$(blocks "$T/kn6.jsonl" 'not one of the fixed closing lines')" 1 "  WAITING FOR NOTHING without its what blocks"
+echo "a handed doc (the owner, 2026-11-01): a hand-over line closes WAITING FOR YOU, D-items or none"
+HL='[local](http://mirror.localhost:7777/@sam/d) | [github](https://github.com/o/r/blob/b/docs/d-2026-11-01.md) | [space](https://spacesheep.dev/@sam/d) — [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)'
+IDLE='✅ SAM, THIS SESSION IS WAITING FOR NOTHING — the design is written.'
+tf_ "$T/kh1.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n'"$IDLE"
+check "$(blocks "$T/kh1.jsonl" 'a doc (its hand-over line).*end on `[^`]*SAM, THIS SESSION IS WAITING FOR YOU')" 1 "  a hand-over line under WAITING FOR NOTHING blocks, naming WAITING FOR YOU"
+check "$(blocks "$T/kh1.jsonl" 'do not resend it')" 1 "  …a fix to the ending, so the short form"
+tf_ "$T/kh2.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the design doc, for your reading.'
+check "$(quiet "$T/kh2.jsonl")" 0 "  the same reply ending WAITING FOR YOU passes"
+tf_ "$T/kh2n.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing outstanding; the doc is up.'
+check "$(quiet "$T/kh2n.jsonl")" 0 "  …and is not sent back to WAITING FOR NOTHING for saying nothing is outstanding"
+tf_ "$T/kh2s.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing to do yet; the reviewers are running.'
+check "$(quiet "$T/kh2s.jsonl")" 0 "  …nor to WAITING FOR SOMETHING: a doc handed while a review runs still owes the owner"
+tf_ "$T/kh2a.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — nothing outstanding; the doc is up.\n\nOne more thing.'
+check "$(blocks "$T/kh2a.jsonl" 'the very last thing said')" 1 "  …nor when that line is not last"
+check "$(blocks "$T/kh2a.jsonl" 'ends on `[^`]*SAM, THIS SESSION IS WAITING FOR NOTHING')" 0 "  …which is told only to move"
+tf_ "$T/kh3.jsonl" "plain prompt" 'ls' $'Landed; the digest:\n\n'"$HL"$'\n\n'"$DONE"
+check "$(quiet "$T/kh3.jsonl")" 0 "  a skill's done line with a hand-over line passes (a landed digest)"
+tf_ "$T/kh4.jsonl" "plain prompt" 'ls' $'It is in [github](https://github.com/o/r/blob/b/docs/d-2026-11-01.md) now.\n\n'"$IDLE"
+check "$(quiet "$T/kh4.jsonl")" 0 "  a plain github link and no hand-over line passes"
+tf_ "$T/kh5.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$IDLE"$'\n'"$HL"
+check "$(blocks "$T/kh5.jsonl" 'a doc (its hand-over line)')" 1 "  a hand-over line after the closing line blocks too (links may follow one)"
+tf_ "$T/kh6.jsonl" "plain prompt" 'ls' $'The design is up.\n\n[github](https://github.com/o/r/blob/b/docs/d-2026-11-01.md) — [d-2026-11-01.md](</x/My Docs/d-2026-11-01.md#L1>)\n\n'"$IDLE"
+check "$(blocks "$T/kh6.jsonl" 'a doc (its hand-over line)')" 1 "  one part before the file link, a path in <…>: still the line"
+tf_ "$T/kh7.jsonl" "plain prompt" 'ls' "$IDLE" "early=The design is up."$'\n\n'"$HL"
+check "$(blocks "$T/kh7.jsonl" 'a doc (its hand-over line)')" 1 "  a hand-over line in an earlier message of the turn blocks too"
+tf_ "$T/kh7f.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n'"$IDLE" "early=Checking:"$'\n```bash\nls'
+check "$(blocks "$T/kh7f.jsonl" 'a doc (its hand-over line)')" 1 "  …and one past an earlier message's unclosed fence, read on the last message alone"
+for r in "The line reads \`$HL\`, as keel prints it." \
+  $'The line:\n```text\n'"$HL"$'\n```' \
+  "The line reads \`\` $HL \`\`, as keel prints it." \
+  "Written: [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)" \
+  "- [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)" \
+  "See [github](https://github.com/o/r) and [space](https://spacesheep.dev/@sam/d) — [notes](/x/docs/d-2026-11-01.md#L1)" \
+  "See [github](https://github.com/o/r) — [d-2026-11-01.md](/x/docs/d-2026-11-01.md)" \
+  "[AGENTS.md](/x/AGENTS.md#L1)" \
+  "[github](https://github.com/o/r/pull/3) — [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1) needs a rebase." \
+  "[github](https://github.com/o/r) — [d-2026-11-01.md](/x/docs/d-2026-11-01.md) and [x.py](/x/bin/x.py#L1)" \
+  "[github](https://github.com/o/r) — [d-2026-11-01.md](docs/d-2026-11-01.md#L1)" \
+  "[d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1) \`item 12\`" \
+  "\`item 12\` [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)" \
+  "See [github](https://github.com/o/r) — [x.py](/x/bin/x.py#L1)" \
+  "See [read](https://github.com/o/r) — [d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)"; do
+  tf_ "$T/kh8.jsonl" "plain prompt" 'ls' "$r"$'\n\n'"$IDLE"
+  check "$(quiet "$T/kh8.jsonl")" 0 "  no hand-over line, WAITING FOR NOTHING passes: ${r:0:44}"
+done
+tf_ "$T/kh8l.jsonl" "plain prompt" 'ls' $'The design is up.\n\n[d-2026-11-01.md](/x/docs/d-2026-11-01.md#L1)\n\n'"$IDLE"
+check "$(blocks "$T/kh8l.jsonl" 'a doc (its hand-over line)')" 1 "  the file link alone on its line blocks: all keel line prints for a new doc on an unpushed branch"
+tf_ "$T/kh8b.jsonl" "plain prompt" 'ls' $'[github](https://github.com/o/r) — [`d.md`](/x/docs/d.md#L1) `x`\n\n'"$IDLE"
+check "$(blocks "$T/kh8b.jsonl" 'a doc (its hand-over line)')" 1 "  a label in backticks with a code span after it stays the line"
+tf_ "$T/kh8a.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n'"$IDLE"$'\n\nOne more thing.'
+check "$(blocks "$T/kh8a.jsonl" 'a closing line is the very last thing said')" 1 "  an idle line that is not last gets its own finding"
+check "$(blocks "$T/kh8a.jsonl" 'a doc (its hand-over line)')" 1 "  …and this one beside it: the block fires once"
+tf_ "$T/kh8f.jsonl" "$FIN" 'touch "$(git rev-parse --git-dir)/claude/finishing"' $'Merged.\n\n**Shipped:** x\n\n'"$HL"$'\n\n'"$IDLE"
+check "$(blocks "$T/kh8f.jsonl" 'ends with one of its closing lines')" 1 "  a /finish that launched owes its own line (a landed digest asks nothing)"
+check "$(blocks "$T/kh8f.jsonl" 'a doc (its hand-over line)')" 0 "  …and is never told WAITING FOR YOU"
+tf_ "$T/kh8e.jsonl" "$EVAC" 'ls' $'Verdict: CLOSE.\n\n'"$HL"$'\n\n'"$IDLE"
+check "$(blocks "$T/kh8e.jsonl" 'ends with one of its closing lines')" 1 "  so does an /evacuate"
+tf_ "$T/kh9.jsonl" "plain prompt" 'ls' $'## Do this now\n\n```\nopen https://x\n```\n\n'"$HL"$'\n\n'"$IDLE"
+check "$(blocks "$T/kh9.jsonl" 'a doc (its hand-over line)')" 0 "  a Do this now block keeps its own finding, one finding for one ending"
+check "$(blocks "$T/kh9.jsonl" 'Do this now block or a')" 1 "  …and its whole resend"
+tf_ "$T/kh10.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n✅ SAM, THIS SESSION IS WAITING FOR NOTHING — pick A or B.'
+check "$(blocks "$T/kh10.jsonl" 'WAITING FOR YOU')" 1 "  an idle line that asks takes its own finding, once"
+check "$(blocks "$T/kh10.jsonl" 'a doc (its hand-over line)')" 0 "  …not this one on top"
 echo "the marks (2026-10-29): ✅ closeable, ⏳ work goes on, 🛑 the owner owes the next move"
 tf_ "$T/km1.jsonl" "plain prompt" 'ls' $'Built.\n\nSAM, THIS SESSION IS WAITING FOR YOU — pick A or B.'
 check "$(blocks "$T/km1.jsonl" 'the closing line has no mark')" 1 "  a closing line with no mark blocks"
@@ -692,7 +759,8 @@ from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("pp", sys.argv[1]).load_module()
 env = dict(a.split("=", 1) for a in sys.argv[4:])
 sid = env.pop("SID", "s-1")
-print(len(m.ask_findings(sys.argv[2].replace("\\n", "\n"), None, sys.argv[3], env, session=sid)))
+bash = env.pop("BASH", "")
+print(len(m.ask_findings(sys.argv[2].replace("\\n", "\n"), None, sys.argv[3], env, session=sid, bash=(bash,) if bash else ())))
 PY
 }
 AG="$T/askrepo"; git init -q "$AG"
@@ -700,6 +768,35 @@ W='done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1, the cadence'
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "ask: a skippered run's WAITING line naming a D-item is refused once"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1)" 1 "  the same under the skipper's new name alone (rename S5: both names read)"
 check "$(af_ 'Do this now\n\n```\nssh buildbox-ssh login\n```\n\nthen I go on.' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a Do-this-now step (Sam: a login counts too)"
+AH="The design is up.\n\n$HL\n\n$IDLE"
+check "$(af_ "$AH" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1)" 1 "  so is a doc handed under WAITING FOR NOTHING: the relay is said in the one block"
+check "$(af_ "$AH" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  …not with no skipper to take it"
+check "$(af_ "$AH" "$AG" DISPATCH_SKIPPER=m1)" 0 "  …nor in a run someone watches"
+check "$(af_ "$AH" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1 'BASH=touch .git/claude/finishing')" 0 "  …nor a landing that owes its own line"
+check "$(af_ 'It is in [github](https://github.com/o/r) now.\n\n'"$IDLE" "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1)" 0 "  …nor a plain github link"
+sk_() { printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$1" "$AG" | env CLAUDE_UNATTENDED=dispatch DISPATCH_SKIPPER=m1 python3 "$B/paste-paths" --stop-hook; }
+check "$(sk_ "$T/kh1.jsonl" | grep -c 'goes to the skipper instead')" 1 "  the hook: a skippered hand-over is told to relay"
+check "$(sk_ "$T/kh1.jsonl" | grep -c 'a doc (its hand-over line)')" 0 "  …and told one ending, the relay's, not WAITING FOR YOU too"
+tf_ "$T/kh11.jsonl" "plain prompt" 'ls' $'The design is up.\n\n'"$HL"$'\n\n'"${IDLE#✅ }"
+check "$(sk_ "$T/kh11.jsonl" | grep -c 'goes to the skipper instead')" 1 "  an unmarked idle line relays"
+check "$(sk_ "$T/kh11.jsonl" | grep -c 'start it with')" 0 "  …with no word on a mark for a line it replaces"
+tf_ "$T/kh12.jsonl" "plain prompt" 'ls' $'⚠ step 4 — the gate.\n\n'"$HL"$'\n\n'"$IDLE"
+check "$(sk_ "$T/kh12.jsonl" | grep -c 'stop or closing line asks')" 1 "  a ⚠ stop goes with the doc: the relay names it"
+check "$(sk_ "$T/kh10.jsonl" | grep -c 'stop or closing line asks')" 1 "  …and an idle line that asks"
+check "$(sk_ "$T/kh1.jsonl" | grep -c 'stop or closing line asks')" 0 "  …a doc alone says the doc"
+check "$(sk_ "$T/kh2n.jsonl" | grep -c 'goes to the skipper instead')" 1 "  a WAITING FOR YOU line saying nothing is owed relays when it hands a doc"
+check "$(sk_ "$T/kh2s.jsonl" | grep -c 'goes to the skipper instead')" 1 "  …and one saying nothing to do"
+check "$(sk_ "$T/kn7.jsonl" | grep -c 'Do this now block or a')" 1 "  no hand-over line: a relay leaves the idle line's own finding as main has it"
+tf_ "$T/kh14.jsonl" "plain prompt" 'ls' $'## Do this now\n\n```\nopen https://x\n```\n\n'"${DONE#✅ }"
+check "$(sk_ "$T/kh14.jsonl" | grep -c 'start it with')" 1 "  …and a done line's mark finding"
+tf_ "$T/kh13.jsonl" "plain prompt" 'ls' $'## Do this now\n\n```\nopen https://x\n```\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — the WAITING FOR NOTHING row\n\nOne more thing.'
+check "$(sk_ "$T/kh13.jsonl" | grep -c 'the very last thing said')" 1 "  a relay keeps a not-last WAITING line's finding, whatever the line quotes"
+for f in kh10 kh8a kh9; do
+  check "$(sk_ "$T/$f.jsonl" | grep -c 'goes to the skipper instead')" 1 "  $f: an idle line with another fault still relays"
+  check "$(sk_ "$T/$f.jsonl" | grep -c 'WAITING FOR YOU\|the very last thing said\|Do this now block or a')" 0 "  …and names no other ending"
+done
+check "$(sk_ "$T/kh8f.jsonl" | grep -c 'goes to the skipper instead')" 0 "  …a landing's turn is not (stop_hook hands ask_findings the turn's Bash)"
+check "$(sk_ "$T/kh8e.jsonl" | grep -c 'goes to the skipper instead')" 0 "  …nor an /evacuate's (and its command)"
 check "$(af_ 'done.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — log in to gh on buildbox, then dispatch --next' "$AG" CLAUDE_UNATTENDED=dispatch DISPATCH_MANAGER=m1)" 1 "  so is a WAITING line naming a manual step"
 check "$(af_ "$W" "$AG" CLAUDE_UNATTENDED=dispatch)" 0 "  a run with no skipper may end on it (R6)"
 check "$(af_ "$W" "$AG" DISPATCH_MANAGER=m1)" 0 "  an attended session is untouched"
@@ -841,6 +938,10 @@ NP="KEEL_NO_PEERS=1"   # no variable the code reads: the scratch tree hides the 
 G24="$T/g24tree"; mkdir -p "$G24/.claude-plugin" "$G24/modules"; : > "$G24/.claude-plugin/marketplace.json"
 cp -R "$B/../../regatta" "$G24/modules/regatta"; cp -R "$B/.." "$G24/modules/keel"
 check "$(printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$T/b7.jsonl" "$R" | env "$NP" python3 "$G24/modules/keel/bin/paste-paths" --stop-hook | grep -c 'hand-over line is not right')" 1 "G9: peers absent — the hand-over finding still blocks"
+G24K="$T/g24keel"; mkdir -p "$G24K/.claude-plugin" "$G24K/modules"; : > "$G24K/.claude-plugin/marketplace.json"
+cp -R "$B/../../regatta" "$G24K/modules/regatta"; cp -R "$B/.." "$G24K/modules/keel"; rm "$G24K/modules/keel/bin/keel"
+check "$(printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$T/kh1.jsonl" "$R" | python3 "$G24K/modules/keel/bin/paste-paths" --stop-hook 2>/dev/null | wc -c | tr -d ' ')" 0 "a bin/keel that will not load blocks no WAITING FOR NOTHING line on a doubt"
+check "$(printf '{"transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$T/kh1.jsonl" "$R" | python3 "$G24K/modules/keel/bin/paste-paths" --stop-hook 2>&1 >/dev/null | grep -c 'hand-over line: bin/keel')" 1 "  …and says so on stderr"
 check "$(env "$NP" python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pp", sys.argv[1]).load_module(); print(m._asklib(), m._rc(), m.standing({"DISPATCH_MANAGER": "m"}), m.skipper_findings("s", env={}, runs=sys.argv[2]))' "$G24/modules/keel/bin/paste-paths" "$T/runs" 2>&1)" "None None None []" "G24: no asklib, no dispatch-rc, no surfaces — None, and no skipper reminder"
 check "$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pp", sys.argv[1]).load_module(); print(m._asklib() is not None, m._rc() is not None, m._ask_cmd().endswith("/bin/ask"))' "$B/paste-paths")" "True True True" "  with them: each found through the core's tool()"
 
