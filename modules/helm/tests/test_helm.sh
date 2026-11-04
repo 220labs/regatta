@@ -5007,6 +5007,10 @@ check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["scope
 check "$(yo env YO_TICK=disarmed "$HM" yard-on yardbox s1)" "1" "a disarmed yard tick: refused"
 has "$(cat "$YO/out")" "yardbox's tick is not armed" "  and says why"
 check "$(yo env YO_TICK=down "$HM" yard-on yardbox s1)" "1" "an unreachable yard: refused, never read as armed"
+check "$(yo env YO_TICK=armed "$HM" yard-on nodebox-agent s1)" "1" "a node's peer: refused (yard-on reaches no node yet)"
+has "$(cat "$YO/out")" "nodebox-agent is a node's peer: yard-on reaches no node yet" "  named as a node, with the road meanwhile"
+has "$(cat "$YO/out")" "never a wharf-runs/ssh row for it" "  never the key the node fence forbids"
+hasnt "$(cat "$YO/out")" "Arm it there first" "  never framed as a tick not armed"
 yship skip1 demo 0 running 5
 check "$(yo env YO_TICK=armed "$HM" yard-on yardbox s1 --dry-run)" "0" "a typed session's ship running here (no blueprint task): not in flight for the fence (the laptop's refusals, 2026-11-01)"
 yship bp1 other 1 running 5

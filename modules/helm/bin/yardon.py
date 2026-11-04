@@ -41,8 +41,13 @@ OVER = ("done", "landed", "launched", "failed")     # nothing more will happen t
 
 
 def tick_mode(host):
-    """(mode, said): HOST's tick as `helm tick --status` there reads; mode None when it cannot be told."""
+    """(mode, said): HOST's tick as `helm tick --status` there reads; mode None when it cannot be told, "node"
+    for a node's peer this Mac has no alias for (yard-on reaches no node yet)."""
     alias = sendlib.alias_of(host)
+    if not alias and host.lower().endswith("-agent"):   # every node's peer (orca-host's NODE_ROLE)
+        return "node", ("%s is a node's peer: yard-on reaches no node yet (TODO.md [node-road-left] (g)); read "
+                      "`helm tick --status` on it and write the yard with `scopes set`, never a wharf-runs/ssh row "
+                      "for it" % host)
     if not alias:
         return None, "no ssh alias for %s (the config dir's wharf-runs/ssh) — cannot reach it" % host
     rc, out, err = sendlib.remote(alias, "helm", ["tick", "--status"], timeout=60)
@@ -136,6 +141,8 @@ def run(host, scopes, dry=False, within=12.0, say=print, err=None):
     mode, said = tick_mode(host)
     if mode in ("armed", "dry"):
         say("  ok      %s's tick reads %s (%s)" % (host, mode, said))
+    elif mode == "node":   # its tick cannot be read from here: said as that, never as a tick not armed
+        why.append(said)
     else:
         why.append("%s's tick is not armed — %s. Arm it there first: `helm tick --arm`" % (host, said))
     busy, bwhy = in_flight(scopes, within)

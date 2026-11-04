@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `helm yard-on` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
+  `wharf-runs/ssh` row: it reaches no node yet, and `scopes set` writes a node yard meanwhile (2026-11-03).
 - The board's shell (helm-board-ux S3), to the helm council's round-6 prototype: `bin/board.html`, `board.css` and
   `board.js` beside `helm_render.py`, which `board_page()` fills in one pass with keel's foundation (S10) and the
   first snapshot; `helm board` writes and deploys it, and falls back to the plain page, said on stderr, without keel
