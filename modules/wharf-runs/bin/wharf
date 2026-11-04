@@ -3281,6 +3281,11 @@ def yard_caller(a):
         return yard_compile(pin, laid, pid, a)
     depth_refusal(laid)   # said here, before the ssh: the yard would refuse it as well
     alias = yard_alias(yard)
+    if not alias and yard.lower().endswith("-agent"):   # every node's peer (orca-host's NODE_ROLE)
+        # a node's peer: never a wharf-runs/ssh row, which orca-host's node_clash faults (every reader of that
+        # key would reach the node); a node yard is reached by helm send's node road (TODO.md [node-road-left] (a))
+        raise Refused("scope %s's yard %s is a node's peer: wharf apply --yard reaches no node yet (TODO.md "
+                      "[node-road-left] (a)); send the ship with helm send, never a wharf-runs/ssh row for it" % (scope, yard))
     if not alias:
         raise Refused("scope %s's yard %s has no ssh alias here (wharf-runs/ssh: %s:<alias>)" % (scope, yard, yard))
     # ssh carries no environment: the caller's SKIPPER_GEN goes across as --gen
