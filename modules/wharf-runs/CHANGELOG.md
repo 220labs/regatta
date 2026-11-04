@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `check`'s scope (`check_scope.py`): a change under `.github/ci/`, where share.sh, linux-tools.sh and the Linux
+  list moved from `.circleci/` (free CI's S2, 2026-11-04), runs the whole line, as `.circleci/` did; a change to
+  `.github/workflows/check.yml` or `check-linux.yml` runs wharf's suite, which reads both. `autofinish`'s brief
+  hold holds `.github/ci/` beside `.github/workflows/`.
 - `autofinish-run`'s detached waiter execs a fresh interpreter (`autofinish-run waiter`, its spec in
   `AUTOFINISH_WAITER_SPEC`) instead of running in the forked image: once the caller had resolved a name, the
   waiter's next getaddrinfo died in Apple's Network framework (fourteen waiters on the laptop, 2026-11-01/03), and a

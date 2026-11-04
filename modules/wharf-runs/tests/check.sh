@@ -35,13 +35,13 @@ fi
 # Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
 # Linux launcher, stood in), test_autofinish (made
 # portable and run on ubuntu in the overlay's CI since 2026-10-07), test_builder_coin (written portable, trim S6) and test_kick_socket (the sheep road's socket
-# press; its stub-server cases where python3 has websockets 14.0+, which .circleci/linux-tools.sh
+# press; its stub-server cases where python3 has websockets 14.0+, which .github/ci/linux-tools.sh
 # unpacks from PyPI's checked wheel). The rest read launchd, plutil,
 # caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
 # what it checks.
 LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket "
 # Off macOS the rest do not run on this host. In regatta a pull request's `check` runs on a macOS runner (the
-# whole line, or with CircleCI's Linux share the rest: WHARF_RUNS_SKIP_LINUX_OK, .circleci/share.sh), and
+# whole line, or with CircleCI's Linux share the rest: WHARF_RUNS_SKIP_LINUX_OK, .github/ci/share.sh), and
 # `pr merge` waits for that required check before it merges, so a /finish on the Linux node (node-lands,
 # 2026-10-31) passes on these lines and its PR does not until they ran on a Mac. Elsewhere (a twin's Linux CI)
 # nothing runs them. Said per suite, and once at the end with the list.
@@ -61,7 +61,7 @@ run_suite() {   # <suite>: its header and the suite, or the line saying why it i
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  --   skipped: not in this checkout"; return 0; fi
   if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only, $LEFT_TO_MAC"; return 0; fi
-  # the PR check's macOS share (.circleci/share.sh): CircleCI's Linux job ran these already
+  # the PR check's macOS share (.github/ci/share.sh): CircleCI's Linux job ran these already
   if [ -n "${WHARF_RUNS_SKIP_LINUX_OK:-}" ] && [ "${LINUX_OK#* $s }" != "$LINUX_OK" ]; then echo "  --   skipped: run on Linux (the macOS share)"; return 0; fi
   t=$(date +%s); bash "$D/$s.sh"; r=$?
   echo "  ($s: $(( $(date +%s) - t )) s, exit $r)"

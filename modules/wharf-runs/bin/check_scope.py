@@ -6,7 +6,9 @@
 Prints a `SCOPE<tab><said>` line, then one `RUN<tab><why>` or `SKIP<tab><why>` per command, in order.
 The rules are `check`'s header (lines 8-30): a module's suite runs when the module changed, or one it
 uses (its plugin.json dependencies, followed through, or a module its files name by path, one hop);
-a change outside modules/ (bar docs/ and .github/) runs the whole line. Moved out of `check`'s heredoc
+a change outside modules/ (bar docs/ and .github/, though .github/ci/ counts: the shares' scripts and list,
+which wharf's and wharf-runs' suites test; free CI's S2, 2026-11-04) runs the whole line; check.yml and
+check-linux.yml run wharf's suite, which reads them. Moved out of `check`'s heredoc
 (2026-10-30) so the Linux PR trigger (.github/workflows/check-linux.yml) asks the same question.
 """
 import json, os, re, sys
@@ -41,7 +43,10 @@ for p in changed:
         continue
     m = re.match(r"\.([^/]+)/", p)
     if m and m.group(1) in mods: own.add(m.group(1))
-    elif p.startswith(("docs/", ".github/")): pass
+    # the two check workflows are wharf's suite's input (its roads and trigger cases read them, free CI's S2)
+    elif p in (".github/workflows/check.yml", ".github/workflows/check-linux.yml") and "wharf" in mods: own.add("wharf")
+    # .github/ci/ holds share.sh and its list (.circleci/ until S2, where it ran the whole line): still does
+    elif p.startswith("docs/") or (p.startswith(".github/") and not p.startswith(".github/ci/")): pass
     elif "/" not in p and p.endswith(".md"): roots = True
     else: why_all = why_all or p
 if why_all:
