@@ -30,9 +30,10 @@
 # The model and effort are opus/high unless given, or unless the brief's `Tier:` line names a principal
 # tier (`principal-architect` fable xhigh, `principal-worker` opus xhigh; blueprintlib's TIER_RUN), read
 # when the run fires; a given --model or --effort below that tier is refused, `--effort max` allowed.
-# A specced brief (its Tier: line names `worker`, or Sonnet) may instead draw its builder by coin: while
+# A specced brief (its Tier: line names `worker`, or Sonnet) or a plain-Opus one (Opus alone, no tier word, no
+# effort but high) may instead draw its builder by coin: while
 # `wharf-runs/builder-rotation` says `until YYYY-MM-DD`, a run with no --model or --effort given draws once
-# where it is enqueued or scheduled (1 in 5 Sonnet 5.5 high, else Opus 5.5 high), every road carries the
+# where it is enqueued or scheduled (3 in 5 Sonnet 5.5 high, else Opus 5.5 high), every road carries the
 # draw as DISPATCH_ARM, and the fire path runs it, records it and writes its row (bin/buildercoin.py's
 # header; S6 of docs/self-tuning-2026-10-26.md). No key, or any other tier, and nothing changes.
 #
@@ -954,21 +955,22 @@ brief_re="^docs/handoff/[0-9]{4}-[0-9]{2}-[0-9]{2}-$topic_re\.md\$"
 # Read here from the branch as this Mac knows it (the dry run's, --next's and the queued line's), and
 # again at fire time from the worktree's brief, which decides; a job or a peer is handed only the flags
 # given, so the fire-time read is never overridden by a default written into its plist.
-tier=""; specced=0; model0="$model"; effort0="$effort"
-tier_run() {  # tier_run < <brief text>: sets $tier and $specced, and $model and $effort where no flag named them
+tier=""; on_coin=0; rotates=""; model0="$model"; effort0="$effort"
+# $on_coin: the brief is on the builder coin; $rotates says why (specced or plain, blueprintlib's brief_rotates)
+tier_run() {  # tier_run < <brief text>: sets $tier, $on_coin and $rotates, and $model and $effort where no flag named them
   local out t m e s
   # each read starts from the given-or-default pair: a stale early read's principal tier never outlives
   # the fire-time read that decides (the S5 landing review)
-  model="$model0"; effort="$effort0"; specced=0
+  model="$model0"; effort="$effort0"; on_coin=0; rotates=""
   out=$(python3 -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import blueprintlib as b
 x = sys.stdin.read()
 t = b.brief_tier(x)
-print(t or "-", *(b.TIER_RUN[t] if b.principal(t) else ("-", "-")), int(b.brief_specced(x)))' "$here/bin") || return 1
+print(t or "-", *(b.TIER_RUN[t] if b.principal(t) else ("-", "-")), b.brief_rotates(x) or "-")' "$here/bin") || return 1
   read -r t m e s <<<"$out"
   [ "$t" = - ] && tier="" || tier="$t"
-  [ "$s" = 1 ] && specced=1
+  case "$s" in specced|plain) on_coin=1; rotates="$s";; esac
   [ "$m" = - ] && return 0
   [ "$model_given" = 1 ] || model="$m"
   [ "$effort_given" = 1 ] || effort="$e"
@@ -1004,15 +1006,15 @@ principal_flags() {
     *) echo "tier $tier runs on $pm; --model $model would run it elsewhere"; return 1;;
   esac
 }
-# arm_apply: the builder rotation's arm (the header) on the fire path, once the brief as it fires is read: still
-# specced, no --model or --effort given, a word that reads, the key's window still open and the fence open here,
+# arm_apply: the builder rotation's arm (the header) on the fire path, once the brief as it fires is read:
+# still on the coin, no --model or --effort given, a word that reads, the key's window still open and the fence open here,
 # the arm decides the model and effort and the record keeps it (chain_record); else it is dropped, said, and
 # today's choice runs
 arm_apply() {
   local out why=""
   [ -n "$arm_word" ] || return 0
   if [ "$start$probe" != 00 ]; then why="no build run"
-  elif [ "$specced" = 0 ]; then why="the brief as it fires is not specced${tier:+ (tier $tier)}"
+  elif [ "$on_coin" = 0 ]; then why="the brief as it fires is not on the coin${tier:+ (tier $tier)}"
   elif [ "$model_given$effort_given" != 00 ]; then why="a --model or --effort was given"
   # the key's window and the fence again, on this host now: the owner's switch stops a word drawn before it
   # (an --at one-shot, a queued entry), and a repo fenced since runs today's builder, unrecorded (`arm --repo`)
@@ -1027,7 +1029,7 @@ arm_apply() {
 # arm_row: the rotation's row, once the record holds the run's session (buildercoin.py row asks the fence again)
 arm_row() {
   [ -n "$arm_json" ] || return 0
-  python3 "$here/bin/buildercoin.py" row "$arm_word" --repo "$repo" --branch "$branch" --topic "$topic" --session "$sid"     --account "${acct_label:-}" --queue "${fromq:-}" || true
+  python3 "$here/bin/buildercoin.py" row "$arm_word" --repo "$repo" --branch "$branch" --topic "$topic" --session "$sid"     --account "${acct_label:-}" --queue "${fromq:-}" --brief "${rotates:-}" || true
 }
 if [ "$start" = 0 ]; then
   for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
@@ -2288,13 +2290,13 @@ queue_claim() {
   refresh_cap   # a run's end, maybe hours after its start: the claim judges at the cap of now (live-limits)
   python3 "$Q" claim "${qctx[@]}"
 }
-# The builder rotation (the header; buildercoin.py's): a specced brief's run with no --model or --effort given
+# The builder rotation (the header; buildercoin.py's): a specced or plain-Opus brief's run with no --model or --effort given
 # draws its builder once, here, where it is enqueued or scheduled, and every road below carries the word —
 # the queue's entry (queue_args), the peer's ssh line, the one-shot's plist — so both roads run the arm drawn
 # once. A fired job and a claimed entry came with theirs (or none) and draw nothing, nor does a peer's call
 # (its ssh line says DISPATCH_ARM=- when the sender drew none); a draw that fails is no arm. The fence and the key are judged in the draw; a line on stderr says the arm, or why none
 # when the key is there
-if [ -z "$arm_word" ] && [ "$arm_none" = 0 ] && [ "$specced" = 1 ] && [ "$model_given$effort_given" = 00 ] && [ "$start$probe$cancel$fired" = 0000 ] && [ -z "$fromq" ]; then
+if [ -z "$arm_word" ] && [ "$arm_none" = 0 ] && [ "$on_coin" = 1 ] && [ "$model_given$effort_given" = 00 ] && [ "$start$probe$cancel$fired" = 0000 ] && [ -z "$fromq" ]; then
   arm_word=$(DISPATCH_COIN="$coin_force" python3 "$here/bin/buildercoin.py" draw "$repo") || arm_word=""
   [[ "$arm_word" =~ ^(opus-high|sonnet-high):[01]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]$ ]] || arm_word=""
 fi

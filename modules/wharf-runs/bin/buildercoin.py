@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""The builder rotation: dispatch's coin for a specced build (S6 of docs/self-tuning-2026-10-26.md, D2-A).
+"""The builder rotation: dispatch's coin for a build on it, specced or plain Opus (S6 of docs/self-tuning-2026-10-26.md, D2-A).
 
 The finisher rotation's shape (autofinish-run's header), for builders. While the config key
 `wharf-runs/builder-rotation` says `until YYYY-MM-DD` and that day has not passed, a run whose brief is
 specced — its `Tier:` line names `worker` (and no other model) or Sonnet alone; a blueprint block's `tier: worker`
-counts only through the brief's line, and `wharf check` warns when they differ — and
-no principal tier, `sr-worker` or other tier — and that no `--model` or `--effort` was given for, draws its
-builder once, when dispatch enqueues or schedules it: 1 in 5 Sonnet 5.5 at `high`, else Opus 5.5 at `high`
-(today's builder spelled out), both by full id. No key, a passed day or a line that does not parse is
+counts only through the brief's line, and `wharf check` warns when they differ — or plain Opus — the line names
+Opus alone, no tier word and no effort but `high`, the rules' default written out (the owner, 2026-11-03) — and
+no principal tier, `sr-worker` or other tier, and that no `--model` or `--effort` was given for, draws its
+builder once, when dispatch enqueues or schedules it: 3 in 5 Sonnet 5.5 at `high`, else Opus 5.5 at `high`
+(today's builder spelled out), both by full id (1 in 5 until 2026-11-03, when the owner raised it for more
+Sonnet rows sooner and fewer credits spent; blueprintlib's `brief_rotates` says which class, and the row keeps it as `brief_class`). No key, a passed day or a line that does not parse is
 today's dispatch, unchanged. The fence comes first, as the finisher's: a repo in any `confidential: true`
 scope, a repo in no scope, or a registry that does not read or walk draws nothing.
 
 The arm rides to the run as one word, DISPATCH_ARM=<name>:<coin>:<until>:<forced> (the queue entry's env,
 the ssh line, the one-shot's plist), so both roads run the arm drawn once. Where the run fires, dispatch
 re-reads the brief and asks the key's window and the fence again, on that host (so every host that claims runs
-needs the key): still specced, no flag given, the key on and the fence open, the arm decides the model and effort and goes into the
+needs the key): still on the coin, no flag given, the key on and the fence open, the arm decides the model and effort and goes into the
 run record as `arm` ({name, model, effort, coin, until, forced}) with `arm_source` (`coin`, or `pinned` for a
 forced coin); and one row goes to <logs>/builder-rotation.jsonl beside finisher-rotation.jsonl, outside git,
 private to this Mac — the fence asked again there, so a repo fenced meanwhile writes none. trim's collect
@@ -23,8 +25,9 @@ joins the rows by session. DISPATCH_COIN=0|1 forces the coin (the tests), and th
     buildercoin.py draw REPO            # stdout: the word, or nothing; stderr: why (only with the key file there)
     buildercoin.py arm WORD [--repo R]  # stdout: "<model> <effort> <record json>"; exit 1, why on stdout, for a word
                                         # that does not read, or with R: the key's window closed today, or R fenced
-    buildercoin.py row WORD --repo R --branch B --topic T --session S [--account A] [--queue Q]
+    buildercoin.py row WORD --repo R --branch B --topic T --session S [--account A] [--queue Q] [--brief CLASS]
     buildercoin.py specced              # stdin: a brief; exit 0 when specced, 1 when not
+    buildercoin.py rotates              # stdin: a brief; stdout: specced or plain, exit 0; nothing, exit 1
 
 Exit 0, or 1 for a word or brief that does not read (or an arm the window or fence refuses at fire time); dispatch
 reads any non-zero, an uncaught error's 1 included, as no arm.
@@ -50,7 +53,10 @@ LOGS = os.path.join(os.path.expanduser("~"), "Library", "Logs", "claude-weekly")
 ROTATION_KEY = "wharf-runs/builder-rotation"
 # the arms in coin order, 0 the pin; full ids: an alias floats (the builders bench's harness rules)
 ARMS = (("opus-high", "claude-opus-5-5", "high"), ("sonnet-high", "claude-sonnet-5-5", "high"))
-ODDS = 5   # 1 in ODDS draws the challenger (D2-A)
+ODDS = 5        # SONNET_IN in ODDS draws the challenger (D2-A's coin; 1 in 5 until the owner's 3 in 5, 2026-11-03)
+SONNET_IN = 3
+# both arms must get rows, or the comparison is gone with no error (the finish review, 2026-11-03)
+assert 0 < SONNET_IN < ODDS, "buildercoin: SONNET_IN must be between 0 and ODDS, exclusive"
 ROTATION_LOG = "builder-rotation.jsonl"   # in LOGS: private to this Mac, outside git
 ROTATION_RE = re.compile(r"^(?:until\s+)?(\d{4}-\d{2}-\d{2})$")
 WORD_RE = re.compile(r"^(%s):([01]):(\d{4}-\d{2}-\d{2}):([01])$" % "|".join(a[0] for a in ARMS))
@@ -107,6 +113,17 @@ def specced(text):
     return blueprintlib.brief_specced(text)
 
 
+def coin_of(r):
+    """The coin for a roll r in range(ODDS): 1 (the challenger) for SONNET_IN of the ODDS rolls, else 0."""
+    return int(r < SONNET_IN)
+
+
+def rotates(text):
+    """blueprintlib's brief_rotates: "specced", "plain", or None."""
+    import blueprintlib
+    return blueprintlib.brief_rotates(text)
+
+
 def draw(primary):
     """(word, why): the arm drawn for a build of this repo, as DISPATCH_ARM's word, or None and why not."""
     end, why = rotation_window()
@@ -116,7 +133,7 @@ def draw(primary):
     if fenced:
         return None, "builder rotation fenced: %s — today's builder, no row" % fenced
     forced = os.environ.get("DISPATCH_COIN")
-    coin = int(forced) if forced in ("0", "1") else int(random.SystemRandom().randrange(ODDS) == 0)
+    coin = int(forced) if forced in ("0", "1") else coin_of(random.SystemRandom().randrange(ODDS))
     name = ARMS[coin][0]
     return "%s:%d:%s:%d" % (name, coin, end.isoformat(), forced in ("0", "1")), "%s; coin %d: %s%s" % (
         why, coin, name, " (forced)" if forced in ("0", "1") else "")
@@ -158,7 +175,10 @@ def write_row(arm, a):
            "repo": os.path.basename(a.repo), "primary": a.repo, "branch": a.branch, "topic": a.topic,
            "session": a.session, "account": a.account or None, "queue": a.queue or None,
            "arm": arm["name"], "coin": arm["coin"], "forced": arm["forced"], "model": arm["model"],
-           "effort": arm["effort"], "until": arm["until"]}
+           "effort": arm["effort"], "until": arm["until"], "brief_class": a.brief or None,   # never `brief`: a run record's `brief` is a path
+           # the odds of the code that wrote the row (the word does not carry the draw's): 1/5 until 2026-11-03, 3/5 since;
+           # a word drawn before the landing and fired after it says 3/5, so rows within a day of it may be 1/5 draws
+           "odds": "%d/%d" % (SONNET_IN, ODDS)}
     with rotation_lock() as path:
         with open(path, "a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -174,10 +194,16 @@ def main(argv):
     for k in ("--repo", "--branch", "--topic", "--session"):
         r.add_argument(k, required=True)
     r.add_argument("--account", default=""); r.add_argument("--queue", default="")
-    sub.add_parser("specced")
+    r.add_argument("--brief", default="")   # no choices: a class this list lacks must not lose the row (dispatch's || true)
+    sub.add_parser("specced"); sub.add_parser("rotates")
     a = ap.parse_args(argv)
     if a.cmd == "specced":
         return 0 if specced(sys.stdin.read()) else 1
+    if a.cmd == "rotates":
+        c = rotates(sys.stdin.read())
+        if c:
+            print(c)
+        return 0 if c else 1
     if a.cmd == "draw":
         word, why = draw(os.path.realpath(a.repo))
         if word:

@@ -540,12 +540,21 @@ def load(path, text=None, key=None, accepted=()):
                     elif not bt and st["raw"].get("provider") == "claude-code":
                         problems.append("line %d: `## %s` names no tier on its Tier: line; dispatch runs a claude-code block at "
                                         "what that line says — name %s there" % (st["line"], st["id"], kt))
-                # the builder rotation (trim S6): dispatch reads a claude-code block's specced-ness from its section's
-                # Tier: line alone, so a `tier: worker` key over a line that is not specced never joins the coin
-                if kt == "worker" and st["raw"].get("provider") == "claude-code" and not brief_specced(st["section"]):
-                    warnings.append("line %d: `## %s` has tier: worker, but its Tier: line names neither worker nor Sonnet: "
-                                    "dispatch reads the line, so the builder rotation never draws for it — say worker there"
-                                    % (st["line"], st["id"]))
+                # the builder rotation (trim S6): dispatch reads a claude-code block's coin class from its section's
+                # Tier: line alone (brief_rotates), never from the block's tier: key, so the two can disagree
+                if st["raw"].get("provider") == "claude-code":
+                    cls = brief_rotates(st["section"])
+                    if kt == "worker" and cls != "specced":
+                        warnings.append("line %d: `## %s` has tier: worker, but its Tier: line names neither worker nor Sonnet: "
+                                        "dispatch reads the line, so the builder rotation %s — say worker there"
+                                        % (st["line"], st["id"], "draws for it as plain Opus, not specced" if cls
+                                           else "never draws for it"))
+                    elif kt and kt != "worker" and not principal(kt) and cls:
+                        # a problem, not a warning: wharf passes dispatch no tier, so an sr-worker block over a plain
+                        # line would draw Sonnet 3 times in 5 (coin-3in5's finish review, 2026-11-04)
+                        problems.append("line %d: `## %s` has tier: %s, but its Tier: line reads as %s: dispatch reads the "
+                                        "line, so the builder coin would draw Sonnet for it — name %s there"
+                                        % (st["line"], st["id"], kt, cls, kt))
     w = []
     if not problems:
         try:
@@ -752,6 +761,37 @@ def brief_specced(text):
     # names, so `Opus 5.5 high (not Sonnet)` or `Haiku, Sonnet if it fails` is not specced
     line = m.group(1) if m else ""
     return bool(re.search(r"\bsonnet\b", line, re.I) and not re.search(r"\b(opus|haiku|fable)\b", line, re.I))
+
+
+# The plain-Opus line, whole: Opus (an optional version), an optional `high`, and an optional "per rule <name>" or
+# "per the rules' tier table" tail — nothing else. An allowlist, not a list of words that keep a line out: a line
+# that says anything more ("(hooks are gates; judgement is the work)", "(physical: …)", "x-high", another model)
+# is the writer's choice and stays off the coin (the finish review, 2026-11-03: a denylist let sr-worker-in-all-
+# but-the-word lines draw Sonnet). Probed on every Opus Tier: line of the briefs on all refs (2026-11-03): the three default forms, 132 lines, all match.
+PLAIN_OPUS_RE = re.compile(r"^(?:claude-)?opus(?:[ -]5(?:[.-]5)?)?(?:\s+`?high`?)?"
+                           r"(?:\s*,\s*per\s+(?:rule\s+[\w.-]+|the\s+rules['’]?\s+tier\s+table))?\.?$", re.I)
+
+
+def brief_plain_opus(text):
+    """True for a plain-Opus brief: its first Tier: line is the rules' default written out and nothing more
+    (`Tier: Opus 5.5 high`, `Tier: Opus 5.5 high, per rule …`; PLAIN_OPUS_RE), which dispatch runs at its own
+    opus/high anyway. The builder rotation draws for it beside a specced brief (the owner, 2026-11-03: "widen to
+    plain Opus"); any other line, a tier word, another model, another effort or a reason, stays out."""
+    if brief_tier(text) is not None:
+        return False
+    m = TIER_LINE_RE.search(text or "")
+    line = (m.group(1) if m else "").strip().strip("*").strip()
+    return bool(PLAIN_OPUS_RE.match(line))
+
+
+def brief_rotates(text):
+    """The builder rotation's class for a brief: "specced" (brief_specced), "plain" (brief_plain_opus), or None
+    when the coin draws nothing for it. dispatch's tier_run reads this one function."""
+    if brief_specced(text):
+        return "specced"
+    if brief_plain_opus(text):
+        return "plain"
+    return None
 
 
 def describe(st):

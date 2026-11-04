@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The builder coin draws 3 in 5 Sonnet 5.5 `high` (was 1 in 5), and plain-Opus briefs join it: a `Tier:` line naming Opus alone, no tier word and no effort but `high` (blueprintlib's `brief_rotates`). Plain Opus is the rules' default line and nothing more (`PLAIN_OPUS_RE`: a reason, another model or effort keeps a brief off). The rotation row's `brief_class` says `specced` or `plain` and its `odds` the draw's; `buildercoin.py rotates` reads a brief's class. The owner, 2026-11-03: more Sonnet rows sooner, fewer credits.
+
 - `wharf apply --yard` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
   `wharf-runs/ssh` row, the key the node fence forbids (2026-11-03).
 - `yard-node`'s named-node payload writes `wharf-runs/node/scope`, the scope the node serves (empty on a shared
