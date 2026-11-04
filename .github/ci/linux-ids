@@ -1,0 +1,18 @@
+# The Linux list: the check line's commands proven on Linux, one id a line (`share.sh ids` names every
+# command's id). Read by share.sh, so the PR check's Linux share (check-linux.yml), the twin's matrix
+# (check.yml's `suite` jobs), the macOS share and the rest all split the line by this one file.
+# CircleCI's static matrix (.circleci/parts/check-linux.yml) must list the same ids: share.sh fails
+# when it differs. An id joins once its suite passes on Linux (.circleci/linux-local.sh reproduces one
+# on a Mac); off it: sextant, whose suite needs macOS, and wharf-runs' scripts off its LINUX_OK list.
+plugin
+regatta
+regatta-classes
+helloworld
+plumb
+keel
+lighthouse
+wharf
+aurora
+atlas
+wharf-runs
+helm

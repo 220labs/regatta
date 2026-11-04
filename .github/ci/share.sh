@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# The check line in shares, so a run waits on its slowest suite and not on their sum. Each suite that
+# passes on Linux (the list in linux-ids, beside this file) runs as a job of its own, in parallel; the
+# rest of the line runs in one more job.
+#   - The private repo's PR check: the Linux jobs run on GitHub Actions or CircleCI (the repository
+#     variable CI_LINUX_TARGET; .github/workflows/check-linux.yml, .circleci/parts/check-linux.yml),
+#     and the Actions `check` on a self-hosted Mac runs only the rest (check.yml's macOS-share step,
+#     taken when the repository variable CI_LINUX_ELSEWHERE is `true`). The owner, 2026-10-26: "can we
+#     help regatta build queue with turning on circle ci for it? … I want to build fast";
+#     docs/ci-linux-split-2026-10-26.md.
+#   - The public twin, and any repo whose check.yml reads no runner variable: check.yml's `suite`
+#     jobs run the Linux list on ubuntu-latest, its `check (the rest)` job the rest, and `gather`
+#     reports both as `check` (free CI's S2, 2026-11-04: about 7 minutes, not 15).
+#
+#   share.sh ids            each command of the check line, its id first (tab-separated)
+#   share.sh line DIR       DIR's check line, one command a line (check.yml's `check` step)
+#   share.sh linux ID       run the command whose id is ID (one `suite` job)
+#   share.sh macos          run every command whose id is not on the Linux list, past a failure,
+#                           and wharf-runs' macOS-only scripts where wharf-runs is on it
+#   share.sh rest           the same, under its own name where the rest runs on Linux (the twin)
+#   share.sh verdicts DIR   the fan-in: a `pass` file in DIR for every id on the Linux list
+#   share.sh scope [BASE]   `RUN <why>` when HEAD's change since its fork from BASE (origin/main)
+#                           reaches a Linux suite, else `NONE <why>`: the PR trigger's question
+#   share.sh linux-ids [BASE]  the Linux list as one JSON array: a job matrix (check-linux.yml's,
+#                           linux-on-actions 2026-11-02; check.yml's on the twin); with BASE, only
+#                           the ids HEAD's change since its fork from BASE reaches
+#
+# The line is check.yml's `check` step, so a module that appends its check there lands in the rest
+# until it joins the Linux list. An id is `plugin` for `claude plugin validate`, the module for its
+# tests/check.sh, `<module>-<script>` for another script, `line-<n>` for any other command (its place
+# in the line). In the private repo, on a pull request only: a push, the nightly run and a hand start
+# run the whole line on a Mac (check.yml), so every Darwin branch is still run each day.
+# Public since free CI's S2 (2026-11-04; .circleci/ held it before, unpublished): it names no
+# machine and no login, and reads a private file only where the file exists.
+set -u
+repo="$(cd "$(dirname "$0")/../.." && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+line_of() {
+    # DIR's check line: the `run:` block of the step named `check` in DIR's check.yml, its `&&`s
+    # outside braces and quotes as the cuts (here since S2; .circleci/twin-linux.sh asks this one)
+    python3 - "$1/.github/workflows/check.yml" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+start = next(i for i, l in enumerate(lines) if re.match(r"^\s*- name: check\s*$", l))
+run, key = [], None
+for l in lines[start + 1:]:
+    ind = len(l) - len(l.lstrip())
+    if key is None:
+        if re.match(r"^\s*- ", l):
+            break
+        if re.match(r"^\s*run: \|", l):
+            key = ind; run.append(l)
+        continue
+    # the block ends at the first line back at the key's column or left of it: the next step, or a
+    # job after this one (check is not the file's last job since the shares' road, S2)
+    if l.strip() and ind <= key:
+        break
+    run.append(l)
+# a `#` line would comment out the whole joined line, an apostrophe in it open a quote
+text = " ".join(l.strip() for l in run[1:] if l.strip() and not l.strip().startswith("#"))
+cmds, cur, depth, quote, i = [], "", 0, None, 0
+while i < len(text):
+    c = text[i]
+    if quote:
+        quote = None if c == quote else quote
+    elif c in "'\"":
+        quote = c
+    elif c == "{":
+        depth += 1
+    elif c == "}":
+        depth -= 1
+    elif depth == 0 and text.startswith("&&", i):
+        cmds.append(cur.strip()); cur = ""; i += 2
+        continue
+    cur += c
+    i += 1
+if cur.strip():
+    cmds.append(cur.strip())
+if not cmds:
+    sys.exit("no command in the check step")
+print("\n".join(cmds))
+PY
+}
+
+ids() {
+    local cmds
+    cmds="$(line_of "$repo")" || return 2
+    local n=0
+    printf '%s\n' "$cmds" | while IFS= read -r cmd; do
+        local id path
+        n=$((n + 1))
+        case "$cmd" in
+            *"claude plugin validate"*) id=plugin ;;
+            *)
+                path="$(printf '%s' "$cmd" | grep -o 'modules/[a-z0-9-]*/tests/[A-Za-z0-9_.-]*\.sh' | tail -1)"
+                # any other command is the line's own (`line-<n>`): in the macOS share until the
+                # matrix names it, never a refusal of both shares
+                if [ -z "$path" ]; then id="line-$n"
+                else id="$(printf '%s' "$path" | sed -E 's#modules/([^/]*)/tests/(.*)\.sh#\1-\2#; s#-check$##')"; fi
+                ;;
+        esac
+        printf '%s\t%s\n' "$id" "$cmd"
+    done
+}
+
+linux_ids() {
+    # the Linux list: linux-ids beside this file, one id a line, `#` to the line's end and blanks skipped
+    local ids
+    ids="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$here/linux-ids" 2>/dev/null | grep -v '^$' | tr '\n' ' ')"
+    [ -n "$ids" ] || { echo "share.sh: no Linux list in $here/linux-ids" >&2; return 2; }
+    # a duplicate would be two matrix legs of one suite (the twin has no CircleCI matrix to catch it)
+    local dup
+    # shellcheck disable=SC2086 — the list is words, one id each
+    dup="$(printf '%s\n' $ids | sort | uniq -d | tr '\n' ' ')"
+    [ -z "$dup" ] || { echo "share.sh: $here/linux-ids names ${dup% } more than once" >&2; return 2; }
+    echo " $ids"
+}
+
+circleci_ids() {
+    # <list>: CircleCI's static matrix cannot read linux-ids, so where the private .circleci/ is (the
+    # twin has none) its `id:` list must hold the same ids, or both shares would drift apart
+    local part="$repo/.circleci/parts/check-linux.yml" got want
+    [ -f "$part" ] || return 0
+    got="$(sed -n -E 's/^ *id: \[(.*)\] *$/\1/p' "$part" | tr -d ' ' | tr ',' '\n' | grep -v '^$' | sort | tr '\n' ' ')"
+    # shellcheck disable=SC2086 — the list is words, one id each
+    want="$(printf '%s\n' $1 | sort | tr '\n' ' ')"
+    [ "$got" = "$want" ] || { echo "share.sh: .circleci/parts/check-linux.yml's id matrix ($got) is not .github/ci/linux-ids ($want)" >&2; return 1; }
+}
+
+on_linux() { case "$2" in *" $1 "*) return 0 ;; esac; return 1; }
+
+verify() {
+    # every Linux id names a command of the line: a renamed suite must not leave both shares
+    local all lx id dup bad=0
+    all="$(ids)" || return 2
+    lx="$(linux_ids)" || return 2
+    for id in $lx; do
+        printf '%s\n' "$all" | cut -f1 | grep -qx "$id" || { echo "share.sh: Linux id $id names no command of check.yml's line" >&2; bad=1; }
+    done
+    # two commands under one id would run as one `bash -c`, the first one's failure masked by the last
+    dup="$(printf '%s\n' "$all" | cut -f1 | sort | uniq -d | tr '\n' ' ')"
+    [ -z "$dup" ] || { echo "share.sh: two commands of the line share an id: $dup" >&2; bad=1; }
+    circleci_ids "$lx" || bad=1
+    return $bad
+}
+
+run_one() {
+    # one command from the repo's root; stdin off, as twin-linux.sh's run
+    local cmd="$1" t0 rc
+    echo "=== $cmd"
+    t0=$(date +%s)
+    (cd "$repo" && bash -c "$cmd") </dev/null
+    rc=$?
+    echo "=== rc=$rc $(( $(date +%s) - t0 ))s"
+    return $rc
+}
+
+case "${1:-}" in
+    ids) ids ;;
+    line)
+        [ -n "${2:-}" ] || { echo "usage: $0 line DIR" >&2; exit 2; }
+        line_of "$2"
+        ;;
+    linux)
+        [ -n "${2:-}" ] || { echo "usage: $0 linux ID" >&2; exit 2; }
+        verify || exit 2
+        cmd="$(ids | awk -F'\t' -v id="$2" '$1 == id { print $2 }')"
+        [ -n "$cmd" ] || { echo "share.sh: no command with id $2" >&2; exit 2; }
+        run_one "$cmd"
+        ;;
+    macos|rest)
+        verify || exit 2
+        lx="$(linux_ids)" || exit 2
+        all="$(ids)" || exit 2
+        summary=(); failed=0
+        while IFS=$'\t' read -r id cmd; do
+            if on_linux "$id" "$lx"; then
+                # wharf-runs runs its Linux-proven scripts there and the rest here
+                [ "$id" = wharf-runs ] || { summary+=("LINUX  $id"); continue; }
+                cmd="WHARF_RUNS_SKIP_LINUX_OK=1 $cmd"
+            fi
+            t0=$(date +%s)
+            if run_one "$cmd"; then summary+=("PASS $(( $(date +%s) - t0 ))s  $id")
+            else failed=$((failed + 1)); summary+=("FAIL $(( $(date +%s) - t0 ))s  $id"); fi
+        done <<< "$all"
+        echo
+        if [ "$1" = rest ]; then echo "=== the rest of the line: $failed failed (the LINUX lines run in jobs of their own)"
+        else echo "=== the macOS share: $failed failed (the LINUX lines run in check-linux)"; fi
+        printf '%s\n' "${summary[@]}"
+        [ "$failed" -eq 0 ]
+        ;;
+    scope)
+        # Does the PR's change reach a Linux suite? The Actions trigger asks before it spends credits
+        # (.github/workflows/check-linux.yml). check_scope.py judges the Linux ids' module suites against
+        # what HEAD changed since its fork from BASE. A command that is no module's suite (`plugin`, a
+        # `line-<n>`) is left out, not filtered by its verdict's wording: a change it would see (a
+        # plugin.json, the marketplace) reaches a module or the whole line anyway. A change under
+        # .github/workflows/ or .github/ci/ runs: the Linux commands are read from check.yml's line, and check_scope.py
+        # counts the rest of .github/ as reaching no suite (.github/ci/ as the whole line, the two check
+        # workflows as wharf's, whose suite reads them). Since every module declares the core, which is on the
+        # Linux list, any change under modules/ reads RUN: NONE is a PR of docs and records only.
+        # Prints `RUN <said>` or `NONE <said>`; exit 2 when it cannot tell (the caller runs).
+        base="${2:-origin/main}"
+        verify || exit 2
+        lx="$(linux_ids)" || exit 2
+        # an `if`, not a `case`: macOS's bash 3.2 misreads a pattern's lone `)` inside "$(…)"
+        cmds="$(ids | while IFS=$'\t' read -r id cmd; do
+                  if [ "$id" = plugin ] || [ "${id#line-}" != "$id" ]; then continue; fi
+                  on_linux "$id" "$lx" && printf '%s\n' "$cmd"; done)"
+        mb="$(git -C "$repo" merge-base "$base" HEAD 2>/dev/null)" || { echo "share.sh: no fork point from $base" >&2; exit 2; }
+        # quotePath off: a non-ASCII name comes quoted otherwise, and misses its docs/ prefix
+        changed="$(git -C "$repo" -c core.quotePath=false diff --no-renames --name-only "$mb" HEAD)" || exit 2
+        wf="$(printf '%s\n' "$changed" | grep -m1 -E '^\.github/(workflows|ci)/')" && { echo "RUN $wf changed: the CI that runs the line"; exit 0; }
+        # any module or manifest change runs, said outright: today every module declaring the core gives the
+        # same verdict, but a module that declared nothing would leave `plugin` (left out above) unrun
+        mc="$(printf '%s\n' "$changed" | grep -m1 -E '^(modules|\.claude-plugin)/')" && { echo "RUN $mc changed"; exit 0; }
+        verdicts="$(CHECK_CMDS="$cmds" python3 "$repo/modules/wharf-runs/bin/check_scope.py" "$repo" "$base" "$changed")" || exit 2
+        said="$(printf '%s\n' "$verdicts" | sed -n 's/^SCOPE\t//p')"
+        [ -n "$said" ] || { echo "share.sh: check_scope.py said nothing" >&2; exit 2; }
+        if printf '%s\n' "$verdicts" | grep -q '^RUN'; then echo "RUN $said"
+        else echo "NONE no Linux suite is reached by what changed since $base"; fi
+        ;;
+    linux-ids)
+        # With BASE, only the ids HEAD's change since its fork from BASE reaches, by check_scope.py's
+        # rules (the Macs' check scope): Actions' matrix is built per run, so a PR spends minutes on the
+        # suites it reaches, not all of them (the landing review, 2026-11-02). `plugin` and a `line-<n>`
+        # are no module's suite and always run; a change under .github/workflows/ or .github/ci/ runs the whole list,
+        # as `scope` says; a list that comes out empty runs the whole list, never an empty matrix.
+        verify || exit 2
+        lx="$(linux_ids)" || exit 2
+        if [ -n "${2:-}" ]; then
+            mb="$(git -C "$repo" merge-base "$2" HEAD 2>/dev/null)" || { echo "share.sh: no fork point from $2" >&2; exit 2; }
+            changed="$(git -C "$repo" -c core.quotePath=false diff --no-renames --name-only "$mb" HEAD)" || exit 2
+            if ! printf '%s\n' "$changed" | grep -qE '^\.github/(workflows|ci)/'; then
+                pairs="$(ids | while IFS=$'\t' read -r id cmd; do on_linux "$id" "$lx" && printf '%s\t%s\n' "$id" "$cmd"; done)"
+                verdicts="$(CHECK_CMDS="$(printf '%s\n' "$pairs" | cut -f2-)" \
+                            python3 "$repo/modules/wharf-runs/bin/check_scope.py" "$repo" "$2" "$changed")" || exit 2
+                reached="$(PAIRS="$pairs" VERDICTS="$verdicts" python3 -c '
+import os, sys
+ids = [l.split("\t", 1)[0] for l in os.environ["PAIRS"].split("\n") if l]
+vs = [l.split("\t", 1)[0] for l in os.environ["VERDICTS"].split("\n") if l and not l.startswith("SCOPE")]
+if len(ids) != len(vs): sys.exit("share.sh: check_scope.py gave %d verdicts for %d ids" % (len(vs), len(ids)))
+print(" ".join(i for i, v in zip(ids, vs) if v == "RUN"))')" || exit 2
+                [ -z "$reached" ] || lx=" $reached "
+            fi
+        fi
+        # shellcheck disable=SC2086 — the list is words, one id each
+        python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $lx
+        ;;
+    verdicts)
+        [ -d "${2:-}" ] || { echo "usage: $0 verdicts DIR" >&2; exit 2; }
+        lx="$(linux_ids)" || exit 2
+        bad=0
+        for id in $lx; do
+            v="$(cat "$2/$id" 2>/dev/null || echo missing)"
+            echo "$v  $id"
+            [ "$v" = pass ] || bad=1
+        done
+        exit $bad
+        ;;
+    *) sed -n '2,34p' "$0" >&2; exit 2 ;;
+esac
