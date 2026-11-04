@@ -15,6 +15,21 @@
   judgement, the council's rows taken as given, and `keel lint --strict`'s principal rule; test_council.sh runs
   sextant's `bin/principal` on its stand-ins (off macOS: every arm refused, the Receipt saying so; on macOS: a paper
   and a critique per arm that answered).
+- `pr restack <N> | --all [--dry-run]` (dirty-pr-rebase, the owner 2026-11-03: "We should have a tool for that now
+  that resolves in finish"): a ready claude/* PR GitHub marks DIRTY only because main appended to TODO.md or a
+  CHANGELOG.md is rebased onto origin/main in a scratch worktree with list-merge as the clone's driver and pushed
+  with `--force-with-lease` on the PR's head, so automerge lands it. Pushed only when every path both sides changed
+  is a list file merged as union, the rebase is clean, those files hold no conflict markers, `todo-md lint --base`
+  passes and a CHANGELOG's Unreleased stays first; else the finding goes on the PR, once a tip. Never main, never a
+  merge. `pr carry <before> <after>`: whether a push's patch is the previous head's bar the lists, which check.yml
+  and check-linux.yml read to keep that head's green instead of the whole line. Suite: `tests/test_restack.sh`.
+  Its review rounds: only PRs opened by the token's own login or the registry's `machine_account` (a collaborator's
+  claude/* PR is theirs), never while the head's checks run or are red (a push would cancel them), merge commits
+  refused, the rebased patch proved by `carry_verdict` before the push, tree entries compared (mode and type) with
+  `-z` names; the workflows judge with the base's copy of `pr` and the newest `check` run. The landing review's: a
+  PR labelled `hold` is left alone, a head no workflow ever ran on (GitHub runs none on a PR that conflicts) is
+  restacked rather than waited on for good, and an unreadable `check-attr` refuses rather than reads as union.
+
 - `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
   nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
   table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged
