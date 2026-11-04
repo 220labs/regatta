@@ -751,7 +751,7 @@ STRONG_DEF_RE = re.compile(r"^\s*(?:#{1,6}\s+|(?:[-*]|\d+\.)\s+)?"
                            r"(?:\*\*([A-CF-Z]\d+)\b|([A-CF-Z]\d+)\**\s*[—–:]|\|\s*\**([A-CF-Z]\d+)\**\s*\|)")
 # Link targets and code spans hold paths and anchors (`#L12`), never a reference to an id.
 NOT_PROSE_RE = re.compile(r"\]\([^)]*\)|`[^`]*`")
-ARCHITECT_RE = re.compile(r"\bWritten by\s+`?(sr-architect|architect|sounder)`?.*?\bon (\d{4}-\d{2}-\d{2})")
+ARCHITECT_RE = re.compile(r"\bWritten by\s+`?(principal-architect|sr-architect|architect|sounder)`?.*?\bon (\d{4}-\d{2}-\d{2})")
 # The two conditional forms agents/architect.md teaches, and only those: "A, simplest even if R15
 # turns out wrong" carries an "if" and is still a bare pick (code-review, 2026-10-04), and so does
 # "B, even if R15 is wrong; nothing else" — the else must name a letter (memo-lint-fixes), bold or
@@ -999,7 +999,104 @@ def lint(text, strict=False, path=None):
                             "the stand sweep); mark it above `➤ Recommended:`" % (it["id"], it["start"] + 1))
     ke, kw = keel_lint(text, path)
     fe, fw = figure_lint(text, path)
-    return errors + ke + fe, warnings + kw + fw + kind_warnings(text, path)
+    # a set's component carries no Receipt of its own: the entry holds the set's (the shared body's set shape)
+    pe, pw = principal_lint(text) if strict and not set_component(path) else ([], [])
+    return errors + ke + fe + pe, warnings + kw + fw + pw + kind_warnings(text, path)
+
+
+# The principal tier's S4 (docs/principal-tier-2026-10-26.md, "The receipt and the invocation", G2): a principal
+# doc ends in a Receipt — a row per arm, a completion state, each disagreement settled by source, probe or
+# judgement, a judgement flagged. `lint --strict` judges it, the check `/sounding --principal` runs before the owner
+# sees the doc. A principal doc: its header's `Written by` names `principal-architect`, or its parenthesis holds
+# `principal` as an item of its own (a venture's `sounder`, run at `xhigh` beside the council: `(Fable 5.1, xhigh,
+# principal)`; "a principal-tier follow-up" is not one), dated PRINCIPAL_SINCE or later — the day
+# the rule went in, so an older doc is never judged by it (KIND_SINCE's rule).
+PRINCIPAL_SINCE = "2026-11-03"
+PRINCIPAL_RE = re.compile(r"\bWritten by\s+`?(principal-architect|sr-architect|architect|sounder)`?\s*(\([^)]*\))?"
+                          r".*?\bon (\d{4}-\d{2}-\d{2})")
+RECEIPT_COMPLETION_RE = re.compile(r"^\s*(?:[-*]\s+)?[*_]*(?:the\s+)?completion(?:\s+state)?[*_]*\s*[:—–-]\s*[*_`]*\s*[*_`]*"
+                                   r"(complete with limitation|incomplete|complete)\b", re.I)
+RECEIPT_BAD_RE = re.compile(r"\b(refused|failed|timeout|timed out|capped|incomplete)\b", re.I)
+RECEIPT_NOT_ARM_RE = re.compile(r"^[*_`]*(?:reviewer|parent)\b|\bthe parent\b|\bthis session\b|, examine\b", re.I)
+RECEIPT_PAST_RE = re.compile(r", examine #\d+\b", re.I)   # an earlier examine round, which council's completion skips
+SETTLED_RE = re.compile(r"\b(?:source|probe|judge?ment)\b|\bthe owner's words?\b", re.I)
+JUDGED_RE = re.compile(r"\bjudge?ment\b", re.I)
+
+
+def is_principal(lines):
+    """True for a principal doc (above): its header, the lines before the first `## `."""
+    head = []
+    for l in lines:
+        if l.startswith("## "):
+            break
+        head.append(l)
+    m = PRINCIPAL_RE.search("\n".join(head))
+    return bool(m and m.group(3) >= PRINCIPAL_SINCE
+                and (m.group(1) == "principal-architect"
+                     or re.search(r"(?:^\(|,)\s*[*_`]*principal[*_`]*\s*(?:,|\)$)", m.group(2) or "")))
+
+
+def principal_lint(text):
+    """(errors, warnings) for a principal doc's Receipt: an error with no `## Receipt` section, with no completion
+    state (`Completion: **complete | incomplete | complete with limitation**`, the last such line the doc's own), or
+    one that says anything but `incomplete` while an arm's row says refused, failed, timed out or capped (the
+    council's definition: an arm that did not answer makes it incomplete); a warning under three arms (rows bar the reviewers,
+    the parent and examine's; every table in the section), and for each disagreement settled by none of source, probe or judgement, or by a
+    judgement not flagged as one."""
+    lines = text.split("\n")
+    if not is_principal(lines):
+        return [], []
+    found = sections(lines, lambda t: bool(re.match(r"^[*_]*Receipt\b", t)))
+    if not found:
+        return (["a principal doc without its Receipt: `## Receipt — who ran, at what, for how much` before `## Open "
+                 "feedback`, a row per arm and a completion state (agents/principal-architect.md)"], [])
+    a, b = found[-1]
+    fence = fenced(lines)
+    sec = [(k, lines[k]) for k in range(a + 1, b) if not fence[k]]
+    errors, warnings = [], []
+    rows, header = [], None   # every table in the section: the council's rows may sit in a table of their own
+    for k, l in sec:
+        if not l.lstrip().startswith("|"):
+            header = None
+            continue
+        cells = [c.strip() for c in l.strip().strip("|").split("|")]
+        if header is None:
+            header = next((i for i, c in enumerate(cells) if re.match(r"^[*_]*state\b", c, re.I)), len(cells) - 1)
+            continue
+        if all(re.match(r"^:?-+:?$", c) for c in cells if c):
+            continue
+        rows.append((k, cells, header))
+    arms = [c for _, c, _ in rows if c and not RECEIPT_NOT_ARM_RE.search(c[0])]
+    done = [(k, m.group(1).lower()) for k, m in ((k, RECEIPT_COMPLETION_RE.match(l)) for k, l in sec) if m]
+    if not done:
+        errors.append("the Receipt (line %d) states no completion: `Completion: **complete**`, `**incomplete**` (an arm "
+                      "failed, refused or hit a limit) or `**complete with limitation**` (a named gap)" % (a + 1))
+    elif done[-1][1] != "incomplete":
+        # arms only, as the count below: a reviewer or the parent that timed out is no arm that did not answer
+        bad = [c[0] for _, c, col in rows if len(c) > col and RECEIPT_BAD_RE.search(c[col]) and not RECEIPT_PAST_RE.search(c[0])
+               and (not RECEIPT_NOT_ARM_RE.search(c[0]) or re.search(r", examine\b", c[0], re.I))]
+        if bad:
+            errors.append("the Receipt's completion (line %d) says %s while %s did not answer — incomplete"
+                          % (done[-1][0] + 1, done[-1][1], ", ".join(bad)))
+    if len(arms) < 3:
+        warnings.append("the Receipt (line %d) holds %d arm%s, under three (G2: the pen and the council's arms; "
+                        "reviewers and the parent not counted)" % (a + 1, len(arms), "" if len(arms) == 1 else "s"))
+    lead = next((k for k, l in sec if re.match(r"^\s*(?:#{1,6}\s+|[-*]\s+)?[*_]*disagreements\b", l, re.I)), None)
+    if lead is not None:
+        for k, l in sec:
+            if k <= lead:
+                continue
+            if RECEIPT_COMPLETION_RE.match(l):
+                break   # the completion line, a bullet or not, ends the list
+            if not LIST_ITEM_RE.match(l):
+                if l.strip() and k > lead + 1 and not l.startswith((" ", "\t")):
+                    break
+                continue
+            if not SETTLED_RE.search(l):
+                warnings.append("Receipt, line %d: a disagreement settled by none of source, probe or judgement" % (k + 1))
+            elif JUDGED_RE.search(l) and not re.search(r"\bflagged\b", l, re.I):
+                warnings.append("Receipt, line %d: a judgement settlement not flagged as one (`judgement, flagged`)" % (k + 1))
+    return errors, warnings
 
 
 def written_by(lines):
@@ -1218,6 +1315,14 @@ def keel_status_fields(m):
     out["crew"] = c and {"who": c.group("who").strip(), "state": c.group("state"), "date": c.group("date")}
     out["crew_bad"] = bool(re.search(r"(?:^|·)\s*crew:", tail)) and not c
     return out
+
+
+def set_component(path):
+    """True when `path` is a component of a nested set, not its entry: the principal rule judges the entry's Receipt."""
+    if not path:
+        return False
+    s = set_of(path)
+    return bool(s) and s["entry"] != Path(path).resolve()
 
 
 def set_of(path):
