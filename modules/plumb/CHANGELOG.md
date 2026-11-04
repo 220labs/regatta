@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `usage-report tick` keeps the last 6 lines of lighthouse's `account refresh`, not 4 (budgets-edges, 2026-11-02:
+  the budgets link and its copy took the room), and its docstring names the budgets file.
 - trim reads the builder rotation's rows (S6 of the Trim design): a vertical's `builders` source
   (`builder-rotation.jsonl`, dispatch's draw), joined by session to a landing's last build run, so a coin build is
   `arm_source: coin` with its drawn arm (a forced coin `pinned`, as the finisher's rows read) whether or not its
