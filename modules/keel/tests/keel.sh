@@ -3986,6 +3986,76 @@ check "$(kk undated.md 'X — y')" "rc=0 : no findings" "kind: an undated doc (a
 printf '# X — y\n\nShort.\n' > "$K/digest-2026-10-17.md"; "$B/keel" lint "$K/digest-2026-10-17.md" > "$T/kkind.out" 2>&1
 check "$(sed "s|$K/||" "$T/kkind.out")" "digest-2026-10-17.md: no findings" "kind: a doc no architect wrote (a digest) is never judged"
 
+echo "lint --strict: a principal doc's Receipt (the principal tier's S4, G2)"
+# pd <file> <by> <receipt…>: a principal doc dated 2026-11-03; each further argument is a line of its Receipt
+# section, none and the section is left out; prints `rc=<rc>` and the strict lint's lines, path cut
+pd() { local f=$1 by=$2; shift 2
+       { printf '# X — y (design, 2026-11-03)\n\nWritten by %s on 2026-11-03 for "x".\n\n## Summary\n\nShort.\n\n' "$by"
+         if [ $# -gt 0 ]; then printf '## Receipt — who ran, at what, for how much\n\n'; for l in "$@"; do printf '%s\n' "$l"; done; printf '\n'; fi
+         printf '## Open feedback\n'; } > "$K/$f"
+       "$B/keel" lint --strict "$K/$f" > "$T/kpr.out" 2>&1; echo "rc=$?"; }
+PA='`principal-architect` (Fable 5.1, `xhigh`)'
+RH='| Arm (login) | Requested / observed | Cost | Caught | State |'; RS='| --- | --- | --- | --- | --- |'
+R1='| pen 1 (acct-a) | Fable `xhigh` / `xhigh` | $1 | x | complete |'; R2='| opus (acct-a) | Opus / unknown | $1 | x | ok |'
+R3='| codex (—) | default / unknown | — | x | ok |'; RV='| reviewer-high 1 (acct-a) | Opus `high` / `high` | $1 | x | complete |'
+check "$(pd p1.md "$PA")" "rc=1" "principal: no Receipt is an error under --strict"
+has "$T/kpr.out" "a principal doc without its Receipt" "  saying so"
+"$B/keel" lint "$K/p1.md" > "$T/kpr.out" 2>&1; check "$?" 0 "  without --strict it is not judged"
+lacks "$T/kpr.out" "Receipt" "  …and says nothing of it"
+check "$(pd p2.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" "$RV" "" "Completion: **complete** — three arms.")" "rc=0" "principal: three arms and a completion state pass"
+lacks "$T/kpr.out" "Receipt" "  quiet"
+check "$(pd p3.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3")" "rc=1" "principal: no completion state is an error"
+has "$T/kpr.out" "states no completion" "  saying so"
+check "$(pd p4.md "$PA" "$RH" "$RS" "$R1" "$R2" '| codex (—) | default / unknown | — | — | refused: no seatbelt here |' "" "Completion: **complete**")" "rc=1" \
+  "principal: complete while an arm refused is an error"
+has "$T/kpr.out" "says complete while codex (—) did not answer" "  naming the arm"
+check "$(pd p4b.md "$PA" "$RH" "$RS" "$R1" "$R2" '| codex (—) | default / unknown | — | — | failed: F5 |' "" "Completion: **complete with limitation** — codex failed.")" "rc=1" \
+  "principal: complete with limitation while an arm failed is an error too"
+check "$(pd p4c.md "$PA" "$RH" "$RS" "$R1" "$RV" "" "$RH" "$RS" "$R2" '| codex (—) | default / unknown | — | — | refused: no seatbelt |' '| antigravity (—) | x | — | — | ok |' "" "Completion: **complete**")" "rc=1" \
+  "principal: a refused arm in the Receipt's second table is judged too"
+has "$T/kpr.out" "did not answer" "  naming it"
+lacks "$T/kpr.out" "under three" "  …and the second table's arms count"
+check "$(pd p4d.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" '| codex, examine #1 (—) | x | — | — | timeout: cut |' '| codex, examine (—) | x | — | — | ok |' "" "**Completion:** **complete** — the second examine answered.")" "rc=0" \
+  "principal: an earlier examine round's timeout beside a later answer is no arm that did not answer (council's completion); the bold label reads"
+check "$(pd p4e.md "$PA" "$RH" "$RS" "$R1" "$R2" '| Opus 5.5, this session (the parent) | Opus `high` | — | x | complete |' "" "Completion: **complete**")" "rc=0" \
+  "principal: the parent's row is not an arm"
+has "$T/kpr.out" "holds 2 arms, under three" "  …two arms counted"
+check "$(pd p4f.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" '| reviewer-high 2 (acct-a) | Opus `high` / unknown | — | x | timeout |' '| parent | Opus | — | x | applied 3; refused 1 finding |' "" "Completion: **complete**")" "rc=0" \
+  "principal: a reviewer that timed out, or the parent's refused finding, is no arm that did not answer"
+check "$(pd p4g.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" '| codex, examine (—) | x | — | — | timeout: cut |' "" "Completion: **complete**")" "rc=1" \
+  "  …while the last examine's timeout still is"
+check "$(pd p5.md "$PA" "$RH" "$RS" "$R1" "$R2" '| codex (—) | default / unknown | — | — | refused: no seatbelt here |' "" "Completion: **incomplete** — codex refused.")" "rc=0" \
+  "principal: incomplete with the refusal in its row passes"
+check "$(pd p6.md "$PA" "$RH" "$RS" "$R1" "$RV" '| reviewer-high 2 | Opus | $1 | x | complete |' '| parent | Opus | — | x | complete |' '| opus, examine (acct-a) | x | — | — | ok |' "" "**Completion state: complete with limitation** — one arm.")" "rc=0" \
+  "principal: one arm (reviewers, the parent, examine's rows not counted) is a warning, never an error"
+has "$T/kpr.out" "warning: the Receipt (line 9) holds 1 arm, under three" "  saying how many"
+check "$(pd p7.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" "" '**Disagreements**, each settled:' "" '1. A against B — source, keel:12.' '2. C against D — we picked C.' \
+  '3. E against F — judgement → E.' '4. G against H — judgement, flagged → G.' '5. I against J — the owner'"'"'s words → J.' "" "Completion: **complete**")" "rc=0" "principal: disagreements are warnings"
+check "$(grep -c 'warning: Receipt, line' "$T/kpr.out")" 2 "  two of five"
+has "$T/kpr.out" "line 20: a disagreement settled by none of source, probe or judgement" "  the unsettled one"
+has "$T/kpr.out" "line 21: a judgement settlement not flagged as one" "  the unflagged judgement"
+check "$(pd p7c.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" "" '### Disagreements' "" '1. A against B — we picked A.' "" "Completion: **complete**")" "rc=0" "principal: a Disagreements heading leads the list too"
+check "$(grep -c 'settled by none' "$T/kpr.out")" 1 "  …its unsettled item warns"
+check "$(pd p7b.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" "" '**Disagreements**:' "" '1. A against B — probe, the run.' "" '- Completion: **complete** — three arms.')" "rc=0" \
+  "principal: a completion bullet after the disagreements is no disagreement"
+lacks "$T/kpr.out" "warning: Receipt, line" "  quiet"
+check "$(pd p8.md '`sounder` (Fable 5.1, `xhigh`, principal)')" "rc=1" "principal: a venture's sounder marked principal is judged"
+check "$(pd p9.md '`sounder` (Fable 5.1, `xhigh`)')" "rc=0" "  an unmarked one is not"
+check "$(pd p8b.md '`sounder` (Fable 5.1, `xhigh`, `principal`)')" "rc=1" "  …the marker in backticks too"
+check "$(pd p8c.md '`sounder` (Fable 5.1, `xhigh`, **principal**)')" "rc=1" "  …or bold"
+check "$(pd p9b.md '`architect` (Opus 5.5, `high`, a principal-tier follow-up)')" "rc=0" "  nor one whose parenthesis only mentions the tier"
+check "$(pd p10.md '`sr-architect` (Fable 5.1, `high`)')" "rc=0" "  nor an sr-architect's"
+# a set: the entry holds the Receipt, its component none of its own (the shared body's set shape)
+pd ps-2026-11-03.md "$PA" "$RH" "$RS" "$R1" "$R2" "$R3" "" "Completion: **complete** — three arms. The [actions](ps-actions-2026-11-03.md) component." > /dev/null
+printf '# X — actions (design, 2026-11-03)\n\nWritten by %s on 2026-11-03; the `actions` component of the [entry](ps-2026-11-03.md).\n\nStatus: answered — 0 of 0 decisions answered\n\n## Summary\n\nShort.\n' "$PA" > "$K/ps-actions-2026-11-03.md"
+"$B/keel" lint --strict "$K/ps-actions-2026-11-03.md" > "$T/kpr.out" 2>&1; check "$?" 0 "principal: a set's component without a Receipt passes (the entry holds it)"
+lacks "$T/kpr.out" "without its Receipt" "  …and says nothing of it"
+"$B/keel" lint --strict "$K/ps-2026-11-03.md" > "$T/kpr.out" 2>&1; check "$?" 0 "  the entry with its Receipt passes"
+sed 's/on 2026-11-03 for/on 2026-11-02 for/' "$K/p1.md" > "$K/p11.md"; "$B/keel" lint --strict "$K/p11.md" > "$T/kpr.out" 2>&1
+check "$?" 0 "principal: a doc dated before the rule landed is never judged by it"
+printf '# X\n\n```\n## Receipt\n```\n' >> "$K/p1.md"; "$B/keel" lint --strict "$K/p1.md" > "$T/kpr.out" 2>&1
+check "$?" 1 "principal: a Receipt heading inside a fence is none"
+
 echo "Mermaid in the form and the page: pinned, fetched once, drawn at build time, no library in any page (entry S13; keel-mermaid-light)"
 cat > "$K/dia.md" <<'EOF'
 # Diagram (design, 2026-10-15)
