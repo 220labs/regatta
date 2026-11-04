@@ -2713,6 +2713,7 @@ check "$(grep -c "$TOKEN" "$UNITS/ci-runner-lnx1.container")" "0" "…nor in the
 check "$(grep -c -- "--unattended --replace --disableupdate --url https://github.com/acme/demo --name lnx1 --labels linux-share --work _work" "$T/ssh/config")" "1" "…config.sh: its name, its capabilities as labels, no self-update (the image holds the pin)"
 b=$(grep -n '^podman build' "$T/ssh/podman" | head -1 | cut -d: -f1); c=$(grep -n ' configure ' "$T/ssh/podman" | head -1 | cut -d: -f1)
 check "$([ -n "$b" ] && [ -n "$c" ] && [ "$b" -lt "$c" ] && echo before || echo "b=$b c=$c")" "before" "…the image built before anything is registered"
+grep -q 'websockets-15.0.1-py3-none-any.whl' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…the image carries websockets, which linux-tools.sh's hosted road installs with sudo"
 grep -qF "FROM docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852" "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…over the pinned base"
 check "$(cmp -s "$T/ssh/img/localhost_ci-runner-lnx1/runner.tar.gz" "$DIST/fake-linux.tar.gz" && echo same || echo differs)" "same" "…from the tarball verified on the host"
 grep -q '^USER runner$' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…its jobs as an unprivileged user"
@@ -2960,6 +2961,10 @@ while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -fsSLO) here=1 ;; http*
 cp "$LT_LOG/srv/${url##*/}" "$out"
 EOF
   printf '#!/usr/bin/env bash\necho "sudo $*" >> "$LT_LOG/sudo"; exit 1\n' > "$LT/stub/sudo"
+  # the runner image's websockets, for the system python3 these cases run: a stand-in, unset by the case that lacks it
+  mkdir -p "$LT/py/websockets/sync"; echo 'version = "15.0.1"' > "$LT/py/websockets/version.py"
+  : > "$LT/py/websockets/__init__.py"; : > "$LT/py/websockets/sync/__init__.py"; echo 'connect = None' > "$LT/py/websockets/sync/client.py"
+  export PYTHONPATH="$LT/py"
   for c in jq ruby sqlite3; do printf '#!/bin/sh\nexit 0\n' > "$LT/stub/$c"; done
   chmod +x "$LT/stub/"*
   ltrun() { # ltrun <job>: linux-tools.sh as job <job> of a self-hosted runner, its own RUNNER_TEMP, one tool cache
@@ -2981,6 +2986,13 @@ EOF
   check "$(grep -c 'npm install' "$LT/npm")" "1" "…nor the CLI installed again"
   check "$(grep -c 'kept from an earlier job' "$LT/out2")" "2" "…both said"
   check "$(test -s "$JH2/.linux-path" && echo own || echo none)" "own" "…the PATH in this job's own HOME"
+  if ! env -u PYTHONPATH /usr/bin/python3 -c 'import websockets' 2> /dev/null; then
+    mkdir -p "$LT/job4"
+    (env -u PYTHONPATH HOME="$LH" PATH="$LT/stub:$PATH" LT_LOG="$LT" RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$LT/job4" \
+       RUNNER_TOOL_CACHE="$LT/cache" bash "$LTS" > "$LT/out4" 2>&1); check "$?" "1" "an image without websockets: the job fails"
+    grep -q "this runner lacks websockets 14+" "$LT/out4"; check "$?" "0" "…naming it, never a quiet skip of the kick socket's cases"
+    check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…and never runs sudo"
+  fi
   rm -f "$LT/stub/ruby"
   if env PATH="$LT/stub:/usr/bin:/bin" bash -c 'command -v ruby' > /dev/null; then
     echo "  skip this host has ruby on /usr/bin: the missing-package case needs a host without it"
