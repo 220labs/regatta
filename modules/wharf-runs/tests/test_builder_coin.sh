@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the builder rotation (bin/buildercoin.py; dispatch's header; S6 of docs/self-tuning-2026-10-26.md):
-# a specced brief's run draws its builder once where it is enqueued or scheduled, every road carries the draw
+# a specced or plain-Opus brief's run draws its builder once where it is enqueued or scheduled, every road carries the draw
 # (the one-shot's plist, the peer's ssh line, the queue's entry), and the fire path runs it, records it and
 # writes its row. Scratch HOME, a scratch origin and queue home, stand-ins for launchctl, claude and ssh; no
 # launchd job, session or network is touched. Every name is synthetic. Portable: it runs on Linux too.
@@ -54,7 +54,8 @@ seed sonnet "Tier: Sonnet 5.5 high"
 seed block "tier: worker"
 seed sr "Tier: Opus 5.5 high (sr-worker; not Sonnet)"
 seed prin "Tier: principal-worker"
-seed plain "Tier: Opus 5.5 high"
+seed plain "Tier: Opus 5.5 high, per the rules' tier table"
+seed xhigh "Tier: Opus 5.5 xhigh"
 printf -- '- physical: none\n' > "$R/AGENTS.md"   # the contract dispatch requires, untracked on main
 
 cat > "$T/launchctl" <<EOF
@@ -97,7 +98,7 @@ for p in sorted(glob.glob(sys.argv[1] + "/*." + sys.argv[2] + ".*.json")):
 print(json.dumps(d.get("arm"), sort_keys=True), d.get("arm_source"), d.get("model"), d.get("effort"))' "$RUNS" "$1" 2>/dev/null; }
 rowsof() { python3 -c 'import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
-print(len(rows), *[(r["topic"], r["arm"], r["coin"], r["forced"], r["model"], r["effort"], bool(r["session"])) for r in rows])' "$ROWS" 2>/dev/null || echo 0; }
+print(len(rows), *[(r["topic"], r["arm"], r["coin"], r["forced"], r["model"], r["effort"], bool(r["session"])) + ((r["brief_class"],) if r.get("brief_class") != "specced" else ()) for r in rows])' "$ROWS" 2>/dev/null || echo 0; }
 
 echo "the key: absent, past or garbled is today's dispatch, said nothing when absent"
 clean; rm -f "$KEY"
@@ -117,6 +118,15 @@ r=""; for line in "Tier: worker" "Tier: Sonnet 5.5 high" "Tier: claude-sonnet-5-
   printf '%s\n' "$line" | python3 "$B/buildercoin.py" specced; r="$r$?"
 done
 check "$r" "000011111111" "worker, Sonnet and its full id are specced; sr-worker, a principal tier, another tier, Opus, none, Sonnet beside another model, or worker beside Opus are not"
+echo "what the coin draws for (blueprintlib.brief_rotates)"
+r=""; for line in "Tier: worker" "Tier: Sonnet 5.5 high" "Tier: Opus 5.5 high" "Tier: Opus 5.5 \`high\`, per the rules' tier table" "Tier: claude-opus-5-5" "Tier: Opus 5.5 xhigh" "Tier: Opus 5.5 medium" "Tier: Opus 5.5 high (not Sonnet)" "Tier: sr-worker (Opus high)" "Tier: Opus 5.5 high, principal" "Tier: Opus 5.5 high (worker)" "Task: no tier" \
+    "**Tier:** Opus 5.5 high, per rule engineering" "Tier: Opus 5.5 high, per the rules’ tier table" "tier: opus high" "Tier: Opus 5.5 x-high" \
+    "Tier: Opus 5.5 high (hooks are gates; judgement is the work)" "Tier: Opus 5.5 high, per the rules' tier table (sr-worker: Ring 0)" \
+    "Tier: Opus 5.5 high (physical: the yard node)" "Tier: Gemini or Opus"; do
+  r="$r$(printf '%s\n' "$line" | python3 "$B/buildercoin.py" rotates || echo -)."
+done
+check "$r" "specced.specced.plain.plain.plain.-.-.-.-.-.-.-.plain.plain.plain.-.-.-.-.-." "specced, then plain Opus (the rules' default line and nothing more, bold or lower-case); any other Opus line, a reason, a tier word or no Tier line draws nothing"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c; print(c.ODDS, sum(c.coin_of(r) for r in range(c.ODDS)))' "$B")" "5 3" "the coin: 3 of 5 rolls draw Sonnet (the owner, 2026-11-03)"
 # a claude-code block's tier: worker key over a Tier: line that is not specced: dispatch reads the line, so wharf check warns
 cat > "$T/bp.md" <<'MD'
 ---
@@ -148,6 +158,19 @@ for line in ("Opus 5.5 high", "worker (Sonnet 5.5 high)"):
         print("ERR", e.problems)
 PY
 check "$(python3 "$T/bp.py" "$B" "$T/bp.md" 2>&1 | tr '\n' ' ')" "1 0 " "a claude-code block's tier: worker over an Opus Tier: line warns; over a worker line it does not"
+# a tier: sr-worker key over a plain-Opus line would put a pinned tier on the coin: a problem, not a warning
+sed 's/tier: worker/tier: sr-worker/; s/TIERLINE/Opus 5.5 high/' "$T/bp.md" > "$T/bp2.md"
+check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import blueprintlib as b
+try: b.load(sys.argv[2]); print("loaded")
+except b.BlueprintError as e: print(len([p for p in e.problems if "tier: sr-worker" in p]))' "$B" "$T/bp2.md" 2>&1)" "1" "a claude-code block's tier: sr-worker over a plain-Opus Tier: line is refused (the coin would draw Sonnet for a pinned tier)"
+cat > "$T/bp2.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1]); import blueprintlib as b
+src = open(sys.argv[2]).read().replace("tier: worker", "tier: sr-worker").replace("TIERLINE", "Opus 5.5 high")
+print(b.load(sys.argv[2], text=src)["warnings"])
+PY
+python3 "$T/bp2.py" "$B" "$T/bp.md" > "$T/bp2.out" 2>&1
+has "$T/bp2.out" "has tier: sr-worker, but its Tier: line reads as plain" "a tier: sr-worker key over a plain-Opus Tier: line warns: the coin would draw for it"
 
 echo "the draw, on the one-shot road"
 echo "until $UNTIL" > "$KEY"
@@ -163,7 +186,8 @@ check "$(sched worker DISPATCH_COIN=1 -- --model claude-opus-5-5)" "" "a typed -
 check "$(sched worker DISPATCH_COIN=1 -- --effort medium)" "" "a typed --effort draws nothing"
 check "$(sched sr DISPATCH_COIN=1)" "" "sr-worker draws nothing (Sonnet on its line or not)"
 check "$(sched prin DISPATCH_COIN=1)" "" "a principal tier draws nothing"
-check "$(sched plain DISPATCH_COIN=1)" "" "a brief that is not specced draws nothing"
+check "$(sched plain DISPATCH_COIN=1)" "sonnet-high:1:$UNTIL:1" "a plain-Opus brief (the rules' default written out) draws"
+check "$(sched xhigh DISPATCH_COIN=1)" "" "an Opus line at another effort draws nothing"
 cp "$T/conf.json" "$T/repos.json"
 check "$(sched worker DISPATCH_COIN=1)" "" "a confidential scope draws nothing"
 has "$T/out" "builder rotation fenced: scope vault is confidential" "  said"
@@ -172,8 +196,8 @@ check "$(sched worker DISPATCH_COIN=1)" "" "a torn registry draws nothing"
 echo '{"repos": {}, "scopes": {"other": {"repos": ["elsewhere"]}}}' > "$T/repos.json"
 check "$(sched worker DISPATCH_COIN=1)" "" "a repo in no scope draws nothing"
 cp "$T/open.json" "$T/repos.json"
-DISPATCH_ARM=bogus "$B/dispatch" claude/laptop/2026-11-02-plain --repo "$R" --at "$FUT 04:20" > "$T/out" 2>&1
-check "$(armof "$(pl plain)")" "" "a carried word that does not read is no arm"
+DISPATCH_ARM=bogus "$B/dispatch" claude/laptop/2026-11-02-xhigh --repo "$R" --at "$FUT 04:20" > "$T/out" 2>&1
+check "$(armof "$(pl xhigh)")" "" "a carried word that does not read is no arm"
 
 echo "the fire path: the arm runs, the record keeps it, one row"
 clean
@@ -197,7 +221,7 @@ check "$(rowsof)" "0" "  and no row"
 clean
 fire sr "sonnet-high:1:$UNTIL:0"
 has "$T/claude.calls" "--model opus --effort high" "a brief no longer specced at fire time: today's builder"
-has "$H/fire-sr.log" "dropped — the brief as it fires is not specced (tier sr-worker)" "  said"
+has "$H/fire-sr.log" "dropped — the brief as it fires is not on the coin (tier sr-worker)" "  said"
 check "$(rowsof)" "0" "  no row"
 clean
 cp "$T/conf.json" "$T/repos.json"
@@ -210,9 +234,13 @@ fire worker "sonnet-high:1:$UNTIL:0"
 check "$(rowsof)" "0" "a torn registry at fire time: no row"
 cp "$T/open.json" "$T/repos.json"
 clean
-fire plain ""
+fire plain "sonnet-high:1:$UNTIL:0"
+has "$T/claude.calls" "--model claude-sonnet-5-5 --effort high --permission-mode auto" "a plain-Opus brief's Sonnet arm fires"
+check "$(rowsof)" "1 ('plain', 'sonnet-high', 1, False, 'claude-sonnet-5-5', 'high', True, 'plain')" "  its row says the brief was plain"
+clean
+fire xhigh ""
 has "$T/claude.calls" "--model opus --effort high" "no word: today's builder, unchanged"
-check "$(recof plain | cut -d' ' -f1,2)" "null None" "  the record has no arm"
+check "$(recof xhigh | cut -d' ' -f1,2)" "null None" "  the record has no arm"
 check "$(rowsof)" "0" "  and no row"
 
 clean
