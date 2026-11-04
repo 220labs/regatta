@@ -1603,11 +1603,17 @@ def claims_dir():
     return qdir() / "claims"
 
 
+def domain():
+    """This user's launchd domain (the core's launchd_domain: `gui/<uid>`, or `user/<uid>` on a builder host); `gui/<uid>`
+    under a core older than the seam, as dispatch-rc's launchd_domain() (S2's landing review)."""
+    return common.launchd_domain() if hasattr(common, "launchd_domain") else "gui/%d" % os.getuid()
+
+
 def job_running(launchctl, label):
     if not label:
         return False
     try:
-        r = subprocess.run([launchctl, "print", "gui/%d/%s" % (os.getuid(), label)], capture_output=True, text=True, timeout=10)
+        r = subprocess.run([launchctl, "print", "%s/%s" % (domain(), label)], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return "\tstate = running" in r.stdout
@@ -1736,7 +1742,9 @@ def busy(launchctl, repo="", topic="", except_qid=None):
     runs = [st for _, st in every if not m.parked(st)]
     n = m.counted([(k, st) for k, st in every
                    if not (topic and st.get("topic") == topic and m.same_repo(st.get("repo"), repo))])
-    return n + m.vendor_slots() + len(held(launchctl, except_qid, runs))
+    # a builder user's runs and the owner's share one Mac's cap (peer_slots: `wharf-runs/slot-share`; the Argon arm's S2)
+    h = len(held(launchctl, except_qid, runs))
+    return n + m.vendor_slots() + m.peer_slots([st for _, st in every], h) + h
 
 
 def start_lock(wait=150):
@@ -1940,8 +1948,41 @@ def fleet_fence(e, h=None):
     return None
 
 
+def only_here():
+    """(names, why) from `wharf-runs/only`: the features this host claims nothing without — a builder host's vendor
+    (`agy`; the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md, "The builder host"). None when there is no
+    file (every host but a builder's). A file that is there but names no valid feature, or will not read, gives
+    why: such a host claims nothing (read as absent it would take every Claude entry, the narrowing trap)."""
+    lines, why = common.config_read("wharf-runs/only")
+    if why:
+        return None, "wharf-runs/only does not read here (%s): this host claims nothing" % why
+    if lines is None:
+        return None, None
+    names = {n for n in (x.strip().lower() for ln in lines for x in ln.split(",")) if NEED_RE.fullmatch(n)}
+    if not names:
+        return None, "wharf-runs/only names no feature: this host claims nothing"
+    return names, None
+
+
+def only_refusal(e):
+    """Why `wharf-runs/only` keeps this host off E, or None: E's needs must name one of its features, and a finish
+    is never one (a /finish is a Claude run on the owner's row, whatever it needs)."""
+    names, why = only_here()
+    if why:
+        return why
+    if names is None:
+        return None
+    if e.get("kind") == FINISH:
+        return "this host takes only %s builds, never a finish" % ", ".join(sorted(names))
+    needs = e.get("needs") if isinstance(e.get("needs"), list) else []
+    if not names & {n for n in needs if isinstance(n, str)}:
+        return "this host takes only entries that need %s" % " or ".join(sorted(names))
+    return None
+
+
 def claimable(e, h, t=None, fleet=False):
-    """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features).
+    """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features;
+    and this host's own `wharf-runs/only`, a builder host's).
     FLEET: E is the fleet ref's, and the fence (fleet_fence) judges it too."""
     t = now() if t is None else t
     if e.get("state") != "queued":
@@ -1949,6 +1990,10 @@ def claimable(e, h, t=None, fleet=False):
     why = eligibility(e, h)   # the pin first, as its text always led the listing
     if why:
         return why
+    if h == host_name():   # `only` is this host's own config: a peer's verdict on its own claim
+        why = only_refusal(e)
+        if why:
+            return why
     if e.get("running_on") and e["running_on"].lower() != h:
         return "its branch runs on %s" % e["running_on"]
     if t - int((e.get("refused_by") or {}).get(h) or 0) < SKIP:
@@ -2301,7 +2346,7 @@ def start_job(ctx, store, key, e, label):
     p = la / ("%s.plist" % label)
     with open(p, "wb") as f:
         plistlib.dump(plist, f)
-    dom = "gui/%d" % os.getuid()
+    dom = domain()
     subprocess.run([ctx.launchctl, "bootout", "%s/%s" % (dom, label)], capture_output=True)
     for i in range(2):
         r = subprocess.run([ctx.launchctl, "bootstrap", dom, str(p)], capture_output=True, text=True)
@@ -3726,7 +3771,7 @@ def boot_job(ctx, label):
     """LABEL's launchd job out and its plist gone: a claimed or waiting entry's job, cancelled."""
     if not label:
         return
-    subprocess.run([ctx.launchctl, "bootout", "gui/%d/%s" % (os.getuid(), label)], capture_output=True)
+    subprocess.run([ctx.launchctl, "bootout", "%s/%s" % (domain(), label)], capture_output=True)
     (agents() / ("%s.plist" % label)).unlink(missing_ok=True)
 
 
@@ -4585,7 +4630,7 @@ def drop_previous(ctx):
     out = []
     for label in prev_labels(ctx):
         try:
-            r = subprocess.run([ctx.launchctl, "print", "gui/%d/%s" % (os.getuid(), label)],
+            r = subprocess.run([ctx.launchctl, "print", "%s/%s" % (domain(), label)],
                                capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -4608,7 +4653,7 @@ def job_loaded(ctx, label):
     not tell (a launchctl past its 10 s on a loaded Mac): read as loaded, so a running sweep is never booted
     out mid-pass for a slow answer (S2a's finish review)."""
     try:
-        return subprocess.run([ctx.launchctl, "print", "gui/%d/%s" % (os.getuid(), label)],
+        return subprocess.run([ctx.launchctl, "print", "%s/%s" % (domain(), label)],
                               capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -4632,7 +4677,7 @@ def job_load(ctx, plist):
         pass
     agents().mkdir(parents=True, exist_ok=True)
     logdir().mkdir(parents=True, exist_ok=True)
-    dom = "gui/%d" % os.getuid()
+    dom = domain()
     subprocess.run([ctx.launchctl, "bootout", "%s/%s" % (dom, label)], capture_output=True)
     with open(p, "wb") as f:
         plistlib.dump(plist, f)
@@ -4654,7 +4699,7 @@ def job_out(ctx, label):
     p = agents() / ("%s.plist" % label)
     had = p.exists()
     p.unlink(missing_ok=True)
-    r = subprocess.run([ctx.launchctl, "bootout", "gui/%d/%s" % (os.getuid(), label)], capture_output=True)
+    r = subprocess.run([ctx.launchctl, "bootout", "%s/%s" % (domain(), label)], capture_output=True)
     return had or r.returncode == 0
 
 
@@ -4672,6 +4717,15 @@ def launcher_here():
         return False
 
 
+def daemon_sweep(ctx):
+    """The LaunchDaemon builder-host make wrote for this user's sweep (`<prefix>.queue-sweep.<user>` in
+    DISPATCH_DAEMONS, else /Library/LaunchDaemons), or None: every host but a builder's."""
+    import getpass
+    p = Path(os.environ.get("DISPATCH_DAEMONS") or "/Library/LaunchDaemons") / ("%s.queue-sweep.%s.plist"
+                                                                                % (ctx.prefix, getpass.getuser()))
+    return p if p.is_file() else None
+
+
 def cmd_jobs(a, ctx):
     """The sweep where a home is, nothing where none is: dispatch runs this at each start beside the
     tidier's refresh, so a host gets its sweep at its first dispatch once a home is set, and loses both
@@ -4680,6 +4734,11 @@ def cmd_jobs(a, ctx):
         print("queue jobs: no launchd or systemd user manager here; no sweep")
         return 0
     sweep, poll = job_labels(ctx)
+    if home() and daemon_sweep(ctx):
+        # a builder host (the Argon arm's S2): builder-host make put its sweep in the system domain with UserName, as a
+        # user with no login session has no gui domain to load a LaunchAgent into
+        print("queue jobs: the sweep here is the LaunchDaemon %s" % daemon_sweep(ctx))
+        return 0
     if not home():
         gone = [l for l in (sweep, poll) if job_out(ctx, l)] + drop_previous(ctx)
         if gone:
@@ -4924,7 +4983,7 @@ def cmd_kicked(a, ctx):
     ok = False
     for label in (job_labels(ctx)[0],) + tuple(prev_labels(ctx)[:1]):
         # launchctl on a Mac, systemd-launchctl elsewhere (dispatch's $LC): its kickstart never waits on the unit
-        cmd = [ctx.launchctl, "kickstart", "gui/%d/%s" % (os.getuid(), label)]
+        cmd = [ctx.launchctl, "kickstart", "%s/%s" % (domain(), label)]
         try:
             # 35 s: over systemd-launchctl ctl()'s own 30 s, so a loaded node's start is never cut first
             ok = subprocess.run(cmd, capture_output=True, text=True, timeout=35).returncode == 0

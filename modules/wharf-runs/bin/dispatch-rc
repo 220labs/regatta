@@ -132,6 +132,8 @@ import json
 import os
 import plistlib
 import re
+import stat
+import tempfile
 import shutil
 import signal
 import subprocess
@@ -231,6 +233,11 @@ try:
     import common  # noqa: E402
 except Exception:
     common = None
+
+
+def launchd_domain():
+    """This user's launchd domain: the core's launchd_domain (`user/<uid>` on a builder host), `gui/<uid>` without the core."""
+    return common.launchd_domain() if common is not None and hasattr(common, "launchd_domain") else "gui/%d" % os.getuid()
 
 
 def proc_start(pid, timeout=10):
@@ -955,6 +962,153 @@ def vendor_slots():
     except Exception as e:   # noqa: BLE001
         print("dispatch-rc: the other CLIs' runs were not counted (%s: %s)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
         return 0
+
+
+PEER_MAX = 64   # runs counted from one peer at most: a file is data another user writes
+PEER_BYTES = 64 << 10
+PEER_FRESH = 1200   # two sweep passes: each user's sweep republishes through its sampler's `dispatch --slots`
+
+
+def slot_share():
+    """The folder `wharf-runs/slot-share` names (one path), or None: where the users of one Mac that share its run
+    cap — the owner's and a builder user's (the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md, "The builder
+    host") — each publish their live runs, one folder per user (`<share>/<user>/runs.json`, the folder owned by its
+    user; builder-host make makes them, root's share 0755). None without the core or the key (every host but a
+    builder's Mac)."""
+    if common is None:
+        return None
+    p = (common.config_line("wharf-runs/slot-share") or "").strip()
+    return os.path.expanduser(p) if p.startswith(("/", "~")) else None
+
+
+def _me():
+    import pwd
+    return os.environ.get("DISPATCH_RC_ME") or pwd.getpwuid(os.getuid()).pw_name   # the suite's stand-in name
+
+
+def publish_slots(runs=None, held=0):
+    """This user's live runs not parked (RUNS, live()'s states, else read now) into `<share>/<me>/runs.json`: a fresh
+    temp (mkstemp: O_EXCL, never a planted link) renamed into place, in a folder that is this user's and no link.
+    HELD: the claim reservations the caller counted (busy()), so a claim is seen before its run starts. Called at each
+    count, at each run's watcher start and after a headless run's record, so a run just started is seen by the other
+    user's next count. Each user's start lock is its own, so two counts in the same seconds can still both take the
+    last slot: the cap is against load, and a cross-user lock would let either user stall the other. Never raises; a
+    share that will not take it is said once."""
+    d = slot_share()
+    if not d:
+        return
+    try:
+        mine = os.path.join(d, _me())
+        st = os.lstat(mine)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            raise OSError("%s is not this user's folder" % mine)
+        runs = [st for _, st in live(reap=False)] if runs is None else runs
+        rows = [{"pid": x["pid"], "proc_start": x.get("proc_start") or ""}
+                for x in runs if not parked(x) and isinstance(x.get("pid"), int)]
+        # every slot this user's own count holds, not only the Claude runs with a pid: the parked overflow, research
+        # runs and the other CLIs' runs (vendor_slots), which the other user counts as `slots` past the pids (round 2)
+        slots = counted([(None, x) for x in runs]) + vendor_slots() + held
+        fd, tmp = tempfile.mkstemp(prefix=".runs.", dir=mine)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"at": int(time.time()), "runs": rows, "slots": slots}, f)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, os.path.join(mine, "runs.json"))
+    except Exception as e:   # noqa: BLE001 — the count goes on without it
+        say_once("dispatch-rc: wharf-runs/slot-share did not take this user's runs (%s: %s)" % (type(e).__name__, e))
+
+
+def _ps_uid_start(pid):
+    """(uid, `ps -o lstart` in UTC) of PID, or (None, "")."""
+    try:
+        r = subprocess.run(["ps", "-o", "uid=", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                           env=dict(os.environ, TZ="UTC", LC_ALL="C"), timeout=10)
+        w = r.stdout.split()
+        return (int(w[0]), " ".join(w[1:])) if len(w) > 1 else (None, "")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None, ""
+
+
+def peer_runs(d, name):
+    """The runs user NAME's file in share D says are live and are: a folder and a file that are NAME's own, no link,
+    a regular file (never a FIFO) under PEER_BYTES; each pid a process of NAME's uid running with the recorded start
+    time, each counted once, plus the file's `slots` past the pids it lists (the peer's runs with no pid here: other
+    CLIs', research, the parked overflow), PEER_MAX at most in all. Anything else counts nothing (the share is data
+    other users write; a peer that lies about `slots` holds no more than it could by running PEER_MAX processes)."""
+    import pwd
+    uid = pwd.getpwnam(name).pw_uid
+    st = os.lstat(os.path.join(d, name))
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid:
+        return 0
+    fd = os.open(os.path.join(d, name, "runs.json"), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    try:
+        fs = os.fstat(fd)
+        if not stat.S_ISREG(fs.st_mode) or fs.st_uid != uid or fs.st_size > PEER_BYTES:
+            return 0
+        data = json.loads(os.read(fd, PEER_BYTES + 1).decode())
+    finally:
+        os.close(fd)
+    seen, n = set(), 0
+    for r in (data.get("runs") if isinstance(data, dict) and isinstance(data.get("runs"), list) else [])[:PEER_MAX]:
+        pid, start = (r.get("pid"), r.get("proc_start")) if isinstance(r, dict) else (None, None)
+        if not isinstance(pid, int) or not 1 < pid < 1 << 22 or pid in seen or not isinstance(start, str) or not start.strip():
+            continue
+        seen.add(pid)
+        puid, now = _ps_uid_start(pid)
+        if puid is None and not now:
+            # a blank `ps` for a live pid is no evidence either way (running()'s docstring): a loaded Mac prints
+            # nothing, and counting it as gone would over-commit the Mac exactly under load
+            try:
+                os.kill(pid, 0)
+                n += 1
+            except PermissionError:
+                n += 1
+            except OSError:
+                pass
+        elif puid == uid and now == " ".join(start.split()):
+            n += 1
+    listed = len(data.get("runs") or []) if isinstance(data, dict) and isinstance(data.get("runs"), list) else 0
+    extra = data.get("slots") if isinstance(data, dict) else None
+    extra = max(0, extra - listed) if isinstance(extra, int) and not isinstance(extra, bool) else 0
+    at = data.get("at") if isinstance(data, dict) else None
+    if not isinstance(at, int) or time.time() - at > PEER_FRESH:
+        extra = 0   # slots with no pid to verify expire: a peer whose sweep stopped holds none of them for good
+    return min(PEER_MAX, n + extra)
+
+
+def peer_slots(runs=None, held=0):
+    """The slots the other users' runs hold on this Mac (peer_runs, each other user's folder in the share), this
+    user's own published first (publish_slots, from RUNS when the caller has them). No share counts 0, as does a
+    peer whose file does not read, said once on stderr: the cap is against load, and a count that cannot read never
+    stops a run (as vendor_slots)."""
+    d = slot_share()
+    if not d:
+        return 0
+    publish_slots(runs, held)
+    me, n = _me(), 0
+    try:
+        names = sorted(os.listdir(d))
+    except OSError as e:
+        say_once("dispatch-rc: wharf-runs/slot-share %s did not read (%s)" % (d, type(e).__name__))
+        return 0
+    for name in names:
+        if name == me or name.startswith("."):
+            continue
+        try:
+            n += peer_runs(d, name)
+        except FileNotFoundError:
+            continue
+        except Exception as e:   # noqa: BLE001 — one peer's file never stops the count
+            say_once("dispatch-rc: %s's runs in %s did not read (%s): not counted" % (name, d, type(e).__name__))
+    return n
+
+
+def say_once(line):
+    if line not in _SAID:
+        _SAID.add(line)
+        try:
+            print(line, file=sys.stderr)
+        except OSError:
+            pass
 
 
 def live(skip_repo=None, skip_topic=None, reap=True):
@@ -1847,6 +2001,7 @@ def watch(path):
     st = load(path)
     st.update(watcher=os.getpid(), watcher_start=ws)
     save(path, st)
+    publish_slots()   # the shared run cap: the other user's next count sees this run (no-op without slot-share)
     start, busy = time.time(), False
     started = st.get("started") or start
     hold_awake(True)
@@ -2103,7 +2258,7 @@ def tidy_soon():
     if not any(t and os.path.exists(os.path.join(HOME, "Library", "LaunchAgents", t + ".plist")) for t in (TIDIER, TIDIER_PREV)):
         return 0
     lc = os.environ.get("DISPATCH_LAUNCHCTL", "launchctl")
-    label = "gui/%d/%s" % (os.getuid(), TIDY_SOON)
+    label = "%s/%s" % (launchd_domain(), TIDY_SOON)
     plist = os.path.join(HOME, "Library", "LaunchAgents", TIDY_SOON + ".plist")
     # behind claude-host once this Mac's sitting is done: the tidy's osascript to Terminal is then
     # claude-host's one Automation grant, not /bin/sh's (docs/tcc-one-identity-2026-10-18.md)
@@ -2121,10 +2276,10 @@ def tidy_soon():
             "RunAtLoad": True, "ProcessType": "Background",
             "StandardOutPath": log, "StandardErrorPath": log,
         }, f)
-    r = subprocess.run([lc, "bootstrap", "gui/%d" % os.getuid(), plist], capture_output=True, text=True)
+    r = subprocess.run([lc, "bootstrap", launchd_domain(), plist], capture_output=True, text=True)
     if r.returncode:   # bootout returns before the old job is gone: once more after a pause
         time.sleep(2)
-        r = subprocess.run([lc, "bootstrap", "gui/%d" % os.getuid(), plist], capture_output=True, text=True)
+        r = subprocess.run([lc, "bootstrap", launchd_domain(), plist], capture_output=True, text=True)
     if r.returncode:
         say("tidy-soon: launchctl bootstrap failed (%s): %s — the 10-minute tidy closes it" % (r.returncode, (r.stderr or "").strip()[:160]))
         return 1
@@ -2164,7 +2319,7 @@ def schedule_tidy(install=True):
 
 def job_state(label):
     """(loaded, running) as launchd reads LABEL."""
-    r = subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "print", "gui/%d/%s" % (os.getuid(), label)],
+    r = subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "print", "%s/%s" % (launchd_domain(), label)],
                        capture_output=True, text=True)
     return r.returncode == 0, "\tstate = running" in r.stdout
 
@@ -2180,7 +2335,7 @@ def drop_tidy_prev():
 
 def drop_job(label):
     """LABEL's job booted out and its plist removed (either may already be gone)."""
-    subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "bootout", "gui/%d/%s" % (os.getuid(), label)],
+    subprocess.run([os.environ.get("DISPATCH_LAUNCHCTL", "launchctl"), "bootout", "%s/%s" % (launchd_domain(), label)],
                    capture_output=True)
     plist = os.path.join(HOME, "Library", "LaunchAgents", label + ".plist")
     if os.path.exists(plist):
@@ -2509,7 +2664,7 @@ if __name__ == "__main__":
         repo, topic = sys.argv[-2:]
         out, sys.stdout = sys.stdout, sys.stderr   # say() from a reap must not join the count
         try:
-            n = counted(live(repo, topic, reap)) + vendor_slots()
+            n = counted(live(repo, topic, reap)) + vendor_slots() + peer_slots()
         finally:
             sys.stdout = out
         print(n)
@@ -2521,6 +2676,9 @@ if __name__ == "__main__":
         finally:
             sys.stdout = out
         print(n)
+        sys.exit(0)
+    if verb == "publish" and len(sys.argv) == 2:   # after a headless run's record: no watcher publishes it
+        publish_slots()
         sys.exit(0)
     if verb == "reap" and len(sys.argv) == 2:
         live()

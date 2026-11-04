@@ -200,6 +200,17 @@ def config_lines(name):
     return config_read(name)[0]
 
 
+def launchd_domain(uid=None):
+    """The launchd domain this user's jobs load into: `gui/<uid>`, a login's (every host but a builder's), or
+    `user/<uid>` where DISPATCH_LAUNCHD_DOMAIN (else `wharf-runs/launchd-domain`) says `user`: a builder user
+    has no login session and so no gui domain (the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md,
+    "launchd"). Any other word reads as `gui`, today's, so a typo never moves a login's jobs. The one seam
+    dispatch, dispatch-queue, dispatch-rc and kicklib build a target from; systemd-launchctl takes both."""
+    uid = os.getuid() if uid is None else uid
+    word = (os.environ.get("DISPATCH_LAUNCHD_DOMAIN") or config_line("wharf-runs/launchd-domain") or "gui").strip()
+    return "%s/%d" % ("user" if word == "user" else "gui", uid)
+
+
 # ---- the core's private values (B2b; README, "Private values") --------------------------------
 # Each is one file under <config>/regatta/, which the overlay writes; the core carries only a
 # neutral default. Where the overlay is installed (the `regatta/overlay` marker), a key it
@@ -1683,6 +1694,12 @@ def host_name():
     came from without asking."""
     global _host
     if _host:
+        return _host
+    # a builder host's row (`<host>-<vendor>`, the Argon arm's S2): its config dir's `wharf-runs/host`, which
+    # builder-host make writes, so a launchd job's run names the row its sweep claimed as. No key, the Mac's name.
+    key = re.sub(r"[^a-z0-9-]", "-", (config_line("wharf-runs/host") or "").strip().lower()).strip("-")
+    if key:
+        _host = key
         return _host
     name = ""
     try:

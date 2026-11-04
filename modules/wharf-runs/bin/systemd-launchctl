@@ -77,11 +77,15 @@ def ctl(*a, timeout=STOP_WAIT):
         return subprocess.CompletedProcess([SYSTEMCTL, *a], 1, "", str(x))
 
 
+DOMAINS = ("gui/", "user/")
+
+
 def label_of(target):
-    """gui/UID/LABEL -> LABEL; anything else exits 2 as launchctl's usage does."""
-    lab = target.rsplit("/", 1)[-1] if target.startswith("gui/") and target.count("/") >= 2 else ""
+    """gui/UID/LABEL or user/UID/LABEL -> LABEL; anything else exits 2 as launchctl's usage does. Both domains are
+    the one systemd user manager here: `user/` is a builder host's (the core's launchd_domain, the Argon arm's S2)."""
+    lab = target.rsplit("/", 1)[-1] if target.startswith(DOMAINS) and target.count("/") >= 2 else ""
     if not LABEL_OK.fullmatch(lab):
-        sys.exit("systemd-launchctl: %r is not gui/<uid>/<label> with a unit name's characters" % target)
+        sys.exit("systemd-launchctl: %r is not gui/<uid>/<label> (or user/) with a unit name's characters" % target)
     return lab
 
 
@@ -307,7 +311,7 @@ def main(argv):
         print(__doc__.split("\n\n")[1])
         return 0 if argv else 2
     verb, rest = argv[0], argv[1:]
-    if verb == "bootstrap" and len(rest) == 2 and rest[0].startswith("gui/"):
+    if verb == "bootstrap" and len(rest) == 2 and rest[0].startswith(DOMAINS):
         return bootstrap(rest[1])
     if verb == "bootout" and len(rest) == 1:
         return bootout(label_of(rest[0]))
