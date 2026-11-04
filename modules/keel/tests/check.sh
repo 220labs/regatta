@@ -28,7 +28,7 @@ for s in paste-paths owed test_lookout sheep_gate; do
   wait "${pids[$i]}" || rc=1; i=$((i+1))
   echo "== $s"; cat "$O/$s"; rm -f "$O/$s"
 done
-# sheep_control and routed (S2) came after that audit, ui (helm-ui S10) after them: alone, until someone shows they
+# sheep_control and routed (S2) came after that audit, ui (helm-ui S10) and decision (S8) after them: alone, until someone shows they
 # share nothing with the four
-for s in sheep_control routed ui; do echo "== $s"; bash "$D/$s.sh" || rc=1; done
+for s in sheep_control routed ui decision; do echo "== $s"; bash "$D/$s.sh" || rc=1; done
 exit $rc

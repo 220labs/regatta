@@ -507,13 +507,15 @@ check "$(py 'print([i["shape"] for i in d["items"]])')" "['new', 'new', 'old']" 
 
 echo "D10 shape — the form"
 "$B/keel" build "$T/d10.md" -o "$T/d10.html" > /dev/null
-has "$T/d10.html" '<span class="k">Recommended</span><strong>B</strong> — answer in the block under it' "Recommended shown read-only, the letter with its option"
+has "$T/d10.html" '<button type="button" class="opt rec" data-letter="B"><span class="kcw"><span class="kc">B</span><span class="recflag"' "Recommended shown on its option: the flag beside the letter (helm-ui S8)"
 check "$(grep -o '<textarea id="ans-D1"[^>]*></textarea>' "$T/d10.html" | wc -l | tr -d ' ')" "1" "D1's answer box is empty"
 has "$T/d10.html" '<button type="button" class="opt" data-letter="A">' "options are buttons in a card"
-has "$T/d10.html" 'id="take-D1"' "a take-the-recommendation button"
+has "$T/d10.html" '<textarea id="free-D1" rows="2"' "…and the owner's own words the last row"
+lacks "$T/d10.html" 'id="take-D1"' "no Take on an unmarked pick, which R refuses (decision.sh has the plain pick's Take)"
 has "$T/d10.html" 'id="acceptall" title="Accept all recommendations">Accept all<span class="more"> recommendations</span>' "one click to agree with everything (D5, 2026-10-04)"
-has "$T/d10.html" 'var ACCEPT_ALL = "= recommended (accept all)"' "…marked apart from a per-card take"
-has "$T/d10.html" '<textarea id="ans-D3" rows="2">yes, pre-filled.</textarea>' "old shape still pre-filled"
+has "$T/d10.html" "KDC.ACCEPT_ALL = '= recommended (accept all)'" "…marked apart from a per-card take"
+has "$T/d10.html" '<textarea id="ans-D3" rows="2" hidden>yes, pre-filled.</textarea>' "old shape still pre-filled"
+has "$T/d10.html" '<textarea id="free-D3" rows="2" placeholder="Your answer" title="Your answer to D3, in your words">yes, pre-filled.</textarea>' "…its words shown in the words row"
 has "$T/d10.html" 'data-at="2" data-q="Some context before the list."' "prose carries its source line"
 has "$T/d10.html" 'data-row="Keep"' "a table row carries its first cell"
 has "$T/d10.html" 'data-q="- a nested point"' "a nested bullet in a card carries its line"
@@ -607,7 +609,8 @@ check "$(py 'print(d["items"][0]["answer"])')" $'I think so.\nD2 — same as her
 check "$(py 'print(d["items"][0]["recommended"])')" "A hybrid: keep both" "Recommended stops before options under it"
 check "$(py 'print(d["items"][0]["options"])')" "[['A', 'one'], ['B', 'two']]" "options between Recommended and Answer are found"
 "$B/keel" build "$T/r1.md" -o "$T/r1.html" > /dev/null
-has "$T/r1.html" '<span class="k">Recommended</span>A hybrid: keep both</div>' "a recommendation starting with the article A is not option A"
+has "$T/r1.html" '<span>Recommended: A hybrid: keep both</span>' "a recommendation starting with the article A is not option A"
+lacks "$T/r1.html" 'class="opt rec"' "…and flags no option"
 has "$T/r1.html" 'Why: cheaper.' "the lines between Recommended and Answer are on the card"
 has "$T/r1.html" 'data-row="row 1"' "an empty first cell is named by its row"
 has "$T/r1.html" 'data-row="row 2"' "…so two rows never share a note"
@@ -719,8 +722,8 @@ check "$(py 'print(d["items"][0]["options"])')" "[['A', 'answer on the arrow lin
 check "$(py 'print(d["items"][2]["options"])')" "[['A', 'the lint'], ['B', 'nothing']]" "bullets: D3's options, outside a list item"
 check "$(py 'print([(i["recommended"], i["answer"], i["shape"]) for i in d["items"]])')" "[('B', '', 'new'), ('none until P1 shows it builds', '', 'new'), ('A if P1 shows X, else B', '', 'new')]" "bullets: Recommended read across the blank line, answers empty"
 "$B/keel" build "$T/bul.md" -o "$T/bul.html" > /dev/null
-check "$(grep -o '<button type="button" class="opt" data-letter="[AB]">' "$T/bul.html" | wc -l | tr -d ' ')" "6" "bullets: every option a button on its card"
-has "$T/bul.html" '<span class="k">Recommended</span><strong>B</strong> — answer in the block under it' "bullets: the letter shows its option"
+check "$(grep -oE '<button type="button" class="opt( rec)?" data-letter="[AB]">' "$T/bul.html" | wc -l | tr -d ' ')" "6" "bullets: every option a button on its card"
+has "$T/bul.html" '<button type="button" class="opt rec" data-letter="B">' "bullets: the recommended letter is flagged on its option"
 check "$(grep -o '<textarea id="ans-D[123]"[^>]*></textarea>' "$T/bul.html" | wc -l | tr -d ' ')" "3" "bullets: three empty answer boxes"
 lacks "$T/bul.html" '<li data-at="8"' "bullets: an option is not a plain list item"
 printf '{"items": {"D1": "A - great idea\\nsecond thought", "D3": "B"}}' > "$T/bul.json"
@@ -1411,7 +1414,7 @@ has "$S/page.html" 'data-ss-id="D2"' "…and D2's"
 PID=$(python3 -c 'import hashlib; print("b-" + hashlib.sha1(b"Some context worth a note.\x00").hexdigest()[:8])')
 has "$S/page.html" "data-ss-id=\"$PID\"" "a paragraph is a block anchor, by its text, not its line number"
 check "$(grep -o 'data-ss-id="b-[0-9a-f]*"[^>]*><td[^>]*>Keep' "$S/page.html" | wc -l | tr -d ' ')" "1" "a table row is one too"
-check "$(python3 -c 'import re,sys; h=open(sys.argv[1]).read(); c=re.search(r"<section class=\"card\" id=\"card-D2\".*?</section>", h, re.S).group(0); print(c.count(" data-ss-id=\"D2\""), c.count("class=\"opt\""), c.count("id=\"ans-D2\""))' "$S/page.html")" "1 2 1" "the page is the form (2026-10-14): D2's card anchored, its options buttons, its answer box"
+check "$(python3 -c 'import re,sys; h=open(sys.argv[1]).read(); c=re.search(r"<section class=\"dq[^\"]*\" id=\"card-D2\".*?</section>", h, re.S).group(0); print(c.count(" data-ss-id=\"D2\""), len(re.findall(r"class=\"opt( rec)?( pick)?\" data-letter", c)), c.count("id=\"ans-D2\""))' "$S/page.html")" "1 2 1" "the page is the form (2026-10-14): D2's card anchored, its options buttons, its answer box"
 has "$S/page.html" '"emit": "memo-save"' "…its Save goes out as the memo-save event"
 has "$S/page.html" "\"sha\": \"$(git -C "$G/sh" rev-parse HEAD)\"" "…naming the commit the page shows"
 has "$S/page.html" "window.ss.emit(M.emit, ev)" "…through spacesheep's page bridge"
@@ -2738,7 +2741,7 @@ echo "the reading heartbeat (crew design S6): memo-read into reads.jsonl, and sh
 has "$S/page.html" '"read": "memo-read"' "the page carries the heartbeat's event name"
 check "$(python3 -c 'import re,sys; h=open(sys.argv[1]).read(); i=h.index("if (M.emit && M.read)"); b=h[i:i+900]; print(all(t in b for t in ("isTrusted", "\"wheel\", \"keydown\", \"pointerdown\", \"touchstart\"", "visibilityState", "60000", "15000")), "scroll" in b or "pointermove" in b)' "$S/page.html")" \
       "True False" "…counting only trusted wheel, keydown, pointerdown, touchstart while visible, once a minute on a 15 s timer — no scroll, no pointermove"
-check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([v["fmt"] for k, v in d.items() if k.endswith("docs/s.md")])' "$S/state/sheep.json")" "[10]" "…and the pin is PAGE_FMT 10: an older page is redeployed with it"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([v["fmt"] for k, v in d.items() if k.endswith("docs/s.md")])' "$S/state/sheep.json")" "[11]" "…and the pin is PAGE_FMT 11: an older page is redeployed with it"
 # a state of its own, so the cursors and logs above stay as the cases after them expect
 RS="$S/state-r" RM="$T/state-r"; mkdir -p "$RS"
 SMKEY=$(python3 -c 'import json,sys; print([k for k in json.load(open(sys.argv[1])) if k.endswith("docs/s.md")][0])' "$S/state/sheep.json")
@@ -3587,8 +3590,8 @@ EOF
 "$B/keel" parse "$T/fbm.md" > "$T/parse.json"
 check "$(py 'print(d["feedback_line"])')" "22" "a prose mention above the items is not the marker: the numbered heading is"
 "$B/keel" build "$T/fbm.md" -o "$T/fbm.html" > /dev/null
-check "$(grep -o '<section class="card" id="card-D[0-9]"' "$T/fbm.html" | wc -l | tr -d ' ')" "2" "…the form has one card per item"
-check "$(grep -o '<button type="button" class="opt" data-letter="[AB]">' "$T/fbm.html" | wc -l | tr -d ' ')" "4" "…and every option row a button"
+check "$(grep -oE '<section class="dq[^"]*" id="card-D[0-9]"' "$T/fbm.html" | wc -l | tr -d ' ')" "2" "…the form has one card per item"
+check "$(grep -oE '<button type="button" class="opt( rec)?( pick)?" data-letter="[AB]">' "$T/fbm.html" | wc -l | tr -d ' ')" "4" "…and every option row a button"
 check "$("$B/keel" lint "$T/fbm.md" | grep -v 'no `Reversible: yes|no` line'; echo "rc=${PIPESTATUS[0]}")" "rc=0" "…lint is quiet"
 # a prose mention inside an item's own body does not cut the item short either
 sedi 's/^- \*\*D1 — First\.\*\* Body\./- **D1 — First.** Body, see Open feedback below./' "$T/fbm.md"
@@ -3623,7 +3626,7 @@ EOF
 "$B/keel" parse "$T/fbl.md" > "$T/parse.json"
 check "$(py 'print(len(d["items"]), d["feedback_line"])')" "2 None" "an item under a marker: both parsed, and that marker is not the feedback section"
 "$B/keel" build "$T/fbl.md" -o "$T/fbl.html" > /dev/null
-check "$(grep -o '<section class="card" id="card-D[0-9]"' "$T/fbl.html" | wc -l | tr -d ' ')" "2" "…the form has a card for each, the late one too"
+check "$(grep -oE '<section class="dq[^"]*" id="card-D[0-9]"' "$T/fbl.html" | wc -l | tr -d ' ')" "2" "…the form has a card for each, the late one too"
 has "$T/fbl.html" "Sam&#x27;s earlier note." "…and the old section's text is on the page, as prose"
 check "$("$B/keel" lint "$T/fbl.md" | grep -c ': warning: D2 (line 15): sits under the feedback section (line 11)'; "$B/keel" lint "$T/fbl.md" >/dev/null; echo "rc=$?")" "1
 rc=0" "lint: an unanswered item under the section is a warning naming both lines, not an error"
