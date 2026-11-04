@@ -46,6 +46,34 @@
   PR labelled `hold` is left alone, a head no workflow ever ran on (GitHub runs none on a PR that conflicts) is
   restacked rather than waited on for good, and an unreadable `check-attr` refuses rather than reads as union.
 
+- `ci-provider` on a Linux host (linux-runner, 2026-11-04; the owner: "can the node help with linux checks as
+  well?"): `--runner install|status|remove --host H --name N --labels self-hosted,Linux` installs actions/runner's
+  linux-x64 or linux-arm64 build (v2.338.0, size and SHA-256 pinned as the osx ones are) in a rootless Podman
+  container (D1-C, the owner: "container"): an image built on the host over a digest-pinned `ubuntu:24.04` with
+  the suites' packages and no sudo, a quadlet user unit that runs one job a container (the listener's `--once`) and a fresh
+  container for the next, no host mount, socket, credential or capability, the registration alone in a named
+  volume mounted read-only (and judged there, so a lost volume registers again), at `CPUWeight=20` beside the
+  sessions' user units at 100 and `Nice=10`. The entry runs the listener itself and reads its exit: a refused
+  registration, a session conflict or a retired version stops its unit (`RestartPreventExitStatus=3`), any other
+  exit retries in a fresh container, and SIGTERM reaches the listener. An install re-registers a runner GitHub no
+  longer lists. The runner never updates itself, so its pin is bumped within GitHub's 30 days of a newer release. No sudo on
+  any road: what the host lacks (podman, uidmap, a user namespace with subordinate uid and gid ranges, slirp4netns,
+  linger, the user instance) is
+  refused at the probe, each named as the owner's step, before a token is minted. One runner a host (a further
+  instance, or another repo's runner or unit there, is refused), registered by its capabilities in
+  `wharf/ci-runner-caps.json` and never a label of the host's own, the token on the container's stdin only. The
+  probe's `uname -s` must agree with the labels. It routes no check.yml variable: the pick does, for
+  check-linux.yml. The runner script reads a size by `wc -c` and a digest by `sha256sum` or `shasum`, so macOS and
+  Linux share it.
+- The pick's self-hosted Linux lane for the Linux share: an Actions lane whose `runs_on` labels name Linux and whose
+  `projects` names the repo with `actions`. Judged by its runner, never a budget: online, it is taken before any
+  hosted lane, moving `CI_LINUX_TARGET`, then `CI_LINUX_RUNS_ON` (the `suite` job's runs-on, which check-linux.yml
+  now reads, `ubuntu-latest` while unset), then `CI_LINUX_ELSEWHERE`; with no runner carrying its labels, or one
+  offline more than a sweep (20 min, three readings of the desk's 15, counted from the first offline sighting the desk's `--apply` keeps in
+  `ci-share-runners.json`), the share takes a hosted lane with month left, `CI_LINUX_RUNS_ON` back to its image, or
+  goes off. A move back waits an hour, as between CircleCI orgs. A public repo, or one running fork PRs' workflows,
+  is never given the lane, nor a check-linux.yml that reads no `CI_LINUX_RUNS_ON`; a value no `suite` job can read
+  (a bare word) stands on no lane, so the pick rewrites it. The lane is never check.yml's: the runs-on pick skips it.
 - `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
   nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
   table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged

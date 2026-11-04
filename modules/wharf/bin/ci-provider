@@ -21,7 +21,9 @@ self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched
     ci-provider REPO --compose                regenerate .circleci/config.yml from its parts
     ci-provider REPO --runner install|status|remove [--host ALIAS] [--labels L,…] [--name NAME]
                      [--instance N] [--dry-run]
-                                              the repo's runner on the runner Mac, over ssh
+                                              the repo's runner on the runner Mac, over ssh, or on a
+                                              Linux host (--labels self-hosted,Linux --name NAME: the
+                                              Linux share's suites, below the runner's notes)
                                               (live: install downloads and registers it, and sets
                                               the runs-on variable unless other online runners
                                               serve it; remove deregisters it; status only reads);
@@ -216,6 +218,38 @@ self-hosted, and what it does not cover:
     and `a/b-c` share one directory. The runners installed before that stay where they are:
     every verb uses the flat directory while its .runner names this repo's URL (config.sh writes
     it as gitHubUrl), the nested one otherwise.
+  - a Linux host (linux-runner, 2026-11-04; the owner: "can the node help with linux checks as well?"): a
+    runner whose labels name Linux (--labels self-hosted,Linux, with --name, as a Linux host has no label of
+    its own to route on) is installed the same way, over ssh, with the release's linux-x64 or linux-arm64
+    build (pinned by URL, size and SHA-256, the asset digests read 2026-11-04) as the host's `uname -m` says;
+    the probe's `uname -s` must say Linux (and a Mac's must not), or nothing is minted. It runs in a rootless
+    container (D1-C, the owner, 2026-11-04: "container", over svc.sh's systemd unit as the host's login, which can
+    become root there: any write collaborator's pull request could): Podman, as the login, with no sudo on any road.
+    The probe names what the host lacks for it (podman; a user namespace, which the profile for /usr/bin/podman in
+    Ubuntu's apparmor package allows; subordinate uid and gid ranges with uidmap's newuidmap and newgidmap;
+    slirp4netns, podman 4.9's rootless network; linger; the systemd user instance), each the owner's step with sudo,
+    and refuses before a token. The install builds the image localhost/ci-runner-<name>
+    first, so a failed build registers nothing: the pinned ubuntu:24.04 (hosted ubuntu-latest is newer), the suites' packages, no
+    sudo, the verified tarball unpacked for an unprivileged user (RUNNER_CONTAINERFILE). config.sh runs in a
+    container of it, the token on its stdin, into the volume ci-runner-<name>-state (no self-update: the image holds
+    the pin), whose .runner is copied out to the runner directory for the probe. The service is a quadlet user unit,
+    ci-runner-<name>.service: each container takes one job (the listener's `--once`, run by the entry) and exits, and systemd starts a fresh one
+    from the image, so no job's leftovers reach the next; the state volume read-only, and no host mount, socket,
+    credential, capability or new privilege. The residual risks: a kernel escape; the job's read of the runner's own
+    credential, as on any runner; the network, which reaches what the host reaches, though not its loopback: the
+    host's own listeners on its other addresses (sshd, tailscale's), the tailnet's peers, and on a cloud VM its
+    link-local metadata service, which hands out the VM's managed-identity tokens where it has one; and the
+    login's disk, which a job's layer may fill. The runner never updates itself (--disableupdate: the image holds the
+    pin), and GitHub stops queuing jobs to a runner 30 days after a newer release (its docs, read 2026-11-04; v2.338.2
+    came out 2026-10-26): bump RUNNER_LINUX_* and reinstall within that. A user unit sits in the login's app.slice beside the sessions' units (read on a
+    node, 2026-11-04: dispatched sessions run as user units there, the cpu controller delegated), at CPUWeight=20 to
+    their 100 and Nice=10: a weight counts among siblings only. A rebuilt image or rewritten unit serves the job after
+    the next (the container waiting holds the old one), never by a restart that would cut a job. One runner a host,
+    so one job at a time: --instance 2 is refused, and so is a host where another repo's runner or unit is
+    configured. It registers by its capabilities alone, so the capabilities file must list it (the
+    ci-capabilities rule: never a host's name, here not even beside them). It serves check-linux.yml's
+    `suite` jobs, never check.yml: install and remove route and name no runs-on variable, which the pick
+    sets for the share (CI_LINUX_RUNS_ON, below). A runner deregistered or asleep is the pick's to judge.
   - the variable form: --runner install sets the repository variable to the runner's labels (its
     capabilities in wharf/ci-runner-caps.json, else the labels key's, or --labels') once the runner is online, unless the variable already asks for
     labels it carries or another registered runner, online or asleep, carries the variable's (a
@@ -227,7 +261,8 @@ self-hosted, and what it does not cover:
     while ci.json says self-hosted or the repo has a public twin, install says it set none, and why.
   - the registration and remove tokens: `gh api -X POST repos/O/R/actions/runners/
     registration-token` (`remove-token`), an hour's life, minted only once the runner Mac reports
-    the runner not configured (install) or configured (remove); held in memory, written to ssh's
+    the runner not configured (install; on Linux also a registration GitHub's full list no longer names) or
+    configured (remove); held in memory, written to ssh's
     stdin and handed to config.sh as ACTIONS_RUNNER_INPUT_TOKEN (the runner reads and unsets its
     ACTIONS_RUNNER_INPUT_* variables: src/Runner.Listener/CommandSettings.cs at v2.338.0); never
     in an argv, a file, a log or this tool's output. It does sit in config.sh's environment for
@@ -273,7 +308,12 @@ judged and nothing moves, unless the variable holds a project no lane names, whi
 A move waits an hour after the last one unless the lane it leaves is out.
 An Actions lane (provider `actions`, GitHub's hosted runners, judged by the account's minutes) whose
 `projects` names this repo (`"actions"`) runs the share alone: the CircleCI lanes are read and said, never
-chosen, and with it out the share goes off (linux-on-actions, 2026-11-02).
+chosen, and with it out the share goes off (linux-on-actions, 2026-11-02). A self-hosted Linux lane (a label
+list naming Linux, never macOS, its `projects` naming the repo with `actions`; linux-runner, 2026-11-04) is such a
+lane too, judged by its runner and not a budget: with one online it is taken before any hosted lane, and the
+share's suites run there by CI_LINUX_RUNS_ON, the `suite` job's runs-on, which the pick moves between the lanes'
+`runs_on` (unset is ubuntu-latest); a runner none carries the labels of, or one offline more than a sweep, is
+gone, and the share moves to a hosted lane with month left or goes off (LINUX_RUNS_VAR's notes).
 Each flip has the same guards, and is logged the same way.
 """
 import argparse
@@ -339,6 +379,156 @@ RUNNER_X64_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/
                   "actions-runner-osx-x64-2.338.0.tar.gz")
 RUNNER_X64_SIZE = 132802570
 RUNNER_X64_SHA256 = "dea7a58796ce215fc424a8b27c0fdd9b813fa5fc03d109a4a1d38131d6bfa1a3"
+# the same release's Linux builds, for a Linux host that runs the Linux share's suites (linux-runner,
+# 2026-11-04): read that day from the release's asset digests, which its notes' "BEGIN SHA linux-x64" and
+# "linux-arm64" lines match. arm64 is `aarch64` in a Linux `uname -m`
+RUNNER_LINUX_X64_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/"
+                        "actions-runner-linux-x64-2.338.0.tar.gz")
+RUNNER_LINUX_X64_SIZE = 227660598
+RUNNER_LINUX_X64_SHA256 = "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"
+RUNNER_LINUX_ARM64_URL = ("https://github.com/actions/runner/releases/download/v2.338.0/"
+                          "actions-runner-linux-arm64-2.338.0.tar.gz")
+RUNNER_LINUX_ARM64_SIZE = 140012091
+RUNNER_LINUX_ARM64_SHA256 = "628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b"
+# A Linux runner runs in a rootless container (linux-runner D1-C, the owner, 2026-11-04: "container"): Podman,
+# a quadlet user unit, the image built on the host from this file over the pinned base (ubuntu:24.04's index digest,
+# read from Docker Hub 2026-11-04; hosted ubuntu-latest is on 26.04, with uutils, so a 26.04-only break shows on the
+# twin's CI, not here; by digest alone, as a tag beside one is not every tool's grammar) and the tarball verified there first.
+# No sudo in it and none needed: what a suite lacks fails the job, naming it (linux-tools.sh)
+RUNNER_IMAGE_BASE = ("docker.io/library/ubuntu@sha256:"
+                     "fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852")
+RUNNER_CONTAINERFILE = """\
+# ci-provider's runner image (linux-runner): the pinned runner and what check-linux's suites need, no sudo
+FROM %(base)s
+LABEL ci-provider.runner=true
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \\
+      ca-certificates curl git jq python3 python3-yaml ruby sqlite3 xz-utils openssh-client locales tzdata \\
+      >/dev/null && rm -rf /var/lib/apt/lists/*
+# /state is the runner's: podman gives a fresh volume its mount point's owner after it applies `:U` (4.9.3's
+# fixVolumePermissions, read)
+RUN useradd -m -d /runner -s /bin/bash runner && mkdir -p /runner/actions-runner /state && \\
+    chown runner:runner /state
+COPY runner.tar.gz /tmp/runner.tar.gz
+RUN tar xzf /tmp/runner.tar.gz -C /runner/actions-runner && rm -f /tmp/runner.tar.gz && \\
+    /runner/actions-runner/bin/installdependencies.sh >/dev/null && rm -rf /var/lib/apt/lists/* && \\
+    chown -R runner:runner /runner/actions-runner
+COPY entry.sh /usr/local/bin/ci-runner-entry
+RUN chmod 755 /usr/local/bin/ci-runner-entry
+ENV LANG=C.UTF-8 ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE=1
+USER runner
+WORKDIR /runner/actions-runner
+ENTRYPOINT ["/usr/local/bin/ci-runner-entry"]
+CMD ["run"]
+"""
+# The container's entry. configure and remove read their token from stdin (`podman run -i`): never in an
+# argv, an environment podman sees, or the unit. The runner's registration (config.sh's files) lives in the
+# state volume, copied in at each start: the runner deletes a file before it writes it (ConfigurationStore's
+# SaveObject, v2.338.0), so a link into the volume would not hold. run takes one job (the listener's `--once`,
+# kept in v2.338.0: "customers still relies on it") and exits; systemd starts a fresh container from the image for
+# the next, so nothing a job leaves reaches the one after it, the volume aside, which the unit mounts read-only.
+# The listener runs under this script, not run.sh, whose loop reads every outcome as 0: its exit is read here.
+# 1 (terminated: GitHub refused the registration, a runner it deleted, say), 5 (a session conflict) and 7 (a
+# version GitHub retired, with ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE) exit 3, which stops the unit
+# (RestartPreventExitStatus), each with its remedy; every other exit ends the container for a fresh one: 0 (its
+# one job done) at once, unless the listener lived under 30 s (a revoked credential's "Shutting down" is a 0 too),
+# and the rest (2, retryable; a crash; a kill) after a pause, so a registration that can never work retries slowly
+# and for good (the runner's own service, RunnerService.js v2.338.0, stops on 0 and after ten retryable failures,
+# where nobody restarts it here). The pause is a background sleep the shell waits on, so a SIGTERM ends it at once. SIGTERM is passed on to the listener, which
+# then ends its session; a shell as PID 1 ignores the signal it has no trap for. Not kept: what the listener
+# saves while it runs (a migrated .runner_migrated or .credentials_migrated, v2.338.0's RunnerConfigUpdater):
+# the volume is read-only to it, so a job cannot plant a registration for the next container
+RUNNER_ENTRY = """\
+#!/bin/sh
+set -eu
+cd /runner/actions-runner
+state=".runner .credentials .credentials_rsaparams .env .path"
+load() { for f in $state; do if [ -f "/state/$f" ]; then cp "/state/$f" "./$f"; fi; done; }
+token() { IFS= read -r token || true; [ -n "${token:-}" ] || { echo "no token on stdin" >&2; exit 4; }; }
+case "${1:-run}" in
+configure)
+  token
+  ACTIONS_RUNNER_INPUT_TOKEN=$token ./config.sh --unattended --replace --disableupdate --url "$2" \\
+    --name "$3" --labels "$4" --work _work
+  for f in $state; do if [ -f "$f" ]; then cp "$f" "/state/$f"; fi; done ;;
+run)
+  [ -f /state/.runner ] || { echo "not configured: no /state/.runner" >&2; exit 3; }
+  # the trap first: a stop while the state is copied starts no listener (PID 1 ignores an untrapped TERM)
+  pid=
+  trap 'stopping=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true' TERM INT
+  load
+  [ -z "${stopping:-}" ] || exit 0
+  began=$(date +%s)
+  ./bin/Runner.Listener run --once &
+  pid=$!
+  rc=0; wait "$pid" || rc=$?
+  while kill -0 "$pid" 2>/dev/null; do rc=0; wait "$pid" || rc=$?; done
+  # a stop: the listener has ended its session, and no pause follows (the trap's one TERM went to the listener)
+  [ -z "${stopping:-}" ] || exit 0
+  case $rc in
+    0) [ $(( $(date +%s) - began )) -ge 30 ] && exit 0
+       echo "the listener exited 0 within 30 s: a fresh container after a pause" >&2 ;;
+    1) echo "the listener exited 1, GitHub refused its registration: --runner install registers it again where GitHub lists no such runner" >&2; exit 3 ;;
+    5) echo "the listener exited 5, a session conflict: another listener holds this runner's session; --runner install starts it again" >&2; exit 3 ;;
+    7) echo "the listener exited 7, a version GitHub retired: bump ci-provider's Linux pin, then --runner install" >&2; exit 3 ;;
+    *) echo "the listener exited $rc: a fresh container after a pause" >&2 ;;
+  esac
+  sleep "${RUNNER_RETRY_PAUSE:-30}" &
+  wait $! || true
+  exit 0 ;;
+remove)
+  token
+  load
+  ACTIONS_RUNNER_INPUT_TOKEN=$token ./config.sh remove
+  for f in $state; do rm -f "/state/$f"; done ;;
+*) echo "unknown verb: $1" >&2; exit 2 ;;
+esac
+"""
+# The quadlet unit, in containers/systemd under the login's config folder: a user service in app.slice, the sibling of
+# the sessions' services there (read on a node, 2026-11-04: the dispatched sessions run as user units in
+# user@<uid>.service/app.slice, whose cpu controller is delegated), at CPUWeight 20 to their 100 and Nice 10.
+# No host mount (the state is a named volume, read-only), no socket, no credential, no capability, no new
+# privileges; rootless podman's own network, which keeps the host's loopback (127/8) out of reach and nothing
+# else. The entry's exit 3 stops it (a runner that can take no job): quadlet's --sdnotify=conmon unit ends with the
+# container's exit, which conmon returns (podman 4.9.3, conmon 2.1.10, read; podman is not on the node to probe)
+RUNNER_UNIT = """\
+# ci-provider's, for %(slug)s's runner %(name)s: a rootless container, a fresh one for every job
+[Unit]
+Description=GitHub Actions runner %(name)s for %(slug)s, in a rootless container
+
+[Container]
+Image=localhost/%(ctr)s
+ContainerName=%(ctr)s
+Exec=run
+Volume=%(ctr)s-state:/state:ro
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+RestartPreventExitStatus=3
+RestartSec=10
+CPUWeight=20
+Nice=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
+"""
+# what an image reference's path component takes (containers/image's grammar, vendored by podman 4.9):
+# lower case, a separator only between letters and digits; at most 53, so ci-runner-<name> keeps under 64
+LINUX_NAME = re.compile(r"^(?=.{1,53}$)[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
+
+
+def runner_container(name):
+    """The unit, container, image and volume stem of a Linux runner: its name on GitHub, never the host's."""
+    return "ci-runner-" + name
+
+
+def linux_files(s, name):
+    """(Containerfile, entry, unit) for a Linux runner's install, passed to the host in argv: none secret."""
+    ctr = runner_container(name)
+    return (RUNNER_CONTAINERFILE % {"base": RUNNER_IMAGE_BASE}, RUNNER_ENTRY,
+            RUNNER_UNIT % {"slug": s, "name": name, "ctr": ctr})
 RUNNER_WAIT = 60  # seconds a new runner gets to show online on GitHub
 GENERATED = "# GENERATED by wharf's ci-provider"
 # Every config.yml composed before the move opens "# GENERATED by <the overlay's path to it>":
@@ -371,7 +561,7 @@ def config_key(name):
     return lines
 
 
-def runner_labels(required=True, given=None):
+def runner_labels(required=True, given=None, named=False):
     """The runner Mac's labels, from `wharf/ci-runner-labels` (or `given`, --labels' list), which
     name it and register a runner the capabilities file does not list: self-hosted among them and at least one of the Mac's own, or a refusal naming the file to
     write. required=False, for reading a repo's files (which kind, which labels status asks for):
@@ -383,9 +573,12 @@ def runner_labels(required=True, given=None):
             raise Refusal("no runner labels: write the runner Mac's labels to %s, one per "
                           "line (self-hosted, macOS and one of its own, e.g. its host name)" % path)
         labels = tuple(dict.fromkeys(lines))
-        if "self-hosted" not in {l.lower() for l in labels} or not own_labels(labels):
+        # a Linux runner registers by its capabilities alone (the ci-capabilities rule): with --name to
+        # name it, its labels are self-hosted and Linux, and no label of the host's own
+        if "self-hosted" not in {l.lower() for l in labels} or not (
+                own_labels(labels) or (named and linux_labels(labels))):
             raise Refusal("%s holds %s: it needs self-hosted and at least one label of the Mac's own"
-                          % (path, ", ".join(labels)))
+                          " (a Linux runner: self-hosted and Linux, with --name)" % (path, ", ".join(labels)))
     except Refusal:
         if required:
             raise
@@ -1942,15 +2135,30 @@ class Target:
         self.name = base if instance == 1 else "%s-%d" % (base, instance)
 
 
-def runner_asset(arch):
-    """The pinned build for the runner Mac's `uname -m`: (url, size, sha256). Read at call time,
-    so a suite's swap of the arm64 pin holds."""
+def runner_asset(arch, system="Darwin"):
+    """The pinned build for the runner host's `uname -m` and `uname -s`: (url, size, sha256). Read at
+    call time, so a suite's swap of a pin holds."""
+    if system == "Linux":
+        if arch == "x86_64":
+            return RUNNER_LINUX_X64_URL, RUNNER_LINUX_X64_SIZE, RUNNER_LINUX_X64_SHA256
+        if arch in ("aarch64", "arm64"):
+            return RUNNER_LINUX_ARM64_URL, RUNNER_LINUX_ARM64_SIZE, RUNNER_LINUX_ARM64_SHA256
+        raise Refusal("the Linux host's `uname -m` is %r: no runner build is pinned for it (x86_64, aarch64)"
+                      % arch)
+    if system != "Darwin":
+        raise Refusal("the runner host's `uname -s` is %r: a runner is installed on macOS or Linux only" % system)
     if arch == "arm64":
         return RUNNER_URL, RUNNER_SIZE, RUNNER_SHA256
     if arch == "x86_64":
         return RUNNER_X64_URL, RUNNER_X64_SIZE, RUNNER_X64_SHA256
     raise Refusal("the runner Mac's `uname -m` is %r: no runner build is pinned for it (arm64, x86_64)"
                   % arch)
+
+
+def linux_labels(labels):
+    """Whether a runner's labels make it a Linux one: `Linux` among them (labels ignore case). The probe's
+    `uname -s` must agree before anything is minted or written."""
+    return "linux" in lowered(labels)
 
 
 def runner_dir(s, instance=1):
@@ -1966,10 +2174,17 @@ def flat_runner_dir(s, instance=1):
     return "actions-runners/" + s.replace("/", "-") if instance == 1 else runner_dir(s, instance)
 
 
-# Run by bash on the runner Mac, its arguments in argv and nothing secret among them: the token, when the
-# verb needs one, is the first line of stdin. No `set -x`: it would echo the token's expansion.
+# Run by bash on the runner host, its arguments in argv and nothing secret among them: the token, when the
+# verb needs one, is the first line of stdin. No `set -x`: it would echo the token's expansion. macOS and
+# Linux alike (linux-runner, 2026-11-04): a size by wc, a digest by sha256sum or shasum. The service is the
+# runner's own svc.sh on macOS, a LaunchAgent; on Linux a rootless container (D1-C), its image, entry and
+# quadlet unit in $10-$12 (install only), under the login's systemd user instance: no sudo on either road
 RUNNER_SH = r'''set -euo pipefail
 verb=$1 slug=$2 dir=$HOME/$3 flat=$HOME/$4 url=$5 size=$6 sha=$7 name=$8 label=$9
+containerfile=${10:-} entry=${11:-} unit=${12:-}
+system=$(uname -s)
+ctr=ci-runner-$name
+qdir=${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd
 # a runner installed before 2026-10-19 lives in the flat <owner>-<repo>: kept while its .runner (config.sh's
 # settings, gitHubUrl among them) names this repo, so another repo's flat directory of
 # the same spelling (a-b/c beside a/b-c) is never taken for it
@@ -1982,14 +2197,165 @@ if [ -s "$dir/.runner" ] && ! grep -qiF "github.com/$slug\"" "$dir/.runner"; the
 fi
 dist=$HOME/actions-runners/.dist
 tgz=$dist/${url##*/}
+size_of() { if [ -f "$1" ]; then wc -c < "$1" | tr -d ' '; else echo 0; fi; }
+sha_ok() {   # by what the host has, never its name: a Mac's shasum, and a Linux without perl has GNU's sha256sum
+  if command -v shasum >/dev/null 2>&1; then echo "$sha  $1" | shasum -a 256 -c --status -
+  else echo "$sha  $1" | sha256sum -c --status -; fi
+}
+# what a rootless runner container needs of a Linux host, one `lacks <what>` a line, each the owner's to give
+# with sudo before an install: podman; a user namespace AppArmor allows (Ubuntu's apparmor package ships the
+# profile for /usr/bin/podman that grants it); subordinate uid and gid ranges in it (/etc/subuid and /etc/subgid,
+# with uidmap's newuidmap and newgidmap: podman 4.9 refuses a namespace whose ranges it cannot map, and with one
+# id alone the image's runner user cannot exist); a rootless network helper; linger, so the unit runs with no
+# login; the user instance. Read as the effect (the namespace's maps) where there is one
+idmap() { m=$(podman unshare cat "/proc/self/$1" 2>/dev/null || true); printf '%s\n' "$m" | grep -c . || true; }
+lacks() {
+  [ "$system" = Linux ] || return 0
+  if ! podman --version >/dev/null 2>&1; then echo "lacks podman"
+  else
+    nu=$(idmap uid_map) ng=$(idmap gid_map)
+    if [ "$nu" = 0 ] || [ "$ng" = 0 ]; then
+      if ! command -v newuidmap >/dev/null 2>&1 || ! command -v newgidmap >/dev/null 2>&1; then echo "lacks uidmap"
+      else echo "lacks userns"; fi
+    elif [ "$nu" = 1 ] || [ "$ng" = 1 ]; then echo "lacks subuids"; fi
+  fi
+  command -v slirp4netns >/dev/null 2>&1 || echo "lacks network"
+  [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" = yes ] || echo "lacks linger"
+  systemctl --user show-environment >/dev/null 2>&1 || echo "lacks user-systemd"
+}
+# another runner on this Linux host, any repo's: one runner a Linux host, so one job at a time and a suite
+# never starves the sessions it runs beside. A configured directory, else another runner's unit. No pipe:
+# under pipefail an early-closing reader fails
+other_runner() {
+  [ "$system" = Linux ] || return 0
+  o=$(find "${dist%/.dist}" -mindepth 2 -maxdepth 3 -name .runner ! -path "$dir/.runner" -print -quit 2>/dev/null || true)
+  [ -n "$o" ] || o=$(find "$qdir" -maxdepth 1 -name 'ci-runner-*.container' ! -name "$ctr.container" -print -quit 2>/dev/null || true)
+  printf '%s' "${o%/.runner}"
+}
+# the pinned build, once for every repo's runner, kept only when its size and SHA-256 are the pinned ones
+fetch_tgz() {
+  if [ "$(size_of "$tgz")" != "$size" ]; then
+    echo "downloading ${url##*/}"
+    curl -fsSL --retry 2 -o "$tgz.part" "$url"
+    mv "$tgz.part" "$tgz"
+  fi
+  got=$(size_of "$tgz")
+  if [ "$got" != "$size" ]; then echo "$tgz: $got bytes, not $size; removed" >&2; rm -f "$tgz"; exit 3; fi
+  if ! sha_ok "$tgz"; then
+    echo "$tgz: SHA-256 is not $sha; removed" >&2; rm -f "$tgz"; exit 3
+  fi
+}
+# the registration is the state volume's .runner; the copy in $dir (the slug check's) counts only beside it, so a
+# lost volume reads as not configured, and the install mints a token and registers again (config.sh --replace)
+linux_registered() {
+  [ -f "$dir/.runner" ] || return 1
+  mp=$(podman volume inspect --format '{{.Mountpoint}}' "$ctr-state" 2>/dev/null) || return 1
+  podman unshare test -f "$mp/.runner"
+}
+refuse_lacks() {
+  l=$(lacks)
+  if [ -n "$l" ]; then printf '%s\n' "$l" >&2; echo "a rootless runner container needs them: nothing done" >&2; exit 6; fi
+}
+# remove, on Linux: nothing touched before the refusals (the image a registration needs to leave GitHub, its
+# token); then the unit (a job running is cut, as svc.sh's uninstall cuts one), config.sh remove in a container of
+# the image where there is a registration, and the volume and the image
+linux_remove() {
+  refuse_lacks
+  reg=
+  if linux_registered; then reg=1; fi
+  if [ -n "$reg" ] && ! podman image exists "localhost/$ctr"; then
+    echo "the image localhost/$ctr is gone: --runner install rebuilds it (the registration kept), then remove; nothing touched" >&2; exit 9
+  fi
+  if [ -n "$reg" ]; then
+    IFS= read -r token || true
+    if [ -z "${token:-}" ]; then echo "no remove token on stdin" >&2; exit 4; fi
+  fi
+  systemctl --user stop "$ctr.service" 2>/dev/null || true
+  rm -f "$qdir/$ctr.container"
+  systemctl --user daemon-reload
+  if [ -n "$reg" ]; then
+    printf '%s\n' "$token" | podman run --rm -i -v "$ctr-state:/state:U" "localhost/$ctr" remove
+    unset token
+  else
+    echo "the state volume holds no registration: nothing deregistered from here"
+  fi
+  podman volume rm "$ctr-state" >/dev/null 2>&1 || true
+  podman rmi "localhost/$ctr" >/dev/null 2>&1 || true
+  # the directory is the repo's, the unit and volume the name's: its .runner goes only where it is this runner's
+  # (a registration in this name's volume says nothing of whose .runner the directory holds: another name's may)
+  if grep -qF "\"agentName\": \"$name\"" "$dir/.runner" 2>/dev/null; then rm -f "$dir/.runner"; fi
+  echo "removed; $dir stays (the image's build context)"
+}
+# A Linux runner (D1-C): the image built before anything is registered, so a failed build leaves no runner on
+# GitHub; the registration in the state volume, its .runner copied here (the probe's and the slug check's);
+# then the quadlet unit, started unless active (a unit its exit 3 stopped is reset first).
+# An active unit is never restarted, as a restart would cut a job: the container waiting now keeps the old image
+# and runs the next job, and the rebuilt image and rewritten unit serve the job after it. Dangling images no container
+# uses are pruned, by the image's label as the login's podman may hold others', so an old one in use goes at a later install: one at most.
+# A token on stdin registers whatever the volume holds (config.sh --replace): the caller sends one when GitHub lists
+# no runner of this name, a registration it deleted; a unit still active then is stopped first, so no listener keeps
+# the key the registration replaces (GitHub listing no such runner, it runs no job)
+linux_install() {
+  o=$(other_runner)
+  if [ -n "$o" ] && [ ! -f "$dir/.runner" ]; then
+    echo "$o holds a runner already: one runner a Linux host, one job at a time" >&2; exit 7
+  fi
+  refuse_lacks
+  mkdir -p "$dist" "$dir" "$qdir"
+  cd "$dir"
+  reg=
+  if linux_registered; then reg=1; fi
+  IFS= read -r token || true
+  if [ -n "${token:-}" ]; then reg=
+  elif [ -z "$reg" ]; then echo "no registration token on stdin" >&2; exit 4; fi
+  fetch_tgz
+  rm -rf image
+  mkdir image
+  printf '%s' "$containerfile" > image/Containerfile
+  printf '%s' "$entry" > image/entry.sh
+  cp "$tgz" image/runner.tar.gz
+  podman build -q -t "localhost/$ctr" image
+  rm -f image/runner.tar.gz
+  podman image prune -f --filter label=ci-provider.runner >/dev/null
+  if [ -z "$reg" ]; then
+    # unguarded: is-active reads a unit waiting out RestartSec as inactive, and a stop cancels that restart too
+    systemctl --user stop "$ctr.service" 2>/dev/null || true
+    podman volume create --ignore "$ctr-state" >/dev/null
+    # printf is bash's own: the token reaches the container's stdin and no process's argv
+    printf '%s\n' "$token" | podman run --rm -i -v "$ctr-state:/state:U" "localhost/$ctr" \
+      configure "https://github.com/$slug" "$name" "$label"
+    podman run --rm -v "$ctr-state:/state:ro" --entrypoint cat "localhost/$ctr" /state/.runner > .runner.new
+    mv .runner.new .runner
+  fi
+  unset token || true
+  printf '%s' "$unit" > "$qdir/$ctr.container.new"
+  mv "$qdir/$ctr.container.new" "$qdir/$ctr.container"
+  systemctl --user daemon-reload
+  if ! systemctl --user is-active --quiet "$ctr.service"; then
+    systemctl --user reset-failed "$ctr.service" 2>/dev/null || true
+    systemctl --user start "$ctr.service"
+  fi
+  # systemctl exits 3 for a unit that is not active: a state to report, never a failed read
+  systemctl --user --no-pager status "$ctr.service" || { rc=$?; echo "the unit is not active (systemctl status exit $rc)"; }
+}
 case $verb in
 probe)
   # whether a token is needed: install mints one only when not configured, remove only when it is;
-  # and the Mac's architecture, which picks the build install fetches
-  if [ -f "$dir/.runner" ]; then state=configured; else state=absent; fi
-  echo "$state $(uname -m) $dir"
+  # the host's architecture and system, which pick the build install fetches; on Linux, another runner
+  if [ "$system" = Linux ]; then
+    if linux_registered; then
+      state=configured
+      podman image exists "localhost/$ctr" || noimage=1
+    else state=absent; fi
+  elif [ -f "$dir/.runner" ]; then state=configured; else state=absent; fi
+  echo "$state $(uname -m) $system $dir"
+  o=$(other_runner)
+  if [ -n "$o" ]; then echo "other $o"; fi
+  if [ -n "${noimage:-}" ]; then echo noimage; fi
+  lacks
   ;;
 install)
+  if [ "$system" = Linux ]; then linux_install; exit 0; fi
   mkdir -p "$dist" "$dir"
   cd "$dir"
   if [ -f .runner ]; then
@@ -1997,17 +2363,7 @@ install)
   else
     IFS= read -r token || true
     if [ -z "${token:-}" ]; then echo "no registration token on stdin" >&2; exit 4; fi
-    # one download for every repo's runner, kept only when its size and SHA-256 are the pinned ones
-    if [ "$(stat -f %z "$tgz" 2>/dev/null || echo 0)" != "$size" ]; then
-      echo "downloading ${url##*/}"
-      curl -fsSL --retry 2 -o "$tgz.part" "$url"
-      mv "$tgz.part" "$tgz"
-    fi
-    got=$(stat -f %z "$tgz")
-    if [ "$got" != "$size" ]; then echo "$tgz: $got bytes, not $size; removed" >&2; rm -f "$tgz"; exit 3; fi
-    if ! echo "$sha  $tgz" | shasum -a 256 -c --status -; then
-      echo "$tgz: SHA-256 is not $sha; removed" >&2; rm -f "$tgz"; exit 3
-    fi
+    fetch_tgz
     tar xzf "$tgz"
     # config.sh sources env.sh, which freezes this PATH into .path for every job: ssh's bare one
     # lacks Homebrew, which hosted macOS images have (gtar for upload-pages-artifact, say)
@@ -2025,7 +2381,8 @@ install)
   # printf %q escapes each non-ASCII character (the 2016 laptop's first job, 2026-10-27). Such a
   # LANG, fresh or from an earlier install, becomes an installed UTF-8 one, and the service restarts
   # (an empty or absent LANG is C too). The list read once, into a variable: `locale -a | grep -q`
-  # under pipefail fails when grep stops reading early, which would call an installed LANG missing
+  # under pipefail fails when grep stops reading early, which would call an installed LANG missing.
+  # (A Linux runner's container sets its own LANG, C.UTF-8, in the image: it never reaches this)
   relang=
   have=
   if [ -f .env ]; then have=$(sed -n 's/^LANG=//p' .env | head -1); fi
@@ -2057,9 +2414,20 @@ install)
 status)
   if [ ! -f "$dir/.runner" ]; then echo "not configured: $dir"; exit 0; fi
   cd "$dir"
-  ./svc.sh status
+  if [ "$system" = Linux ]; then
+    if ! linux_registered; then echo "the state volume $ctr-state holds no registration: --runner install registers again"; fi
+    if [ ! -f "$qdir/$ctr.container" ]; then echo "configured, no unit installed: $dir"; exit 0; fi
+    # systemctl exits 3 for a unit that is not active: a state to report, never a failed read
+    systemctl --user --no-pager status "$ctr.service" || { rc=$?; echo "the unit is not active (systemctl status exit $rc)"; }
+  else
+    ./svc.sh status
+  fi
   ;;
 remove)
+  if [ "$system" = Linux ]; then
+    if [ ! -f "$dir/.runner" ] && [ ! -f "$qdir/$ctr.container" ]; then echo "not configured: $dir"; exit 0; fi
+    linux_remove; exit 0
+  fi
   if [ ! -f "$dir/.runner" ]; then echo "not configured: $dir"; exit 0; fi
   IFS= read -r token || true
   if [ -z "${token:-}" ]; then echo "no remove token on stdin" >&2; exit 4; fi
@@ -2159,14 +2527,14 @@ def runner_token(s, kind):
     return tok
 
 
-def ssh_runner(verb, s, t, token=None, capture=False, asset=None):
+def ssh_runner(verb, s, t, token=None, capture=False, asset=None, files=()):
     """RUNNER_SH on the runner Mac (t.host: the key's ssh alias, or --host's): the script and its arguments in
     ssh's argv, the token on stdin. The return code, or with capture (probe) the code and stdout.
     The name, the labels and the build (asset, the arm64 pin unless given) are passed on every verb,
-    as before; only install reads them."""
-    url, size, sha = asset or runner_asset("arm64")
+    as before; only install reads them, and a Linux install its image, entry and unit (files)."""
+    url, size, sha = asset or runner_asset("arm64")   # any pin: probe, status and remove read none
     args = (verb, s, runner_dir(s, t.instance), flat_runner_dir(s, t.instance), url, str(size), sha,
-            t.name, ",".join(own_labels(t.labels)))
+            t.name, ",".join(own_labels(t.labels))) + tuple(files)
     remote = "bash -c %s ci-provider-runner %s" % (shlex.quote(RUNNER_SH),
                                                    " ".join(shlex.quote(a) for a in args))
     r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", t.host, remote],
@@ -2175,15 +2543,48 @@ def ssh_runner(verb, s, t, token=None, capture=False, asset=None):
     return (r.returncode, r.stdout or "") if capture else r.returncode
 
 
+class Probe:
+    """What the runner host reports before a token is minted: done (the repo's runner is configured), arch
+    and system (`uname -m`, `uname -s`), other (another runner's directory or unit on a Linux host, which
+    holds one) and lacks (what a Linux host lacks for a rootless runner container, in LACKS' words)."""
+
+    def __init__(self, done, arch, system, other, lacks=(), noimage=False):
+        self.done, self.arch, self.system, self.other, self.lacks = done, arch, system, other, list(lacks)
+        self.noimage = noimage   # a Linux runner registered whose image is gone: remove needs it
+
+
+# What each `lacks` word asks of the owner, with sudo, before a Linux install (Ubuntu's names)
+LACKS = {
+    "podman": "podman (apt-get install podman)",
+    "uidmap": "the uidmap package (newuidmap and newgidmap: podman cannot map the login's subordinate ranges "
+              "without them)",
+    "userns": "an unprivileged user namespace for podman (Ubuntu's apparmor package ships the profile for "
+              "/usr/bin/podman that allows one; else kernel.apparmor_restrict_unprivileged_userns)",
+    "subuids": "a subordinate uid and gid range for the login (its lines in /etc/subuid and /etc/subgid)",
+    "network": "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)",
+    "linger": "linger for the login (loginctl enable-linger <login>), so its unit runs with no session",
+    "user-systemd": "the login's systemd user instance (systemctl --user)",
+}
+
+
 def configured(s, t):
-    """Whether the runner Mac reports the repo's runner configured, and its `uname -m`: a token is
-    minted only for a step that will use it (an hour's life, and one less in flight)."""
+    """The runner host's Probe: a token is minted only for a step that will use it (an hour's life, and one
+    less in flight), and the build and the service follow the host's system."""
     rc, out = ssh_runner("probe", s, t, capture=True)
-    words = out.strip().split(" ", 2) if rc == 0 else []
-    if len(words) < 2 or words[0] not in ("configured", "absent"):
+    lines = out.strip().splitlines() if rc == 0 else []
+    words = lines[0].split(" ", 3) if lines else []
+    if len(words) < 3 or words[0] not in ("configured", "absent"):
         raise Refusal("ssh %s exited %d (%s): could not read whether %s's runner is configured"
                       % (t.host, rc, out.strip()[:200] or "no output", s))
-    return words[0] == "configured", words[1]
+    other = next((l[len("other "):] for l in lines[1:] if l.startswith("other ")), None)
+    lacks = [l[len("lacks "):] for l in lines[1:] if l.startswith("lacks ")]
+    return Probe(words[0] == "configured", words[1], words[2], other, lacks, "noimage" in lines[1:])
+
+
+def refuse_lacks(probe, host):
+    if probe.system == "Linux" and probe.lacks:
+        raise Refusal("%s lacks what a rootless runner container needs, the owner's to give with sudo first: %s; "
+                      "nothing minted" % (host, "; ".join(LACKS.get(w, w) for w in probe.lacks)))
 
 
 def served(s, value, name):
@@ -2269,27 +2670,55 @@ def route_variable(s, var, t, dry):
              shlex.quote(variable_value(labels))))
 
 
+LINUX_ROUTE = ("  no runs-on variable routed: a Linux runner takes %s's Linux share, whose suites check-linux.yml "
+               "sends where CI_LINUX_RUNS_ON says; the pick sets it with CI_LINUX_TARGET and CI_LINUX_ELSEWHERE "
+               "once a self-hosted Linux lane in lighthouse/ci-lanes.json names the repo (`--pick`)")
+
+
 def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
     s = slug(repo)
     # the keys before anything else, GitHub and ssh included: absent, a refusal naming the file.
     # Read once here and passed down (review 2026-10-21, 12); --host and --labels stand in for them
     given_host = host
-    t = Target(runner_host(host), runner_labels(given=labels), name, instance)
+    t = Target(runner_host(host), runner_labels(given=labels, named=name is not None), name, instance)
+    # a Linux runner (its labels name Linux; the probe's `uname -s` must agree) takes the Linux share's
+    # suites, which check-linux.yml routes by CI_LINUX_RUNS_ON and the pick sets: it registers by its
+    # capabilities alone, one a host, and check.yml's own variable is never routed to it (linux-runner)
+    linux = linux_labels(t.labels)
+    if linux and instance > 1:
+        raise Refusal("one runner a Linux host: a further instance would run two jobs at once beside the "
+                      "host's sessions")
+    if linux and not LINUX_NAME.match(t.name):
+        raise Refusal("%r names a Linux runner's image, unit and volume: lower-case letters and digits, a `.`, "
+                      "`_` or `-` only between them, at most 53" % t.name)
     wf = p(repo, ".github", "workflows", "check.yml")
     text = read(wf) if os.path.isfile(wf) else None
     # only the variable form this tool writes: a variable the file reads any other way is the
     # repo's own, never set here (review 2026-10-21, 3)
     var = runs_on_var(text)
     capped, kept, stays, key_labels = False, [], [], t.labels
-    table = load_caps() if verb == "install" and labels is None else None
+    table = load_caps() if verb == "install" and (labels is None or linux) else None
     listed = table is not None and t.name in table
+    if linux and verb == "install" and not listed:
+        raise Refusal("a Linux runner registers by its capabilities, never a label of the host's own: list %s "
+                      "in %s (its capabilities, e.g. the one CI_LINUX_RUNS_ON asks for)"
+                      % (t.name, common.CONFIG / "wharf" / CAPS_KEY))
     # every list a job routes on, read as caps reads them: a fresh registration meets no other judge.
     # Fetched only where a write rests on it: elsewhere they word the warnings below
     texts = workflows(repo, remote=listed) if verb == "install" else []
     lists = literal_runs_on(texts)
     asked = [l for _, _, l, _ in lists if l]
     unread = [(f, v, x) for f, v, l, x in lists if l is None]
-    if listed:
+    if listed and linux:
+        # its automatic labels (self-hosted, Linux) and its capabilities: no label of its own to keep, and
+        # no runs-on variable it moves
+        if not table[t.name]:
+            raise Refusal("%s lists %s with no capabilities: a runner that takes no job; list one"
+                          % (CAPS_KEY, t.name))
+        t.route = capped_labels(t.name, t.labels, table)
+        t.labels = t.route
+        capped = True
+    elif listed:
         # registered with what it can do (the capabilities' section): the labels key's automatic
         # labels and the table's capabilities. The Mac's own label only names it, unless a runs-on
         # still asks for it (`[self-hosted, macOS, <the Mac's label>]`, as --to self-hosted wrote before
@@ -2339,8 +2768,9 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
         none_set = None if var else no_variable(repo, text, key_labels)
         for f, v, _ in unread:
             print("  ⚠ %s's runs-on (%s) is no label list or variable this tool reads: not judged" % (f, v))
-        uncarried = list(dict.fromkeys(l for one in asked if not hosted_name(one) for l in own_labels(one)
-                                       if l.lower() not in lowered(labels)))
+        # a Linux runner carries none of check.yml's runs-on: nothing it would leave queued
+        uncarried = [] if linux else list(dict.fromkeys(
+            l for one in asked if not hosted_name(one) for l in own_labels(one) if l.lower() not in lowered(labels)))
         if uncarried:
             # the literal form's capabilities: registered without them, a job may queue for good
             print("  ⚠ a runs-on asks for %s, which runner %s would not carry: unless another runner "
@@ -2348,14 +2778,33 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
                   % (", ".join(uncarried), name, "it" if len(uncarried) == 1 else "them", name,
                      common.CONFIG / "wharf" / CAPS_KEY))
         if dry:
+            system, archs = ("Linux", ("x86_64", "aarch64")) if linux else ("Darwin", ("arm64", "x86_64"))
             builds = "; ".join("%s %s (%d bytes, SHA-256 %s)" % ((arch,) + (u, z, h[:12]))
-                               for arch in ("arm64", "x86_64") for u, z, h in [runner_asset(arch)])
-            print("would: ask the runner Mac whether it is configured and its `uname -m`; if not "
-                  "configured, take a registration token (gh api -X POST repos/%s/actions/runners/"
-                  "registration-token), and over ssh into %s: fetch that architecture's build once "
-                  "(%s), unpack, config.sh --name %s --labels %s; svc.sh install and start; then wait "
-                  "for it online on GitHub" % (s, where, builds, name, ",".join(own_labels(labels))))
-            if var:
+                               for arch in archs for u, z, h in [runner_asset(arch, system)])
+            if linux:
+                ctr = runner_container(name)
+                print("would: ask the runner host whether it is configured, its `uname -m` and `uname -s` (Linux, "
+                      "or refused) and whether it lacks what a rootless container needs (podman, a user namespace "
+                      "with subordinate uids, a network helper, linger, the user instance: refused, naming each); if "
+                      "not registered (or registered where GitHub's list names no such runner), "
+                      "take a registration token (gh api -X POST repos/%s/actions/runners/registration-token), "
+                      "and over ssh into %s: fetch that architecture's build once (%s), build the image "
+                      "localhost/%s from it over %s (no sudo in it), config.sh --name %s --labels %s in a "
+                      "container of it, the token on its stdin, into the volume %s-state; then the quadlet "
+                      "unit %s.service, a rootless container a job (the listener's --once), no host mount, socket or "
+                      "credential, in the login's app.slice at CPUWeight=20 beside the sessions' 100, Nice=10; "
+                      "start; one runner on the host; then wait for it online on GitHub"
+                      % (s, where, builds, ctr, RUNNER_IMAGE_BASE, name, ",".join(own_labels(labels)), ctr, ctr))
+            else:
+                print("would: ask the runner host whether it is configured, its `uname -m` and `uname -s` (%s, "
+                      "or refused); if not configured, take a registration token (gh api -X POST repos/%s/"
+                      "actions/runners/registration-token), and over ssh into %s: fetch that architecture's "
+                      "build once (%s), unpack, config.sh --name %s --labels %s; svc.sh install and start; "
+                      "then wait for it online on GitHub"
+                      % (system, s, where, builds, name, ",".join(own_labels(labels))))
+            if linux:
+                print(LINUX_ROUTE % s)
+            elif var:
                 print("would then route the repository variable %s that check.yml's runs-on reads:"
                       % var)
                 route_variable(s, var, t, dry=True)
@@ -2363,10 +2812,36 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
                 print(none_set)
             return
         print("%s: installing its runner %s in %s" % (s, name, where))
-        done, arch = configured(s, t)
-        # the build only for a fresh install: a configured runner fetches nothing
-        asset = None if done else runner_asset(arch)
-        rc = ssh_runner("install", s, t, None if done else runner_token(s, "registration"), asset=asset)
+        probe = configured(s, t)
+        done, arch, system, other = probe.done, probe.arch, probe.system, probe.other
+        if (system == "Linux") != linux:
+            # labels that say another system than the host's: registered, every job would queue on them
+            raise Refusal("%s is %s, and the runner's labels %s: a Linux host's runner is labelled "
+                          "self-hosted,Linux (with --name), a Mac's macOS; nothing done"
+                          % (host, system, "name Linux" if linux else "do not name Linux"))
+        if other and not done:
+            raise Refusal("%s holds a runner already (%s): one runner a Linux host, so a suite never starves "
+                          "its sessions; nothing minted" % (host, other))
+        refuse_lacks(probe, host)
+        # the build only for a fresh install: a configured runner fetches nothing. A Linux one rebuilds its
+        # image on every install (the build cached, the tarball kept), so a reinstall takes a changed image
+        asset = runner_asset(arch, system) if linux or not done else None
+        files = linux_files(s, name) if linux else ()
+        mint = not done
+        if linux and done:
+            # the volume's registration is only local state: a runner GitHub deleted (offline too long) reads
+            # configured and stops its unit at exit 1 for good. GitHub's list decides; unread, the volume does
+            # read here, not through runners_of: only a list GitHub says is whole (total_count) can say "none"
+            ok, page = gh_read("repos/%s/actions/runners" % s)
+            listed_runners = page.get("runners") or [] if ok and isinstance(page, dict) else None
+            whole = listed_runners is not None and isinstance(page.get("total_count"), int)
+            if not whole or page["total_count"] > len(listed_runners):
+                listed_runners = None
+            if listed_runners is not None and not any(r.get("name") == name for r in listed_runners):
+                print("  GitHub lists no runner %s: registering it again (config.sh --replace)" % name)
+                mint = True
+        rc = ssh_runner("install", s, t, runner_token(s, "registration") if mint else None, asset=asset,
+                        files=files)
         if rc:
             raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
         if done and capped:
@@ -2376,7 +2851,9 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
             caps(repo, False, only=name, keep=kept + stays, texts=texts)
         wait_online(s, t)
         # only now: set before the runner is online, every job would queue on it
-        if var:
+        if linux:
+            print(LINUX_ROUTE % s)
+        elif var:
             route_variable(s, var, t, dry=False)
         elif none_set:
             print(none_set)
@@ -2387,22 +2864,54 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
                   "--runner caps` drops it once no runs-on asks for it" % (name, ", ".join(stays), repo))
         return
     if dry:
-        print("would: if the runner Mac reports it configured, take a remove token, and over ssh in "
-              "%s: svc.sh uninstall, config.sh remove" % where)
+        print("would: if the runner host reports it configured, take a remove token, and over ssh in "
+              "%s: %s" % (where, "stop and remove the unit %s.service, config.sh remove in a container of its "
+                          "image, then its volume and image" % runner_container(name) if linux else
+                          "svc.sh uninstall, config.sh remove"))
         return
     print("%s: removing its runner %s in %s" % (s, name, where))
-    rc = ssh_runner("remove", s, t, runner_token(s, "remove") if configured(s, t)[0] else None)
+    probe = configured(s, t)
+    if linux and probe.system != "Linux":
+        # Linux labels on another system: the runner there is not the one this call names (install refuses alike)
+        raise Refusal("%s is %s, and the runner's labels name Linux: nothing removed" % (host, probe.system))
+    linux = probe.system == "Linux"   # Mac labels on a Linux host (the keys'): the host says what it is
+    if probe.done:
+        refuse_lacks(probe, host)
+    if linux and probe.other and not probe.done:
+        # the runner directory is the repo's, the unit the name's: this name is not the runner the host holds
+        raise Refusal("%s holds another runner (%s), not %s: nothing removed" % (host, probe.other, name))
+    if probe.done and probe.noimage:
+        raise Refusal("the image localhost/%s is gone: --runner install rebuilds it (the registration kept), then "
+                      "remove; nothing minted" % runner_container(name))
+    rc = ssh_runner("remove", s, t, runner_token(s, "remove") if probe.done else None)
     if rc:
         raise Refusal("ssh %s exited %d: the output above says where it stopped" % (host, rc))
-    runners, _ = runners_of(s)
+    runners, list_err = runners_of(s)
     left = [r for r in runners or [] if r.get("name") == name]
-    if left:
+    if runners is None:
+        print("  GitHub's runner list unread (%s): whether %s is gone is not known here" % (list_err, name))
+    elif left:
         # a runner whose directory was lost stays registered: the DELETE is printed, not run
         print("  GitHub still lists %s (%s): gh api -X DELETE repos/%s/actions/runners/%s"
               % (name, left[0].get("status"), s, left[0].get("id")))
     else:
         print("  GitHub: no runner %s left" % name)
-    if var:
+    if linux:
+        # said from what was done and what GitHub lists now: the pick judges the lane by the same list
+        others = [r.get("name") for r in runners or [] if r.get("name") != name and "linux" in lowered(labels_of(r))]
+        if runners is None and probe.done:
+            print("  the Linux share: deregistered from here; GitHub's list unread, so `ci-provider %s --pick` "
+                  "judges the lane" % repo)
+        elif not probe.done or left:
+            print("  the Linux share: nothing deregistered from here, so it stays where the pick put it "
+                  "(`ci-provider %s --pick` judges the lane by GitHub's list)" % repo)
+        elif others:
+            print("  the Linux share: deregistered; %s still carr%s Linux labels, which the next pick judges the "
+                  "lane by (`ci-provider %s --pick`)" % (", ".join(others), "ies" if len(others) == 1 else "y", repo))
+        else:
+            print("  the Linux share: deregistered, no runner carries its lane's labels, so the next pick takes the "
+                  "share off that lane (`ci-provider %s --pick`)" % repo)
+    elif var:
         # what the variable holds, read, never assumed (review 2026-10-21, 9). Left set, jobs queue
         # for a runner that is gone; deleting it sends the check to hosted ubuntu, billed: the
         # owner's call, so printed, not run
@@ -2851,9 +3360,11 @@ def load_lanes():
                                                      and v == ACTIONS_TARGET for k, v in projects.items()):
             raise Refusal("%s: lane %s's `projects` maps \"<owner>/<repo>\" to %r on an Actions lane"
                           % (path, name, ACTIONS_TARGET))
-        if projects and lane["self_hosted"]:
-            raise Refusal("%s: lane %s is self-hosted: the Linux share runs on GitHub's hosted runners only"
-                          % (path, name))
+        if projects and lane["self_hosted"] and not (
+                "linux" in lane["runs"] and "linux" in lowered(lane["runs_on"]) and "macos" not in lowered(lane["runs_on"])):
+            # a self-hosted lane runs the share only on a Linux runner of the repo's (linux-runner, 2026-11-04)
+            raise Refusal("%s: lane %s is self-hosted: the Linux share runs on GitHub's hosted runners, or on a "
+                          "self-hosted Linux lane (its `runs` and `runs_on` naming linux, never macOS)" % (path, name))
         lane["projects"] = projects
         lanes.append(lane)
     return lanes
@@ -3062,7 +3573,8 @@ def last_flip(s, variable=None):
                     continue
                 if not (isinstance(r, dict) and r.get("repo") == s and isinstance(r.get("at"), (int, float))):
                     continue
-                if (r.get("variable") == variable) if variable else (r.get("variable") not in (SHARE_VAR, PROJECT_VAR, OLD_PROJECT_VAR)):
+                if (r.get("variable") == variable) if variable else (
+                        r.get("variable") not in (SHARE_VAR, PROJECT_VAR, OLD_PROJECT_VAR, LINUX_RUNS_VAR)):
                     at = max(at, r["at"])
     except OSError:
         return 0
@@ -3139,6 +3651,21 @@ PROJECT_VAR = "CI_LINUX_TARGET"   # a CircleCI project slug, or ACTIONS_TARGET (
 OLD_PROJECT_VAR = "CI_CIRCLECI_PROJECT"   # its name until linux-on-actions: an old log row of it is no runs-on flip
 ACTIONS_TARGET = "actions"
 PROJECT_FILE = (".circleci", "project-slug")
+# The share on a self-hosted Linux lane (linux-runner, 2026-11-04; the owner: "can the node help with linux checks
+# as well?"): an Actions lane whose `runs_on` is a label list naming linux, its `projects` naming the repo with
+# `actions`. Its suites run where check-linux.yml's `suite` job reads CI_LINUX_RUNS_ON (unset: ubuntu-latest), so
+# choosing it moves three variables, CI_LINUX_TARGET, CI_LINUX_RUNS_ON and CI_LINUX_ELSEWHERE, in that order, and a
+# hosted Actions lane moves CI_LINUX_RUNS_ON back to its image. It has no budget: a lane whose runner is online is
+# taken before any hosted one (it bills nothing), and one whose runner is gone is out, the share off or on another
+# lane, as a CircleCI lane without budget is. Gone: no runner carries its labels, or the one that does has been
+# offline more than a sweep (SHARE_GRACE: three of the desk's 15-minute readings, as a one-job runner is offline in
+# the seconds between its containers and two readings can both land there), counted from the pick that first saw it offline
+# in the log dir's ci-share-runners.json, which only --apply (the desk's job) writes. Within the grace the share
+# stays where it stands, and never comes on at a lane whose runner is offline. The trust refusals hold as for a
+# runs-on flip: a public repo, or a private one that runs fork PRs' workflows, is never given one.
+LINUX_RUNS_VAR = "CI_LINUX_RUNS_ON"
+SHARE_GRACE = 20 * 60   # s: past a sweep, the desk's pick interval; offline longer, the share lane's runner is gone
+RUNNER_LEFT = float("inf")   # a self-hosted share lane's "month left": it bills nothing, so it beats every budget
 
 
 def requires_share(s, branch):
@@ -3180,14 +3707,144 @@ def trigger_reads_project(repo):
         return False
 
 
-def share_lane(rows, s, project, reads, budgets, usage, usage_why, now):
+def trigger_reads_runs_on(repo):
+    """Whether this checkout's check-linux.yml sends its suites where the runs-on variable says: if not, a
+    self-hosted lane would run them on GitHub's hosted runners, billed."""
+    try:
+        return "vars." + LINUX_RUNS_VAR in read_loose(p(repo, ".github", "workflows", "check-linux.yml"))
+    except OSError:
+        return False
+
+
+BAD_RUNS = object()   # a CI_LINUX_RUNS_ON no `suite` job can read: it matches no lane, so the pick rewrites it
+
+
+def runs_value(raw):
+    """CI_LINUX_RUNS_ON as the `suite` job reads it: unset (or empty, which `||` passes over) is ubuntu-latest,
+    a JSON string one image, a JSON list of strings labels (a tuple here); anything else, a bare word among them,
+    fails fromJSON or runs-on, so it is BAD_RUNS and stands on no lane."""
+    if not raw:
+        return "ubuntu-latest"
+    try:
+        v = json.loads(raw)
+    except ValueError:
+        return BAD_RUNS
+    if isinstance(v, str) and v:
+        return v
+    if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+        return tuple(v)
+    return BAD_RUNS
+
+
+def same_runs(a, b):
+    if a is BAD_RUNS or b is BAD_RUNS:
+        return False
+    if isinstance(a, str) or isinstance(b, str):
+        return a == b
+    return lowered(a) == lowered(b)
+
+
+def share_runners_file():
+    return common.LOG_DIR / "ci-share-runners.json"
+
+
+class ShareCtx:
+    """What the share's judgement reads once per pick: the lanes' budgets, the repo's trust and runners, and
+    when each self-hosted share lane's runner was first seen offline (SHARE_GRACE)."""
+
+    def __init__(self, repo, s, budgets, usage, usage_why, now):
+        self.repo, self.s, self.budgets, self.usage, self.usage_why, self.now = repo, s, budgets, usage, usage_why, now
+        self.trust = self.runners = None
+        self.reads_runs = trigger_reads_runs_on(repo)
+        self.on = False
+        self.at = lambda lane: False
+        self.changed = False
+        try:
+            d = json.loads(share_runners_file().read_text(encoding="utf-8"))
+            self.offline = {k: v for k, v in (d.get(s) or {}).items() if isinstance(v, (int, float))}
+        except (OSError, ValueError, AttributeError):
+            self.offline = {}
+
+    def left(self, lane):
+        """(left, why) for one share lane: an account's budget, or for a self-hosted lane its runner."""
+        if not lane["self_hosted"]:
+            return budget_left(lane["account"], self.budgets, self.usage, self.usage_why)
+        if self.trust is None:
+            try:
+                refuse_forks(self.s, "the Linux share on a self-hosted lane")
+                self.trust = ""
+            except Refusal as e:
+                self.trust = str(e)
+        if self.trust:
+            return None, self.trust
+        if not self.reads_runs:
+            return None, "check-linux.yml reads no %s, so its suites would run on GitHub's hosted runners" % LINUX_RUNS_VAR
+        if self.runners is None:
+            self.runners = runners_of(self.s)
+        runners, err = self.runners
+        if runners is None:
+            return None, "the repo's runners are unread (%s)" % err
+        labels, name = lane["runs_on"], lane["name"]
+        if any(runs_check(r, labels) for r in runners):
+            self.seen(name, None)
+            return RUNNER_LEFT, "a runner labelled %s is online" % ", ".join(labels)
+        if not any(lowered(labels) <= lowered(labels_of(r)) for r in runners):
+            self.seen(name, None)
+            return None, "no runner labelled %s" % ", ".join(labels)
+        since = self.offline.get(name)
+        if since is None:
+            since = self.now
+            self.seen(name, since)
+        mins = int(max(0, self.now - since) // 60)
+        if self.now - since >= SHARE_GRACE:
+            return None, "its runner labelled %s has been offline %d min: gone" % (", ".join(labels), mins)
+        if self.on and self.at(lane):
+            return RUNNER_LEFT, "its runner is offline %d min, held a sweep before the share leaves it" % mins
+        return None, "its runner labelled %s is offline: never a lane to come on at" % ", ".join(labels)
+
+    def seen(self, name, since):
+        if self.offline.get(name) != since:
+            self.changed = True
+            if since is None:
+                self.offline.pop(name, None)
+            else:
+                self.offline[name] = since
+
+    def save(self, apply, dry):
+        """The first-offline times, written by the desk's job alone: --apply, not --dry-run, and only where
+        apply_guard passes (never a session's or another host's --apply, whose variable writes it refuses)."""
+        if not (apply and not dry and self.changed):
+            return
+        try:
+            apply_guard(dry)
+        except Refusal:
+            return
+        path = share_runners_file()
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+            d = d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            d = {}
+        d[self.s] = self.offline
+        # never a raise: it runs in pick_share's `finally`, and the runs-on half of the pick still follows
+        try:
+            os.makedirs(path.parent, exist_ok=True)
+            tmp = path.with_name(path.name + ".%d" % os.getpid())
+            tmp.write_text(json.dumps(d, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as e:
+            print("  ⚠ share runners not recorded at %s: %s" % (path, getattr(e, "strerror", None) or e))
+
+
+def share_lane(rows, s, project, reads, ctx, now):
     """(lane, left, why, stands) for the share: the lane to run on with what it has left, or, with none able
     to, (the lane that explains it, None, why, False). stands: the lane the share is on can still run it."""
+    budgets = ctx.budgets
     fits = []
     last = (None, "no lane")
     for lane in rows:
         to = lane["projects"].get(s)
-        left, why = budget_left(lane["account"], budgets, usage, usage_why)
+        left, why = ctx.left(lane)
         if left is not None and not to and len(rows) > 1:
             left, why = None, "names no project for %s" % s
         elif left is not None and to and to != project and not reads:
@@ -3196,17 +3853,19 @@ def share_lane(rows, s, project, reads, budgets, usage, usage_why, now):
             print("  share lane %s: %s, %s" % (lane["name"], "eligible" if left is not None else "not chosen", why))
         if left is not None:
             fits.append((lane, left, why))
-        if last[0] is None or (to and to == project):
+        if last[0] is None or ctx.at(lane):
             last = (lane, why)   # the lane the share stands on says why best, else the first
     if not fits:
         return last[0], None, last[1], False
-    here = next((f for f in fits if f[0]["projects"].get(s) == project), None)
+    here = next((f for f in fits if ctx.at(f[0])), None)
     def frac(f):   # minutes and credits are no common unit: the share of the month's cap left
+        if f[1] == RUNNER_LEFT:
+            return RUNNER_LEFT   # a self-hosted lane bills nothing
         cap = (budgets.get(f[0]["account"]) or {}).get("cap")
         return f[1] / cap if cap else 0.0
     best = max(fits, key=lambda f: (frac(f), f is here))   # a tie stays where it is
     if here and best is not here:
-        moved = last_flip(s, PROJECT_VAR)
+        moved = max(last_flip(s, PROJECT_VAR), last_flip(s, LINUX_RUNS_VAR))
         if moved and now - moved < SHARE_HOLD:
             print("  share %s: stays on lane %s: lane %s has more left, but the project moved %d min ago "
                   "(a move waits %d min)" % (PROJECT_VAR, here[0]["name"], best[0]["name"],
@@ -3215,28 +3874,56 @@ def share_lane(rows, s, project, reads, budgets, usage, usage_why, now):
     return best + (here is not None or not best[0]["projects"].get(s),)   # a lane with no project moves nothing
 
 
-def share_move(s, lane, project, why, apply, dry, now):
-    """The trigger's project moved to LANE's, said and (with --apply) written. True when a write failed."""
+def share_move(s, lane, project, why, apply, dry, now, runs=None, reads_runs=False):
+    """The trigger's project moved to LANE's, then, for an Actions lane, the suites' runs-on (runs: the
+    variable as read, None when unset; reads_runs: check-linux.yml reads it), each said and (with --apply)
+    written. True when a write failed: the runs-on is never moved after a refused project."""
     to = lane["projects"].get(s)
-    if not to or to == project:
+    if to and to != project:
+        print("  share %s: %s → %s (lane %s: %s)" % (PROJECT_VAR, project or "unset", to, lane["name"], why))
+        if not apply:
+            print("  --apply sets %s to it" % PROJECT_VAR)
+        else:
+            apply_guard(dry)   # a session or the wrong host: a refusal, as before
+            try:
+                undo = set_variable(s, PROJECT_VAR, to, dry, raw=True)
+            except Refusal as e:
+                print("  ⚠ share %s not written: %s" % (PROJECT_VAR, e))
+                return True
+            if undo:
+                pick_log({"at": int(now), "repo": s, "variable": PROJECT_VAR, "from": project, "to": to,
+                          "lane": lane["name"], "why": why, "undo": undo})
+    if not (to and lane["provider"] == "actions" and reads_runs):
         return False
-    print("  share %s: %s → %s (lane %s: %s)" % (PROJECT_VAR, project or "unset", to, lane["name"], why))
+    want = lane["runs_on"]
+    if same_runs(runs_value(runs), want):
+        return False
+    print("  share %s: %s → %s (lane %s: %s)" % (LINUX_RUNS_VAR, runs or "unset", variable_value(want), lane["name"], why))
     if not apply:
-        print("  --apply sets %s to it" % PROJECT_VAR)
+        print("  --apply sets %s to it" % LINUX_RUNS_VAR)
         return False
-    apply_guard(dry)   # a session or the wrong host: a refusal, as before
+    apply_guard(dry)
     try:
-        undo = set_variable(s, PROJECT_VAR, to, dry, raw=True)
+        undo = set_variable(s, LINUX_RUNS_VAR, want, dry)
     except Refusal as e:
-        print("  ⚠ share %s not written: %s" % (PROJECT_VAR, e))
+        print("  ⚠ share %s not written: %s" % (LINUX_RUNS_VAR, e))
         return True
     if undo:
-        pick_log({"at": int(now), "repo": s, "variable": PROJECT_VAR, "from": project, "to": to,
+        pick_log({"at": int(now), "repo": s, "variable": LINUX_RUNS_VAR, "from": runs, "to": variable_value(want),
                   "lane": lane["name"], "why": why, "undo": undo})
     return False
 
 
 def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now):
+    """pick_share_on, then the share lanes' runner sightings kept for the next pick (ShareCtx.save)."""
+    ctx = ShareCtx(repo, s, budgets, usage, usage_why, now)
+    try:
+        return pick_share_on(repo, s, text, lanes, ctx, apply, dry, now)
+    finally:
+        ctx.save(apply, dry)
+
+
+def pick_share_on(repo, s, text, lanes, ctx, apply, dry, now):
     """The share's flip and its project, said and (with --apply) written: off when no lane is under
     budget, when it may stand on a lane that is out and cannot be moved or told, or when main no longer requires
     check-linux; on when a lane is, main requires check-linux and the
@@ -3262,7 +3949,7 @@ def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
     if gha:
         for l in rows:
             if l not in gha:
-                left, why = budget_left(l["account"], budgets, usage, usage_why)
+                left, why = ctx.left(l)
                 print("  share lane %s: not chosen, an Actions lane runs the share for %s (%s)" % (
                     l["name"], s, why))
         rows = gha
@@ -3278,7 +3965,20 @@ def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
     perr = perr if reads else None   # a trigger that ignores the variable goes to the file's project, known
     project = (held if reads else None) or file_project(repo)   # where the trigger goes, as it reads it
     on = (have or "").strip().lower() == "true"
-    lane, left, why, stands = share_lane(rows, s, project, reads, budgets, usage, usage_why, now)
+    # where an Actions lane's suites run: read only where check-linux.yml routes them by it, and unread is as an
+    # unread project, nothing moves
+    runs = None
+    if ctx.reads_runs and any(l["provider"] == "actions" for l in rows):
+        runs, rerr = variable(s, LINUX_RUNS_VAR)
+        perr = perr or (rerr and "%s: %s" % (LINUX_RUNS_VAR, rerr))
+
+    def at(lane):   # the share stands on LANE: its project, and for an Actions lane its runs-on too
+        to = lane["projects"].get(s)
+        if not to or to != project:
+            return False
+        return not (lane["provider"] == "actions" and ctx.reads_runs) or same_runs(runs_value(runs), lane["runs_on"])
+    ctx.on, ctx.at = on, at
+    lane, left, why, stands = share_lane(rows, s, project, reads, ctx, now)
     # a variable left behind by a lanes file that named projects: the trigger goes where no lane is judged
     refused = bool(not named and held and reads and held != file_project(repo))
     if refused:
@@ -3293,19 +3993,18 @@ def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
             # where the share stands is unknown: nothing moves or comes on, and it goes off, which needs no
             # project, when it may stand on a lane that is out
             print("  share %s: unread (%s); nothing moves" % (PROJECT_VAR, perr))
-            out = next((l for l in rows if l["projects"].get(s)
-                        and budget_left(l["account"], budgets, usage, usage_why)[0] is None), None)
+            out = next((l for l in rows if l["projects"].get(s) and ctx.left(l)[0] is None), None)
             if not on or out is None:
                 return False
             why, lane = "%s is unread, and a lane it may stand on is out" % PROJECT_VAR, out
         elif on:
-            if lane["projects"].get(s) in (None, project):
+            if not lane["projects"].get(s) or at(lane):
                 print("  share %s: %s, stays (lane %s: %s%s)" % (
                     SHARE_VAR, have, lane["name"], why, "; %s" % rwhy if rwhy else ""))
-            refused = share_move(s, lane, project, why, apply, dry, now)
+            refused = share_move(s, lane, project, why, apply, dry, now, runs, ctx.reads_runs)
             if not refused or stands:
                 return refused
-            out = next((l for l in rows if project and l["projects"].get(s) == project), None)
+            out = next((l for l in rows if project and at(l)), None)
             why = "%s, and the move to lane %s was refused" % ("it is out" if out else "no lane names its project", lane["name"])
             lane = out or lane
         elif not req:
@@ -3325,12 +4024,12 @@ def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
         return refused
     want = "false" if on else "true"
     print("  share %s: %s → %s (lane %s: %s)" % (SHARE_VAR, have or "unset", want, lane["name"], why))
-    if want == "true" and share_move(s, lane, project, why, apply, dry, now):
+    if want == "true" and share_move(s, lane, project, why, apply, dry, now, runs, ctx.reads_runs):
         if not stands:
             return True   # never on at an org the pick judged out
         refused = True    # where it stands can run it: on there, the better lane refused
         # the log names the lane the share comes on at, not the one the refused move aimed for
-        held_at = next((l for l in rows if project and l["projects"].get(s) == project), None)
+        held_at = next((l for l in rows if project and at(l)), None)
         if held_at is not None:
             why = "the move to lane %s was refused; on where it stands" % lane["name"]
             lane = held_at
@@ -3403,6 +4102,13 @@ def pick(repo, apply, dry, usage_path=None):
         n = lane["name"]
         if lane["provider"] != "actions":
             print("  lane %s: CircleCI, advisory: a variable moves no check there" % n)
+            continue
+        if lane["self_hosted"] and lane["projects"]:
+            # a self-hosted share lane is check-linux.yml's suites' alone: one job at a time, never check.yml's
+            print("  lane %s: a share lane, the Linux share's suites only" % n)
+            if n == cur_lane:
+                # check.yml sits on it (a variable set by hand): a failing lane, carded when nothing else takes it
+                failed[n] = "a share lane, the Linux share's suites only: check.yml never runs there"
             continue
         lacks = lane_lacks(lane, need)
         if lacks:

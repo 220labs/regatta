@@ -101,9 +101,9 @@ chmod +x "$T/bin/gh"
 # A fake ssh: records its argv and stdin in $T/ssh, then runs the remote command here, as the runner Mac
 # would, with HOME=$T/ssh/home and $T/ssh/rbin (fake launchctl, curl, stat) first on PATH.
 mkdir -p "$T/ssh/home" "$T/ssh/rbin"
-# The runner script is macOS's and reads a size with BSD `stat -f %z`; GNU stat's -f is the file
-# system's status, so on CI's ubuntu every size read 0 and the download cases took another path.
-# This stat answers only that form, by wc, on both systems (wharf's check runs in CI since B5).
+# The runner script read a size with BSD `stat -f %z` until it learnt Linux (linux-runner): GNU stat's -f is
+# the file system's status, so on CI's ubuntu every size read 0. It reads `wc -c` now; this stat stays, so a
+# script that went back to the BSD form would still read right here, and fails on any other form.
 cat > "$T/ssh/rbin/stat" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = -f ] && [ "$2" = %z ] && [ -f "$3" ] && { wc -c < "$3" | tr -d ' '; exit 0; }
@@ -113,16 +113,18 @@ cat > "$T/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 D="$FAKE_SSH"
 printf '%s\n' "$@" >> "$D/argv"
-tee -a "$D/stdin" | HOME="$D/home" PATH="$D/rbin:$PATH" bash -c "${@: -1}"
+tee -a "$D/stdin" | env -u XDG_CONFIG_HOME HOME="$D/home" PATH="$D/rbin:$PATH" bash -c "${@: -1}"
 EOF
 cat > "$T/ssh/rbin/launchctl" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in list) cat "$FAKE_SSH/loaded" 2>/dev/null; echo "-	0	com.apple.other" ;; *) echo "launchctl $*" >> "$FAKE_SSH/launchctl" ;; esac
 EOF
-# the runner Mac's architecture is $FAKE_ARCH's (arm64 unless a case sets it), on any machine the suite runs on
+# the runner host's architecture is $FAKE_ARCH's (arm64 unless a case sets it) and its system $FAKE_SYSTEM's
+# (Darwin unless a case sets Linux), on any machine the suite runs on
 cat > "$T/ssh/rbin/uname" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = -m ] && { echo "${FAKE_ARCH:-arm64}"; exit 0; }
+[ "$1" = -s ] && { echo "${FAKE_SYSTEM:-Darwin}"; exit 0; }
 exec /usr/bin/uname "$@"
 EOF
 # and its installed locales $FAKE_LOCALES's (unset: C, en_US.UTF-8, C.UTF-8 and the suite's own LANG),
@@ -2556,6 +2558,580 @@ rm -f "$CAPS"; R="$T/rv8"; newrepo "$R"; printf '{"provider": ["x"], "check": "s
 "$CP" "$R" --to actions > "$T/out" 2>&1; grep -q 'Traceback' "$T/out"; check "$?" "1" "a provider that is no string, on --to: no traceback"
 
 rm -f "$CAPS"; rm -rf "$T/gh/vars"; echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+
+echo "a Linux host's runner: the Linux share's suites, by capabilities (linux-runner, 2026-11-04)"
+# The fake host as Linux (D1-C, a rootless container): FAKE_SYSTEM=Linux for its uname; a podman that keeps
+# images, volumes and the build context under $T/ssh and runs the real entry script over a fresh copy of the
+# image's runner for every `run` (its paths moved under $T/ssh), refusing with $T/ssh/nopodman, nouserns or
+# nosubuids; a systemctl that knows --user only and starts a unit by running its Image, Volume and Exec through
+# that podman; a loginctl whose linger is off with $T/ssh/nolinger; and a sudo that is never to be called
+cat > "$T/ssh/rbin/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >> "$FAKE_SSH/sudo"; exit 1
+EOF
+cat > "$T/ssh/rbin/podman" <<'EOF'
+#!/usr/bin/env bash
+D="$FAKE_SSH"
+echo "podman $*" >> "$D/podman"
+key() { printf '%s' "$1" | tr '/:' '__'; }
+case "$1" in
+  --version) [ -e "$D/nopodman" ] && exit 127; echo "podman version 4.9.3" ;;
+  unshare) [ -e "$D/nopodman" ] && exit 127; [ -e "$D/nouserns" ] && exit 1
+    if [ "$2" = test ]; then shift; exec "$@"; fi
+    echo "         0       1000          1"
+    case "$3" in */uid_map) [ -e "$D/nosubuids" ] || echo "         1     100000      65536" ;;
+                 *) [ -e "$D/nosubgids" ] || echo "         1     100000      65536" ;; esac ;;
+  build) ctx="${@: -1}"; tag=$4
+    # the reference grammar podman's containers/image applies: lower case, separators between letters and digits
+    printf '%s' "${tag#localhost/}" | grep -Eqx '[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*' || { echo "fake podman: invalid reference format: $tag" >&2; exit 125; }
+    for f in Containerfile entry.sh runner.tar.gz; do [ -f "$ctx/$f" ] || { echo "fake podman: no $f in the context" >&2; exit 1; }; done
+    rm -rf "$D/img/$(key "$tag")"; mkdir -p "$D/img/$(key "$tag")"; cp "$ctx/Containerfile" "$ctx/entry.sh" "$ctx/runner.tar.gz" "$D/img/$(key "$tag")/" ;;
+  image) case "$2" in exists) [ -d "$D/img/$(key "$3")" ] ;; prune) echo "pruned $*" >> "$D/prune" ;; *) exit 125 ;; esac ;;
+  rmi) rm -rf "$D/img/$(key "$2")" ;;
+  volume) case "$2" in create) mkdir -p "$D/vol/${@: -1}" ;; rm) [ -d "$D/vol/$3" ] && rm -rf "$D/vol/$3" ;;
+            inspect) [ -d "$D/vol/${@: -1}" ] && echo "$D/vol/${@: -1}" ;; esac ;;
+  run) shift; vol= ent=
+    while [ $# -gt 0 ]; do case "$1" in --rm|-i) shift ;; -v) vol=$2; shift 2 ;; --entrypoint) ent=$2; shift 2 ;; *) break ;; esac; done
+    img="$D/img/$(key "$1")"; shift
+    [ -d "$img" ] || { echo "fake podman: no image" >&2; exit 125; }
+    V="$D/vol/${vol%%:*}"; mkdir -p "$V"
+    [ "${vol#*:}" = /state:ro ] || [ "${vol#*:}" = /state:U ] || { echo "fake podman: a mount other than the state volume: $vol" >&2; exit 125; }
+    if [ "$ent" = cat ]; then cat "$V/${1#/state/}"; exit; fi
+    R="$D/ctr"; rm -rf "$R"; mkdir -p "$R"; tar xzf "$img/runner.tar.gz" -C "$R"
+    sed -e "s#/runner/actions-runner#$R#g" -e "s#/state#$V#g" "$img/entry.sh" > "$D/entry.run"
+    sum() { find "$V" -type f -exec cksum {} + 2>/dev/null | sort; }
+    before=$(sum); rc=0; sh "$D/entry.run" "$@" || rc=$?
+    if [ "${vol#*:}" = /state:ro ] && [ "$(sum)" != "$before" ]; then echo "fake podman: a write to a read-only volume" >&2; exit 125; fi
+    exit $rc ;;
+esac
+EOF
+cat > "$T/ssh/rbin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+D="$FAKE_SSH"
+[ "$1" = --user ] || { echo "system $*" >> "$D/systemctl"; echo "fake systemctl: --user only" >&2; exit 1; }
+shift
+u="$(cd ~ && pwd)/.config/containers/systemd/${2%.service}.container"
+case "$1" in
+  show-environment) [ -e "$D/nousersd" ] && exit 1; echo "HOME=$HOME" ;;
+  daemon-reload) echo daemon-reload >> "$D/systemctl" ;;
+  reset-failed) echo "reset-failed $2" >> "$D/systemctl" ;;
+  is-active) [ -e "$D/active" ] ;;
+  start) echo "start $2" >> "$D/systemctl"
+    rc=0; podman run --rm -v "$(sed -n 's/^Volume=//p' "$u")" "$(sed -n 's/^Image=//p' "$u")" $(sed -n 's/^Exec=//p' "$u") < /dev/null || rc=$?
+    echo "exit $rc" >> "$D/systemctl"; [ "$rc" = 0 ] && touch "$D/active"; true ;;
+  stop) echo "stop $2" >> "$D/systemctl"; rm -f "$D/active" ;;
+  --no-pager) echo "systemctl status $3"; [ -e "$D/active" ] || exit 3 ;;
+esac
+EOF
+cat > "$T/ssh/rbin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+[ -e "$FAKE_SSH/nolinger" ] && echo no || echo yes
+EOF
+# newuidmap, newgidmap and slirp4netns stand-ins, so the probe finds them on any machine the suite runs on
+for c in newuidmap newgidmap slirp4netns; do printf '#!/bin/sh\nexit 0\n' > "$T/ssh/rbin/$c"; done
+chmod +x "$T/ssh/rbin/sudo" "$T/ssh/rbin/podman" "$T/ssh/rbin/systemctl" "$T/ssh/rbin/loginctl" "$T/ssh/rbin/newuidmap" "$T/ssh/rbin/newgidmap" "$T/ssh/rbin/slirp4netns"
+fakelinux() { # fakelinux <dir>: the Linux build's config.sh and run.sh, as the image holds them
+  mkdir -p "$1/bin"
+  cat > "$1/config.sh" <<'EOF'
+#!/usr/bin/env bash
+[ "${ACTIONS_RUNNER_INPUT_TOKEN:-}" = "$FAKE_TOKEN" ] && echo "$1" >> "$FAKE_SSH/envtoken"
+echo "config.sh $*" >> "$FAKE_SSH/config"
+if [ "$1" = remove ]; then rm -f .runner .credentials; fi
+if [ "$1" = --unattended ]; then
+  while [ $# -gt 0 ]; do [ "$1" = --url ] && url=$2; [ "$1" = --name ] && nm=$2; shift; done
+  printf '{"agentName": "%s", "gitHubUrl": "%s"}\n' "$nm" "$url" > .runner; echo cred > .credentials; printf 'LANG=%s\n' "${LANG:-}" > .env
+fi
+EOF
+  cat > "$1/bin/Runner.Listener" <<'EOF'
+#!/usr/bin/env bash
+echo "Runner.Listener $* $(test -f .runner && test -f .credentials && echo registered || echo bare)" >> "$FAKE_SSH/runsh"
+exit "$(cat "$FAKE_SSH/listener" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$1/config.sh" "$1/bin/Runner.Listener"
+}
+CAPS="$REGATTA_CONFIG/wharf/ci-runner-caps.json"
+UNITS="$RH/.config/containers/systemd"
+echo true > "$T/gh/private"; echo false > "$T/gh/forkpr"; rm -f "$T/gh/fetch.fail" "$T/gh/default" "$T/gh/runners.fail"
+R="$T/lx"; newrepo "$R"; mkdir -p "$R/.helloworld"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+# the fake host holds no runner of the earlier cases (a-b-c, flat ones): one runner a Linux host
+rm -rf "$RH/actions-runners/"* "$T/gh/vars" "$UNITS"; rm -f "$CAPS"
+: > "$T/ssh/argv"; : > "$T/ssh/curl"; : > "$T/gh/calls"; : > "$T/ssh/stdin"; rm -f "$T/ssh/envtoken"
+LX="--host node-ci --name lnx1 --labels self-hosted,Linux"
+"$CP" "$R" --runner install --dry-run $LX > "$T/out" 2>&1; check "$?" "2" "a Linux runner the capabilities file does not list: refused"
+grep -q "a Linux runner registers by its capabilities, never a label of the host's own: list lnx1 in" "$T/out"; check "$?" "0" "…naming the file to list it in"
+"$CP" "$R" --runner install --dry-run --host node-ci --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "--host without --name: refused, as before"
+echo '{"lnx1": ["linux-share"]}' > "$CAPS"
+"$CP" "$R" --runner install --dry-run $LX --instance 2 > "$T/out" 2>&1; check "$?" "2" "a second instance on a Linux host: refused"
+grep -q "one runner a Linux host" "$T/out"; check "$?" "0" "…one job at a time beside its sessions"
+"$CP" "$R" --runner install --dry-run --host node-ci --name 'lnx/1' --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "a Linux runner's name that cannot name a unit: refused"
+grep -q "\-\-name: letters, digits" "$T/out"; check "$?" "0" "…saying why"
+for bad in Lnx1 lnx1- lnx..1; do
+  "$CP" "$R" --runner install --dry-run --host node-ci --name "$bad" --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "a Linux runner's name no image reference takes ($bad): refused before any ssh"
+  grep -q "names a Linux runner's image, unit and volume: lower-case letters and digits" "$T/out"; check "$?" "0" "…saying what it takes"
+done
+"$CP" "$R" --runner install --dry-run --host node-ci --name lnx1 --labels self-hosted,macOS > "$T/out" 2>&1; check "$?" "2" "Mac labels with no label of its own and --name: refused, as before"
+"$CP" "$R" --runner install --dry-run $LX > "$T/out" 2>&1; check "$?" "0" "--runner install --dry-run, a Linux host: the plan"
+check "$(test -s "$T/ssh/argv" && echo ssh || echo none)" "none" "…no ssh"
+grep -q 'uname -s. (Linux, or refused)' "$T/out"; check "$?" "0" "…the probe's system must say Linux"
+grep -q "whether it lacks what a rootless container needs (podman, a user namespace with subordinate uids, a network helper, linger, the user instance: refused, naming each)" "$T/out"; check "$?" "0" "…and what a rootless container needs"
+grep -qF "x86_64 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz (227660598 bytes, SHA-256 af4b794c1bc4)" "$T/out"; check "$?" "0" "…the pinned linux-x64 build, its size and digest"
+grep -qF "aarch64 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-arm64-2.338.0.tar.gz (140012091 bytes, SHA-256 628b4a725848)" "$T/out"; check "$?" "0" "…and linux-arm64's for an aarch64 host"
+grep -q "osx-" "$T/out"; check "$?" "1" "…no macOS build in a Linux plan"
+grep -qF "build the image localhost/ci-runner-lnx1 from it over docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 (no sudo in it)" "$T/out"; check "$?" "0" "…the image over the pinned base"
+grep -q "config.sh --name lnx1 --labels linux-share in a container of it, the token on its stdin" "$T/out"; check "$?" "0" "…registered with its capabilities, never the host's name, the token on stdin"
+grep -q "a rootless container a job (the listener's --once), no host mount, socket or credential, in the login's app.slice at CPUWeight=20 beside the sessions' 100, Nice=10" "$T/out"; check "$?" "0" "…the service: a rootless container a job, below the host's sessions"
+grep -q -E 'sudo -n|svc\.sh' "$T/out"; check "$?" "1" "…and no sudo or svc.sh in it"
+grep -q "no runs-on variable routed: a Linux runner takes acme/demo's Linux share" "$T/out"; check "$?" "0" "…check.yml's variable never routed to it"
+check "$(grep -c 'actions/variables' "$T/gh/calls")" "0" "…nor read"
+"$CP" "$R" --runner remove --dry-run $LX > "$T/out" 2>&1; check "$?" "0" "--runner remove --dry-run, a Linux host"
+grep -q "stop and remove the unit ci-runner-lnx1.service, config.sh remove in a container of its image, then its volume and image" "$T/out"; check "$?" "0" "…the container's road, not svc.sh's"
+
+DIST="$RH/actions-runners/.dist"; mkdir -p "$DIST"
+fakelinux "$T/lxtar"; (cd "$T/lxtar" && tar czf "$DIST/fake-linux.tar.gz" config.sh bin)
+LXRUN='{"id":40,"name":"lnx1","os":"Linux","status":"online","busy":false,"labels":[{"name":"self-hosted","type":"read-only"},{"name":"Linux","type":"read-only"},{"name":"X64","type":"read-only"},{"name":"linux-share","type":"custom"}]}'
+echo "{\"total_count\":1,\"runners\":[$LXRUN]}" > "$T/gh/runners.json"
+cat > "$T/freshlx.py" <<'PY'
+import hashlib, importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("cp", sys.argv[1])
+spec = importlib.util.spec_from_loader("cp", loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+tgz = sys.argv[4]
+m.RUNNER_LINUX_X64_URL = "https://example.invalid/fake-linux.tar.gz"
+m.RUNNER_LINUX_X64_SIZE = os.path.getsize(tgz)
+m.RUNNER_LINUX_X64_SHA256 = hashlib.sha256(open(tgz, "rb").read()).hexdigest()
+sys.exit(m.main([sys.argv[2], "--runner", sys.argv[3]] + sys.argv[5:]))
+PY
+lx() { FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 python3 "$T/freshlx.py" "$CP" "$R" "$1" "$DIST/fake-linux.tar.gz" $LX; }
+export RUNNER_RETRY_PAUSE=0   # the entry's pause before a retried container, 30 s in the image: none in the fakes
+: > "$T/gh/calls"; rm -rf "$T/ssh/sudo" "$T/ssh/podman" "$T/ssh/config" "$T/ssh/active" "$T/ssh/systemctl" "$T/ssh/runsh" "$T/ssh/img" "$T/ssh/vol"
+lx install > "$T/out" 2>&1; check "$?" "0" "a fresh install on a Linux host"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "1" "…one registration token minted"
+check "$(cat "$T/ssh/envtoken" 2>/dev/null)" "--unattended" "…handed to config.sh in ACTIONS_RUNNER_INPUT_TOKEN, inside the container"
+check "$(grep -c "$TOKEN" "$T/out")" "0" "…in none of its output"
+check "$(grep -c "$TOKEN" "$T/ssh/argv")" "0" "…nor in ssh's argv"
+check "$(grep -c "$TOKEN" "$T/ssh/podman")" "0" "…nor in any podman argv"
+check "$(grep -c "$TOKEN" "$UNITS/ci-runner-lnx1.container")" "0" "…nor in the unit"
+check "$(grep -c -- "--unattended --replace --disableupdate --url https://github.com/acme/demo --name lnx1 --labels linux-share --work _work" "$T/ssh/config")" "1" "…config.sh: its name, its capabilities as labels, no self-update (the image holds the pin)"
+b=$(grep -n '^podman build' "$T/ssh/podman" | head -1 | cut -d: -f1); c=$(grep -n ' configure ' "$T/ssh/podman" | head -1 | cut -d: -f1)
+check "$([ -n "$b" ] && [ -n "$c" ] && [ "$b" -lt "$c" ] && echo before || echo "b=$b c=$c")" "before" "…the image built before anything is registered"
+grep -qF "FROM docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852" "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…over the pinned base"
+check "$(cmp -s "$T/ssh/img/localhost_ci-runner-lnx1/runner.tar.gz" "$DIST/fake-linux.tar.gz" && echo same || echo differs)" "same" "…from the tarball verified on the host"
+grep -q '^USER runner$' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…its jobs as an unprivileged user"
+grep -v '^#' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile" | grep -qw sudo; check "$?" "1" "…with no sudo in the image"
+check "$(cat "$RH/actions-runners/acme/demo/.runner" 2>/dev/null)" '{"agentName": "lnx1", "gitHubUrl": "https://github.com/acme/demo"}' "…the registration's .runner copied out of the volume to the host"
+check "$(ls -A "$T/ssh/vol/ci-runner-lnx1-state" | tr '\n' ' ')" ".credentials .env .runner " "…the registration itself in the state volume"
+for want in 'Image=localhost/ci-runner-lnx1' 'Exec=run' 'Volume=ci-runner-lnx1-state:/state:ro' 'DropCapability=ALL' 'NoNewPrivileges=true' 'Restart=always' 'CPUWeight=20' 'Nice=10'; do
+  grep -qxF "$want" "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…the quadlet unit: $want"
+done
+check "$(grep -c -E '^(Volume|Mount)=' "$UNITS/ci-runner-lnx1.container")" "1" "…no mount but the state volume"
+grep -q -i -E 'sock|PublishPort|Network=host|Secret=|Environment=' "$UNITS/ci-runner-lnx1.container"; check "$?" "1" "…no socket, host network, secret or environment"
+check "$(grep -c 'start ci-runner-lnx1.service' "$T/ssh/systemctl")" "1" "…started as a user unit"
+check "$(cat "$T/ssh/runsh" 2>/dev/null)" "Runner.Listener run --once registered" "…its container takes one job, its registration loaded from the volume"
+grep -q 'chown runner:runner /state' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…the image's /state the runner's, so a fresh volume is too (podman 4.9 copies its owner after :U)"
+check "$(grep -c '^pruned' "$T/ssh/prune" 2>/dev/null)" "1" "…dangling images pruned after the build (one a container still uses goes at a later install)"
+grep -q -- '--filter label=ci-provider.runner' "$T/ssh/prune"; check "$?" "0" "…the runner's own alone, by the label the image carries"
+grep -qxF 'RestartPreventExitStatus=3' "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…the unit stops on the entry's exit 3, a runner that can take no job"
+check "$(test -e "$T/ssh/sudo" && cat "$T/ssh/sudo" || echo none)" "none" "…and no sudo run"
+grep -q "system " "$T/ssh/systemctl"; check "$?" "1" "…nor the system's systemctl"
+grep -q 'systemctl status ci-runner-lnx1.service' "$T/out"; check "$?" "0" "…its status from systemd"
+grep -q 'runner lnx1 online, labels self-hosted, Linux, X64, linux-share' "$T/out"; check "$?" "0" "…read back online from GitHub, its capabilities among its labels"
+grep -q "no runs-on variable routed" "$T/out"; check "$?" "0" "…the Linux share's runs-on left to the pick"
+check "$(grep -c 'actions/variables' "$T/gh/calls")" "0" "…no repository variable read or written"
+: > "$T/gh/calls"; lx install > "$T/out" 2>&1; check "$?" "0" "a second install on the Linux host"
+check "$(grep -c 'token' "$T/gh/calls")" "0" "…no token minted"
+check "$(grep -c '^podman build' "$T/ssh/podman")" "2" "…the image rebuilt, so a reinstall takes a changed one"
+check "$(grep -c ' configure ' "$T/ssh/podman")" "1" "…never registered twice"
+check "$(grep -c 'start ci-runner-lnx1.service' "$T/ssh/systemctl")" "1" "…the active unit not started again (its next job takes the new image)"
+: > "$T/gh/calls"; FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name other1 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "remove under a name the host's runner does not have: refused"
+grep -q "node-ci holds another runner (.*ci-runner-lnx1.container), not other1: nothing removed" "$T/out"; check "$?" "0" "…naming the runner it holds"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "kept" "…the real runner's .runner kept"
+check "$(grep -c 'remove-token' "$T/gh/calls")" "0" "…and no token minted"
+mv "$UNITS/ci-runner-lnx1.container" "$T/unit.keep"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name other1 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "0" "…with the real runner's unit file gone, nothing to refuse on: remove goes on"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "kept" "…and keeps the .runner another name holds (its agentName)"
+grep -q "the Linux share: nothing deregistered from here" "$T/out"; check "$?" "0" "…claiming no deregistration"
+mv "$T/unit.keep" "$UNITS/ci-runner-lnx1.container"
+touch "$T/gh/runners.fail"; : > "$T/gh/calls"; lx install > /dev/null 2>&1
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "a configured runner, GitHub's list unread: no token, the volume's registration kept"
+rm -f "$T/gh/runners.fail"
+keep=$(cat "$T/gh/runners.json"); echo '{"total_count":31,"runners":[]}' > "$T/gh/runners.json"; : > "$T/gh/calls"; lx install > /dev/null 2>&1
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "a configured runner, GitHub's list one page of more: no token (only a whole list says none)"
+echo '{"runners":[]}' > "$T/gh/runners.json"; : > "$T/gh/calls"; lx install > /dev/null 2>&1
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nor where the list carries no total_count"
+printf '%s\n' "$keep" > "$T/gh/runners.json"
+for code in 0 2 134; do
+  echo "$code" > "$T/ssh/listener"; rm -f "$T/ssh/active"; : > "$T/ssh/systemctl"; lx install > "$T/out" 2>&1
+  [ "$code" = 0 ] && { grep -q "the listener exited 0 within 30 s: a fresh container after a pause" "$T/out"; check "$?" "0" "a listener that exits 0 at once (a revoked credential's Shutting down): paused like a failure"; }
+  check "$(grep '^exit' "$T/ssh/systemctl")" "exit 0" "the listener's exit $code (its job done, retryable, a crash): the container ends for a fresh one"
+done
+for code in 1:"GitHub refused its registration" 5:"a session conflict" 7:"a version GitHub retired: bump ci-provider's Linux pin"; do
+  echo "${code%%:*}" > "$T/ssh/listener"; rm -f "$T/ssh/active"; : > "$T/ssh/systemctl"; lx install > "$T/out" 2>&1
+  check "$(grep '^exit' "$T/ssh/systemctl")" "exit 3" "the listener's exit ${code%%:*}: exit 3, which stops the unit"
+  grep -qF "the listener exited ${code%%:*}, ${code#*:}" "$T/out"; check "$?" "0" "…saying its remedy"
+  grep -q "reset-failed ci-runner-lnx1.service" "$T/ssh/systemctl"; check "$?" "0" "…and the next install resets it before its start"
+done
+# a stop while the listener runs: the entry passes TERM on and exits 0 at once, never into its 30 s pause
+E="$T/termrun"; rm -rf "$E"; mkdir -p "$E/root/bin" "$E/state"; echo x > "$E/state/.runner"
+printf '#!/bin/sh\ntrap "exit 143" TERM\n: > "%s/live"\ni=0; while [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done\n' "$E" > "$E/root/bin/Runner.Listener"; chmod +x "$E/root/bin/Runner.Listener"
+sed -e "s#/runner/actions-runner#$E/root#g" -e "s#/state#$E/state#g" "$T/ssh/img/localhost_ci-runner-lnx1/entry.sh" > "$E/entry"
+RUNNER_RETRY_PAUSE=30 sh "$E/entry" run > "$E/out" 2>&1 & epid=$!
+n=0; while [ ! -e "$E/live" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+sleep 0.2; t0=$(date +%s); kill -TERM "$epid"; rc=0; wait "$epid" || rc=$?; t1=$(date +%s)
+check "$rc" "0" "a TERM while the listener runs: the entry exits 0"
+check "$([ $((t1 - t0)) -le 4 ] && echo prompt || echo "$((t1 - t0)) s")" "prompt" "…within seconds, never into the pause"
+grep -q "after a pause" "$E/out"; check "$?" "1" "…and says no pause"
+rm -rf "$E"
+rm -f "$T/ssh/listener"; lx install > /dev/null 2>&1
+FAKE_SYSTEM=Linux "$CP" "$R" --runner status $LX > "$T/out" 2>&1; check "$?" "0" "--runner status on the Linux host"
+grep -q 'systemctl status ci-runner-lnx1.service' "$T/out"; check "$?" "0" "…the user unit's status"
+mv "$T/ssh/active" "$T/ssh/active.keep"; FAKE_SYSTEM=Linux "$CP" "$R" --runner status $LX > "$T/out" 2>&1; check "$?" "0" "--runner status of a stopped unit: reported, not a failed read"
+grep -q "the unit is not active (systemctl status exit 3)" "$T/out"; check "$?" "0" "…saying so"
+mv "$T/ssh/active.keep" "$T/ssh/active"
+: > "$T/gh/calls"; FAKE_SYSTEM=Darwin "$CP" "$R" --runner remove $LX > "$T/out" 2>&1; check "$?" "2" "remove with Linux labels, the host a Mac: refused"
+grep -q "node-ci is Darwin, and the runner's labels name Linux: nothing removed" "$T/out"; check "$?" "0" "…saying both"
+check "$(grep -c 'remove-token' "$T/gh/calls")" "0" "…before any token"
+: > "$T/gh/calls"; FAKE_SYSTEM=Darwin "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "Linux labels, the host a Mac: refused"
+grep -q "node-ci is Darwin, and the runner's labels name Linux" "$T/out"; check "$?" "0" "…saying both"
+check "$(grep -c 'token' "$T/gh/calls")" "0" "…before any token"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner install > "$T/out" 2>&1; check "$?" "2" "Mac labels (the keys'), the host Linux: refused"
+grep -q "laptop-ci is Linux, and the runner's labels do not name Linux" "$T/out"; check "$?" "0" "…saying both"
+rm -rf "$T/ssh/img/localhost_ci-runner-lnx1"; : > "$T/ssh/stdin"
+: > "$T/gh/calls"; FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name lnx1 > "$T/out" 2>&1; check "$?" "2" "--runner remove with the runner's image gone: refused"
+check "$(grep -c 'remove-token' "$T/gh/calls")" "0" "…found by the probe: no token minted"
+grep -q "the image localhost/ci-runner-lnx1 is gone: --runner install rebuilds it" "$T/out"; check "$?" "0" "…naming the way back"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "kept" "…the registration kept"
+lx install > "$T/out" 2>&1; check "$?" "0" "…install rebuilds the image, the registration kept"
+check "$(grep -c ' configure ' "$T/ssh/podman")" "1" "…still registered once"
+check "$(grep -c '^stop' "$T/ssh/systemctl")" "0" "…the refused remove left the unit running"
+check "$(test -e "$UNITS/ci-runner-lnx1.container" && echo kept || echo gone)" "kept" "…and its unit file"
+mv "$T/ssh/vol/ci-runner-lnx1-state" "$T/ssh/vol.keep"; : > "$T/gh/calls"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner status $LX > "$T/out" 2>&1
+grep -q "the state volume ci-runner-lnx1-state holds no registration" "$T/out"; check "$?" "0" "a lost state volume: status says so"
+lx install > "$T/out" 2>&1; check "$?" "0" "…and an install registers again"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "1" "…a token minted for it, the host's .runner copy not taken for a registration"
+check "$(grep -c ' configure ' "$T/ssh/podman")" "2" "…configured a second time"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"; : > "$T/gh/calls"; : > "$T/ssh/systemctl"; rm -f "$T/ssh/active"
+lx install > "$T/out" 2>&1
+check "$(grep -c '^stop ci-runner-lnx1.service' "$T/ssh/systemctl")" "1" "…its unit stopped before the registration is replaced, even one is-active reads as down (waiting out RestartSec)"
+grep -q "GitHub lists no runner lnx1: registering it again" "$T/out"; check "$?" "0" "a registration GitHub no longer lists (a runner it deleted): registered again"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "1" "…a token minted though the volume holds a registration"
+check "$(grep -c ' configure ' "$T/ssh/podman")" "3" "…configured again (config.sh --replace)"
+: > "$T/ssh/stdin"; : > "$T/ssh/systemctl"; rm -f "$T/ssh/envtoken"; rm -rf "$T/ssh/vol.keep"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name lnx1 > "$T/out" 2>&1; check "$?" "0" "--runner remove on the Linux host, the keys' Mac labels given"
+check "$(head -1 "$T/ssh/systemctl")" "stop ci-runner-lnx1.service" "…the user unit stopped"
+check "$(test -e "$UNITS/ci-runner-lnx1.container" && echo kept || echo gone)" "gone" "…and its unit file removed"
+check "$(cat "$T/ssh/envtoken" 2>/dev/null)" "remove" "…config.sh remove in a container, the token in ACTIONS_RUNNER_INPUT_TOKEN"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "gone" "…and deregistered"
+check "$(test -d "$T/ssh/vol/ci-runner-lnx1-state" && echo kept || echo gone)" "gone" "…its volume removed"
+check "$(test -d "$T/ssh/img/localhost_ci-runner-lnx1" && echo kept || echo gone)" "gone" "…and its image"
+check "$(grep -c "$TOKEN" "$T/ssh/stdin")" "1" "…the remove token on ssh's stdin"
+grep -q "the Linux share: deregistered, no runner carries its lane's labels" "$T/out"; check "$?" "0" "…and says where the share goes, not check.yml's variable (the host's uname -s, not the labels)"
+lx install > /dev/null 2>&1; touch "$T/gh/runners.fail"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name lnx1 > "$T/out" 2>&1; check "$?" "0" "remove with GitHub's runner list unread"
+grep -q "GitHub's runner list unread (HTTP 403): whether lnx1 is gone is not known here" "$T/out"; check "$?" "0" "…saying so, never that no runner is left"
+grep -q "the Linux share: deregistered from here; GitHub's list unread" "$T/out"; check "$?" "0" "…nor that no runner carries the lane's labels"
+rm -f "$T/gh/runners.fail"
+echo "{\"total_count\":1,\"runners\":[$LXRUN]}" > "$T/gh/runners.json"
+lx install > "$T/out" 2>&1; check "$?" "0" "an install again, for the lost volume's case"
+mv "$T/ssh/vol/ci-runner-lnx1-state" "$T/vol.keep"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name lnx1 > "$T/out" 2>&1; check "$?" "0" "remove with the state volume lost"
+grep -q "the state volume holds no registration: nothing deregistered from here" "$T/out"; check "$?" "0" "…saying nothing was deregistered from the host"
+grep -q "GitHub still lists lnx1 (online): gh api -X DELETE repos/acme/demo/actions/runners/40" "$T/out"; check "$?" "0" "…and the DELETE that clears GitHub's record"
+grep -q "the Linux share: nothing deregistered from here, so it stays where the pick put it" "$T/out"; check "$?" "0" "…never that the share was deregistered"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "gone" "…and its own .runner removed (its agentName)"
+rm -rf "$T/vol.keep"
+mkdir -p "$RH/actions-runners/other/repo"; echo '{"gitHubUrl": "https://github.com/other/repo"}' > "$RH/actions-runners/other/repo/.runner"
+: > "$T/gh/calls"; FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "another repo's runner on the Linux host: refused"
+grep -q "node-ci holds a runner already (.*actions-runners/other/repo): one runner a Linux host" "$T/out"; check "$?" "0" "…naming it"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nothing minted"
+rm -rf "$RH/actions-runners/other"; mkdir -p "$UNITS"; : > "$UNITS/ci-runner-lnx9.container"; : > "$T/gh/calls"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "another runner's unit on the Linux host: refused"
+grep -q "node-ci holds a runner already (.*ci-runner-lnx9.container)" "$T/out"; check "$?" "0" "…naming it"
+rm -f "$UNITS/ci-runner-lnx9.container"
+for lack in nopodman nouserns nosubuids nosubgids nolinger nousersd; do
+  touch "$T/ssh/$lack"; : > "$T/gh/calls"
+  FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "a Linux host that lacks one thing ($lack): refused"
+  check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…found by the probe: nothing minted"
+  rm -f "$T/ssh/$lack"
+done
+touch "$T/ssh/nosubuids" "$T/ssh/nolinger"; FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
+grep -q "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: a subordinate uid and gid range for the login" "$T/out"; check "$?" "0" "…each lack named as the owner's step"
+grep -q "linger for the login (loginctl enable-linger <login>)" "$T/out"; check "$?" "0" "…all of them at once"
+touch "$T/ssh/nopodman"; FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
+grep -q "podman (apt-get install podman)" "$T/out"; check "$?" "0" "…podman's absence among them"
+check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo configured || echo absent)" "absent" "…nothing configured"
+# newuidmap and slirp4netns hidden: what the probe says then depends on this machine's own, so the expectation is read
+# from the same fact (a stand-in's absence cannot hide a real one on PATH)
+rm -f "$T/ssh/nopodman" "$T/ssh/nosubuids" "$T/ssh/nolinger"
+touch "$T/ssh/nouserns"; mv "$T/ssh/rbin/newuidmap" "$T/ssh/rbin/newuidmap.off"; mv "$T/ssh/rbin/slirp4netns" "$T/ssh/rbin/slirp4netns.off"
+want=userns; command -v newuidmap > /dev/null 2>&1 || want=uidmap
+net=0; command -v slirp4netns > /dev/null 2>&1 || net=1
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
+case $want in uidmap) w="the uidmap package (newuidmap and newgidmap" ;; *) w="an unprivileged user namespace for podman (Ubuntu's apparmor package ships the profile" ;; esac
+grep -qF "$w" "$T/out"; check "$?" "0" "a namespace podman cannot make: named by newuidmap's presence ($want)"
+check "$(grep -c "slirp4netns, podman 4.9's rootless network" "$T/out")" "$net" "…and the network helper's absence named where it is absent"
+mv "$T/ssh/rbin/newuidmap.off" "$T/ssh/rbin/newuidmap"; mv "$T/ssh/rbin/slirp4netns.off" "$T/ssh/rbin/slirp4netns"; rm -f "$T/ssh/nouserns"
+check "$(test -e "$T/ssh/sudo" && echo ran || echo none)" "none" "no sudo on any Linux road"
+cat > "$T/lacks.py" <<'PY'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+try:
+    m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, ["uidmap", "network", "subuids"]), "node-ci")
+except m.Refusal as e:
+    print(e)
+m.refuse_lacks(m.Probe(False, "arm64", "Darwin", None, ["podman"]), "mac")
+print("a Mac: nothing")
+PY
+python3 "$T/lacks.py" "$CP" > "$T/out" 2>&1; check "$?" "0" "each lacks word's remedy, as the owner reads it"
+grep -qF "the uidmap package (newuidmap and newgidmap" "$T/out"; check "$?" "0" "…uidmap's"
+grep -qF "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)" "$T/out"; check "$?" "0" "…the network helper's"
+grep -qF "a subordinate uid and gid range for the login (its lines in /etc/subuid and /etc/subgid)" "$T/out"; check "$?" "0" "…the ranges'"
+grep -qx "a Mac: nothing" "$T/out"; check "$?" "0" "…and a Mac's probe never refused for them"
+rm -f "$T/ssh/nopodman" "$T/ssh/nosubuids" "$T/ssh/nolinger" "$CAPS"; rm -rf "$RH/actions-runners/acme" "$T/lxtar" "$UNITS" "$T/ssh/img" "$T/ssh/vol"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+FAKE_SYSTEM=Darwin FAKE_ARCH=arm64 python3 - "$CP" > "$T/out" 2>&1 <<'PY'; check "$?" "0" "the pinned builds by system and architecture"
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+print(" ".join(m.runner_asset(a, o)[0].rsplit("/", 1)[1].rsplit("-", 1)[0] for o, a in
+               [("Darwin", "arm64"), ("Darwin", "x86_64"), ("Linux", "x86_64"), ("Linux", "aarch64"), ("Linux", "arm64")]))
+for o, a in [("Linux", "ppc64le"), ("FreeBSD", "x86_64")]:
+    try:
+        m.runner_asset(a, o); print("no refusal")
+    except m.Refusal as e:
+        print("refused:", o, a)
+PY
+check "$(sed -n 1p "$T/out")" "actions-runner-osx-arm64 actions-runner-osx-x64 actions-runner-linux-x64 actions-runner-linux-arm64 actions-runner-linux-arm64" "…macOS's two, Linux's two (aarch64 and arm64 alike)"
+check "$(sed -n 2,3p "$T/out" | tr '\n' '|')" "refused: Linux ppc64le|refused: FreeBSD x86_64|" "…another architecture or system: refused"
+
+echo "check-linux.yml: the suites' runs-on from CI_LINUX_RUNS_ON, ubuntu-latest by default (linux-runner)"
+WF="$M/../../.github/workflows/check-linux.yml"
+if [ -f "$WF" ]; then
+  python3 - "$WF" > "$T/out" 2>&1 <<'PY'
+import json, re, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+ro = d["jobs"]["suite"]["runs-on"]
+print(ro)
+m = re.fullmatch(r"\$\{\{ fromJSON\(vars\.(\w+) \|\| '(.*)'\) \}\}", ro)
+name, default = m.group(1), m.group(2)
+# GitHub's `||` takes the variable unless it is unset or empty, and fromJSON parses what it gets
+for v in ({}, {name: ""}, {name: '["self-hosted","Linux","linux-share"]'}):
+    print(json.dumps(json.loads(v.get(name) or default)))
+PY
+  check "$(sed -n 1p "$T/out")" "\${{ fromJSON(vars.CI_LINUX_RUNS_ON || '\"ubuntu-latest\"') }}" "the suite job's runs-on reads the repository variable"
+  check "$(sed -n 2,4p "$T/out" | tr '\n' '|')" '"ubuntu-latest"|"ubuntu-latest"|["self-hosted", "Linux", "linux-share"]|' "…unset or empty: GitHub's hosted ubuntu-latest; set: the runner's labels"
+  check "$(grep -c 'export HOME="$RUNNER_TEMP/home" TMPDIR="$RUNNER_TEMP/tmp"' "$WF")" "1" "…a self-hosted job's suite step keeps to the job's own HOME and TMPDIR"
+  check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); print(c.LINUX_RUNS_VAR, c.trigger_reads_runs_on(sys.argv[2]))' "$CP" "$M/../..")" \
+    "CI_LINUX_RUNS_ON True" "…the variable the pick moves, which it reads this checkout's workflow for"
+else
+  echo "  skip the twin has no check-linux.yml"
+fi
+
+echo "linux-tools.sh on a persistent runner: no sudo, the job's own HOME, Node and the CLI kept (linux-runner)"
+LTS="$M/../../.github/ci/linux-tools.sh"
+if [ ! -f "$LTS" ]; then
+  echo "  skip no .github/ci/linux-tools.sh in this checkout"
+elif [ "$(uname -s)" != Linux ] || ! command -v xz > /dev/null || ! /usr/bin/python3 -c 'import yaml' 2> /dev/null; then
+  echo "  skip linux-tools.sh runs on Linux, with xz and the system python3's PyYAML"
+else
+  LT="$T/lt"; LH="$LT/hm"; JH1="$LT/job1/home"; JH2="$LT/job2/home"   # the login's HOME, two jobs' own
+  mkdir -p "$LT/stub" "$LT/srv" "$LH" "$LT/cache" "$LT/pkg/node-v22.99.0-linux-a/bin"
+  case "$(uname -m)" in aarch64|arm64) NA=arm64 ;; *) NA=x64 ;; esac
+  NODE="node-v22.99.0-linux-$NA"; mv "$LT/pkg/node-v22.99.0-linux-a" "$LT/pkg/$NODE"
+  printf '#!/bin/sh\necho v22.99.0\n' > "$LT/pkg/$NODE/bin/node"
+  # npm as the Node build ships it, first on the script's PATH once Node is in: an install into --prefix
+  cat > "$LT/pkg/$NODE/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+echo "npm $*" >> "$LT_LOG/npm"
+prefix=""; while [ $# -gt 0 ]; do [ "$1" = --prefix ] && prefix=$2; shift; done
+[ -n "$prefix" ] || prefix="$(dirname "$(dirname "$0")")"
+mkdir -p "$prefix/bin"; printf '#!/bin/sh\necho "9.9.9 (Claude Code)"\n' > "$prefix/bin/claude"; chmod +x "$prefix/bin/claude"
+EOF
+  chmod +x "$LT/pkg/$NODE/bin/node" "$LT/pkg/$NODE/bin/npm"
+  (cd "$LT/pkg" && tar -cJf "$LT/srv/$NODE.tar.xz" "$NODE")
+  (cd "$LT/srv" && sha256sum "$NODE.tar.xz" > SHASUMS256.txt && echo "0000  node-v22.99.0-win-x64.zip" >> SHASUMS256.txt)
+  cat > "$LT/stub/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "$LT_LOG/curl"
+out=""; url=""; here=""
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; -fsSLO) here=1 ;; http*) url=$1 ;; esac; shift; done
+[ -n "$here" ] && out=${url##*/}
+cp "$LT_LOG/srv/${url##*/}" "$out"
+EOF
+  printf '#!/usr/bin/env bash\necho "sudo $*" >> "$LT_LOG/sudo"; exit 1\n' > "$LT/stub/sudo"
+  for c in jq ruby sqlite3; do printf '#!/bin/sh\nexit 0\n' > "$LT/stub/$c"; done
+  chmod +x "$LT/stub/"*
+  ltrun() { # ltrun <job>: linux-tools.sh as job <job> of a self-hosted runner, its own RUNNER_TEMP, one tool cache
+    mkdir -p "$LT/job$1"
+    (env HOME="$LH" PATH="$LT/stub:$PATH" LT_LOG="$LT" RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$LT/job$1" \
+       RUNNER_TOOL_CACHE="$LT/cache" GIT_CONFIG_GLOBAL="$LH/.gitconfig-login" bash "$LTS" > "$LT/out$1" 2>&1); echo "$?"; }
+  LT_LOG="$LT"; export LT_LOG
+  check "$(ltrun 1)" "0" "the first job on a persistent runner"
+  check "$(grep -c "$NODE.tar.xz" "$LT/curl")" "1" "…Node fetched once, checked against nodejs.org's sums"
+  check "$(grep -c 'npm install -g --prefix' "$LT/npm")" "1" "…the CLI installed into a prefix of its own"
+  check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…no sudo"
+  CLIV="$(grep -o '@anthropic-ai/claude-code@[0-9.]*' "$M/../../.github/workflows/check.yml" | head -1)"; CLIV="${CLIV##*@}"
+  check "$(cut -d: -f1-2 "$JH1/.linux-path")" "$LT/cache/regatta-linux/claude-code-$CLIV/bin:$LT/cache/regatta-linux/$NODE/bin" "…the PATH, in the job's own HOME: the kept CLI, then the kept Node"
+  check "$(git config --file "$JH1/.gitconfig" user.name)" "CI" "…git config --global in the job's own file"
+  check "$(ls -A "$LH" | tr '\n' ' ')" "" "…the runner login's HOME untouched"
+  grep -q '9.9.9 (Claude Code)' "$LT/out1"; check "$?" "0" "…and the CLI runs"
+  check "$(ltrun 2)" "0" "the next job on the same runner"
+  check "$(grep -c "$NODE.tar.xz" "$LT/curl")" "1" "…Node kept, not fetched again"
+  check "$(grep -c 'npm install' "$LT/npm")" "1" "…nor the CLI installed again"
+  check "$(grep -c 'kept from an earlier job' "$LT/out2")" "2" "…both said"
+  check "$(test -s "$JH2/.linux-path" && echo own || echo none)" "own" "…the PATH in this job's own HOME"
+  rm -f "$LT/stub/ruby"
+  if env PATH="$LT/stub:/usr/bin:/bin" bash -c 'command -v ruby' > /dev/null; then
+    echo "  skip this host has ruby on /usr/bin: the missing-package case needs a host without it"
+  else
+    mkdir -p "$LT/job3"
+    (env HOME="$LH" PATH="$LT/stub:/usr/bin:/bin" LT_LOG="$LT" RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$LT/job3" \
+       RUNNER_TOOL_CACHE="$LT/cache" bash "$LTS" > "$LT/out3" 2>&1); check "$?" "1" "a package the runner lacks: the job fails"
+    grep -q "this runner lacks ruby: add it to the image (ci-provider's RUNNER_CONTAINERFILE) and run --runner install again" "$LT/out3"; check "$?" "0" "…naming it, and the image it belongs in"
+    check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…and never runs sudo or apt-get"
+  fi
+  unset PYTHONPATH LT_LOG   # the stand-in websockets stays with these cases, never the pick's below
+fi
+
+echo "the pick: the Linux share on a self-hosted Linux lane (linux-runner, 2026-11-04)"
+cp "$LANES" "$T/lanes.lx"; cp "$BUDGETS" "$T/budgets.lx"; cp "$T/gh/rsc.json" "$T/gh/rsc.lx"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}},
+ {"name": "gha", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-u", "projects": {"acme/demo": "actions"}},
+ {"name": "node", "runs_on": ["self-hosted", "Linux", "linux-share"], "runs": ["linux"], "projects": {"acme/demo": "actions"}}]}
+EOF
+cat > "$BUDGETS" <<'EOF'
+{"reserve": 0.2, "accounts": {"cci-o": {"provider": "circleci", "org_slug": "gh/acme", "month_credits": 30000},
+ "cci-a": {"provider": "circleci", "org_slug": "circleci/ORG", "month_credits": 30000},
+ "gh-u": {"provider": "github", "user": "acme", "month_minutes": 3000}}}
+EOF
+STATE="$T/logs/ci-share-runners.json"
+MACR='{"id":7,"name":"laptop","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"ARM64"},{"name":"laptop"}]}'
+lxrunners() { # lxrunners online|offline|none: the runner list, the Mac's and the Linux host's runner in that state
+  case "$1" in none) echo "{\"total_count\":1,\"runners\":[$MACR]}" ;;
+    *) echo "{\"total_count\":2,\"runners\":[$MACR,${LXRUN/online/$1}]}" ;; esac > "$T/gh/runners.json"; }
+runs() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_LINUX_RUNS_ON.json" 2>/dev/null || echo unset; }
+lxrepo() { # lxrepo <dir>: tworepo's, its check-linux.yml routing the suites by CI_LINUX_RUNS_ON, the share off,
+  # check.yml already on the Mac lane (so the runs-on half writes nothing beside the share)
+  tworepo "$1"; printf '    runs-on: ${{ fromJSON(vars.CI_LINUX_RUNS_ON) }}\n' >> "$1/.github/workflows/check-linux.yml"
+  echo '{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"macOS\",\"laptop\"]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+  setvar CI_LINUX_ELSEWHERE false; rm -f "$PLOG" "$STATE"; }
+NODEL='["self-hosted","Linux","linux-share"]'
+R="$T/lxp"; lxrepo "$R"; lxrunners online
+gusage 29443 33299 100; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "the Linux host's runner online, GitHub's minutes under budget too"
+grep -q "share lane node: eligible, a runner labelled self-hosted, Linux, linux-share is online" "$T/out"; check "$?" "0" "…the self-hosted lane judged by its runner, no budget"
+grep -qF "share CI_LINUX_RUNS_ON: unset → $NODEL (lane node:" "$T/out"; check "$?" "0" "…taken before the hosted lane: it bills nothing"
+grep -q -- "--apply sets CI_LINUX_RUNS_ON to it" "$T/out"; check "$?" "0" "…said, and without --apply nothing written"
+check "$(project) $(runs) $(share)" "unset unset false" "…nothing written"
+check "$(test -e "$STATE" && echo kept || echo none)" "none" "…nor any sighting kept"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "--apply"
+check "$(project) $(runs) $(share)" "actions $NODEL true" "…CI_LINUX_TARGET actions, CI_LINUX_RUNS_ON the lane's labels, CI_LINUX_ELSEWHERE true"
+check "$(python3 -c 'import json,sys; print(" ".join(json.loads(l)["variable"] for l in open(sys.argv[1])))' "$PLOG")" \
+  "CI_LINUX_TARGET CI_LINUX_RUNS_ON CI_LINUX_ELSEWHERE" "…in that order, the share last, each logged"
+check "$(logrow CI_LINUX_RUNS_ON)" "None $NODEL node gh api -X DELETE repos/acme/demo/actions/variables/CI_LINUX_RUNS_ON" "…the runs-on with the DELETE that sends the suites back to ubuntu-latest"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_ELSEWHERE: true, stays (lane node: a runner labelled" "$T/out"; check "$?" "0" "a second pick: it stays"
+check "$(wc -l < "$PLOG" | tr -d ' ')" "3" "…nothing more written"
+check "$(python3 -c 'import importlib.machinery as m, importlib.util as u, sys; l=m.SourceFileLoader("cp", sys.argv[1]); c=u.module_from_spec(u.spec_from_loader("cp", l)); l.exec_module(c); print(c.last_flip("acme/demo"))' "$CP")" \
+  "0" "…a runs-on flip of the share is no flip of check.yml's runs-on (stale_lane)"
+lxrunners offline; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "share CI_LINUX_ELSEWHERE: true, stays (lane node: its runner is offline 0 min, held a sweep before the share leaves it)" "$T/out"; check "$?" "0" "its runner offline: the share stays a sweep"
+check "$(test -e "$STATE" && echo kept || echo none)" "none" "…a report keeps no sighting"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["acme/demo"]))' "$STATE")" "['node']" "…--apply keeps when it first saw it offline"
+check "$(runs) $(share)" "$NODEL true" "…nothing moves"
+mv "$STATE" "$T/state.keep"; CLAUDE_CODE_SESSION_ID=s-1 "$CP" "$R" --pick --apply > /dev/null 2>&1
+check "$(test -e "$STATE" && echo kept || echo none)" "none" "…a session's --apply keeps no sighting: only the desk's job writes it"
+mv "$T/state.keep" "$STATE"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["acme/demo"]["node"]-=16*60; json.dump(d,open(sys.argv[1],"w"))' "$STATE"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "stays (lane node: its runner is offline 16 min, held a sweep before the share leaves it)" "$T/out"; check "$?" "0" "a second offline reading a sweep on: held, as a one-job runner may be between containers"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["acme/demo"]["node"]-=5*60; json.dump(d,open(sys.argv[1],"w"))' "$STATE"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "offline past a sweep"
+grep -q "share lane node: not chosen, its runner labelled self-hosted, Linux, linux-share has been offline 21 min: gone" "$T/out"; check "$?" "0" "…the lane counts as gone"
+check "$(project) $(runs) $(share)" 'actions "ubuntu-latest" true' "…the share on the hosted lane, CI_LINUX_RUNS_ON back to its image at once"
+lxrunners online; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "stays on lane gha: lane node has more left, but the project moved 0 min ago" "$T/out"; check "$?" "0" "the runner back: the move back waits an hour"
+check "$(runs)" '"ubuntu-latest"' "…held there"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["acme/demo"])' "$STATE")" "{}" "…the sighting cleared"
+python3 -c 'import json,sys,time; r=[json.loads(l) for l in open(sys.argv[1])]
+for x in r: x["at"]-=7200
+open(sys.argv[1],"w").write("".join(json.dumps(x)+"\n" for x in r))' "$PLOG"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(runs) $(share)" "$NODEL true" "…and back on the Linux host's runner an hour later"
+lxrunners none; gusage 29443 33299 2500; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "no runner carries the lane's labels, GitHub's minutes past the reserve"
+grep -q "share CI_LINUX_ELSEWHERE: true → false (lane node: no runner labelled self-hosted, Linux, linux-share)" "$T/out"; check "$?" "0" "…the lane gone at once: the share off, the Macs take the whole line"
+check "$(share)" "false" "…written"
+setvar CI_LINUX_ELSEWHERE true; lxrunners online; rm -f "$PLOG"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"]=d["lanes"][:3]; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share)" "false" "the lane gone from the lanes file, the hosted one past its reserve: the share off"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "gha", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-u", "projects": {"acme/demo": "actions"}},
+ {"name": "node", "runs_on": ["self-hosted", "Linux", "linux-share"], "runs": ["linux"], "projects": {"acme/demo": "actions"}}]}
+EOF
+R="$T/lxq"; tworepo "$R"; setvar CI_LINUX_ELSEWHERE false; rm -f "$PLOG" "$STATE"; lxrunners online; gusage 29443 33299 100
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share lane node: not chosen, check-linux.yml reads no CI_LINUX_RUNS_ON, so its suites would run on GitHub's hosted runners" "$T/out"; check "$?" "0" "a check-linux.yml that reads no CI_LINUX_RUNS_ON: the self-hosted lane is never chosen"
+check "$(project) $(runs) $(share)" "actions unset true" "…the hosted lane takes the share, the runs-on variable untouched"
+R="$T/lxr"; lxrepo "$R"; lxrunners online; echo false > "$T/gh/private"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share lane node: not chosen, acme/demo is public: the Linux share on a self-hosted lane would let a fork" "$T/out"; check "$?" "0" "a public repo: never on the self-hosted lane"
+check "$(runs)" "unset" "…its runs-on never moved there"
+echo true > "$T/gh/private"; echo true > "$T/gh/forkpr"; rm -f "$T/gh/vars/CI_LINUX_TARGET.json"; setvar CI_LINUX_ELSEWHERE false
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "share lane node: not chosen, acme/demo runs fork pull requests' workflows" "$T/out"; check "$?" "0" "…nor a private one that runs fork PRs' workflows"
+echo false > "$T/gh/forkpr"; touch "$T/gh/vars/CI_LINUX_RUNS_ON.unread"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q "share CI_LINUX_TARGET: unread (CI_LINUX_RUNS_ON: " "$T/out"; check "$?" "0" "CI_LINUX_RUNS_ON unread: where the share stands is unknown, said"
+check "$(share)" "false" "…nothing comes on"
+rm -f "$T/gh/vars/CI_LINUX_RUNS_ON.unread"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["lanes"][1]["runs_on"]=["self-hosted","macOS","Linux"]; json.dump(d,open(sys.argv[1],"w"))' "$LANES"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a self-hosted share lane naming macOS: refused"
+grep -q "lane node is self-hosted: the Linux share runs on GitHub's hosted runners, or on a self-hosted Linux lane" "$T/out"; check "$?" "0" "…naming the lane"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "gha", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-u", "projects": {"acme/demo": "actions"}}]}
+EOF
+R="$T/lxs"; lxrepo "$R"; lxrunners online; setvar CI_LINUX_ELSEWHERE true; setvar CI_LINUX_TARGET actions
+setvar CI_LINUX_RUNS_ON ubuntu-latest; gusage 29443 33299 100; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(runs)" '"ubuntu-latest"' "CI_LINUX_RUNS_ON a bare word, which fromJSON refuses: stands on no lane, rewritten as the hosted lane's JSON"
+python3 - "$CP" > "$T/out" 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+print(" ".join(str(m.runs_value(v) is m.BAD_RUNS) for v in (None, "", '"ubuntu-latest"', '["a"]', "ubuntu-latest", "[]", "3", '[1]')))
+PY2
+check "$(cat "$T/out")" "False False False False True True True True" "…unset, empty, a JSON image or label list read; a bare word, [], a number or a non-string list stand nowhere"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "node", "runs_on": ["self-hosted", "Linux", "linux-share"], "runs": ["linux"], "projects": {"acme/demo": "actions"}}]}
+EOF
+R="$T/lxt"; lxrepo "$R"; printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": ["linux"]}\n' > "$R/.github/ci.json"
+lxrunners online; "$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "lane node: a share lane, the Linux share's suites only" "$T/out"; check "$?" "0" "a repo that needs linux: the share lane is never check.yml's"
+grep -q "  pick: node" "$T/out"; check "$?" "1" "…never picked for CI_RUNS_ON"
+echo "{\"name\":\"CI_RUNS_ON\",\"value\":\"[\\\"self-hosted\\\",\\\"Linux\\\",\\\"linux-share\\\"]\"}" > "$T/gh/vars/CI_RUNS_ON.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "check.yml set on the share lane by hand, no other lane: exit 3, for the desk to card"
+grep -q "⚠ current lane node fails: a share lane, the Linux share's suites only" "$T/out"; check "$?" "0" "…saying why"
+mkdir -p "$T/ro"; chmod 555 "$T/ro"
+python3 - "$CP" "$T/ro" > "$T/out" 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, pathlib, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+m.common.LOG_DIR = pathlib.Path(sys.argv[2]) / "logs"
+c = m.ShareCtx(".", "acme/demo", {}, {}, None, 1000.0)
+c.seen("node", 1000.0); c.save(True, False); print("returned")
+PY2
+check "$(tail -1 "$T/out")" "returned" "the sightings' log dir unwritable: said, never a raise out of the pick"
+grep -q "⚠ share runners not recorded at" "$T/out"; check "$?" "0" "…in one line"
+chmod 755 "$T/ro"
+cp "$T/lanes.lx" "$LANES"; cp "$T/budgets.lx" "$BUDGETS"; mv "$T/gh/rsc.lx" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG" "$STATE"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 
 echo "the review of 2026-10-21: the suite's own git config (15)"
 check "$(git config --global --list 2>/dev/null | wc -l | tr -d ' ')" "0" "git reads the suite's global config, not the caller's (15)"
