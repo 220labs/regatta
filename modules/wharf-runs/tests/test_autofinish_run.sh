@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for bin/autofinish-run (autofinish E1) and the dispatch --start it starts through — a scratch
 # HOME, a scratch repo with a bare origin, and stand-ins for claude, screen, GitHub's API and (for
-# the crash cases) dispatch itself. No session, screen, window or GitHub call is real.
+# the crash cases) dispatch itself. No session, screen, window or GitHub call is real, bar one case's
+# name lookups and one GET of api.github.com/zen (the waiter-fork-crash case: errors swallowed, so offline passes).
 #   bash modules/wharf-runs/tests/test_autofinish_run.sh
 set -u
 # a dispatch session runs this suite inside its own run: its markers would change what is tested
@@ -339,8 +340,17 @@ next_tip "waiter, live"; : > "$T/claude.calls"
 STUB_RUN=busy STUB_MARK=1 af > /dev/null 2>&1
 for _ in $(seq 1 50); do CP=$(pgrep -f "$T/claude /finish" | head -1); [ -n "$CP" ] && break; sleep 0.2; done
 sleep 1
-# the waiter is the forked runner: the one process left with the runner's command line
-WPID=$(pgrep -f "bin/autofinish-run $W" | head -1)
+# the waiter: its pid in autofinish-waiter.json (an exec'd `autofinish-run waiter` since waiter-fork-crash,
+# 2026-11-03: no process keeps the runner's own command line)
+# this run's file, never the last case's: its session is the one the run's state names
+WSID=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["session"])' "$GD/claude/autofinish.json" 2>/dev/null)
+for _ in $(seq 1 50); do
+  python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("session") != sys.argv[2])' \
+    "$GD/claude/autofinish-waiter.json" "$WSID" 2>/dev/null && break; sleep 0.2
+done
+WPID=$(python3 -c 'import json, sys; w = json.load(open(sys.argv[1])); print(w["pid"] if w.get("session") == sys.argv[2] else "")' \
+       "$GD/claude/autofinish-waiter.json" "$WSID" 2>/dev/null)
+check "$(ps -o args= -p "$WPID" | grep -c 'autofinish-run waiter')" "1" "the waiter runs as an exec'd \`autofinish-run waiter\`"
 check "$([ -f "$GD/claude/finishing" ] && echo set || echo unset)" "set" "a /finish under way (its finishing marker set)…"
 kill -TERM "$WPID"
 ended
@@ -403,7 +413,7 @@ python3 - "$B/autofinish-run" "$W" <<'EOF' > "$T/out" 2>&1
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish_run", sys.argv[1]).load_module()
-def no_fork(fn, out):
+def no_fork(*_):
     raise OSError("fork: resource temporarily unavailable")
 m.detach = no_fork
 print("rc=%s" % m.main([sys.argv[2], "--rule", "A", "--by", "sweep"]))
@@ -418,12 +428,95 @@ python3 - "$B/autofinish-run" "$W" <<'EOF' > /dev/null 2>&1
 import sys
 from importlib.machinery import SourceFileLoader
 m = SourceFileLoader("autofinish_run", sys.argv[1]).load_module()
-def no_fork(fn, out):
+def no_fork(*_):
     raise OSError("fork failed")
 m.detach = no_fork
 m.main([sys.argv[2], "--rule", "A", "--by", "sweep"])
 EOF
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "  with no lock before it, ours is removed"
+
+echo "the waiter is a fresh interpreter: a parent that resolved names first still gets its end (waiter-fork-crash, 2026-11-03)"
+# macOS: once a process has called getaddrinfo, a forked child's next one may die in Apple's Network framework
+# (SIGSEGV; fourteen waiters on the laptop died so, 2026-11-01/03, detach()'s docstring). The race is not
+# deterministic, so the case proves both halves: the waiter's own GitHub call (the stop's comment, through a
+# stub that resolves names in the waiter's process) runs in a process exec'd as `autofinish-run waiter`, and the
+# run records its end. Offline, the resolves fail with an error, which is no crash either.
+next_tip "a parent that resolved names"; : > "$T/api.log"; rm -f "$T/gai.log" "$T/claude.env"
+RL="$LOGS/$AUTOFINISH_DAY-dispatch-finish-demo.log"; RL0=$(wc -c < "$RL" 2>/dev/null || echo 0)   # the day's log: earlier cases wrote it too
+cat > "$T/api_stub_gai.py" <<'EOF'
+import importlib.util, json, os, socket, sys
+_spec = importlib.util.spec_from_file_location("api_stub_base", os.environ["STUB_API_BASE"])
+_base = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_base)
+def api(method, path, body=None, tok=None, timeout=15):
+    said = []
+    for host in ("localhost", "github.com", "api.github.com"):
+        try:
+            socket.getaddrinfo(host, 443); said.append("ok")
+        except OSError as e:
+            said.append(type(e).__name__)
+    with open(os.environ["STUB_GAI_LOG"], "a") as f:
+        f.write(json.dumps({"argv": sys.argv[1:], "spec": os.environ.get("AUTOFINISH_WAITER_SPEC") is not None, "gai": said}) + "\n")
+    return _base.api(method, path, body, tok, timeout)
+EOF
+STUB_REPLY="$T/stop.txt" AUTOFINISH_API_STUB="$T/api_stub_gai.py" STUB_API_BASE="$T/api_stub.py" STUB_GAI_LOG="$T/gai.log" \
+  CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=caller python3 - "$B/autofinish-run" "$W" <<'EOF' > "$T/out" 2>&1
+import socket, sys, urllib.request
+from importlib.machinery import SourceFileLoader
+for host in ("localhost", "github.com", "api.github.com"):
+    try:
+        socket.getaddrinfo(host, 443)
+    except OSError:
+        pass
+try:   # what the night's callers did before their detach: an HTTPS call, which loads the Network framework
+    urllib.request.urlopen("https://api.github.com/zen", timeout=5).read()
+except Exception:
+    pass
+m = SourceFileLoader("autofinish_run", sys.argv[1]).load_module()
+print("rc=%s" % m.main([sys.argv[2], "--rule", "A", "--by", "sweep"]))
+EOF
+has "$T/out" "rc=0" "a caller that resolved names and called GitHub first: started"
+ended; check "$(field outcome)/$(field gate)" "stopped/G4" "  the waiter recorded the run's end"
+has "$T/api.log" '"method": "POST"' "  its comment went through GitHub's stand-in, from the waiter"
+check "$(python3 -c 'import json, sys; print(sorted({" ".join(json.loads(l)["argv"]) for l in open(sys.argv[1])}))' "$T/gai.log" 2>&1)" "['waiter']" \
+      "  every GitHub call of the run ran in the waiter, a process exec'd as \`autofinish-run waiter\`"
+check "$(python3 -c 'import json, sys; print({json.loads(l)["spec"] for l in open(sys.argv[1])})' "$T/gai.log" 2>&1)" "{False}" \
+      "  its spec left the environment before the waiter ran"
+check "$([ -f "$T/claude.env" ] && echo ran || echo missing)" "ran" "  claude ran for this case"
+hasnt "$T/claude.env" "AUTOFINISH_WAITER_" "  nor its spec or ready fd reached claude's"
+check "$(python3 -c 'import json, sys; print(all(set(json.loads(l)["gai"]) <= {"ok", "gaierror"} for l in open(sys.argv[1])))' "$T/gai.log" 2>&1)" "True" \
+      "  and the waiter's own getaddrinfo calls came back (an answer, or an error offline)"
+tail -c +$((RL0 + 1)) "$RL" > "$T/rl.new"
+has "$T/rl.new" "autofinish-run: bundle " "  its log line written, by this run"
+python3 - "$B/autofinish-run" "$W" "$T/gone.log" <<'EOF' > "$T/out" 2>&1
+import os, sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("autofinish_run", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+PY = sys.executable   # m.sys is this sys: the cases below change it, so the real one is kept here
+cases = (("a waiter not in WAITERS", lambda: m.detach("print", t, (), sys.argv[3])),
+         ("a spec that will not encode", lambda: (setattr(m.sys, "executable", "x\ud83d"),   # a lone surrogate:
+                                                 m.detach("wait_for_end", t, ({}, []), sys.argv[3]))),   # no exec encodes it
+         ("no interpreter named", lambda: (setattr(m.sys, "executable", ""),
+                                           m.detach("wait_for_end", t, ({}, []), sys.argv[3]))),
+         ("an interpreter that is gone", lambda: (setattr(m.sys, "executable", "/nonexistent/python3"),
+                                                 m.detach("wait_for_end", t, ({}, []), sys.argv[3]))),
+         ("a waiter that dies at its start", lambda: (setattr(m.sys, "executable", PY),
+                                                     m.detach("wait_for_end", t, ({},), sys.argv[3]))))
+for name, fix in cases:
+    try:
+        fix()
+        print(name, "detached")
+    except OSError as e:
+        print(name, "OSError:", e)
+EOF
+has "$T/out" "a waiter not in WAITERS OSError: no such waiter: print" "detach names its waiter from WAITERS, never any function"
+has "$T/out" "a spec that will not encode OSError: the waiter's spec does not encode" "  a spec no exec could carry: the caller's OSError"
+has "$T/out" "no interpreter named OSError: no interpreter to exec the waiter with" "  no sys.executable: the caller's OSError"
+has "$T/out" "an interpreter that is gone OSError: [Errno 2] the waiter's exec failed: No such file or directory" \
+    "  an exec that fails is the caller's OSError (its callers give the lock back), never a silent grandchild"
+has "$T/out" "a waiter that dies at its start OSError: the waiter died at its start" \
+    "  a waiter whose arguments do not bind says no ok: the caller's OSError, not a lock held for 10 min"
+has "$T/gone.log" "TypeError" "  and its traceback is in the run's log"
 
 echo "the login: picked at start from the account pool (work-account E5, 2026-10-08)"
 ln -s "$T" "$HOME/projects"   # bin/account names a repo by its path under ~/projects: $T/repo is "repo"

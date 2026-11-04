@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `autofinish-run`'s detached waiter execs a fresh interpreter (`autofinish-run waiter`, its spec in
+  `AUTOFINISH_WAITER_SPEC`) instead of running in the forked image: once the caller had resolved a name, the
+  waiter's next getaddrinfo died in Apple's Network framework (fourteen waiters on the laptop, 2026-11-01/03), and a
+  local landing ended with an empty dispatch log (waiter-fork-crash, 2026-11-03). `detach()` returns only once the
+  waiter says "ok" over a pipe, its spec read and its arguments bound: an exec that fails, or a waiter that dies at
+  its start or says nothing in 60 s (the run's own budget, if less, never under 10 s), is the caller's OSError, so
+  the lock is given back. An "ok" decides it whatever else the pipe says, the pipe is read once more at the deadline
+  and polled (no FD_SETSIZE limit), the spec is ASCII JSON, no descriptor lands on 0-2, and a waiter whose caller
+  died mid-wait runs on rather than stop on the broken pipe (the finish review).
 - kicklib: the sheep kick road presses over spacesheep's stream socket (kick-socket; TODO.md [sheep-kick], the owner's
   "yes, websockets", 2026-11-02), as the page runtime does: the full key's web session, the socket of the space
   `wharf-runs/kick-space` names (its page declares `kick/*`), `sub` then `send`, ok at the listener's first ack that

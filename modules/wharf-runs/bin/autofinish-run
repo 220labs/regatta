@@ -5,6 +5,7 @@
                    [--digest D] [--session ID] [--on here] [--priority high|force] [--dry]
     autofinish-run notify [WORKTREE]      the run's own session: whom to message, and the text (below)
     autofinish-run queued QID --repo R --branch B   a claimed finish's start: its launchd job's verb (Where, below)
+    autofinish-run waiter                 detach()'s exec'd grandchild, its spec in AUTOFINISH_WAITER_SPEC; never typed
 
 Where (finish-as-task, 2026-11-02; the owner's D3 of docs/node-lands-2026-10-31.md: "The finish should be handled
 like any other task … finishes assigned to the queue should be picked up similarly to other non-finish tasks"): on a
@@ -190,7 +191,9 @@ refusals and both write:
     Should the detach fail after that, the lock is given back (the previous owner.json, or none)
     and the state ended `never-started` at gate `refused`, exit 1: nothing ran.
 Then a detached child (a double fork and setsid: the caller's process group, a hook's or a
-Bash call's, may be ended the moment the caller returns — dispatch's header, 2026-10-05):
+Bash call's, may be ended the moment the caller returns — dispatch's header, 2026-10-05), which
+execs this script afresh (`autofinish-run waiter`): a forked image that had resolved a name dies at its
+next getaddrinfo on macOS (waiter-fork-crash, 2026-11-03; detach()'s docstring):
   - the bundle — bin/pickup's context_bundle, the branch's prompts, its last asks and replies, its
     PR — at `<git dir>/claude/autofinish-bundle.md`: the conversation's record for /finish's
     learnings and open-items gates (design section 7). Written here, not before returning: it
@@ -357,6 +360,7 @@ import fcntl
 import glob
 import importlib.machinery
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -364,6 +368,7 @@ import pathlib
 import random
 import re
 import shlex
+import select
 import signal
 import subprocess
 import sys
@@ -2711,28 +2716,158 @@ def queued_worktree(repo, branch, tip, own=False, pinned=False):
     return wt, 0, None
 
 
-def detach(fn, out_path):
-    """fn() in a grandchild in its own session, its output appended to out_path; returns at once.
-    Raises when no grandchild was made: the fork failed, or the child could not setsid or fork."""
+# The waiters a detach may start, by name: the grandchild execs this script fresh (`autofinish-run waiter`) and
+# finds its function here, never a closure carried across the fork (waiter-fork-crash, 2026-11-03)
+WAITERS = ("wait_for_end",)
+WAITER_SPEC = "AUTOFINISH_WAITER_SPEC"   # the exec'd waiter's spec, JSON, popped from its environment at its start
+WAITER_READY = "AUTOFINISH_WAITER_READY"   # the fd the waiter says "ok" on once its spec read, popped likewise
+WAITER_START_S = 60   # how long detach() waits for that "ok"; a waiter still starting then is killed
+
+
+def _read_until(r, deadline, done=lambda got: False):
+    """What the pipe r holds until EOF or done(got), or what it held at the deadline (then None as the second
+    value), read once more at the deadline so an answer written at the last moment is not lost. poll, not
+    select: select refuses a descriptor past FD_SETSIZE with a ValueError no caller catches (finish review)."""
+    got = b""
+    p = select.poll()
+    p.register(r, select.POLLIN | select.POLLHUP)
+    while True:
+        left = deadline - time.monotonic()
+        if not p.poll(max(0, int(left * 1000))):
+            if left > 0:
+                continue
+            return got, None
+        chunk = os.read(r, 64)
+        if not chunk:
+            return got, True
+        got += chunk
+        if done(got):
+            return got, False
+
+
+def detach(waiter, t, args, out_path):
+    """waiter(t, *args) in a grandchild in its own session, its output appended to out_path; returns once the
+    waiter has started. The grandchild execs a fresh interpreter on this script (`waiter`, its spec in
+    WAITER_SPEC) rather than run the function in the forked image: once this process has resolved a name, a
+    forked child's next getaddrinfo dies in Apple's Network framework (SIGSEGV in
+    nw_nat64_v4_address_requires_synthesis; fourteen waiters on the laptop died so, 2026-11-01/03: a local
+    landing's at its first lookup, before dispatch wrote a line, and the peer road's hours in). Between the fork
+    and the exec the children make syscalls only. A pipe carries the grandchild's pid, then either its exec's
+    errno or the waiter's "ok", written once it has read its spec and bound its arguments, before it runs them.
+    Raises OSError when no waiter was made: the spec would not serialise, the log would not open, the fork
+    failed, the child could not setsid or fork, the exec failed, the waiter died at its start (its traceback is
+    in out_path), or it said nothing in WAITER_START_S (then it is killed). The caller then gives the lock back,
+    which a waiter that died after the exec could never do."""
+    if waiter not in WAITERS:
+        raise OSError("no such waiter: %s" % waiter)
+    try:   # Tree's fields are plain data (paths, the tip, the budget, flags); a tuple comes back a list
+        spec = json.dumps({"waiter": waiter, "tree": vars(t), "args": list(args)})   # ASCII: no locale decides it
+    except (TypeError, ValueError) as e:
+        raise OSError("the waiter's spec does not serialise: %s" % e)
+    if not sys.executable:
+        raise OSError("no interpreter to exec the waiter with (sys.executable is empty)")
+    try:   # encoded here, not in the grandchild, where a failure would leave nothing behind but a silent exit
+        argv = [os.fsencode(a) for a in (sys.executable, os.path.abspath(__file__), "waiter")]
+        env = {os.fsencode(k): os.fsencode(v) for k, v in dict(os.environ, **{WAITER_SPEC: spec}).items()}
+    except (UnicodeError, ValueError) as e:
+        raise OSError("the waiter's spec does not encode: %s" % e)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    opened = []
+    try:
+        opened.append(os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644))
+        opened.append(os.open(os.devnull, os.O_RDONLY))
+        opened.extend(os.pipe())   # both close-on-exec (PEP 446); w is made inheritable in the grandchild alone
+        for i, x in enumerate(opened):   # never on 0-2: the grandchild's dup2s would overwrite one with another
+            if x <= 2:
+                opened[i] = fcntl.fcntl(x, fcntl.F_DUPFD_CLOEXEC, 3)
+                os.close(x)
+    except OSError:
+        for x in opened:
+            os.close(x)
+        raise
+    fd, null, r, w = opened
+    env[os.fsencode(WAITER_READY)] = str(w).encode()
     sys.stdout.flush()
     sys.stderr.flush()
-    pid = os.fork()
-    if pid:
-        _, status = os.waitpid(pid, 0)
-        if not os.WIFEXITED(status) or os.WEXITSTATUS(status):
-            raise OSError("the detaching child ended with status %d" % status)
-        return
     try:
-        os.setsid()
-        if os.fork():
-            os._exit(0)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-        null = os.open(os.devnull, os.O_RDONLY)
-        os.dup2(null, 0)
-        os.dup2(fd, 1)
-        os.dup2(fd, 2)
-        fn()
+        pid = os.fork()
+    except OSError:
+        for x in opened:
+            os.close(x)
+        raise
+    if pid == 0:
+        code = 1
+        try:
+            os.close(r)
+            os.setsid()
+            if os.fork():
+                os._exit(0)
+            os.write(w, b"%d\n" % os.getpid())
+            os.dup2(null, 0)
+            os.dup2(fd, 1)
+            os.dup2(fd, 2)
+            os.set_inheritable(w, True)
+            os.execve(argv[0], argv, env)
+        except BaseException as e:   # anything: a grandchild that exits unheard would read as a waiter made
+            try:
+                os.write(w, (str(e.errno) if isinstance(e, OSError) and e.errno else type(e).__name__).encode())
+            except BaseException:
+                pass
+            code = 3
+        finally:
+            os._exit(code)
+    for x in (fd, null, w):
+        os.close(x)
+    # The wait is the run's own budget at most (a caller killed mid-wait gives nothing back), never under 10 s
+    wait = min(WAITER_START_S, max(10, getattr(t, "deadline", time.time() + WAITER_START_S) - time.time()))
+    try:
+        _, status = os.waitpid(pid, 0)
+        got, eof = _read_until(r, time.monotonic() + wait, lambda got: got.partition(b"\n")[2].startswith(b"ok"))
+        head, _, said = got.partition(b"\n")
+        if said.startswith(b"ok"):   # decisive: the waiter runs, whatever else the pipe or the child says
+            return
+        if eof is None and head.isdigit():   # killed before r closes, so its "ok" can never land unread
+            try:
+                os.kill(int(head), signal.SIGKILL)
+            except OSError:
+                pass
+    finally:
+        os.close(r)
+    if not os.WIFEXITED(status) or os.WEXITSTATUS(status):
+        raise OSError("the detaching child ended with status %d%s" % (status, " (%s)" % got.decode(errors="replace") if got else ""))
+    if eof is None:
+        raise OSError("the waiter said nothing in %d s: killed" % wait)
+    if not said:
+        raise OSError("the waiter died at its start (its traceback is in %s)" % out_path)
+    if said.isdigit():
+        raise OSError(int(said), "the waiter's exec failed: %s" % os.strerror(int(said)))
+    raise OSError("the waiter's exec failed: %s" % said.decode(errors="replace"))
+
+
+def waiter_main():
+    """`autofinish-run waiter`: the exec'd grandchild of detach(), its stdout and stderr the run's log. The spec
+    names one of WAITERS, the Tree's fields and its arguments; it leaves the environment before anything runs,
+    so dispatch and the session never inherit it. "ok" goes to detach() only once the spec read and the
+    arguments bind to the waiter's own signature (the file on disk may be newer than the caller's), so a waiter
+    that cannot run is the caller's OSError and its lock is given back. Exit 0 once the waiter returned, 1 on
+    its traceback."""
+    raw = os.environ.pop(WAITER_SPEC, None)
+    ready = os.environ.pop(WAITER_READY, None)
+    try:
+        spec = json.loads(raw or "")
+        fn = globals()[spec["waiter"]] if spec.get("waiter") in WAITERS else None
+        if fn is None:
+            raise ValueError("no waiter named %r" % spec.get("waiter"))
+        t = Tree.__new__(Tree)   # read from git once, by the caller: the tip and the budget as it judged them
+        t.__dict__.update(spec["tree"])
+        inspect.signature(fn).bind(t, *spec["args"])
+        if ready and ready.isdigit():
+            try:   # a caller gone mid-wait (killed by its own caller) gives nothing back: run on, as it meant
+                os.write(int(ready), b"ok")
+            except BrokenPipeError:
+                pass
+            os.close(int(ready))
+        fn(t, *spec["args"])
         code = 0
     except BaseException:
         traceback.print_exc()
@@ -2740,7 +2875,7 @@ def detach(fn, out_path):
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
-    os._exit(code)
+    return code
 
 
 def lease_refusal(dry):
@@ -2865,6 +3000,8 @@ def main(argv):
         return queued_main(argv[1:])
     if argv[:1] == ["rotation"]:
         return rotation(argv[1:])
+    if argv[:1] == ["waiter"] and WAITER_SPEC in os.environ:   # a worktree named `waiter` stays a finish
+        return waiter_main()
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
     ap.add_argument("worktree")
     ap.add_argument("--rule", choices="ABCDELM", default="C")
@@ -3190,7 +3327,7 @@ def start_here(t, args, prev, by, via):
     except OSError:
         log_from = 0
     try:
-        detach(lambda: wait_for_end(t, st, cmd), t.runlog)
+        detach("wait_for_end", t, (st, cmd), t.runlog)
     except OSError as e:
         # no child: a lock naming a session that never exists would refuse the panel for 2 h
         give_back(t, sid, before, st)
