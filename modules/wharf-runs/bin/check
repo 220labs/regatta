@@ -14,7 +14,8 @@
 # a module changed it; a module removed is a change its users follow. Uncommitted changes count. Every other command runs every time (`claude plugin
 # validate`, a gate that reads the whole tree); a module every other module declares (the core) runs
 # on any change under modules/, since its suite checks them all. The whole line runs when a changed file
-# sits outside modules/ and is not Markdown, under docs/ or under .github/ (an unknown file is judged
+# sits outside modules/ and is not Markdown, under docs/ or under .github/ (bar .github/ci/, the shares'
+# scripts and list; check.yml and check-linux.yml run wharf's suite, which reads them) (an unknown file is judged
 # by everything), when nothing changed at all (on main, or a clean fork: nothing to scope by), when the
 # fork point cannot be read, when the checkout has no modules/ or no git, or with --full. A root
 # Markdown file (AGENTS.md, README) runs the suites of the modules that depend on nothing — the core's,
@@ -28,7 +29,7 @@
 # (docs/check-load-2026-10-23.md). CI still runs the whole line on the pull request, and `pr merge`
 # refuses until it passed (an admin token is not refused by the protection): the scope is for the
 # session's own loop, the proof stays whole (bar the PR's Linux share, which skips a PR of docs only:
-# .circleci/share.sh scope asks check_scope.py the same question).
+# .github/ci/share.sh scope asks check_scope.py the same question).
 # A pass is remembered per tree: after a run, each script that passed is recorded under
 # $CHECK_LOGS/passed/<tree> (the checkout's exact content, `git write-tree` over a scratch index,
 # uncommitted files included), and a later run of the same tree reports it `PASSED <when> <command>`

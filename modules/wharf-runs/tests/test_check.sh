@@ -358,32 +358,42 @@ check "$(grep -c '^PASSED' "$T/m10/summary")" "0" "CHECK_PASS_TTL=0: the memory 
 CHECK_PASS_TTL=x "$B/check" "$S" > /dev/null 2>&1; check "$?" "2" "CHECK_PASS_TTL that is not a number: exit 2"
 export CHECK_PASS_TTL=0
 
-echo "the Linux PR trigger asks the same scope: .circleci/share.sh scope (check_scope.py)"
+echo "the Linux PR trigger asks the same scope: .github/ci/share.sh scope (check_scope.py)"
 # The repo's own share.sh over a clone of this checkout, the base its tip, so only the case's commit
-# counts. .circleci/ is private (off the allowlist): the twin has no share.sh, and says skip.
+# counts. Public since free CI's S2 (.github/ci/); a copy without it says skip.
 ROOT="$(cd "$B/../../.." && pwd)"
-if [ -f "$ROOT/.circleci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HEAD > /dev/null 2>&1; then
+if [ -f "$ROOT/.github/ci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HEAD > /dev/null 2>&1; then
   git clone -q --local "$ROOT" "$T/sc" > /dev/null 2>&1
-  cp "$ROOT/.circleci/share.sh" "$T/sc/.circleci/share.sh"; cp "$B/check_scope.py" "$T/sc/modules/wharf-runs/bin/check_scope.py"
+  mkdir -p "$T/sc/.github/ci"; cp "$ROOT/.github/ci/share.sh" "$ROOT/.github/ci/linux-ids" "$T/sc/.github/ci/"; cp "$B/check_scope.py" "$T/sc/modules/wharf-runs/bin/check_scope.py"
   ( cd "$T/sc" && git add -A && git -c user.name=t -c user.email=t@t commit -qm here --allow-empty ) > /dev/null 2>&1
   at=$(git -C "$T/sc" rev-parse HEAD)
   commit() { ( cd "$T/sc" && mkdir -p "$(dirname "$1")" && echo x >> "$1" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "$1" ) > /dev/null 2>&1; }
   commit docs/scope-case.md
-  check "$(bash "$T/sc/.circleci/share.sh" scope "$at")" "NONE no Linux suite is reached by what changed since $at" "a docs-only change: NONE, no credits"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at")" "NONE no Linux suite is reached by what changed since $at" "a docs-only change: NONE, no credits"
   commit modules/helm/bin/scope-case
-  check "$(bash "$T/sc/.circleci/share.sh" scope "$at" | cut -c1-4)" "RUN " "a change under a module on the Linux list: RUN"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at" | cut -c1-4)" "RUN " "a change under a module on the Linux list: RUN"
   ( cd "$T/sc" && git reset -q --hard HEAD~1 ) > /dev/null 2>&1
   commit .github/workflows/check.yml
-  check "$(bash "$T/sc/.circleci/share.sh" scope "$at")" "RUN .github/workflows/check.yml changed: the CI that runs the line" "a change to the CI that holds the line: RUN"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at")" "RUN .github/workflows/check.yml changed: the CI that runs the line" "a change to the CI that holds the line: RUN"
+  ( cd "$T/sc" && git reset -q --hard HEAD~1 ) > /dev/null 2>&1
+  commit .github/ci/linux-tools.sh
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at")" "RUN .github/ci/linux-tools.sh changed: the CI that runs the line" "a change to the shares' list or scripts: RUN"
+  # the Macs' scope too: .github/ci/ is the shares' code, which wharf's and wharf-runs' suites test
+  check "$(CHECK_CMDS="$(bash "$T/sc/.github/ci/share.sh" line "$T/sc")" python3 "$B/check_scope.py" "$T/sc" "$at" .github/ci/share.sh | head -1)" \
+    "$(printf 'SCOPE\tthe whole line: .github/ci/share.sh changed, outside modules/')" "…and the session's check: the whole line, as under .circleci/"
+  check "$(CHECK_CMDS="$(bash "$T/sc/.github/ci/share.sh" line "$T/sc")" python3 "$B/check_scope.py" "$T/sc" "$at" .github/ISSUE_TEMPLATE/bug.yml | grep -c '^RUN')" \
+    "2" "…another .github/ file still reaches no module suite (plugin and the line's own command run)"
+  check "$(CHECK_CMDS="$(bash "$T/sc/.github/ci/share.sh" line "$T/sc")" python3 "$B/check_scope.py" "$T/sc" "$at" .github/workflows/check.yml | grep -c '^RUN.*modules/wharf changed')" \
+    "1" "…check.yml reaches wharf's suite, which reads it (its roads and trigger cases)"
   ( cd "$T/sc" && git reset -q --hard HEAD~1 ) > /dev/null 2>&1
   commit "docs/café-scope-case.md"
-  check "$(bash "$T/sc/.circleci/share.sh" scope "$at" | cut -c1-4)" "NONE" "a docs file with a non-ASCII name: NONE (paths unquoted)"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at" | cut -c1-4)" "NONE" "a docs file with a non-ASCII name: NONE (paths unquoted)"
   ( cd "$T/sc" && git reset -q --hard HEAD~1 ) > /dev/null 2>&1
   commit stray-scope-case.txt
-  check "$(bash "$T/sc/.circleci/share.sh" scope "$at")" "RUN the whole line: stray-scope-case.txt changed, outside modules/" "a change outside modules/: the whole line, RUN"
-  check "$(bash "$T/sc/.circleci/share.sh" scope no-such-base > /dev/null 2>&1; echo $?)" "2" "a base it cannot read: exit 2 (the trigger runs)"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope "$at")" "RUN the whole line: stray-scope-case.txt changed, outside modules/" "a change outside modules/: the whole line, RUN"
+  check "$(bash "$T/sc/.github/ci/share.sh" scope no-such-base > /dev/null 2>&1; echo $?)" "2" "a base it cannot read: exit 2 (the trigger runs)"
 else
-  echo "  --   skipped: no .circleci/share.sh (the twin) or not a git checkout"
+  echo "  --   skipped: no .github/ci/share.sh or not a git checkout"
 fi
 
 echo

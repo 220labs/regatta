@@ -679,8 +679,9 @@ def brief_held(repo, wt, main, cfg=None):
         why = "no autofinish_leaks on the base: every listed path holds"
     else:
         # `.github/workflows/` beside the list: check.yml and automerge.yml run from the PR's own copy, so a
-        # branch could loosen the check or the hold brake it is judged by (finding 4)
-        held = tuple(p for p in leaks + inplace + [".claude/workflow.json", ".github/workflows/"] if isinstance(p, str) and p)
+        # branch could loosen the check or the hold brake it is judged by (finding 4); `.github/ci/` too, the
+        # shares' scripts and list those workflows run from the same copy (free CI's S2)
+        held = tuple(p for p in leaks + inplace + [".claude/workflow.json", ".github/workflows/", ".github/ci/"] if isinstance(p, str) and p)
         why = "class 2, in_place, the list or the workflows: a yes at the brief never lands it"
     g = next((p for p in paths if held and p.startswith(held)), None)
     return f"a held path ({g}; {why})" if g else None
