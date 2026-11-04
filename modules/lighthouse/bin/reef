@@ -1,0 +1,508 @@
+#!/usr/bin/env python3
+"""reef — each host reefs its own sails: its run cap and check slots follow the load it measures, within the
+bounds its owner set (lighthouse; the owner, 2026-11-04: "something to figure out how to use [the hosts] properly
+so that regatta's jobs and CI run smoothly at the capacity that we can").
+
+    reef plan [--json] [--row FILE]
+                     what this host would change now, and why; reads only (no FILE: a `hosts sample --no-history`,
+                     which leaves the sampler's history alone)
+    reef apply [--row FILE]
+                     the same, then writes it through `regatta limit set` (the live layer, so `regatta limit get`
+                     shows it and the limit's history records it). The queue's sweep starts it on each host after
+                     its sample (`hosts sample --put --refresh`); a session runs `plan`, never `apply`, unless the owner asked
+                     (the repo's `live:` line: a session reads live limits, the sweep writes them)
+    reef bounds      this host's `lighthouse/reef` line as reef reads it: `regatta limit`'s trial reader (exit 2: a
+                     line it refuses)
+    reef log [-n N]  the last changes reef made here
+
+Why each host tunes itself. The sampler already keeps each host's last 8 h on the host (load per core, free memory,
+swap rate; lighthouse's `hosts`), the limits it moves are per host (`wharf-runs/run-cap`, `wharf-runs/check-slots`),
+and a host's own write needs no ssh and no peer awake. Nothing here places work: the queue already sends an entry to
+any eligible host with room, so a host that shrinks when it is overloaded and grows back when it is idle is what
+moves runs to the hosts with room.
+
+The bounds, one line per host in `lighthouse/reef` (a live limit: `regatta limit set reef <host>:<line>`, or
+`<line> --all` for a line per host; a `*:` line, for every host without its own, only in the base file
+`<config>/lighthouse/reef`): `mode=on|advise|off`, `run=<floor>-<ceiling>`, `check=<floor>-<ceiling>`. `mode=on` needs
+both ranges; reef never moves a limit outside them, and moves one back inside at its next turn; `run=N-N` pins a
+value. No line, or `mode=advise`, prints and logs what it would do and writes nothing; `mode=off` returns at once.
+
+The owner's word stands: a limit that reads other than reef last left it was set by hand (`regatta limit set`, from
+any host), so reef records what it saw and holds a whole cooldown, then judges from that value on samples taken
+since. One turn at a time per host (a lock beside the ledger): a turn that overlaps another exits 0.
+
+The rule, one step a turn, at most one change (or tried change) per host a COOLDOWN, judged over the samples of the
+last WINDOW taken since that change (at least MIN_POINTS of them, so the load the last change made is what is
+measured before the next):
+  hot   — the median load per core is above the host's `wharf-runs/load-max` (the load berth places by), or the
+          newest sample's free memory is under 1.2× headroom's `avail`, or its swap rate over half headroom's `rate`:
+          check slots down one, at their floor run cap down one (check suites are most of the load; a run that waits
+          for a slot holds memory, not CPU).
+  cold  — every sample's load per core under half of load-max, free memory over twice headroom's `avail`, no
+          swapping: check slots up one while checks fill every slot (running or waiting), at their ceiling the run cap
+          up one while every run slot is busy (an idle host gains nothing from more room, and a burst could land on
+          it at once).
+  else  — holds.
+CI runners on a host count in its load, which is the point: reef gives a host's room to its CI before its runs.
+
+Exit 0 done (a hold included); 2 a usage error, a refused line, or `apply` under an unattended caller (a dispatched
+run never changes a limit; the sweep's job carries no marker); 3 a write that failed or read back otherwise; 4 no
+fresh row (the sampler has not run, or its row is older than STALE). Python 3.9, stdlib only.
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import find_core  # noqa: E402
+
+sys.path.insert(0, find_core.hooks())
+import common  # noqa: E402
+
+KEY = "lighthouse/reef"
+WINDOW = 35 * 60      # s: the sweep samples every 10 min and the history keeps a point a 9 min step, so about 4 points
+MIN_POINTS = 3        # a median of 2 is their mean: one spike would move a limit
+COOLDOWN = 19 * 60    # s between two changes on one host: just under two sweeps, so the jitter of a sweep's start
+                      # never turns it into three (the window's MIN_POINTS since the change are the real wait)
+STALE = 20 * 60       # s: a row older than this is no reading of now
+HOT_LOAD = 1.0        # × load-max, the median over the window
+COLD_LOAD = 0.5       # × load-max, every point in the window
+HOT_AVAIL = 1.2       # × headroom's avail: free memory under this is pressure
+COLD_AVAIL = 2.0      # × headroom's avail: free memory over this is room
+HOT_RATE = 0.5        # × headroom's rate: swapping over this is pressure
+LIMITS = {"check": "wharf-runs/check-slots", "run": "wharf-runs/run-cap"}
+SHRINK = ("check", "run")   # the order a hot host gives up slots
+GROW = ("check", "run")     # the order a cold host takes them back
+MODES = ("on", "advise", "off")
+
+
+class Refused(ValueError):
+    """A line of lighthouse/reef that does not read: its reader exits 2."""
+
+
+def host_here():
+    """This host's fleet name, as hosts and dispatch name it (REEF_HOST: limit's trial reader and the suite)."""
+    return (os.environ.get("REEF_HOST") or os.environ.get("DISPATCH_HOST") or common.host_name() or "").lower()
+
+
+def parse(rules):
+    """{"mode": …, "run": (lo, hi), "check": (lo, hi)} from `mode=on,run=1-4,check=1-2`; Refused on any word it
+    cannot read (a typo must not drop a bound silently)."""
+    out = {}
+    for part in (p.strip() for p in re.split(r"[\s,]+", rules or "") if p.strip()):
+        k, eq, v = part.partition("=")
+        if not eq or k in out:
+            raise Refused("%r is not one `name=value`, or names %s twice" % (part, k))
+        if k == "mode":
+            if v not in MODES:
+                raise Refused("mode=%s: one of %s" % (v, ", ".join(MODES)))
+            out[k] = v
+        elif k in LIMITS:
+            m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", v)
+            if not m or not 1 <= int(m.group(1)) <= int(m.group(2)) <= 32:
+                raise Refused("%s=%s: <floor>-<ceiling>, 1 ≤ floor ≤ ceiling ≤ 32" % (k, v))
+            out[k] = (int(m.group(1)), int(m.group(2)))
+        else:
+            raise Refused("unknown word %r (mode, run, check)" % k)
+    if not out:
+        raise Refused("an empty line")
+    out["said_mode"] = "mode" in out   # canon prints the mode only where the line says it: limit's trial compares
+    out.setdefault("mode", "advise")
+    if out["mode"] == "on" and not all(k in out for k in LIMITS):
+        raise Refused("mode=on needs both run=<floor>-<ceiling> and check=<floor>-<ceiling>")
+    return out
+
+
+def canon(b):
+    """The line as reef reads it, in the line's own words (limit's trial compares it with the value tried)."""
+    return ",".join((["mode=%s" % b["mode"]] if b.get("said_mode", True) else []) + ["%s=%d-%d" % ((k,) + b[k]) for k in ("run", "check") if k in b])
+
+
+def bounds(host):
+    """(bounds, where from) for HOST: its own line, else `*:`, else advise with no ranges."""
+    lines, err = common.config_read(KEY)
+    if err:
+        raise Refused("%s: %s" % (KEY, err))
+    table = {}
+    # the core's entries reader, as every `<word>:<value>` key's: notes (`#`, `(`) dropped, an entry that runs on
+    # across lines (the overlay's one word a line) joined
+    for name, rules in common.config_entries(lines):
+        if name is None:
+            raise Refused("a value with no <host>: before it (%r)" % rules)
+        table.setdefault(name, rules)   # the first entry wins: the live layer stands first
+    for name in (host, "*"):
+        if name in table:
+            return parse(table[name]), "%s %s:" % (KEY, name)
+    return {"mode": "advise"}, "no %s line for %s or *: (advise)" % (KEY, host)
+
+
+# ---- the readings ---------------------------------------------------------------------------------------
+
+def tool(name):
+    env = os.environ.get("REEF_TOOL_" + name.upper())
+    if env:
+        return [env]
+    if name == "regatta":
+        return [str(Path(find_core.hooks()).resolve().parent / "bin" / "regatta")]
+    return [sys.executable, str(Path(__file__).resolve().parent / name)]
+
+
+def run(cmd, timeout=180, host=None):
+    # HOST: limit names this host by LIMIT_HOST, else the core's host_name(), while the sampler's row may carry
+    # DISPATCH_HOST's spelling; the row's name is the one reef judges, so limit is told it
+    env = dict(os.environ, LIMIT_HOST=host) if host else None
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, "", "%s did not answer (%s)" % (Path(cmd[-1] if len(cmd) < 3 else cmd[1]).name, type(e).__name__)
+    return r.returncode, r.stdout, r.stderr
+
+
+def row_of(path):
+    """This host's row: the file the sampler wrote (FILE), else a fresh `hosts sample` (no put)."""
+    if path:
+        try:
+            return json.loads(Path(path).read_text())
+        except (OSError, ValueError):
+            return None
+    rc, out, _ = run(tool("hosts") + ["sample", "--no-history"])
+    try:
+        return json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+
+
+def current(host, which):
+    """The limit's value on HOST as `regatta limit get` reads it, an int or None."""
+    rc, out, _ = run(tool("regatta") + ["limit", "get", LIMITS[which], "--on", host], timeout=90, host=host)
+    for l in out.splitlines():
+        bits = l.split()
+        if rc == 0 and len(bits) >= 3 and bits[0] == LIMITS[which] and bits[1].lower() == host and bits[2].isdigit():
+            return int(bits[2])
+    return None
+
+
+# ---- the rule ---------------------------------------------------------------------------------------------
+
+def window(row, now, since=None):
+    """The history's points of the last WINDOW, and none from before SINCE (the last change: its effect is judged)."""
+    start = max(now - WINDOW, since or 0)
+    return [p for p in (row.get("history") or []) if isinstance(p, list) and len(p) >= 4
+            and isinstance(p[0], (int, float)) and start < p[0] <= now + 60]
+
+
+def judge(row, now, since=None):
+    """("hot"|"cold"|"hold", why) from the row's window (since SINCE) and its newest readings."""
+    lim = row.get("limits") or {}
+    lmax = lim.get("load_max") or 1.5
+    pts = window(row, now, since)
+    loads = [p[1] for p in pts if isinstance(p[1], (int, float))]
+    if len(loads) < MIN_POINTS:
+        return "hold", "%d sample(s) in the last %d min%s; %d needed" % (
+            len(loads), WINDOW // 60, " since the last change" if since and since > now - WINDOW else "", MIN_POINTS)
+    mem = row.get("mem") or {}
+    avail, rate = mem.get("avail"), mem.get("rate")
+    a_lim, r_lim = lim.get("avail"), lim.get("rate")
+    med = statistics.median(loads)
+    hot = []
+    if med > lmax * HOT_LOAD:
+        hot.append("load %.2f per core (median of %d) over load-max %.2f" % (med, len(loads), lmax))
+    if isinstance(avail, (int, float)) and a_lim and avail < a_lim * HOT_AVAIL:
+        hot.append("%.0f %% free, under %.0f %%" % (avail, a_lim * HOT_AVAIL))
+    if isinstance(rate, (int, float)) and r_lim and rate > r_lim * HOT_RATE:
+        hot.append("swapping %.0f MB/s, over %.0f" % (rate, r_lim * HOT_RATE))
+    if hot:
+        return "hot", "; ".join(hot)
+    rates = [p[3] for p in pts if isinstance(p[3], (int, float))]
+    cold = (max(loads) < lmax * COLD_LOAD
+            and isinstance(avail, (int, float)) and avail > (a_lim or 10) * COLD_AVAIL
+            and all(r < 1 for r in rates + ([rate] if isinstance(rate, (int, float)) else [])))
+    if cold:
+        return "cold", "load at most %.2f per core over %d samples, %.0f %% free, no swapping" % (max(loads), len(loads), avail)
+    return "hold", "load %.2f per core (median of %d), within load-max %.2f" % (med, len(loads), lmax)
+
+
+def decide(row, b, cur, now, last_change=None, demand=None):
+    """The plan: {"state", "why", "changes": [(which, from, to, why)], "note"} for the row, the bounds B, the
+    current values CUR ({"run": n, "check": n}), the last change's time on this host and DEMAND, the checks running
+    or waiting here (None: unknown). Pure: the suite's."""
+    state, why = judge(row, now, last_change)
+    plan = {"state": state, "why": why, "changes": [], "note": ""}
+    if b.get("mode") == "off":
+        plan["note"] = "off (%s)" % KEY
+        return plan
+    rng = {k: b.get(k) for k in LIMITS}
+    # back inside the bounds first: an owner's narrower line, or a value set by hand outside it
+    for k in GROW:
+        if rng[k] and isinstance(cur.get(k), int) and not rng[k][0] <= cur[k] <= rng[k][1]:
+            to = min(max(cur[k], rng[k][0]), rng[k][1])
+            plan["changes"].append((k, cur[k], to, "outside its bounds %d-%d" % rng[k]))
+            return plan
+    if last_change and now - last_change < COOLDOWN:
+        plan["note"] = "held: the last change was %d min ago (one per %d min)" % ((now - last_change) // 60, COOLDOWN // 60)
+        return plan
+    slots = row.get("slots") or {}
+    if state == "hot":
+        for k in SHRINK:
+            lo = rng[k][0] if rng[k] else 1
+            if isinstance(cur.get(k), int) and cur[k] > lo:
+                plan["changes"].append((k, cur[k], cur[k] - 1, why))
+                return plan
+        plan["note"] = "hot at every floor: nothing left to give back here"
+    elif state == "cold":
+        for k in GROW:
+            if rng[k] and not isinstance(cur.get(k), int):
+                # growing the next limit past one that cannot be read breaks the order: check slots first
+                plan["note"] = "%s unread: holds" % LIMITS[k]
+                return plan
+            if not rng[k] or cur[k] >= rng[k][1]:
+                continue
+            busy = slots.get("busy") if k == "run" else demand
+            if not (isinstance(busy, int) and busy >= cur[k]):
+                plan["note"] = "room, and %s of %d %s busy: no need to grow" % (
+                    busy if busy is not None else "?", cur[k], "run slots" if k == "run" else "check slots (running or waiting)")
+                return plan
+            plan["changes"].append((k, cur[k], cur[k] + 1, why))
+            return plan
+        plan["note"] = "room, at every ceiling" if any(rng.values()) else "room; no bounds to grow into (%s)" % KEY
+    return plan
+
+
+# ---- the ledger -------------------------------------------------------------------------------------------
+
+def ledger():
+    return Path.home() / "Library" / "Caches" / "lighthouse" / "reef.jsonl"
+
+
+def ledger_rows():
+    """The ledger's rows; a line that does not read (a torn append) is skipped, never the whole ledger."""
+    try:
+        text = ledger().read_text()
+    except OSError:
+        return []
+    out = []
+    for l in text.splitlines():
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+def last_change(host):
+    """The last write reef made or tried here: a write that failed or read back otherwise starts the cooldown too,
+    or one that never takes (an environment's CHECK_SLOTS winning) would be tried again every sweep."""
+    ts = [r.get("at") for r in ledger_rows() if r.get("host") == host and (r.get("done") or r.get("tried"))
+          and isinstance(r.get("at"), (int, float))]
+    return max(ts) if ts else None
+
+
+def known(host):
+    """{which: the value reef last left it at here}: its last write that took, or the hand-set value it last saw."""
+    out = {}
+    for r in ledger_rows():
+        if r.get("host") != host:
+            continue
+        for k, key in LIMITS.items():
+            if r.get("key") == key:
+                if isinstance(r.get("seen"), int):
+                    out[k] = r["seen"]
+                elif r.get("done") and isinstance(r.get("to"), int):
+                    out[k] = r["to"]
+    return out
+
+
+def check_demand():
+    """The checks running or waiting on this login (check's slot folder: a slot's or a ticket's pid alive), or
+    None when the folder does not read."""
+    sd = Path(os.environ.get("CHECK_SLOT_DIR") or Path.home() / "Library" / "Caches" / "check-slots")
+    pids = set()
+    try:
+        for s in sd.glob("slot-*"):
+            pids.add((s / "pid").read_text().split()[0] if (s / "pid").is_file() else "")
+        for t in (sd / "queue").iterdir():
+            if not t.name.startswith("."):
+                pids.add(t.read_text().split()[0])
+    except (OSError, IndexError):
+        return None
+    n = 0
+    for p in pids:
+        try:
+            os.kill(int(p), 0)
+            n += 1
+        except (ValueError, OSError):
+            pass
+    return n
+
+
+def record(entry):
+    try:
+        f = ledger()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with open(f, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+        rows = f.read_text().splitlines()
+        if len(rows) > 2000:   # about two weeks of a change every turn; the history worth keeping is the limit's own
+            tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+            tmp.write_text("\n".join(rows[-1000:]) + "\n")
+            os.replace(tmp, f)
+    except OSError:
+        pass
+
+
+# ---- the verbs --------------------------------------------------------------------------------------------
+
+def make_plan(a, host):
+    row = row_of(a.row)
+    now = time.time()
+    if not row or not isinstance(row.get("at"), (int, float)):
+        return None, "no row: the sampler's file is missing or does not read (hosts sample)"
+    if now - row["at"] > STALE:
+        return None, "the row is %d min old (over %d): no reading of now" % ((now - row["at"]) // 60, STALE // 60)
+    if (row.get("host") or "").lower() not in ("", host):
+        return None, "the row is %s's, not %s's" % (row.get("host"), host)
+    b, src = bounds(host)
+    if b["mode"] == "off":
+        return {"state": "off", "why": "mode=off", "changes": [], "note": "off (%s)" % KEY, "host": host, "at": int(now),
+                "mode": "off", "bounds": canon(b), "source": src, "current": {}, "seen": {}}, None
+    cur = {k: current(host, k) for k in LIMITS}
+    if cur["run"] is None and isinstance((row.get("slots") or {}).get("cap"), int):
+        cur["run"] = row["slots"]["cap"]
+    plan = decide(row, b, cur, now, last_change(host), check_demand())
+    # a value reef never left there is the owner's newer word: hold a cooldown, recorded, unless it is outside the
+    # bounds (the bounds are the owner's word too, and the clamp already planned)
+    was = known(host)
+    seen = {k: cur[k] for k in LIMITS if isinstance(cur.get(k), int) and k in was and cur[k] != was[k]}
+    if seen and b["mode"] == "on" and not any(c[3].startswith("outside its bounds") for c in plan["changes"]):
+        plan["changes"] = []
+        plan["note"] = "held: %s set by hand (reef left %s); the cooldown starts now" % (
+            ", ".join("%s %d" % (LIMITS[k], v) for k, v in seen.items()), ", ".join(str(was[k]) for k in seen))
+    else:
+        seen = {}
+    plan.update(host=host, at=int(now), mode=b["mode"], bounds=canon(b), source=src, current=cur, seen=seen)
+    return plan, None
+
+
+def words(plan):
+    head = "reef %s: %s — %s (%s, %s)" % (plan["host"], plan["state"], plan["why"], plan["mode"], plan["source"])
+    lines = [head, "  now: run cap %s, check slots %s" % (plan["current"].get("run"), plan["current"].get("check"))]
+    for k, f, t, why in plan["changes"]:
+        lines.append("  %s %s %d → %d (%s)" % ("change" if plan["mode"] == "on" else "would change", LIMITS[k], f, t, why))
+    if plan["note"]:
+        lines.append("  " + plan["note"])
+    return "\n".join(lines)
+
+
+def cmd_plan(a):
+    host = host_here()
+    try:
+        plan, why = make_plan(a, host)
+    except Refused as e:
+        print("reef: %s" % e, file=sys.stderr)
+        return 2
+    if not plan:
+        print("reef %s: %s" % (host, why), file=sys.stderr)
+        return 4
+    print(json.dumps(plan, sort_keys=True) if a.json else words(plan))
+    return 0
+
+
+def cmd_apply(a):
+    who = common.unattended_caller() if hasattr(common, "unattended_caller") else common.unattended()
+    if who:
+        print("reef: apply writes this host's live limits — refused under %s; the queue's sweep runs it" % who, file=sys.stderr)
+        return 2
+    host = host_here()
+    # one turn at a time: two overlapping turns would each step the same limit inside one cooldown
+    try:
+        lf = ledger().with_name("reef.lock")
+        lf.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(lf, "a")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("reef %s: another reef turn is running here" % host)
+        return 0
+    except OSError as e:
+        print("reef %s: no lock (%s): writes nothing" % (host, e), file=sys.stderr)
+        return 3
+    try:
+        plan, why = make_plan(a, host)
+    except Refused as e:
+        print("reef: %s" % e, file=sys.stderr)
+        return 2
+    if not plan:
+        print("reef %s: %s" % (host, why), file=sys.stderr)
+        return 4
+    if plan["mode"] == "off":
+        return 0
+    print(words(plan))
+    for k, v in plan["seen"].items():
+        record({"at": plan["at"], "host": host, "key": LIMITS[k], "from": None, "to": v, "seen": v, "tried": True,
+                "why": "set by hand", "mode": plan["mode"]})
+    rc = 0
+    for k, f, t, why in plan["changes"]:
+        entry = {"at": plan["at"], "host": host, "key": LIMITS[k], "from": f, "to": t, "why": why, "mode": plan["mode"]}
+        if plan["mode"] != "on":
+            record(dict(entry, done=False))
+            continue
+        # limit set reads the value back itself and exits 3 when it reads otherwise: its 0 is the proof
+        code, out, err = run(tool("regatta") + ["limit", "set", LIMITS[k], "%s:%d" % (host, t)], timeout=180, host=host)
+        done = code == 0
+        record(dict(entry, done=done, tried=True, **({} if done else {"error": (err.strip().splitlines() or [out.strip()] or [""])[-1][:200]})))
+        if not done:
+            print("reef: %s %s:%d was not written (exit %d): %s"
+                  % (LIMITS[k], host, t, code, (err.strip().splitlines() or [""])[-1][:200]), file=sys.stderr)
+            rc = 3
+    return rc
+
+
+def cmd_bounds(a):
+    host = host_here()
+    try:
+        b, src = bounds(host)
+    except Refused as e:
+        print("reef: %s" % e, file=sys.stderr)
+        return 2
+    print(canon(b))
+    print("reef: %s" % src, file=sys.stderr)
+    return 0
+
+
+def cmd_log(a):
+    rows = ledger_rows()[-a.n:]
+    for r in rows:
+        print("%s  %s  %s %s → %s  %s  %s" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("at", 0))), r.get("host"),
+                                              r.get("key"), r.get("from"), r.get("to"),
+                                              "seen" if "seen" in r else "done" if r.get("done") else ("advised" if r.get("mode") != "on" else "FAILED"),
+                                              r.get("why", "")))
+    if not rows:
+        print("reef: no change recorded here")
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="reef", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="verb", required=True)
+    for name in ("plan", "apply"):
+        s = sub.add_parser(name)
+        s.add_argument("--row", help="the row the sampler wrote (else a fresh `hosts sample`)")
+        if name == "plan":
+            s.add_argument("--json", action="store_true")
+    sub.add_parser("bounds")
+    lg = sub.add_parser("log")
+    lg.add_argument("-n", type=int, default=20)
+    a = p.parse_args(argv)
+    return {"plan": cmd_plan, "apply": cmd_apply, "bounds": cmd_bounds, "log": cmd_log}[a.verb](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

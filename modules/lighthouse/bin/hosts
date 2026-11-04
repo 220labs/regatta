@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """hosts — the fleet's hosts, one row each, for the Engine room page (S2 of docs/fleet-page-2026-11-01.md).
 
-    hosts sample [--put [--refresh]] [--host H] [--cap N]
+    hosts sample [--put [--refresh]] [--no-history] [--host H] [--cap N]
                      this host's row (host-row.schema.json): its load, memory and headroom's verdict, its limits,
                      its slots, its live runs with their login (fenced, below) and its stale peer records; printed
                      as JSON, or with --put handed to `dispatch-queue hosts put`, which writes it to
                      refs/regatta/hosts only when it changed (--refresh, the sweep's: whatever it says).
-                     dispatch-queue starts it detached from the sweep and at each claim (its sample_soon); never a
-                     session's job
+                     dispatch-queue starts it detached from the sweep and at each claim (its sample_soon); with
+                     --refresh it then starts `reef apply` where `lighthouse/reef` has a line (bin/reef). Never a
+                     session's job, bar --no-history (reef plan's): it reads the history and adds no point, as
+                     `hosts read` samples
     hosts [read] [--json]
                      every host's row merged with the fleet's queue, the logins and this host's peer records: the
                      page's state. This host's row is sampled here, never pushed; every other host with a row on the
@@ -403,7 +405,7 @@ def cmd_sample(a):
     if not lock:
         print("hosts: another sample is putting this host's row; this one stops")
         return 0
-    row = sample(a.host, a.cap)
+    row = sample(a.host, a.cap, keep_history=not a.no_history)
     if not a.put:
         print(json.dumps(row, indent=1, sort_keys=True))
         return 0
@@ -412,7 +414,37 @@ def cmd_sample(a):
     rc, out = run("dispatch-queue", "hosts", "put", *(["--refresh"] if a.refresh else []), input=json.dumps(row, sort_keys=True),
                   timeout=PUT_TIMEOUT)
     print(out.strip() or "hosts: dispatch-queue hosts put printed nothing (exit %s)" % rc)
+    if a.refresh:
+        reef_soon(row)
     return 0 if rc == 0 else 6
+
+
+def reef_soon(row):
+    """Hand the sweep's row to `reef apply`, detached (lighthouse's reef: this host's run cap and check slots follow
+    its load). Only where `lighthouse/reef` has a line (this host's or `*:`): no line is no opt-in, and `reef plan`
+    by hand still says what it would do. Never waits, never raises: the sample is the page's first."""
+    try:
+        lines, err = common.config_read("lighthouse/reef")
+        if err or not any(w in ((row.get("host") or "").lower(), "*") for w, _ in common.config_entries(lines)):
+            return None
+        tool = Path(__file__).resolve().parent / "reef"
+        f = history_file().with_name("hosts-row.json")
+        tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
+        tmp.write_text(json.dumps(row))
+        os.replace(tmp, f)
+        out = f.with_name("reef.out")
+        try:
+            if out.stat().st_size > 64 * 1024:
+                out.unlink()
+        except OSError:
+            pass
+        with open(out, "a") as fh:
+            fh.write("== %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            fh.flush()
+            return subprocess.Popen([sys.executable, str(tool), "apply", "--row", str(f)], stdout=fh, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, start_new_session=True, env=dict(os.environ, REEF_HOST=row.get("host") or ""))
+    except Exception:   # noqa: BLE001 — the sampler's put is done; reef's turn is never its failure
+        return None
 
 
 # ---- the reader ----------------------------------------------------------------------------------------
@@ -508,6 +540,7 @@ def main(argv=None):
     ap.add_argument("--refresh", action="store_true", help="with --put: put the row whatever it says (the sweep's)")
     ap.add_argument("--host")
     ap.add_argument("--cap", type=int)
+    ap.add_argument("--no-history", action="store_true", help="read the history, add no point to it (reef plan's)")
     a = ap.parse_args(argv)
     if a.verb == "sample":
         return cmd_sample(a)
