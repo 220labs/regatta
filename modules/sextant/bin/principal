@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""principal — the council's road for `/sounding --principal`: the part of a principal sounding a script can do, so
+the skill spends judgement only on its model steps (the head's blind draft, the fresh synthesis, the two
+`reviewer-high` passes). Stdlib, Python 3.9.
+
+    principal run --doc DOC --brief FILE --home REPO [--files PATH,…] [--arms ARM,…] [--research]
+                  [--approved VENDOR=QUOTE]… [--timeout S] [--again]
+        wharf's `council run` on the brief, recorded in the doc's folder, <stem>/council/: state.json (written
+        before the council starts, so an interrupted run says so), the brief, receipt.md, and council's Receipt
+        kept in state.json (the run dir is in the scratch root, which another host or a restart does not keep).
+        The papers stay in council's run dir until examine: the head drafts blind beside this record. A refused
+        run, or an arm that was refused, failed or timed out, is recorded and said, never fatal: exit 0 whatever
+        the council did, so the sounding goes on and its Receipt says so. --again moves an earlier record aside
+        (council-<time>/), an interrupted one's included.
+    principal examine --doc DOC --draft FILE [--research] [--approved VENDOR=QUOTE]… [--timeout S]
+        Once the draft exists: each answered paper under a shuffled label (papers/A.md …; the key in state.json),
+        then `council examine` of the draft against them, each critique under a shuffled label (critiques/A.md …),
+        its first line saying which of its examiner's own labels is the draft and which papers/<label>.md.
+        Not run when no arm answered; recorded and said, exit 0. A guarded home needs --approved again here.
+    principal receipt --doc DOC
+        The council's part of the doc's Receipt, printed and written to receipt.md: `council receipt`'s table and
+        completion line (as recorded, when the run dir no longer reads), or, where the council refused before any
+        arm started, a row per arm asked, each refused with the reason, and `Completion: **incomplete**`; then a
+        line for examine when it did not answer.
+    principal check --doc DOC
+        The doc's `## Receipt` against the record: a row for every arm the council was asked for, an arm that
+        did not answer saying its state there (refused, failed, timeout, off), a line for examine when it did not
+        answer, and a completion state no better than the council's (incomplete when examine did not answer).
+        Exit 1 naming each miss, 2 with no record. `keel lint --strict` judges the rest (keel's principal rule).
+
+Exit 2: a usage error, a doc whose folder does not exist, a record that is there (run without --again) or that
+does not read. Where the council is: $PRINCIPAL_COUNCIL (an attended caller only), else wharf's bin/council beside this module, else the
+core's tool lookup; none found is recorded as every arm refused, so the Receipt says so.
+
+Why: docs/principal-tier-2026-10-26.md, S4 ("The council", "The receipt and the invocation"); the fences and
+refusals are council's own (docs/principal-council-isolation-2026-10-29.md). Not here: the pen, the synthesis,
+the reviewers, the lint.
+"""
+import argparse
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
+DEFAULT_ARMS = ("opus", "codex", "antigravity")   # council's ARMS less antigravity-claude, off by default
+RANK = {"incomplete": 0, "complete with limitation": 1, "complete": 2}
+LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# The council's arm calls are bounded by its own --timeout per call; this bounds the verb as a whole.
+GRACE = 600
+
+
+def say(msg):
+    print("principal: %s" % msg, file=sys.stderr, flush=True)
+
+
+class Usage(Exception):
+    pass
+
+
+def core():
+    import find_core   # noqa: PLC0415
+    sys.path.insert(0, find_core.hooks())
+    import common   # noqa: PLC0415
+    return common
+
+
+def unattended():
+    """True for an unattended caller (the core's unattended_caller), and when the core will not load: the override
+    below is refused then, failing closed."""
+    try:
+        return bool(core().unattended_caller())
+    except Exception:   # noqa: BLE001 — no core, no judgement: treat as unattended
+        return True
+
+
+def council_path():
+    # $PRINCIPAL_COUNCIL is for an attended caller only, council's own override rule (wharf's council, override()):
+    # an unattended run that names its own council would write a Receipt no council made (the finish review, S2).
+    env = None if unattended() else os.environ.get("PRINCIPAL_COUNCIL")
+    if env:
+        return env if os.path.isfile(env) else None
+    beside = os.path.join(os.path.dirname(os.path.dirname(HERE)), "wharf", "bin", "council")
+    if os.path.isfile(beside):
+        return beside
+    try:
+        t = core().tool("council")
+    except SystemExit:
+        return None
+    return str(t) if t else None
+
+
+def said(state):
+    """The pattern a Receipt row says a record's state by: the word itself, and `timed out` for `timeout`, which keel's
+    lint and the principal-architect body accept (the finish review)."""
+    if state == "timeout":
+        return r"\btime(?:out|d out)\b"
+    return r"\b%s\b" % re.escape(state)
+
+
+def leave_text():
+    """The core's credential scan (fence.leave_text), so nothing holding a login's shape is written into the repo."""
+    core()
+    import fence   # noqa: PLC0415
+    return fence.leave_text
+
+
+def folder(doc):
+    doc = os.path.abspath(doc)
+    parent = os.path.dirname(doc)
+    if not os.path.isdir(parent):
+        raise Usage("--doc %s: its folder %s does not exist" % (doc, parent))
+    stem = os.path.splitext(os.path.basename(doc))[0]
+    return os.path.join(parent, stem, "council")
+
+
+def load(rec):
+    path = os.path.join(rec, "state.json")
+    try:
+        with open(path) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise Usage("%s does not read (%s)" % (path, e))
+    if not isinstance(st, dict):
+        raise Usage("%s is not a record" % path)
+    return st
+
+
+def save(rec, st):
+    os.makedirs(rec, exist_ok=True)
+    tmp = os.path.join(rec, ".state.json.%d" % os.getpid())
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, os.path.join(rec, "state.json"))
+
+
+def call(argv, timeout):
+    """(rc, stdout, the last line of stderr) of a council verb; a council that cannot start is rc None."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return None, "", "council did not end within %d s" % timeout
+    except OSError as e:
+        return None, "", "council does not start (%s)" % (e.strerror or e)
+    lines = [l for l in (p.stderr or "").splitlines() if l.strip()]
+    return p.returncode, p.stdout or "", (lines[-1] if lines else "")
+
+
+def why_of(err, rc):
+    err = re.sub(r"^council:\s*(?:refused:\s*)?", "", err or "").strip()
+    return err or "council exited %s" % rc
+
+
+def run_json(run_dir):
+    try:
+        with open(os.path.join(run_dir, "run.json")) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+# What autofinish reads as an open ask in an added text file (wharf-runs' bin/autofinish, asks_in): a D-item, an
+# answer box, a Decide line, an open checkbox, a docs/handoff/ path. The arms' designs and the draft hold them as a
+# matter of course ("Owner decisions … your pick"), and the doc's folder is committed with the doc, where the owner
+# answers only the doc: each is rewritten so none reads as an ask (the shared body's rule for <stem>/ files).
+ASK_FIXES = ((re.compile(r"\*\*D(\d+)(\s*[—–-])"), r"**Paper D\1\2"), (re.compile(r"➤(\s*)Answer:"), r"➤\1Answer (the arm's):"),
+             (re.compile(r"\*\*Decide:\*\*"), "**Paper decide:**"), (re.compile(r"^(\s*[-*+]\s+)\[ \]", re.M), r"\1[open]"),
+             (re.compile(r"docs/handoff/"), "docs/hand-off/"))
+ASK_SEEN = (re.compile(r"\*\*D\d+\s*[—–-]"), re.compile(r"➤\s*Answer:"), re.compile(r"\*\*Decide:\*\*"),
+            re.compile(r"^\s*[-*+]\s+\[ \]"), re.compile(r"docs/handoff/"))
+
+
+def defang(text):
+    for pat, to in ASK_FIXES:
+        text = pat.sub(to, text)
+    return text
+
+
+def left_in(folder_path):
+    """[(path, line number, "ask" | "credential")] under FOLDER_PATH: a line autofinish reads as an ask, in its .md and
+    .txt files, and any text file holding a login's shape (the core's fence.leave_text), which never goes to git."""
+    scan, out = leave_text(), []
+    for root, _dirs, files in os.walk(folder_path):
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            try:
+                with open(path, errors="replace") as f:
+                    lines = f.read().split("\n")
+            except OSError:
+                continue
+            for n, line in enumerate(lines, 1):
+                if name.endswith((".md", ".txt")) and any(p.search(re.sub(r"`[^`]*`", "", line)) for p in ASK_SEEN):
+                    out.append((path, n, "ask"))
+                if scan(line):
+                    out.append((path, n, "credential"))
+    return out
+
+
+def copy_labelled(rows, name, dest, withheld, scan, keep=None):
+    """Each answered arm's NAME file under a shuffled label in DEST; {label: arm}, and the arms left out with why."""
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    texts, left = {}, {}
+    for arm, r in (rows or {}).items():
+        if not isinstance(r, dict) or r.get("state") != "ok":
+            continue
+        if arm in withheld or (r.get("record") or {}).get("withheld"):
+            left[arm] = "withheld by council (F7)"
+            continue
+        try:
+            with open(r.get(name) or "") as f:
+                text = f.read()
+        except (OSError, TypeError) as e:
+            left[arm] = "does not read (%s)" % getattr(e, "strerror", None)
+            continue
+        hit = scan(text)
+        if hit:
+            left[arm] = "holds %s" % ", ".join(hit)
+            continue
+        texts[arm] = text
+    if keep and sorted(keep.values()) == sorted(texts):
+        key = dict(keep)   # the same arms as last time: the same labels, so an earlier critique's key still holds
+    else:
+        arms = sorted(texts)
+        random.SystemRandom().shuffle(arms)
+        key = dict(zip(LABELS, arms))
+    if key:
+        os.makedirs(dest, exist_ok=True)
+    for label, arm in key.items():
+        with open(os.path.join(dest, "%s.md" % label), "w") as f:
+            f.write(defang(texts[arm]))
+    return key, left
+
+
+def relabel_critiques(dest, ckey, state, pkey):
+    """Each critique names papers by its examiner's own labels (council's per-arm shuffle, the draft among them):
+    its first line says which of those is the draft and which is papers/<label>.md, so the pen reads them right
+    without the key to who wrote what."""
+    keys = state.get("examine_keys") or {}
+    by_arm = {arm: label for label, arm in (pkey or {}).items()}
+    for label, examiner in (ckey or {}).items():
+        own = keys.get(examiner)
+        if not isinstance(own, dict) or not own:
+            note = "> Labels in this critique: its examiner's own, not recorded by council."
+        else:
+            parts = []
+            for theirs, source in sorted(own.items()):
+                if source == "draft":
+                    parts.append("%s = the draft" % theirs)
+                elif source in by_arm:
+                    parts.append("%s = papers/%s.md" % (theirs, by_arm[source]))
+                else:
+                    parts.append("%s = a paper not handed to the pen" % theirs)
+            note = "> Labels in this critique (its examiner's own): %s." % ", ".join(parts)
+        path = os.path.join(dest, "%s.md" % label)
+        with open(path) as f:
+            body = f.read()
+        with open(path, "w") as f:
+            f.write(note + "\n\n" + defang(body))
+
+
+def snapshot(st):
+    """council receipt's lines, completion and arm states, kept in the record: the run dir sits in the scratch root,
+    which another host or a restart does not keep, while the record is committed. A call that does not answer keeps
+    the last snapshot."""
+    run, cpath = st.get("run") or {}, council_path()
+    if not (run.get("dir") and run_json(run["dir"]) is not None and cpath):
+        return
+    rc, text, err = call([sys.executable, cpath, "receipt", "--run", run["dir"]], 120)
+    rcj, js, errj = call([sys.executable, cpath, "receipt", "--run", run["dir"], "--json"], 120)
+    try:
+        d = json.loads(js) if rcj == 0 else None
+        snap = {"lines": text.rstrip("\n").split("\n"), "completion": d["completion"],
+                "states": {a: (r or {}).get("state") for a, r in (d.get("arms") or {}).items()},
+                "examine_states": {a: (r or {}).get("state") for a, r in (d.get("examine") or {}).items()},
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        if rc != 0 or not text.strip():
+            raise ValueError
+        st["receipt"] = snap
+        st.pop("receipt_error", None)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        st["receipt_error"] = why_of(err or errj, rc if rc else rcj)
+
+
+def receipt_text(st):
+    """The council's part of the Receipt, as lines."""
+    run = st.get("run") or {}
+    snap = st.get("receipt") or {}
+    if run.get("dir"):
+        snapshot(st)
+        snap = st.get("receipt") or {}
+        if snap.get("lines"):
+            out = list(snap["lines"])
+            if run_json(run["dir"]) is None:
+                out += ["", "(The run dir %s does not read here: council's Receipt as recorded at %s.)" % (run["dir"], snap.get("at"))]
+        else:
+            out = ["`council receipt` did not answer (%s): the run is %s." % (st.get("receipt_error") or "no answer", run["dir"])]
+    else:
+        why = (run.get("why") or "no council run").replace("|", "/")[:200]
+        out = ["| Arm (login) | Requested / observed | Cost | Caught | State |", "| --- | --- | --- | --- | --- |"]
+        out += ["| %s (—) | unknown / unknown | — | — | refused: %s |" % (arm, why) for arm in run.get("arms") or DEFAULT_ARMS]
+        out += ["", "Completion: **incomplete** — the council refused before any arm started: %s. Caught is the pen's to "
+                "fill; each disagreement gets a line, settled by source, probe or judgement." % why]
+    ex = st.get("examine")
+    if not ex:
+        out += ["", "Examine: not run."]
+    elif ex.get("rc") != 0:
+        out += ["", "Examine: %s — %s." % ("not run" if ex.get("skipped") else "refused or failed", ex.get("why"))]
+    left = dict((st.get("left") or {}).get("papers") or {}, **{"%s, examine" % a: w for a, w in ((st.get("left") or {}).get("critiques") or {}).items()})
+    if left:
+        out += ["", "Not handed to the pen: %s." % "; ".join("%s (%s)" % kv for kv in sorted(left.items()))]
+    return out
+
+
+def write_receipt(rec, st):
+    lines = defang("\n".join(receipt_text(st))).split("\n")
+    with open(os.path.join(rec, "receipt.md"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    save(rec, st)
+    return lines
+
+
+def completion_of(st):
+    """(the council's completion state, {arm: state}) from the record: council receipt's word, fresh where the run dir
+    reads, else as recorded; (incomplete, None) when a run was recorded and neither reads; every arm refused when the
+    council refused before any started."""
+    run = st.get("run") or {}
+    if run.get("dir"):
+        snapshot(st)
+        snap = st.get("receipt") or {}
+        if snap.get("completion"):
+            return snap["completion"], snap.get("states") or {}
+        return "incomplete", None
+    return "incomplete", {a: "refused" for a in run.get("arms") or DEFAULT_ARMS}
+
+
+def cmd_run(a):
+    rec = folder(a.doc)
+    if os.path.lexists(rec) and not a.again:
+        raise Usage("%s holds a council record (or an interrupted run's) already: --again moves it aside, a new doc "
+                    "starts its own" % rec)
+    if not os.path.isfile(a.brief):
+        raise Usage("--brief %s is no file" % a.brief)
+    if os.path.lexists(rec):
+        aside, n = "%s-%s" % (rec, time.strftime("%Y%m%d-%H%M%S")), 1
+        while os.path.lexists(aside):
+            aside, n = "%s-%s-%d" % (rec, time.strftime("%Y%m%d-%H%M%S"), n), n + 1
+        os.rename(rec, aside)
+    os.makedirs(rec)
+    with open(a.brief, errors="replace") as f:
+        brief = f.read()
+    hit = leave_text()(brief)
+    with open(os.path.join(rec, "brief.md"), "w") as f:
+        # a brief holding a login's shape is never copied into the repo (council refuses it too, by kind)
+        f.write("(the brief is not copied here: it holds %s)\n" % ", ".join(hit) if hit else defang(brief))
+    arms = [x.strip() for x in a.arms.split(",") if x.strip()] if a.arms else list(DEFAULT_ARMS)
+    st = {"doc": os.path.abspath(a.doc), "run": {"arms": arms, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                                 "rc": None, "dir": None, "why": "interrupted: `principal run` did not finish"},
+          "examine": None, "labels": {}, "left": {}}
+    save(rec, st)   # before the council: an interrupted run leaves a record that says so, never a bare folder
+    cpath = council_path()
+    if not cpath:
+        st["run"].update(why="council is not installed (wharf's bin/council)")
+    else:
+        argv = [sys.executable, cpath, "run", "--home", a.home, "--brief", os.path.abspath(a.brief), "--json",
+                "--timeout", str(a.timeout)]
+        argv += ["--arms", ",".join(arms)]   # always: what is sent is what is recorded and checked
+        argv += ["--files", a.files] if a.files else []
+        argv += ["--research"] if a.research else []
+        for q in a.approved or ():
+            argv += ["--approved", q]
+        rc, out, err = call(argv, a.timeout * 3 + GRACE)
+        st["run"]["rc"] = rc
+        try:
+            d = json.loads(out).get("run")
+        except (ValueError, AttributeError):
+            d = None
+        if d and run_json(d) is not None:
+            st["run"]["dir"] = d
+            st["run"].pop("why", None)
+        else:
+            st["run"]["why"] = why_of(err, rc)
+    # the papers stay in the council's run dir, outside the doc's folder, until examine: the head drafting beside
+    # this record is blind (`principal examine` copies them, once the draft exists)
+    write_receipt(rec, st)
+    state = run_json(st["run"]["dir"]) if st["run"].get("dir") else None
+    arms_seen = (state or {}).get("arms") or {}
+    for arm in arms:
+        r = arms_seen.get(arm) or {}
+        print("%-20s %s" % (arm, r.get("state") or "refused: %s" % st["run"].get("why")))
+    print("answered: %d (the papers reach the doc's folder with `principal examine`)"
+          % sum(1 for r in arms_seen.values() if isinstance(r, dict) and r.get("state") == "ok"))
+    print("record: %s" % rec)
+    return 0
+
+
+def cmd_examine(a):
+    rec = folder(a.doc)
+    st = load(rec)
+    if st is None:
+        raise Usage("%s holds no council record: `principal run` first" % rec)
+    if not os.path.isfile(a.draft):
+        raise Usage("--draft %s is no file" % a.draft)
+    run = st.get("run") or {}
+    state = run_json(run["dir"]) if run.get("dir") else None
+    answered = [arm for arm, r in ((state or {}).get("arms") or {}).items() if isinstance(r, dict) and r.get("state") == "ok"]
+    with open(a.draft, errors="replace") as f:
+        draft = f.read()
+    scan = leave_text()
+    hit = scan(draft)
+    with open(os.path.join(rec, "draft.md"), "w") as f:
+        # the pen's blind draft, for the synthesis and the record; one holding a login's shape is never copied
+        # into the repo (council's examine refuses it as well)
+        f.write("(the draft is not copied here: it holds %s)\n" % ", ".join(hit) if hit else defang(draft))
+    if state:
+        key, left = copy_labelled(state.get("arms"), "paper", os.path.join(rec, "papers"), state.get("withheld") or {}, scan,
+                                  keep=st["labels"].get("papers"))
+        st["labels"]["papers"], st["left"]["papers"] = key, left
+        save(rec, st)
+    cpath = council_path()
+    ex = {"draft": os.path.abspath(a.draft), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    if not answered:
+        ex.update(rc=None, skipped=True, why="no arm answered the run" if state or not run.get("dir")
+                  else "the run dir %s does not read here" % run["dir"])
+    elif not cpath:
+        ex.update(rc=None, skipped=True, why="council is not installed (wharf's bin/council)")
+    else:
+        argv = [sys.executable, cpath, "examine", "--run", run["dir"], "--draft", os.path.abspath(a.draft), "--json",
+                "--timeout", str(a.timeout)]
+        argv += ["--research"] if a.research else []
+        for q in a.approved or ():
+            argv += ["--approved", q]
+        rc, _, err = call(argv, a.timeout * 3 + GRACE)
+        ex["rc"] = rc
+        if rc != 0:
+            ex["why"] = why_of(err, rc)
+    st["examine"] = ex
+    state = run_json(run["dir"]) if run.get("dir") else None
+    if state and ex.get("rc") == 0:
+        dest = os.path.join(rec, "critiques")
+        key, left = copy_labelled(state.get("examine"), "paper", dest, {}, scan)
+        relabel_critiques(dest, key, state, st["labels"].get("papers"))
+        st["labels"]["critiques"], st["left"]["critiques"] = key, left
+    else:
+        # an examine that did not answer leaves no critiques of an earlier one, whose keys name papers as they were
+        shutil.rmtree(os.path.join(rec, "critiques"), ignore_errors=True)
+        st["labels"].pop("critiques", None)
+        st["left"].pop("critiques", None)
+    write_receipt(rec, st)
+    print("papers: %d, in %s" % (len(st["labels"].get("papers") or {}), os.path.join(rec, "papers")))
+    if ex.get("rc") == 0:
+        print("critiques: %d, in %s" % (len(st["labels"].get("critiques") or {}), os.path.join(rec, "critiques")))
+    else:
+        print("examine %s: %s" % ("not run" if ex.get("skipped") else "refused or failed", ex.get("why")))
+    print("record: %s" % rec)
+    return 0
+
+
+def cmd_receipt(a):
+    rec = folder(a.doc)
+    st = load(rec)
+    if st is None:
+        raise Usage("%s holds no council record: `principal run` first" % rec)
+    print("\n".join(write_receipt(rec, st)))
+    return 0
+
+
+def receipt_section(lines):
+    """The lines of the doc's last Receipt section (a heading of any level that opens "Receipt", to the next heading
+    of its level or higher, or a `---`), outside fences (the core's fenced(), as keel reads it), or None."""
+    fence = core().fenced(lines)
+    out, level = None, None
+    for l, inside_fence in zip(lines, fence):
+        if inside_fence:
+            continue
+        h = re.match(r"^(#{1,6})\s+(.*)$", l)
+        if h and re.match(r"^[*_]*Receipt\b", h.group(2)):
+            out, level = [], len(h.group(1))
+            continue
+        if level is not None and ((h and len(h.group(1)) <= level) or l.strip() == "---"):
+            level = None
+            continue
+        if level is not None:
+            out.append(l)
+    return out
+
+
+COMPLETION_RE = re.compile(r"^\s*(?:[-*]\s+)?[*_]*(?:the\s+)?completion(?:\s+state)?[*_]*\s*[:—–-]\s*[*_`]*\s*[*_`]*"
+                           r"(complete with limitation|incomplete|complete)\b", re.I)
+
+
+def cmd_check(a):
+    rec = folder(a.doc)
+    st = load(rec)
+    if st is None:
+        raise Usage("%s holds no council record: nothing to check the Receipt against" % rec)
+    try:
+        with open(a.doc) as f:
+            lines = f.read().split("\n")
+    except OSError as e:
+        raise Usage("--doc %s does not read (%s)" % (a.doc, e.strerror or e))
+    sec = receipt_section(lines)
+    if sec is None:
+        print("%s: no `## Receipt` section" % a.doc)   # (any heading level opening "Receipt")
+        return 1
+    want, states = completion_of(st)
+    ex = st.get("examine") or {}
+    if ex.get("rc") != 0:
+        want = "incomplete"   # the agreement round did not run: the council's own word cannot be complete
+    asked = (st.get("run") or {}).get("arms") or DEFAULT_ARMS
+    rows = [l for l in sec if l.lstrip().startswith("|") and not re.match(r"^\s*\|[\s:|-]+\|\s*$", l)]
+    misses = []
+    if states is None:
+        misses.append("the council's record does not read here (%s): its run dir is gone and no Receipt was recorded, "
+                      "so the rows cannot be judged" % (st.get("receipt_error") or "no snapshot"))
+        states = {}
+    else:
+        for arm in asked:
+            # council's row shape: the arm's name, then its login in parentheses ("| opus (acct) |"), never a row that
+            # only starts with the word ("| Opus 5.5, this session (the parent) |")
+            mine = [r for r in rows if re.match(r"^\s*\|\s*[*_`]*%s[*_`]*\s*\(" % re.escape(arm), r, re.I)]
+            seen = states.get(arm) or "refused"
+            if not mine:
+                misses.append("no row for the council's %s arm (the record: %s)" % (arm, seen))
+            elif seen != "ok" and not any(re.search(said(seen), r, re.I) for r in mine):
+                misses.append("the %s arm's row does not say %s, as the record does" % (arm, seen))
+        for arm, seen in sorted(((st.get("receipt") or {}).get("examine_states") or {}).items()):
+            if seen == "ok":
+                continue
+            # the last examine's row ("| codex, examine (acct) |"), never an earlier round's ("| codex, examine #1 (…) |")
+            mine = [r for r in rows if re.match(r"^\s*\|\s*[*_`]*%s,\s*examine[*_`]*\s*\(" % re.escape(arm), r, re.I)]
+            if not any(re.search(said(seen), r, re.I) for r in mine):
+                misses.append("the %s arm's examine row does not say %s, as the record does" % (arm, seen))
+    for path, n, why in left_in(os.path.dirname(rec)):
+        where = os.path.relpath(path, os.path.dirname(a.doc))
+        if why == "ask":
+            misses.append("%s:%d reads as an open ask to autofinish (a D-item, an answer box, a Decide line, an open "
+                          "checkbox or a docs/handoff/ path): the doc's folder holds none" % (where, n))
+        else:
+            misses.append("%s:%d holds a login's shape: nothing of the doc's folder goes to git with one" % (where, n))
+    if ex.get("rc") != 0 and not any(re.search(r"\bexamine\b", l, re.I) and re.search(r"\b(not run|refused|failed|skipped)\b", l, re.I)
+                                     for l in sec):
+        misses.append("examine %s, and the Receipt does not say so" % ("was not run" if not ex else "did not answer (%s)" % ex.get("why")))
+    done = [m.group(1).lower() for m in map(COMPLETION_RE.match, sec) if m]
+    if not done:
+        misses.append("no completion state (complete, incomplete or complete with limitation)")
+    elif RANK[done[-1]] > RANK.get(want, 0):
+        misses.append("the completion state says %s, the council's is %s" % (done[-1], want))
+    for m in misses:
+        print("%s: %s" % (a.doc, m))
+    if not misses:
+        print("%s: the Receipt holds the council's record (%s)" % (a.doc, want))
+    return 1 if misses else 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="principal", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="verb")
+    r = sub.add_parser("run")
+    r.add_argument("--brief", required=True)
+    r.add_argument("--home", required=True)
+    r.add_argument("--files")
+    r.add_argument("--arms")
+    r.add_argument("--again", action="store_true")
+    e = sub.add_parser("examine")
+    e.add_argument("--draft", required=True)
+    for x in (r, e):
+        x.add_argument("--research", action="store_true")
+        x.add_argument("--approved", action="append")
+        x.add_argument("--timeout", type=int, default=1200)
+    for x in (r, e, sub.add_parser("receipt"), sub.add_parser("check")):
+        x.add_argument("--doc", required=True)
+    a = p.parse_args(argv)
+    if not a.verb:
+        p.print_help()
+        return 2
+    try:
+        return {"run": cmd_run, "examine": cmd_examine, "receipt": cmd_receipt, "check": cmd_check}[a.verb](a)
+    except Usage as e:
+        say(str(e))
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

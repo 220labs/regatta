@@ -406,6 +406,19 @@ if [ -z "$FENCE" ]; then
   check "$(grep -c 'refused .*no seatbelt here.*until a guest' "$T/fences-off.txt")" 3 "  every arm of the three refused, saying why"
   check "$(nruns)" "$n0" "  no run dir made, no CLI started"
   check "$([ -e "$T/fences-state.json" ] && echo written || echo none)" none "  no verdict written"
+  # sextant's bin/principal, /sounding --principal's road (the principal tier's S4): a refused arm is the Receipt's
+  # word, never the sounding's end
+  PR="$M/../sextant/bin/principal"
+  if [ -f "$PR" ]; then
+    mkdir -p "$T/pdocs"; PD="$T/pdocs/p-2026-11-03.md"; PRR="$T/pdocs/p-2026-11-03/council"
+    PRINCIPAL_COUNCIL="$B/council" python3 "$PR" run --doc "$PD" --brief "$T/brief.md" --home "$H" > "$T/pr.out" 2>&1
+    check "$?" 0 "  principal run (sextant's, S4): exits 0 though no arm ran"
+    check "$(grep -c '^| [a-z]* (.*) | .* | refused: .*no seatbelt' "$PRR/receipt.md")" 3 "  its Receipt: the three arms refused, saying why"
+    has "$PRR/receipt.md" "Completion: **incomplete**" "  …incomplete"
+    PRINCIPAL_COUNCIL="$B/council" python3 "$PR" examine --doc "$PD" --draft "$T/draft.md" > "$T/pr.out" 2>&1
+    check "$?" 0 "  principal examine: exits 0, not run"
+    has "$PRR/receipt.md" "Examine: not run — no arm answered the run." "  …the Receipt says so"
+  else echo "  skipped: sextant is not beside this module (principal's cases)"; fi
 else
 echo "run: every arm under the seatbelt, each in its own box"
 : > "$CALLS"
@@ -638,6 +651,23 @@ check "$(jget "$R/run.json" 'd["withheld"]')/$(jget "$R/run.json" 'sorted(d["exa
 hasnt "$R/examine/antigravity/prompt.md" "ant-oat01-STANDIN" "  no examiner's prompt holds it"
 printf 'Draft quoting g%sp_STANDINSTANDINSTANDINSTANDIN\n' h > "$T/draft-tok.md"
 C examine --run "$R" --draft "$T/draft-tok.md" > /dev/null 2>&1; check "$?" 2 "a draft holding a token's shape: examine refused"
+
+echo "principal (sextant's bin/principal, the principal tier's S4): /sounding --principal's road on these stand-ins"
+PR="$M/../sextant/bin/principal"
+if [ -f "$PR" ]; then
+  mkdir -p "$T/pdocs"; PD="$T/pdocs/p-2026-11-03.md"; PRR="$T/pdocs/p-2026-11-03/council"
+  PRINCIPAL_COUNCIL="$B/council" python3 "$PR" run --doc "$PD" --brief "$T/brief.md" --home "$H" > "$T/pr.out" 2>&1; check "$?" 0 "principal run exits 0"
+  PRUN=$(jget "$PRR/state.json" 'd["run"]["dir"]')
+  check "$([ -e "$PRR/papers" ] && echo there || echo none)" none "  no paper in the doc's folder before examine: the head drafts blind"
+  PRINCIPAL_COUNCIL="$B/council" python3 "$PR" examine --doc "$PD" --draft "$T/draft.md" > "$T/pr.out" 2>&1; check "$?" 0 "  examine exits 0"
+  check "$(ls "$PRR/papers" | wc -l | tr -d ' ')" "$(jget "$PRUN/run.json" 'sum(1 for r in d["arms"].values() if r.get("state") == "ok")')" \
+    "  then a paper per arm that answered, under labels in the doc's folder"
+  hasnt "$PRR/state.json" "STANDIN" "  no login in the record"
+  head -1 "$PRR/critiques/A.md" | grep -q '^> Labels in this critique'; check "$?" 0 "  each critique opens with its labels' key"
+  check "$(ls "$PRR/critiques" | wc -l | tr -d ' ')" "$(ls "$PRR/papers" | wc -l | tr -d ' ')" "  a critique per examiner"
+  has "$PRR/receipt.md" ", examine (acct-sam) |" "  the Receipt: council's rows, examine's included"
+  has "$PRR/receipt.md" "Completion: **" "  …and its completion state"
+else echo "  skipped: sextant is not beside this module (principal's cases)"; fi
 
 echo "review: the build path's codex exec review"
 : > "$CALLS"

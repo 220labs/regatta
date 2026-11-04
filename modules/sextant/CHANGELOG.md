@@ -2,8 +2,20 @@
 
 ## Unreleased
 
+- `bin/principal` refuses `$PRINCIPAL_COUNCIL` to an unattended caller, as council refuses its own override, and its
+  `check` reads a row's `timed out` as the record's `timeout` (the finish review).
 - `sextant north-star init|show|check` (Evolve S4): the deployment's North Star in `sextant/north-star.json` of the regatta config dir, a link to wherever the owner keeps it, never validated by the core's config check. `init` writes only what is decided: the builds cap (3 a week, $45 list), the soundings cap (2 a week), the three weekly ceilings in the owner's units (Claude $10 effective, Codex $150 list, Gemini $350 list; `show` prints the other column at the week's ratio; a provider key it does not know, or one left out, makes the file unusable, as a ceiling only narrows), one control slot a week and `meta.trials_in_flight` 1, both marked in their provenance as the design's defaults, no framework-share reservation, goals from a Markdown file's Goals bullets (outcome only), the ventures' status and gates; it refuses to overwrite without `--force` (which keeps the replaced file beside it as `north-star.json.prev`, an older one moved to `.prev.1`, `.prev.2` …), refuses a link into a folder that is missing (an unmounted drive) and writes through the config dir's link. `show` prints each ceiling in both columns from `cost-ratio.json` (a list figure for a Claude ceiling, an effective one for the others), never inventing a column: a ceiling whose ratio key (`ratio_key`, the provider's own by default; Gemini's is `agy-gemini`) the file does not name reads unknown, not pay-per-use. `init` exits 5 when it refused and wrote nothing. `check` exits 0 (a goal has an outcome, measure, horizon and a numeric priority: strategic allocation permitted), 3 (none, or no file: maintenance only, strategic allocation blocked) or 4 (unreadable, off-shape, or a link that leads nowhere). `status()` and `memo_line()` are the entry points for the barrier and the memo. Replaces the strategy record's `sextant goals --check`, `launch --arm` and `north-star.md`.
 
+- `/sounding --principal` (the principal tier's S4, docs/principal-tier-2026-10-26.md): the head by scope
+  (`principal-architect`; a venture's `sounder` at `xhigh`), its blind draft beside wharf's `council run`, `examine`, a
+  fresh synthesis, two `reviewer-high` passes merged, and the Receipt; `--light` refused with it. `bin/principal` is
+  its council road (`run`, `examine`, `receipt`, `check`), recorded in the doc's folder, `<stem>/council/` (state.json
+  before the council starts, council's Receipt kept in it; the papers and critiques under shuffled labels from
+  `examine` on, once the draft exists, each critique keyed to them; every D-item, answer box, Decide line, open checkbox and docs/handoff/ path
+  rewritten so autofinish reads none as an open ask, and `check` refuses one left anywhere in `<stem>/`, and any file there holding a login's shape; a draft or brief
+  holding one is never copied); a refused run, a refused, failed or timed-out arm, or no council installed is
+  recorded, said in the Receipt and exits 0, so the sounding goes on. `check` holds the doc's Receipt to the record.
+  Cases: `tests/principal.sh` against a council stand-in, any OS.
 - `pitch check`: `claims.retired` normalises the scanned paths before `check <document>` keeps that
   document's, so a `retired_scan` glob that climbs out of the root (`../notes/*.md`) is read there as the
   root's check reads it; a planted retired claim passed. The paths are normalised, never resolved through

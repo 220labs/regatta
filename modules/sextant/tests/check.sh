@@ -114,6 +114,16 @@ sys.exit(0 if isinstance(m, dict) and m.get("name") == sys.argv[2] and isinstanc
     ok $? "  …and realpath, run on a linked skill, prints the module that holds bin/pitch"
   else echo "  skipped: realpath is not on this host (before macOS 13); the fallback case above stands"; fi
 done
+# /sounding --principal (the principal tier's S4): the council's road, bin/principal, against a council stand-in
+# (any OS; the stubbed CLIs through the real council are wharf's test_council.sh), and the skill's section names
+# its head by scope and every principal verb it runs, each one principal takes
+bash "$D/tests/principal.sh" >"$T/principal.log" 2>&1; pr=$?; grep -E '^  FAIL|all passed|failed$|^skipped' "$T/principal.log"; [ "$pr" = 0 ] || tail -n 30 "$T/principal.log"
+ok "$pr" "principal's suite (tests/principal.sh)"
+grep -q '^## 6b\. `--principal`' "$SK" && grep -q '`principal-architect`' "$SK" && grep -q 'effort: "xhigh"' "$SK"
+ok $? "skills/sounding: --principal picks principal-architect, or sounder at xhigh for a venture"
+for v in run examine receipt check; do grep -q "<principal> $v --doc" "$SK" && python3 "$D/bin/principal" "$v" --help >/dev/null 2>&1; ok $? "  principal $v, which it runs, is a principal verb"; done
+python3 "$D/bin/principal" run --help | grep -q -- '--approved' && python3 "$D/bin/principal" examine --help | grep -q -- '--research'; ok $? "  …and its flags are principal's"
+if [ -n "$KEEL" ]; then python3 "$KEEL" lint --help >/dev/null 2>&1 && grep -q '^PRINCIPAL_SINCE' "$KEEL"; ok $? "  keel's principal rule, which --strict runs, is there"; fi
 # the sounding queue (the Sounding's S7): scratch dirs and git only, any OS
 bash "$D/tests/soundings.sh" | tail -1; ok "${PIPESTATUS[0]}" "the sounding queue's suite (tests/soundings.sh)"
 python3 "$D/bin/soundings" --help | grep -q 'soundings next'; ok $? "soundings --help prints its usage"

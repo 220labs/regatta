@@ -1,7 +1,7 @@
 ---
 name: sounding
-description: Sound an idea before anything is built — a change to one project, to how every project runs, or an idea outside any repo (a venture, a pitch, a tool to build or adopt) — through one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`). Sounded unless the request starts `firm:`; the doc carries a Landscape of what exists and a one-line Verdict, passes the lint and `reviewer-high`, and reaches the owner by one of three paths — full (the hand-over line), `--light` (a chat questionnaire) or `--yolo` (the reversible picks taken unattended). Use for "sound this out", "is this worth building", "propose …", a kept idea note or a ready proposal, and whenever the owner types /sounding (from a phone, `—light` and `—yolo` are the same flags).
-argument-hint: "[firm:] <idea, brief or note path> [--light] [--yolo]"
+description: Sound an idea before anything is built — a change to one project, to how every project runs, or an idea outside any repo (a venture, a pitch, a tool to build or adopt) — through one architect-family agent picked by scope (`architect`, `sr-architect`, `sounder`). Sounded unless the request starts `firm:`; the doc carries a Landscape of what exists and a one-line Verdict, passes the lint and `reviewer-high`, and reaches the owner by one of three paths — full (the hand-over line), `--light` (a chat questionnaire) or `--yolo` (the reversible picks taken unattended); `--principal` adds the council (blind arms from other vendors, a cross-examination, a fresh synthesis, two fact-checks, a Receipt). Use for "sound this out", "is this worth building", "propose …", a kept idea note or a ready proposal, and whenever the owner types /sounding (from a phone, `—light` and `—yolo` are the same flags).
+argument-hint: "[firm:] <idea, brief or note path> [--light] [--yolo] [--principal]"
 ---
 
 Sound it: $ARGUMENTS
@@ -120,6 +120,69 @@ Spawn the head with the brief, in the foreground: the next step reads its doc.
 **Unattended** (a dispatched run, `CLAUDE_UNATTENDED` set): never the questionnaire — the check
 refuses it (C4). The full path's hand-over is the run's relay (`ask relay <doc> <Dn>`), and the
 run ends on the line it prints.
+
+## 6b. `--principal`: the council, the synthesis, the Receipt
+
+Only when the owner typed `--principal` (or the request starts `principal:`): a sounding where an answer that
+holds is worth a council's cost (docs/principal-tier-2026-10-26.md, "The council"). `--light` is refused with
+it (say so in chat and go the full path); `--yolo` stays the owner's to type. Every step above holds; these
+replace step 1's head and step 4's one spawn, and add to step 5.
+
+- **The head.** One project's idea or one that changes how every project runs: `principal-architect`, the
+  brief naming its scope (the project's, or the system's as `sr-architect` reads it). A venture (nothing in a
+  repo yet): `sounder`, spawned with `effort: "xhigh"`, the brief asking for a header whose `Written by`
+  line names `sounder` with `principal` in its parenthesis (`(Fable 5.1, xhigh, principal)`) — that word is
+  what `keel lint --strict` reads; `principal-architect`'s own name is enough for the other two.
+- **The council's tool.** `principal` (this module's `bin/`, resolved as `sparks` is above; wharf's
+  `council` is its peer). Its record goes in the doc's folder, `<stem>/council/`. A council that refuses, an
+  arm that fails, a council not installed, all off macOS until the isolation design's S6: `principal` records
+  it, prints it and exits 0 — the sounding goes on, and the Receipt says so. Never retry a refused arm by
+  another road; a broken arm's way out is `council fences` (the owner's), or row C.
+- **The home.** The repo the doc is in, at its committed HEAD (council copies a commit, never the working
+  tree: commit the brief first). A venture's is the vault's worktree; a guarded home needs the owner's quote
+  per vendor (`--approved google=<quote>`, typed by the owner in this request), never an unattended caller's:
+  without it those arms refuse, and the Receipt says so.
+
+1. **The brief**, as step 4 writes it, saved to `<stem>/brief.md` and committed: the council's arms get it as
+   it is — each designs in full, on the head's mandate, what the subject owes included (the owner, 2026-10-30:
+   "the other 2 models should design as well, not just consult. then they try to agree") — and the head gets it
+   with the doc's path. The head's copy also says: write the blind draft to `<scratch>/draft.md`, a path in
+   this session's scratch folder (outside the repo), not the doc; no council paper reaches you yet. The brief
+   itself holds no D-item, answer box, open checkbox or docs/handoff/ path: `<stem>/` is committed with the
+   doc, and autofinish reads each as an open ask the owner never answers.
+2. **The draft and the council, side by side.** Bash `<principal> run --doc <doc> --brief <stem>/brief.md
+   --home <repo> [--files <named files>] [--research when the brief needs the web] [--approved …]` with
+   `run_in_background: true`, then, in the same message after it, spawn the head on the draft (foreground):
+   a Bash call that writes never runs beside another tool, so only the background start lets the two overlap.
+   Where background work is off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, a dispatched run), the Agent call
+   comes first and `principal run` after it, timeout 1800000. Either way the head stays blind: `principal
+   run` leaves the papers in the council's run dir, outside the doc's folder. Wait for the run to end before
+   step 3.
+3. `<principal> examine --doc <doc> --draft <scratch>/draft.md [--research] [--approved …, as step 2]` (timeout
+   1800000): the draft and the papers reach `<stem>/council/` (`draft.md`, `papers/`), each D-item and answer
+   box rewritten so none reads as an ask, then the agreement round — each arm that answered reads
+   the draft and every design, blind, adopts what is better, and concedes, holds with evidence or compromises
+   where they disagree. Each critique opens with a line saying which of its own labels is the draft and which
+   `papers/<label>.md`.
+4. `<principal> receipt --doc <doc>`: the council's rows and completion line.
+5. **The synthesis: a fresh head** (never the drafter, never continued), same agent and effort, briefed with
+   the brief, `<stem>/council/draft.md`, `papers/` and `critiques/` (labels only: the key in
+   `state.json` is not for it), and receipt 4's text verbatim. It writes up what the arms agreed, settles what
+   they did not, and leaves as D-items only what the owner alone decides. It writes the doc whole, its probes in
+   `<stem>/`; its `## Receipt` holds the council's rows as given (a refused or failed arm stays so), a row
+   for the draft's pen and its own, a line per disagreement settled by source, probe or judgement (a
+   judgement `flagged`), and its completion state as `Completion: **<state>** — <why>`: `incomplete`
+   while an arm or examine did not answer.
+6. **Two `reviewer-high` passes**, model opus, in one message, each on the doc alone (neither sees the
+   other's report); merge their findings (one item per claim, the stronger severity) and apply them as
+   section 5's check 2 says. Add a Receipt row per reviewer (requested Opus `high`; observed read from its transcript, else
+   `unknown`), and one for this session, the parent.
+7. `<principal> check --doc <doc>` (the Receipt against the council's record) and `keel lint --strict <doc>`
+   (the principal rule: no Receipt, no completion state, or anything but `incomplete` beside an arm that did
+   not answer is an error; under three arms and an unsettled or unflagged disagreement warn). `check` also
+   refuses a file in `<stem>/` that autofinish would read as an open ask. Fix and re-run until both pass.
+8. Commit the doc, `<stem>/` and `<stem>/council/` (draft, papers, critiques, `receipt.md`, `state.json`), then
+   the path section 6 names: full, or `--yolo` when typed.
 
 ## 7. Go on
 
