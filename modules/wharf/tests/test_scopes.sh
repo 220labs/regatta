@@ -314,6 +314,45 @@ out=$(SC set sec --yard none 2>&1); rc=$?
 if [ $rc -eq 0 ] && python3 -c "import json,sys; s=json.load(open(sys.argv[1]))['scopes']['sec']; sys.exit(0 if 'yard' in s and s['yard'] is None else 1)" "$F/repos.json" \
    && SC check >/dev/null 2>&1; then echo "  ok   …--yard none: null written, and the check passes again"
 else echo "  FAIL scopes set --yard none (rc $rc): $out"; fails=$((fails+1)); fi
+# a confidential scope's own node (scopes-node-yard, 2026-11-03): the core's scope_yard_hosts — its node folder
+# here (`scope` and `ssh`), or this host as its node by its payload's clones; never another scope's node,
+# never an open scope's; judged with the flag the same write leaves
+cp "$F/repos.json" "$F/node-before.json"
+yn() {   # yn LABEL WANT_RC GREP ARGS…: SC set ARGS, its rc, its output holding GREP, and the file untouched unless rc 0 and no --dry-run
+  label=$1 want=$2 pat=$3; shift 3
+  out=$(SC set "$@" 2>&1); rc=$?
+  if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$pat" && { [ "$rc" = 0 ] || cmp -s "$F/repos.json" "$F/node-before.json"; }; then echo "  ok   $label"
+  else echo "  FAIL $label (rc $rc): $out"; fails=$((fails+1)); fi
+}
+mkdir -p "$F/cfg/wharf-runs/nodes/sec"; echo sec > "$F/cfg/wharf-runs/nodes/sec/scope"; echo sec-agent > "$F/cfg/wharf-runs/nodes/sec/ssh"
+yn "scopes set sec --yard sec-agent --dry-run: its own node folder → exit 0, the one line" 0 "^would write .*: \[x\] sec — login lab — yard sec-agent$" sec --yard sec-agent --dry-run
+cmp -s "$F/repos.json" "$F/node-before.json" && echo "  ok   …--dry-run writes nothing" || { echo "  FAIL --dry-run wrote"; fails=$((fails+1)); }
+yn "…an open scope naming the node → exit 1, said open, nothing written" 1 "atlas is open, and an open scope's yard is never a node" atlas --yard sec-agent
+yn "…another scope's node, though the write flags it confidential → exit 1, nothing written" 1 "sec-agent is not a host .*nor a node of atlas's told here" atlas --confidential --yard sec-agent
+yn "…a write that opens the scope it names the node of → exit 1" 1 "sec is open, and an open scope's yard is never a node" sec --open --yard sec-agent
+yn "…an unlisted host, as before → exit 1, the scope's own node named beside the list" 1 "nowhere is not a host .*lighthouse/hosts lists (laptop, studio), nor sec's own node (sec-agent)" sec --yard nowhere
+printf 'laptop\nstudio\nsec-agent\n' > "$F/cfg/lighthouse/hosts"   # the overlay may list the node too
+yn "…a node lighthouse/hosts lists, for an open scope → exit 1, nothing written" 1 "atlas is open, and an open scope's yard is never a node" atlas --yard sec-agent
+yn "…for another confidential scope → exit 1, nothing written" 1 "sec-agent is not a host .*nor a node of atlas's told here" atlas --confidential --yard sec-agent
+yn "…for its own scope, in capitals → exit 0" 0 "yard Sec-Agent\$" sec --yard Sec-Agent --dry-run
+printf 'laptop\nstudio\n' > "$F/cfg/lighthouse/hosts"
+rm "$F/cfg/wharf-runs/nodes/sec/ssh"
+yn "…its node folder with no ssh → exit 1, said why" 1 "nodes/sec names scope sec and no ssh" sec --yard sec-agent
+echo sec-agent > "$F/cfg/wharf-runs/nodes/sec/ssh"
+out=$(SC set sec --yard sec-agent 2>&1); rc=$?
+if [ $rc -eq 0 ] && python3 -c "import json,sys; s=json.load(open(sys.argv[1]))['scopes']['sec']; sys.exit(0 if s.get('yard')=='sec-agent' and s.get('confidential') is True and s.get('login')=='lab' else 1)" "$F/repos.json"; then
+  echo "  ok   …written: the yard the node, the flag and the login kept"
+else echo "  FAIL scopes set sec --yard sec-agent (rc $rc): $out"; fails=$((fails+1)); fi
+cp "$F/node-before.json" "$F/repos.json"
+rm -r "$F/cfg/wharf-runs/nodes"; NK="$F/cfg/wharf-runs/node"; mkdir -p "$NK"; echo sec > "$NK/scope"; printf 'know gh/know\n' > "$NK/clones"
+HN=$(REGATTA_CONFIG="$F/cfg" python3 -I -c "import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.host_name())" "$B/../../regatta/hooks")
+yn "this host as sec's node (its payload's scope names sec) → exit 0" 0 "yard $HN\$" sec --yard "$HN" --dry-run
+yn "…another confidential scope naming this node → exit 1" 1 "$HN is not a host .*nor a node of atlas's told here" atlas --confidential --yard "$HN" --dry-run
+: > "$NK/scope"
+yn "…a shared node (its scope empty), whatever its clones hold → exit 1" 1 "$HN is not a host .*nor a node of sec's told here" sec --yard "$HN" --dry-run
+rm "$NK/scope"; printf 'layer gh/layer\n' > "$NK/clones"
+yn "…an older render (clones, no scope key) carrying an open scope's repo, this host not named <scope>-agent: no node → exit 1" 1 "$HN is not a host .*nor a node of atlas's told here" atlas --confidential --yard "$HN" --dry-run
+rm -r "$F/cfg/wharf-runs"
 cp "$F/before.json" "$F/repos.json"
 G="$T/gitreg"; git init -q -b main "$G"; cp "$F/before.json" "$G/repos.json"
 git -C "$G" add repos.json; git -C "$G" -c user.email=t@t -c user.name=t commit -q -m r

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `scopes set SCOPE --yard HOST` (scopes-node-yard): a confidential scope's own node is a yard too (the core's
+  `scope_yard_hosts`), judged with the flag the same write leaves, so `scopes set SCOPE --yard <name>-agent` passes
+  on the Mac holding the node's folder and on the node itself; an open scope naming a node, another scope's node,
+  the shared node and a host nothing knows are refused, each said why.
+
 - `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
   nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
   table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged

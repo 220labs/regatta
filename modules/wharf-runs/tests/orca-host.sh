@@ -353,9 +353,11 @@ def node_readers(root):
     return sorted(out)
 readers = node_readers(M.parent)
 # helm send's yard_alias reads one through orca-host's node_peers, for the send's own yard (node-road,
-# 2026-11-02: a confidential scope's yard by its node folder's ssh, never wharf-runs/ssh); helm's suite holds its cases
-check(sorted(set(readers) - {"wharf-runs/bin/yard-node"}) == ["helm/bin/sendlib.py", "wharf-runs/bin/orca-host"],   # yard-node: not on the twin
-      f"  only orca-host, yard-node and helm send read a node folder: no dispatch, berth, pickup, the rest of helm or landing (got {readers})")
+# 2026-11-02: a confidential scope's yard by its node folder's ssh, never wharf-runs/ssh); helm's suite holds its cases.
+# The core's nodes_here reads one to judge a yard (scopes-node-yard, 2026-11-03: scopes set, regatta check): it gives a
+# node's peer name and scope, never its ssh alias, so nothing reaches a node through it; the core's suite holds its cases
+check(sorted(set(readers) - {"wharf-runs/bin/yard-node"}) == ["helm/bin/sendlib.py", "regatta/hooks/common.py", "wharf-runs/bin/orca-host"],   # yard-node: not on the twin
+      f"  only orca-host, yard-node, helm send and the core's yard judge read a node folder: no dispatch, berth, pickup, the rest of helm or landing (got {readers})")
 stale = T / "readers" / "wharf-runs" / "bin"
 (stale / "__pycache__").mkdir(parents=True)
 (stale / "orca-host").write_text("NODES = 'wharf-runs/nodes'\n")
