@@ -109,7 +109,21 @@ LAYER = HERE.name if HERE else None
 WORKTREES = "/.claude/worktrees/"
 RETIRED = ".scopes-retired"
 EXT = ".code-workspace"
-LOCK_WAIT = float(os.environ.get("REGATTA_SCOPES_LOCK_WAIT") or 60)   # s a session start's `write --from` waits for another write's lock (sync.py allows 120)
+def _lock_wait():
+    """Seconds a session start's `write --from` waits for another write's lock: REGATTA_SCOPES_LOCK_WAIT,
+    else 60, kept within 0-100 so sync.py's 120 s timeout never cuts a wait short; a value that does not
+    read is 60, never a crash of every verb at import (the second finish review, 2026-11-03)."""
+    try:
+        v = float(os.environ.get("REGATTA_SCOPES_LOCK_WAIT") or 60)
+    except ValueError:
+        v = 60.0
+    return 60.0 if v != v else min(max(v, 0.0), 100.0)
+
+
+LOCK_WAIT = _lock_wait()
+# this tool by its own path: a start note reaches every repo's session, where `bin/scopes` resolves nowhere
+# (the second finish review, 2026-11-03)
+SELF = str(Path(__file__).resolve())
 OWNED_ELSEWHERE = ("git.branchProtection",)  # hooks/sync.py's landed-branch locks: never declared, never dropped
 
 
@@ -657,7 +671,7 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None, only=None):
         why = held(path) if current is not None else None
         if why and first_folder(current, path) != first_folder(body, path):
             out.append(f"✗ {scope['file']} not written: its first folder would change and {why} — close"
-                       f" that window, then run `bin/scopes write` (a session start writes it too: any"
+                       f" that window, then run `{SELF} write` (a session start writes it too: any"
                        f" start for an open scope, one inside it for a confidential one)")
             continue
         if (path.read_text() if path.exists() else None) != raw:
@@ -679,7 +693,7 @@ def write(repos, scopes, names, base, dry, retired=(), opened=None, only=None):
         why = held(path)
         if why:
             out.append(f"✗ {rel} not retired: {why} — moving it would crash that window; close it,"
-                       f" then run `bin/scopes write` again")
+                       f" then run `{SELF} write` again")
             continue
         dest = base / RETIRED / stamp / rel.replace("/", "__")
         out.append(f"{'would move' if dry else 'moved'} retired {rel} → {dest.relative_to(base)}")
@@ -788,7 +802,7 @@ def main(argv):
         path = projects() / scopes[name]["file"]
         if not path.is_file():
             print(f"scopes: {name}'s file {path} does not exist — a session start writes it (any"
-                  f" start for an open scope, one inside it for a confidential one), or bin/scopes write", file=sys.stderr)
+                  f" start for an open scope, one inside it for a confidential one), or {SELF} write", file=sys.stderr)
             return 1
         print(path)
         return 0
@@ -805,34 +819,6 @@ def main(argv):
         if stray:   # `--from=PATH`, a misspelt flag, `--from --dry-run`: refused, never read as a write of all
             print(f"scopes write [--dry-run] [--from PATH] — not understood: {' '.join(stray)}", file=sys.stderr)
             return 2
-        only, retired = None, data.get("scope_files_retired") or []
-        if src:
-            # the fence (knowledge-layers D3): a session outside a confidential scope never reads its
-            # folders, so it never writes that scope's file either — a session inside it does
-            only = {n for n, sc in scopes.items() if sc.get("confidential") is not True or inside(n, src, data)}
-            retired = []   # moving one aside stays a deliberate run by hand
-        bad = faults(repos, scopes)
-        if bad and only is not None:
-            # a fault naming a confidential scope this session is outside (its name, a repo of it) is
-            # kept in this repo's record and said at its start: one line that names none of it instead
-            # (the /finish review, 2026-11-03); `bin/scopes check` inside the scope names it
-            hidden = set()
-            for n, sc in scopes.items():
-                if n not in only:
-                    try:
-                        hidden |= {n, *members(sc, repos)}
-                    except Exception:   # a malformed scope: its name alone, and nothing else is shown
-                        hidden.add(n)
-            word = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, sorted(hidden, key=len, reverse=True)))
-                              + r")(?![\w-])") if hidden else None
-            kept = [b for b in bad if not (word and word.search(b))]
-            if len(kept) < len(bad):
-                kept.append("the registry has a fault in a confidential scope this session is outside —"
-                            " `bin/scopes check` in a session inside it names it")
-            bad = kept
-        if bad:
-            print("\n".join(f"✗ {b}" for b in bad), file=sys.stderr)
-            return 1
         lock = common.CONFIG / "wharf" / "scopes-write.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
         with open(lock, "w") as held:
@@ -840,17 +826,62 @@ def main(argv):
             # confidential session's scope is not an open one's), so a run never skips for another's
             # (the /finish review, 2026-11-03). A session start's run gives up after LOCK_WAIT with
             # exit 3 and no ✓, which sync.py reads as "nothing judged" and keeps its record; by hand, wait
-            deadline = datetime.datetime.now().timestamp() + LOCK_WAIT
+            deadline = time.monotonic() + LOCK_WAIT
             while True:
                 try:
                     fcntl.flock(held, fcntl.LOCK_EX | (fcntl.LOCK_NB if src else 0))
                     break
                 except BlockingIOError:
-                    if datetime.datetime.now().timestamp() >= deadline:
-                        print(f"scopes write: another write held the lock for {LOCK_WAIT} s — not run",
+                    if time.monotonic() >= deadline:
+                        print(f"scopes write: another write held the lock for {LOCK_WAIT:g} s — not run",
                               file=sys.stderr)
                         return 3
                     time.sleep(0.5)
+            # the lock first, then the registry: a run that waited judges and writes from what the
+            # holder left, never a view read before it (the second finish review, 2026-11-03)
+            data = registry_data()
+            repos, scopes, names = registry(data=data)
+            only, retired = None, data.get("scope_files_retired") or []
+            if src:
+                # the fence (knowledge-layers D3): a session outside a confidential scope never reads its
+                # folders, so it never writes that scope's file either — a session inside it does. Open
+                # means the flag is absent or false; any other value (`"true"`, 1) is fenced as
+                # confidential, the safe side (the second finish review)
+                only = {n for n, sc in scopes.items()
+                        if sc.get("confidential") is None or sc.get("confidential") is False or inside(n, src, data)}
+                retired = []   # moving one aside stays a deliberate run by hand
+
+                def torn(sc):
+                    ms = sc.get("repos") if isinstance(sc, dict) else None
+                    return ms is not None and not (isinstance(ms, list) and all(isinstance(m, str) for m in ms))
+                if common.registry_malformed(data) or any(torn(sc) for n, sc in scopes.items() if n not in only):
+                    # a fenced scope whose repos do not read hides none of them: refuse in words that name
+                    # nothing, as the core's fences read such a registry as torn (the second finish review)
+                    print("✗ the registry has a malformed confidential scope — `" + SELF + " check` in a"
+                          " session inside it names it", file=sys.stderr)
+                    return 1
+            bad = faults(repos, scopes)
+            if bad and only is not None:
+                # a fault naming a confidential scope this session is outside (its name, a repo of it) is
+                # kept in this repo's record and said at its start: one line that names none of it instead
+                # (the /finish review, 2026-11-03); `bin/scopes check` inside the scope names it
+                hidden = set()
+                for n, sc in scopes.items():
+                    if n not in only:
+                        try:
+                            hidden |= {n, *members(sc, repos)}
+                        except Exception:   # a malformed scope: its name alone, and nothing else is shown
+                            hidden.add(n)
+                word = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, sorted(hidden, key=len, reverse=True)))
+                                  + r")(?![\w-])") if hidden else None
+                kept = [b for b in bad if not (word and word.search(b))]
+                if len(kept) < len(bad):
+                    kept.append("the registry has a fault in a confidential scope this session is outside —"
+                                f" `{SELF} check` in a session inside it names it")
+                bad = kept
+            if bad:
+                print("\n".join(f"✗ {b}" for b in bad), file=sys.stderr)
+                return 1
             lines = write(repos, scopes, names, projects(), "--dry-run" in rest, retired, only=only)
         print("\n".join(lines) if lines else f"✓ {len(only if only is not None else scopes)} scope files current")
         return 1 if any(l.startswith("✗") for l in lines) else 0

@@ -14,6 +14,9 @@
   step (the knowledge layer's hook suite sets it), `=inline` runs it in place; `--from ""` is refused.
   `write` puts a file that lands inside a git checkout into its `.git/info/exclude`, once; asks VS Code
   which files are open only when one would change; and refuses an option it does not understand.
+  A run takes the lock before it reads the registry; under `--from` a scope is open only when its flag is absent or
+  false, and a fenced scope whose repos do not read refuses the run in one line naming nothing; a host with no
+  registry skips the step.
 
 - `council run` asks each arm for a complete design on the pen's mandate, not a position paper, and `council
   examine` for an agreement round: what each arm adopts from each paper, and its stand where they disagree (concede,

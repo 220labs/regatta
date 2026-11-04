@@ -493,7 +493,25 @@ else echo "  FAIL sync.py: a confidential scope's fault in pub's record: $out"; 
 SR "$WP/node"
 printf '%s' "$(SN "$WP/node")" | grep -q "ghostnode" && echo "  ok   …and is named in full at a start inside the scope" \
   || { echo "  FAIL sync.py: the fault not named inside sec: $(SN "$WP/node")"; fails=$((fails+1)); }
+# a fenced scope whose repos do not read hides none of them: the open repo's record names nothing
+# (the second finish review, 2026-11-03: `"repos": "node"` named node as "in no scope")
+python3 -c "import json,sys; d=json.load(open(sys.argv[2])); d['scopes']['sec']['repos']='node'; json.dump(d, open(sys.argv[1],'w'))" "$WP/layer/repos.json" "$W/good.json"
+SR "$WP/pub"
+out=$(SN "$WP/pub")
+if printf '%s' "$out" | grep -q "a malformed confidential scope" && ! printf '%s' "$out" | grep -q -w -e sec -e node; then
+  echo "  ok   …a confidential scope whose repos do not read: one line naming none of it"
+else echo "  FAIL sync.py: a malformed confidential scope in pub's record: $out"; fails=$((fails+1)); fi
+# a confidential flag that is not plainly true or false is fenced, never read as open
+python3 -c "import json,sys; d=json.load(open(sys.argv[2])); d['scopes']['sec']['confidential']='true'; d['scopes']['sec']['repos'].append('ghostnode'); json.dump(d, open(sys.argv[1],'w'))" "$WP/layer/repos.json" "$W/good.json"
+SR "$WP/pub"
+out=$(SN "$WP/pub")
+if printf '%s' "$out" | grep -q "a confidential scope this session is outside" && ! printf '%s' "$out" | grep -q -e ghostnode -e "scope sec"; then
+  echo "  ok   …a confidential flag written \"true\" is fenced: its faults name none of it in an open repo"
+else echo "  FAIL sync.py: a \"true\" flag read as open: $out"; fails=$((fails+1)); fi
 cp "$W/good.json" "$WP/layer/repos.json"
+out=$(REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" REGATTA_SCOPES_LOCK_WAIT=1m python3 "$B/scopes" list 2>&1 >/dev/null; echo "rc=$?")
+[ "$out" = "rc=0" ] && echo "  ok   a lock wait that does not read is 60 s, never a crash of every verb" \
+  || { echo "  FAIL scopes list under REGATTA_SCOPES_LOCK_WAIT=1m: $out"; fails=$((fails+1)); }
 printf '✗ an earlier refusal\n' > "$WP/pub/.git/claude/scope-files"
 REGATTA_CONFIG="$W/cfg" CLAUDE_REPOS_JSON="$WP/layer/repos.json" REGATTA_SCOPES_LOCK_WAIT=1 \
   python3 "$W/lockheld.py" "$W/cfg" python3 "$SY" --scope-files-run "$WP/pub" >/dev/null
@@ -520,6 +538,10 @@ for v in off 0 no false bogus; do [ "$(SPN "$v")" = "0" ] || { bad=1; echo "    
 [ $bad -eq 0 ] && [ "$(SPN "")" = "1" ] \
   && echo "  ok   REGATTA_SCOPE_FILES=off, or any value but empty or inline, starts no child; empty starts one" \
   || { echo "  FAIL REGATTA_SCOPE_FILES's switch"; fails=$((fails+1)); }
+mkdir -p "$W/emptycfg"
+[ "$(env -u CLAUDE_REPOS_JSON REGATTA_CONFIG="$W/emptycfg" REGATTA_SCOPE_FILES= python3 "$W/spawncount.py" "$SY" "$WP/quiet")" = "0" ] \
+  && echo "  ok   a host with no registry (the public twin's users) starts no child and says nothing" \
+  || { echo "  FAIL spawn_scope_files with no registry started a child"; fails=$((fails+1)); }
 SP inline
 [ -s "$WP/quiet/.git/claude/scope-files" ] && echo "  ok   REGATTA_SCOPE_FILES=inline: run in place (its failure recorded)" \
   || { echo "  FAIL REGATTA_SCOPE_FILES=inline left no record"; fails=$((fails+1)); }
