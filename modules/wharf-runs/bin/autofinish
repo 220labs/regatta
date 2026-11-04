@@ -28,6 +28,9 @@ rules; E3, the triggers; E6's half, the /autofinish override.
         printed here as `died <repo> <branch> — <why>`. The dry run reports such a worktree as
         `skip: died, not recorded yet (…)` and writes nothing.
         Prints only those lines (the launchd log); the verdicts are in the dated log.
+        Armed, last: each repo's `pr restack --all` (wharf), which rebases a ready claude/* PR GitHub
+        marks DIRTY on a list file alone and pushes it, or leaves its finding on the PR; one
+        `restack <repo> #<n> <branch>: …` line each it acted on, printed and logged (restack_dirty()).
   autofinish --worktree <path> [--after <s>] [--session <id>] [--reply <file>] [--dry-run] [--log]
         one worktree: its verdict line, then the start on that same verdict, when armed and not
         --dry-run. It is judged with a fetch when a start may follow, and not judged twice: the
@@ -2205,10 +2208,47 @@ def sweep():
                 break
             if attempt(name, repo, branch, ctx) == "start":
                 started += 1
+        restack_dirty(repos)
         return 0
     finally:
         if on:
             drop_lock()
+
+
+RESTACK_TIMEOUT = 600   # one repo's `pr restack --all`: a fetch and a rebase a dirty PR; the next tick waits on the lock
+
+
+def restack_dirty(repos):
+    """Armed only, after the starts: each repo's ready claude/* PRs that GitHub marks DIRTY because main
+    appended to a list file are rebased with list-merge and pushed by wharf's `pr restack --all`, so automerge
+    lands them with no hand step (its header says why that push is no new permission: /finish's step 11 push of
+    an already-launched branch, its lease the PR's head, never main, never a merge). Anything else it leaves as
+    a finding on the PR. One line per PR it acted on, `restack <repo> #<n> <branch>: …`, here and in the day's
+    log. A suite stubs GitHub (AUTOFINISH_GITHUB) and runs none unless AUTOFINISH_RESTACK names a stand-in."""
+    cmd = os.environ.get("AUTOFINISH_RESTACK")
+    if not cmd:
+        if os.environ.get("AUTOFINISH_GITHUB"):
+            return
+        found = common.tool("pr")
+        if not found:
+            return
+        cmd = str(found)
+    rows = []
+    for name, repo in repos:
+        try:
+            r = subprocess.run([cmd, "restack", "--all"], cwd=str(repo), capture_output=True, text=True,
+                               timeout=RESTACK_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"restack {name} — not run ({type(e).__name__})", flush=True)
+            continue
+        for line in r.stdout.splitlines():
+            if line.startswith("pr restack #"):
+                said = line[len("pr restack "):]
+                print(f"restack {name} {said}", flush=True)
+                n, _, rest = said.partition(" ")
+                rows.append((name, n, rest))
+    if rows:
+        log_lines(rows, kind="restack")
 
 
 # ---- one worktree: SessionEnd, the Stop hook, /autofinish -----------------------------------
