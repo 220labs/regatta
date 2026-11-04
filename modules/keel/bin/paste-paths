@@ -12,6 +12,7 @@
                                       hand-over line (`keel line`) or with no doc at all,
                                       a closing line that is not last,
                                       not word for word, or missing from a /finish that landed,
+                                      a WAITING FOR NOTHING line over a doc's hand-over line,
                                       a WAITING line that asks for a go on an event the session
                                       can watch, or names a command without its Do-this-now block,
                                       a session handed to the owner to start (/pickup … --fresh, a
@@ -725,6 +726,85 @@ def external_finish_findings(text: str, command=None, bash=()) -> list:
             "Mac's paths) — skills/finish, \"The closing line\""]
 
 
+# The third thing that makes a WAITING FOR NOTHING line wrong, beside a Do this now block and a ⚠ stop
+# (the owner, 2026-11-01: "this session should have reported that it was waiting for my answers on design.
+# That's a bug."): a doc handed over waits on the owner's reading or answers, with no D-item to ask too.
+def hands_doc(*texts) -> bool:
+    """Does any of `texts` carry a doc's hand-over line? bin/keel's hands_doc, the line's own shape. The
+    turn and its last message apart: an earlier message's unclosed fence swallows, in the joined turn, the
+    message after it (stop_hook). No bin/keel says no: a closing line is never blocked on a doubt."""
+    texts = [t for t in texts if t and "#L1" in t]
+    if not texts:
+        return False
+    try:
+        memo = _memo()
+        return any(memo.hands_doc(t) for t in texts)
+    except Exception as err:
+        print(f"paste-paths: hand-over line: bin/keel: {err}", file=sys.stderr)
+        return False
+
+
+def owes_skill_line(reply: str, command=None, bash=()) -> bool:
+    """/finish past Phase 1 (it touched the marker this turn — a continued "go" turn included — or reports
+    what shipped) and /evacuate, bar a LEAVE OPEN verdict, end on /finish's own line."""
+    return (any(MARKER_TOUCH.search(b) for b in bash)
+            or (command == "finish" and "Shipped:" in reply)
+            or (command == "evacuate" and "LEAVE OPEN" not in reply))
+
+
+def turn_hands_doc(reply: str, last=None, command=None, bash=()) -> bool:
+    """The turn carries a doc's hand-over line and that doc waits on the owner. A turn that owes a skill's
+    line is that line's: a landed digest's hand-over asks nothing."""
+    return not owes_skill_line(reply, command, bash) and hands_doc(reply if last is None else last, reply)
+
+
+def handed_idle(reply: str, last=None, command=None, bash=()) -> bool:
+    """A reply that hands a doc and closes on WAITING FOR NOTHING, last or not (the closing line's own
+    finding blocks once, so the hand-over is said beside it)."""
+    common = _common()
+    kind, _, problem = common.ending(reply if last is None else last)
+    if problem and problem[0] == "after":
+        kind = common.closing_kind(problem[1])
+    return kind == "idle" and turn_hands_doc(reply, last, command, bash)
+
+
+def waits_findings(kind: str, line: str, reply: str, last=None, command=None, bash=()) -> list[str]:
+    """two_waits_findings, standing back from a WAITING FOR YOU line over a handed doc: it would send the
+    line to WAITING FOR NOTHING or SOMETHING, and the doc still owes the owner."""
+    said = two_waits_findings(kind, line)
+    return [] if said and kind == "waiting" and turn_hands_doc(reply, last, command, bash) else said
+
+
+def past_relay(finding: str) -> bool:
+    """A closing finding that a relay replaces, by what it opens with: its fix for an idle line (take the
+    WAITING line, move this one last, mark it) is an ending, the relay names the turn's own, and the hook
+    blocks once, so a run that takes the WAITING line after all reads as an unrelayed ask."""
+    return (finding.startswith("the WAITING FOR NOTHING line says nothing is owed")
+            or finding.startswith("a closing line is the very last thing said — only links may follow it: "
+                                  "move `" + _common().IDLE_PREFIX[:70])
+            or (finding.startswith("the closing line ") and "start it with ✅" in finding))
+
+
+def handed_what(reply: str, last=None) -> str:
+    """What a handed doc's relay carries; the idle line's own ask or a ⚠ stop goes with it, as past_relay
+    drops the finding that said so."""
+    common = _common()
+    text = reply if last is None else last
+    _, line, problem = common.ending(text)
+    closing = common.bare(problem[1]) if problem else line
+    asks = STOP_STEP.search(text) or idle_asks(closing or "")
+    return "a doc handed for reading" + (", and what the reply's ⚠ stop or closing line asks" if asks else "")
+
+
+def handed_findings(reply: str, last=None, command=None, bash=()) -> list[str]:
+    if not handed_idle(reply, last, command, bash):
+        return []
+    common = _common()
+    return [f"the WAITING FOR NOTHING line says nothing is owed, and this reply hands the owner a doc "
+            f"(its hand-over line): a doc handed to the owner waits on the owner's reading or answers, "
+            f"D-items or none — end on `{common.marked('waiting', common.WAITING_PREFIX)}<what, in one line>` instead"]
+
+
 def turn_facts(entries: list) -> tuple:
     """(command, bash, last, background) for the turn that just ended: the slash command that
     started it ('finish' — also for one asked at a prompt's end or through the Skill tool; None
@@ -917,7 +997,8 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
         if common.closing_kind(problem[1]) == "waiting":  # blocked once only: say all of it now
             out += wait_go_findings(common.bare(problem[1]))
             out += external_finish_findings(reply if last is None else last, command, bash)
-        out += two_waits_findings(common.closing_kind(problem[1]), common.bare(problem[1]))
+        out += waits_findings(common.closing_kind(problem[1]), common.bare(problem[1]), reply, last, command, bash) or \
+            handed_findings(reply, last, command, bash)
         return out
     if problem:
         return [f"`{common.bare(problem[1])[:70]}` is not one of the fixed closing lines — use one "
@@ -930,6 +1011,8 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
         if kind == "idle" and not out and (common.do_this_now_block(text) or STOP_STEP.search(text)):
             out = [f"the WAITING FOR NOTHING line says nothing is owed, and this reply hands the owner a "
                    f"Do this now block or a ⚠ stop — end on {waiting} instead"]
+        if kind == "idle" and not out:
+            out = handed_findings(reply, last, command, bash)
         if out:
             return out
     if kind == "waiting":
@@ -937,7 +1020,7 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
         import os  # a command never exists at the root; `/tmp` does
         missing = [c for c in dict.fromkeys(c.rstrip("-") for c in SLASH_COMMAND.findall(line))
                    if not os.path.exists(c) and not in_do_this_now(text, c)]
-        out = wait_go_findings(line) + two_waits_findings(kind, line)  # collected: the hook blocks only once
+        out = wait_go_findings(line) + waits_findings(kind, line, reply, last, command, bash)  # collected: the hook blocks only once
         if missing:
             out.append(f"the WAITING line asks the owner to run {', '.join(f'`{c}`' for c in missing)} — "
                     f"put it in a **Do this now** block too, the command alone in a fenced block "
@@ -945,13 +1028,10 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
         out += external_finish_findings(text, command, bash)
         if out:
             return out
-    # /finish past Phase 1 (it touched the marker this turn — a continued "go" turn included — or
-    # reports what shipped) and /evacuate, bar a LEAVE OPEN verdict, end on /finish's own line;
-    # a stop that needs the owner ends on the WAITING line instead. A stop that waits on its own
-    # background task (the check suite, a reviewer) is not an ending: the notification continues it.
-    owes = (any(MARKER_TOUCH.search(b) for b in bash)
-            or (command == "finish" and "Shipped:" in reply)
-            or (command == "evacuate" and "LEAVE OPEN" not in reply))
+    # A skill's closing line (owes_skill_line); a stop that needs the owner ends on the WAITING line
+    # instead. A stop that waits on its own background task (the check suite, a reviewer) is not an
+    # ending: the notification continues it.
+    owes = owes_skill_line(reply, command, bash)
     tail = (last if last is not None else reply).strip().splitlines()[-1:] or [""]
     if background and kind is None and WAITS.search(tail[0]):
         owes = False
@@ -1212,7 +1292,7 @@ def ask_verdict(cwd: str, session: str = "", standing_name=None):
     return d.get("verdict")
 
 
-def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> list:
+def ask_findings(reply: str, last, cwd: str, env=None, session: str = "", command=None, bash=()) -> list:
     import os
     env = os.environ if env is None else env
     if not env.get("CLAUDE_UNATTENDED"):
@@ -1221,12 +1301,20 @@ def ask_findings(reply: str, last, cwd: str, env=None, session: str = "") -> lis
     # run on one too (finding 7; hooks/common.py unrelayed_ask). Read first: the rest (asklib's
     # load, its registry walk, scutil) runs only on the rare turn that asks, not every Stop.
     what = _common().unrelayed_ask(reply, last)
+    if not what and handed_idle(reply, last, command, bash):
+        what = handed_what(reply, last)  # told to take the WAITING line, which no later Stop reads: say the relay now
+    if not what:
+        k, l, _ = _common().ending(reply if last is None else last)
+        # a "nothing to do" WAITING line reads as no ask, and waits_findings stood back from it over a handed doc
+        if k == "waiting" and two_waits_findings(k, l or "") and turn_hands_doc(reply, last, command, bash):
+            what = "the WAITING line"
     if not what:
         return []
     # a WAITING FOR YOU line that says nothing is owed is told to take WAITING FOR NOTHING (two_waits_findings);
     # telling it to relay the same line as an ask would contradict that (the landing review, 2026-10-29)
     kind, line, _ = _common().ending(reply if last is None else last)
-    if what == "the WAITING line" and kind == "waiting" and owed_nothing(line or "") and not _common().do_this_now_block(reply):
+    if (what == "the WAITING line" and kind == "waiting" and owed_nothing(line or "")
+            and not _common().do_this_now_block(reply) and not turn_hands_doc(reply, last, command, bash)):
         return []
     # autofinish's start is no skipper's run (stray-manager M1 c, M3): its asks are landings, which
     # a skipper never performs, so they go to the owner as before the seam
@@ -1393,7 +1481,10 @@ def stop_hook() -> int:
     try:  # first: the found[:6] cut below must never drop a D-list's line (one block only)
         found = handover_findings(reply, cwd, root) + found
         sid = str(data.get("session_id") or "")
-        found = ask_findings(reply, facts[2], cwd, session=sid) + found
+        asks = ask_findings(reply, facts[2], cwd, session=sid, command=facts[0], bash=facts[1])
+        if asks and handed_idle(reply, facts[2], facts[0], facts[1]):
+            found = [f for f in found if not past_relay(f)]
+        found = asks + found
     except Exception as err:  # git or memo trouble: say nothing rather than block wrongly
         print(f"paste-paths: hand-over line: {err}", file=sys.stderr)
     # Its own try (regatta-modules G9): a peer that raises costs this reminder, never the hand-over
