@@ -32,6 +32,7 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, closed]
 permissions:
   contents: read
+  checks: read   # the carry step reads the previous head's `check`
 # A newer push to the same ref makes the older run moot; every run bills the account's minutes.
 concurrency:
   # per event too: a push run whose job is skipped (CI_SKIP_MAIN_PUSH) would otherwise cancel a nightly
@@ -167,10 +168,45 @@ jobs:
       # so the suites' Darwin branches are still run on a Mac each day. Unset, as in the twin and
       # forks, the step below runs the whole line. The step keeps its name and its one `run:` block:
       # twin-linux.sh and ci-provider read the line from it.
+      # The carry (wharf's `pr restack`, 2026-11-04): a push whose patch is the previous head's, list files
+      # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of the whole line. It is what `pr restack`
+      # pushes when GitHub marks a ready PR DIRTY on a list file alone, and the 85-min re-run it would start
+      # tested nothing new: the PR's code is the tested code, and main's own commits between the two bases are
+      # what `strict: false` (main-protection.json) already lands untested. No suite reads this repo's lists bar
+      # `todo-md lint`, which runs here. `pr carry` judges it from git alone, and the judge is the base's copy (a
+      # worktree of origin/$BASE), never the PR's own: a push that broke carry_verdict would otherwise decide its
+      # own test (the build review). Any doubt (the newest `check` on the previous head not green, a commit not
+      # fetchable, a code path, mode or type that differs) runs the whole line as before.
+      - name: carry the previous head's green
+        id: carry
+        if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          [ -n "$BEFORE" ] || { echo "carry: nothing to carry from"; exit 0; }
+          # the newest run only (filter=latest): an earlier green attempt must not hide a red re-run
+          green="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                     "https://api.github.com/repos/$REPO/commits/$BEFORE/check-runs?check_name=check&filter=latest" \
+                   | jq -r '[.check_runs[]? | select(.app.slug == "github-actions")] | (length > 0 and all(.conclusion == "success"))' 2>/dev/null)" || green=false
+          [ "$green" = true ] || { echo "carry: ${BEFORE:0:8}'s newest check is not green: the whole line runs"; exit 0; }
+          git fetch -q --no-tags --unshallow origin "$BEFORE" "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" 2>/dev/null \
+            || git fetch -q --no-tags origin "$BEFORE" "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+            || { echo "carry: ${BEFORE:0:8} could not be fetched: the whole line runs"; exit 0; }
+          J="$RUNNER_TEMP/carry-judge"; git worktree prune || true   # a prune that fails is no reason to fail the check: `add` below decides
+          git worktree add -q --detach "$J" "origin/$BASE" && [ -f "$J/modules/wharf/libexec/pr" ] \
+            || { echo "carry: the base has no pr carry: the whole line runs"; exit 0; }
+          verdict="$(python3 "$J/modules/wharf/libexec/pr" carry "$BEFORE" "$SHA" --base "origin/$BASE")" || { echo "carry: $verdict: the whole line runs"; exit 0; }
+          { [ ! -f TODO.md ] || python3 "$J/modules/wharf/bin/todo-md" lint .; } || { echo "carry: todo-md lint fails: the whole line runs"; exit 0; }
+          echo "carry: $verdict, green on ${BEFORE:0:8}: not run again"
+          echo "carry=true" >> "$GITHUB_OUTPUT"
       - name: check, the macOS share
-        if: vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request'
+        if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request'
         run: bash .circleci/share.sh macos
       - name: check
-        if: vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request'
+        if: steps.carry.outputs.carry != 'true' && (vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request')
         run: |
           claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; } && { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }
