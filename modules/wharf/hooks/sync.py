@@ -1079,6 +1079,14 @@ def spawn_scope_files(repo):
     mode = os.environ.get(SCOPE_FILES_ENV, "")
     if mode not in ("", "inline") or repo is None:
         return   # `off`, and any value it cannot read (`0`, `no`, a typo): the safe side is no write
+    try:
+        import common  # noqa: E402
+        no_registry = common.repos_json() is None
+    except Exception:   # a missing core: the run's own ✗ line says so
+        no_registry = False
+    if no_registry:
+        return   # no registry on this host (the public twin's users): nothing to write, nothing to say;
+        #          a link whose target is gone is returned, so its ✗ line stays (the second finish review)
     if mode == "inline":
         scope_files(repo)
         return
