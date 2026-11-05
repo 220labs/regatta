@@ -1041,6 +1041,10 @@ check "$bad" none "every module's Python compiles with warnings as errors"
 # the caller's config dir and HOME, which it reads for the overlay marker only.
 REGATTA_CONFIG="$REAL_RC" HOME="$REAL_HOME" bash "$M/tests/classes.sh" | sed 's/^/  /'
 check "${PIPESTATUS[0]}" 0 "tests/classes.sh: the list covers every live path, class 1 and class 2"
+# Every gate call site the modules name has a row in the module's table, found by an AST walk (Evolve S11); the
+# suite clears its own environment and reads the tree, and is on autofinish_exclude beside classes.sh.
+bash "$M/tests/gate_sites.sh" | sed 's/^/  /'
+check "${PIPESTATUS[0]}" 0 "tests/gate_sites.sh: every call site a module names resolves under an empty config"
 bash "$M/tests/flare.sh" | sed 's/^/  /'
 check "${PIPESTATUS[0]}" 0 "tests/flare.sh: regatta flare files, retries and refuses as it says"
 bash "$M/tests/attribution.sh" | sed 's/^/  /'
