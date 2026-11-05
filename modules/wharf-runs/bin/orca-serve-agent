@@ -59,6 +59,9 @@ set -euo pipefail
 # accented letters through, and `here` would accept a label ssh's C locale refuses.
 export LC_ALL=C
 cfg=${REGATTA_CONFIG:-$HOME/.config/regatta}
+# The Linux server's own process: the launcher execs `<orca-ide> <...>/out/cli/index.js serve ...`, so
+# `orca-ide serve` is only ever the brief bash step's command line and a pkill of it stopped nothing.
+SERVE_PROC='^[^ ]*/orca-ide [^ ]*/cli/index[.]js serve( |$)'
 # The first non-blank line of a config file, trimmed, a BOM and a CR dropped: what the core's
 # config_read takes. Empty when the file is absent or blank.
 config_line() {
@@ -143,7 +146,7 @@ EOF
     unit_text
     if [ "$linger" != yes ]; then echo "+ loginctl enable-linger $me"; fi
     echo "+ screen -S orca-serve -X quit"
-    echo "+ pkill -f 'orca-ide serve'"
+    echo "+ pkill -f '$SERVE_PROC'"
     echo "+ (wait up to 30 s for it to go)"
     echo "+ systemctl --user daemon-reload"
     echo "+ systemctl --user enable $unit"
@@ -169,8 +172,8 @@ EOF
   mv "$file.new" "$file"
   echo "stopping the Orca running now (up to 30 s)..."
   screen -S orca-serve -X quit >/dev/null 2>&1 || true
-  pkill -f 'orca-ide serve' 2>/dev/null || true
-  for i in $(seq 1 15); do pgrep -f 'orca-ide serve' >/dev/null || break; sleep 2; done
+  pkill -f "$SERVE_PROC" 2>/dev/null || true
+  for i in $(seq 1 15); do pgrep -f "$SERVE_PROC" >/dev/null || break; sleep 2; done
   echo "starting ${unit}..."
   systemctl --user daemon-reload
   systemctl --user enable "$unit"

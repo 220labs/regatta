@@ -565,6 +565,43 @@ PY
 has "$STUB_ORCA_CALLS" "orchestration worker-start --spec p --on buildbox --worktree path:/remote/wt --agent claude --run run_1" "  worker-start --on the host, Orca's own launch"
 check "$(grep -c '^terminal create' "$STUB_ORCA_CALLS")" "0" "  no login terminal of ours"
 
+echo "orca: the app is up by its process, on a Mac and on a Linux yard; the CLI per OS"
+mkdir -p "$T/pgrep-bin" "$T/orca-path"
+printf '#!/bin/sh\n[ "$1" = -f ] || exit 2\ngrep -qE -- "$2" "$STUB_PROCS"\n' > "$T/pgrep-bin/pgrep"; chmod +x "$T/pgrep-bin/pgrep"
+printf '#!/bin/sh\nexit 0\n' > "$T/orca-path/orca"; printf '#!/bin/sh\nexit 0\n' > "$T/orca-path/orca-ide"; chmod +x "$T/orca-path/orca" "$T/orca-path/orca-ide"
+cat > "$T/app_up.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("orca_up", sys.argv[1] + "/harness_adapters/orca.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+if sys.argv[2] == "bin":
+    b = m._bin(); print(os.path.basename(b) if b else None); sys.exit(0)
+if sys.argv[2] == "linux":   # each later argument is one process's argv, words split on spaces
+    root = sys.argv[3]
+    for n, line in enumerate(sys.argv[4:], 100):
+        os.makedirs("%s/%d" % (root, n), exist_ok=True)
+        with open("%s/%d/cmdline" % (root, n), "wb") as f:
+            f.write(b"\0".join(w.encode() for w in line.split(" ")) + b"\0")
+    os.makedirs(root + "/self", exist_ok=True)   # not a pid: skipped
+    m.PROC = root
+print(m._app_up())
+PY
+up_linux() { n=$((n+1)); env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=linux python3 "$T/app_up.py" "$B" linux "$T/proc$n" "$@"; }
+up_mac() { printf '%s\n' "$1" > "$T/procs"; env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=darwin STUB_PROCS="$T/procs" PATH="$T/pgrep-bin:$PATH" python3 "$T/app_up.py" "$B" mac; }
+n=0
+SRV="/opt/Orca/orca-ide /opt/Orca/resources/app.asar.unpacked/out/cli/index.js"
+check "$(up_linux "/sbin/init" "$SRV serve --pairing-address 192.0.2.7")" "True" "  Linux: the headless server, as the yard node runs it"
+check "$(up_linux "/opt/Orca/orca-ide --no-sandbox")" "True" "  Linux: the desktop app from the .deb"
+check "$(up_linux "/srv/orca/orca-ide /srv/orca/resources/app.asar.unpacked/out/cli/index.js serve --pairing-address 192.0.2.7")" "True" "  Linux: the server installed elsewhere"
+check "$(up_linux "$SRV orchestration worker-list --json" "$SRV status --json")" "False" "  Linux: a CLI call in flight is not Orca up"
+check "$(up_linux "/bin/bash /opt/Orca/resources/bin/orca-ide serve" "pgrep -f /opt/Orca/orca-ide serve")" "False" "  Linux: the launcher's bash step, a probe naming the path: not Orca"
+check "$(up_linux "/usr/bin/python3 /usr/bin/orca --replace")" "False" "  Linux: the GNOME screen reader is not Orca"
+check "$(up_mac '/Applications/Orca.app/Contents/MacOS/Orca')" "True" "  macOS: the app bundle"
+check "$(up_mac 'zsh -c pgrep -f /Applications/Orca.app/Contents/MacOS/Orca')" "False" "  macOS: a shell naming the path is not Orca"
+check "$(env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=darwin PATH="$T/no-such-dir" "$(command -v python3)" "$T/app_up.py" "$B" mac)" "False" "  macOS: no pgrep: down, not a crash"
+check "$(env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=linux PATH="$T/orca-path" "$(command -v python3)" "$T/app_up.py" "$B" bin)" "orca-ide" "  Linux: the CLI is orca-ide, never a bare orca"
+check "$(env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=linux PATH="$T/no-such-dir" "$(command -v python3)" "$T/app_up.py" "$B" bin)" "None" "  Linux: no orca-ide, no CLI"
+check "$(env -u HARNESS_ORCA HARNESS_ORCA_PLATFORM=darwin PATH="$T/orca-path" "$(command -v python3)" "$T/app_up.py" "$B" bin)" "orca" "  macOS: orca on PATH, as before"
+
 echo "orca V2: a chat worker's next turn goes by orchestration send"
 H resume "$DID" --prompt "and again" --json > "$T/or.json" 2>"$T/err"; check "$?" 0 "continue exits 0"
 has "$STUB_ORCA_CALLS" "orchestration send --to dispatch:$DID --from term_shell --subject bin/harness resume --body and again --type dispatch" \

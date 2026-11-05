@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- orca adapter: knows a Linux Orca. `_app_up()` looked only for the Mac bundle's binary, so on the yard node (`orca-ide
+  serve --pairing-address …`, which runs as `/opt/Orca/orca-ide …/out/cli/index.js serve …`) `wharf apply` over ssh said
+  "Orca is not running here" and exited 3 before the first compile, and the tick's `--once` apply then refused the plan
+  for having no Run (2026-11-04). On Linux it reads `/proc`'s argv (no exec): `orca-ide` with no CLI script (the app)
+  or with `cli/index.js serve` (the server); a CLI call in flight, the launcher's bash step and GNOME's `orca` read down.
+  The Mac pattern is anchored, so a shell naming the path no longer reads as Orca. `_bin()` takes `orca-ide` alone on
+  Linux, as orca-host and kicklib do, and `ORCA_DATA` is `~/.config/orca` there.
 - The macOS share's scope (free-ci S3's landing review): the suites name the peers they run by name, so a change to
   keel or wharf-runs runs sextant's and one to lighthouse, plumb, aurora, atlas or helloworld runs this module's;
   `share.sh linux-ids` no longer lets an edited `check_scope.py` cut the Linux matrix.
@@ -18,6 +25,13 @@
   the lock is given back. An "ok" decides it whatever else the pipe says, the pipe is read once more at the deadline
   and polled (no FD_SETSIZE limit), the spec is ASCII JSON, no descriptor lands on 0-2, and a waiter whose caller
   died mid-wait runs on rather than stop on the broken pipe (the finish review).
+- orca-serve-agent: its Linux stop and wait match the server's own process (`^…/orca-ide …/cli/index.js serve`);
+  `orca-ide serve` was only the launcher's brief bash step, so a server started by hand was never stopped.
+- pickup: `run()` returns a failed CompletedProcess (126, 127 for a missing program) on an OSError, never a raise, and
+  `ssh_bytes` the same; `git()` still raises, as `out()` reads stdout alone. A sandboxed session may not exec `ps`, and
+  the PermissionError crashed `pickup seed`, so `helm send --text` from every confidential scope's session. `running()`
+  trusts `kill(0)` when ps cannot be executed; a ps that runs but sees nothing still reads dead.
+
 - kicklib: the sheep kick road presses over spacesheep's stream socket (kick-socket; TODO.md [sheep-kick], the owner's
   "yes, websockets", 2026-11-02), as the page runtime does: the full key's web session, the socket of the space
   `wharf-runs/kick-space` names (its page declares `kick/*`), `sub` then `send`, ok at the listener's first ack that
