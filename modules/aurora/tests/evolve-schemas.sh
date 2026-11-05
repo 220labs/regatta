@@ -140,6 +140,9 @@ check "$(echo "$out" | j 'cell("soft", "meeting-notes")["state"], cell("soft", "
 echo "coverage — the surface diff names the planted area"
 check "$(echo "$out" | j '"log:render-farm" in d["surface"]["unobserved"], "repo:orphan" in d["surface"]["unobserved"]')" "(True, True)" "the planted log area and the repo in no scope: named"
 check "$(echo "$out" | j '[u for u in d["surface"]["unobserved"] if u.startswith(("log:ops", "log:fence", "log:film", "log:house", "config:aurora", "config:sextant/north", "repo:soft", "config:repos"))]')" "[]" "  what a source reads is not on it"
+mkdir -p "$L/plumb/asks/golden"; for f in overrules.jsonl theme-merges.json theme-merges.jsonl golden/texts.jsonl; do printf '{}\n' > "$L/plumb/asks/$f"; done
+check "$("$E" coverage --json --no-record | j '[u for u in d["surface"]["unobserved"] if u.startswith("log:plumb")]')" "[]" "  plumb's asks: its merge map and log and the golden text are ignored, never a blind spot"
+rm -f "$L/plumb/asks/golden/texts.jsonl" "$L/plumb/asks/overrules.jsonl" "$L/plumb/asks/theme-merges.json" "$L/plumb/asks/theme-merges.jsonl"; rmdir "$L/plumb/asks/golden" "$L/plumb/asks" "$L/plumb"
 SLUG=$(python3 -c 'import re, sys; print(re.sub(r"[^A-Za-z0-9]", "-", sys.argv[1]))' "$P/vault-knowledge")
 mkdir -p "$L/$SLUG"; printf 'x\n' > "$L/$SLUG/x"
 out=$("$E" coverage --json --no-record)

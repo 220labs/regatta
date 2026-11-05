@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `week-digest` merges a session's archive and live copies by event uuid, the newest file's copy of a prompt kept
+  (evolve S11; the first file seen per session id used to win, so a resumed session's later prompts, the
+  corrections among them, were lost when the archive's copy was older); a line with no uuid is keyed by its time and
+  words. `--json` and the text form both read the merge. `lenses.json`'s surface ignores plumb's
+  `asks/theme-merges.json*` and `asks/golden` (asks' own map and merge log, and the owner's text, never a lens input).
 - `scope-pass check`: the scan reads the whole text, not a line at a time, so a word of the node's list
   split by a hard wrap is held; a space in a word or a repo name matches any run of whitespace, and a hit
   is named by the line it starts on; a wrap whose next line opens with `>`, `#` or `//` counts too. A
