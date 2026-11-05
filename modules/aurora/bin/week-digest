@@ -10,7 +10,10 @@ the human side: requests, corrections, preferences, "remember this", "never do t
 This prints only human-typed prompts (origin kind "human", IDE context blocks stripped),
 grouped by project and session, oldest first, each cut to --max-chars. It reads the archive
 (~/projects/transcripts, kept past Claude Code's 30-day sweep) and the live transcript
-directory of every login dir (the core's login_dirs), de-duplicated by session id. A prompt counts
+directory of every login dir (the core's login_dirs). A session found in more than one place (the archive's
+copy and a live one: the archive is a copy of the live file, taken at some point) is merged by event uuid,
+the newest file's copy of a prompt kept, so the prompts only one copy holds all count (the first file seen per
+session id used to win, and dropped what the other held; evolve S11). A prompt counts
 by its own timestamp, not its file's. A fork's prompts at or before its `forked-from` cutoff
 are its source's and are skipped (bin/fork_claude_session.py; teleport design E1), and a prompt
 another session of the project already holds, same time and same words, is not counted twice.
@@ -68,9 +71,10 @@ def stamp(epoch):
     return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def prompts(path, since=""):
-    """(session id, title, [(timestamp, text)]); `since`: an ISO second, a prompt stamped before it
-    is outside the window (the file's mtime only says when the last line was written)."""
+def events(path, since=""):
+    """(session id, title, [(timestamp, text, event uuid)]); `since`: an ISO second, a prompt stamped
+    before it is outside the window (the file's mtime only says when the last line was written). A line
+    without a uuid has the empty one: merge() then keys it by its time and words."""
     sid = title = cut = None
     out = []
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -93,12 +97,29 @@ def prompts(path, since=""):
             text = IDE_BLOCK.sub("", text)
             text = COMMAND.sub(lambda m: f"{m.group(1)} {m.group(2) or ''}".strip(), text).strip()
             if text:
-                out.append((r.get("timestamp") or "", text))
+                out.append((r.get("timestamp") or "", text, r.get("uuid") or ""))
     if cut:  # the record follows what it describes, so the skip waits for the whole file
-        out = [(ts, text) for ts, text in out if ts > cut]
+        out = [x for x in out if x[0] > cut]
     if since:
-        out = [(ts, text) for ts, text in out if ts[:19] >= since]
+        out = [x for x in out if x[0][:19] >= since]
     return sid, title, out
+
+
+def prompts(path, since=""):
+    """events() as it was before the merge: (session id, title, [(timestamp, text)]); plumb's suite loads it."""
+    sid, title, ps = events(path, since)
+    return sid, title, [(ts, text) for ts, text, _ in ps]
+
+
+def merge(copies):
+    """One session's prompts from all its copies, [(ts, text)] oldest first. `copies` is [(mtime, path,
+    [(ts, text, uuid)])]; a prompt is one event, keyed by its uuid (by time and words where a line has none),
+    and the copy of the newest file replaces an older file's. A copy with an event the other lacks adds it."""
+    held = {}
+    for _, path, ps in sorted(copies, key=lambda c: (c[0], str(c[1]))):
+        for ts, text, uid in ps:
+            held[uid or (ts, text)] = (ts, text)
+    return sorted(held.values(), key=lambda x: x[0])
 
 
 def project_of(path):
@@ -158,9 +179,11 @@ def main():
     cutoff = time.time() - days * 86400
     since = stamp(cutoff)
     seen, held, by_project, fenced_seen = set(), set(), {}, set()
+    copies, order = {}, []   # a session's copies by its id (or file stem), in the order the sources name them
     for root in sources():
         for f in sorted(root.glob("*/*.jsonl")):
-            if f.stat().st_mtime < cutoff:
+            mtime = f.stat().st_mtime
+            if mtime < cutoff:
                 continue
             verdict = fence(f)   # from the path, before the file is opened
             if verdict == "outside" or scope and verdict != "quote":   # under --scope, only its own counts
@@ -168,21 +191,29 @@ def main():
             if verdict == "fenced":   # counted by name, never opened
                 fenced_seen.add(f.stem)
                 continue
-            sid, title, ps = prompts(f, since)
+            sid, title, ps = events(f, since)
             key = sid or f.stem
-            if key in seen or not ps:
+            if not ps:
                 continue
-            seen.add(key)
-            project = project_of(f)
-            fresh = []
-            for ts, text in ps:   # a fork's copy of a prompt another session holds
-                ident = (project, ts, text)
-                if ident not in held:
-                    held.add(ident)
-                    fresh.append((ts, text))
-            if fresh:
-                by_project.setdefault(project, []).append(
-                    (fresh[0][0], key, title, fresh, "archive" if f.parts[-3] == "transcripts" else "live"))
+            if key not in copies:
+                order.append(key)
+            copies.setdefault(key, []).append((mtime, f, ps, title))
+    for key in order:
+        group = copies[key]
+        f = group[0][1]   # the first source's copy names the project (the archive's, where there is one)
+        ps = merge([(m, p, x) for m, p, x, _ in group])
+        title = next((t for m, p, x, t in sorted(group, key=lambda c: (c[0], str(c[1])), reverse=True) if t), None)
+        seen.add(key)
+        project = project_of(f)
+        fresh = []
+        for ts, text in ps:   # a fork's copy of a prompt another session holds
+            ident = (project, ts, text)
+            if ident not in held:
+                held.add(ident)
+                fresh.append((ts, text))
+        if fresh:
+            by_project.setdefault(project, []).append(
+                (fresh[0][0], key, title, fresh, "archive" if max(group, key=lambda c: (c[0], str(c[1])))[1].parts[-3] == "transcripts" else "live"))
     if "--json" in sys.argv:
         print(json.dumps({
             "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days,

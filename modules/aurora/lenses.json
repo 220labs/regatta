@@ -21,7 +21,7 @@
  ],
  "surface": {
   "roots": ["log", "config"],
-  "ignore": ["config:home", "config:*/*.bak-*", "log:*.lock", "log:*/*.lock"],
+  "ignore": ["config:home", "config:*/*.bak-*", "log:*.lock", "log:*/*.lock", "log:plumb/asks/theme-merges.json*", "log:plumb/asks/golden"],
   "about": "every registry repo, each top-level entry of the log dir and each key of the config dir, minus what any declared source reads: what is left is the surface nothing reads"
  },
  "lenses": [

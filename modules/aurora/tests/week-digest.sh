@@ -106,4 +106,35 @@ check "$("$W" --days 7 --json --scope node | python3 -c '
 import json, sys
 d = json.load(sys.stdin); print(d["scope"], len(d["sessions"]), d["fenced"]["sessions"])')" "node 3 0" "--scope reads its own confidential sessions"
 
+echo "evolve S11: a session's archive and live copies merged by event uuid, the newest kept"
+# the archive copy is older and holds u1 (old words) and u2; the live copy holds u1 (edited) and u3 and not u2
+ev() {   # ev <id> <uuid> <timestamp> <words>
+  printf '{"type": "user", "origin": {"kind": "human"}, "sessionId": "%s", "uuid": "%s", "timestamp": "%s", "message": {"content": "%s"}}\n' "$1" "$2" "$3" "$4"
+}
+T1=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc)-d.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')
+T2=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc)-d.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')
+T3=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc)-d.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')
+mkdir -p "$P/transcripts/open" "$L/$(slug "$P/open")"
+{ ev merge-10 u1 "$T1" "MERGEOLD first words"; ev merge-10 u2 "$T2" "MERGEARCH only the archive has this"; } > "$P/transcripts/open/m.jsonl"
+{ ev merge-10 u1 "$T1" "MERGENEW first words, the live copy"; ev merge-10 u3 "$T3" "MERGELIVE only the live copy has this"; } > "$L/$(slug "$P/open")/m.jsonl"
+ago() { python3 -c 'import os, sys, time; t = time.time() - float(sys.argv[2]) * 3600; os.utime(sys.argv[1], (t, t))' "$1" "$2"; }   # portable: BSD touch has no -d "2 hours ago"
+ago "$P/transcripts/open/m.jsonl" 2
+out=$("$W" --days 7 --json)
+check "$(echo "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+s = [x for x in d["sessions"] if x["session"] == "merge-10"]
+print(len(s), [p["text"].split()[0] for p in s[0]["prompts"]], s[0]["source"])')" \
+  "1 ['MERGENEW', 'MERGEARCH', 'MERGELIVE'] live" "one session, three events (the uuid u1 once, from the newer file), oldest first"
+out=$("$W" --days 7)
+check "$(echo "$out" | grep -c MERGE) $(echo "$out" | grep -c MERGEOLD)" "3 0" "  the text form counts them the same"
+# the other way round: the archive copy is the newer file, and wins u1
+ago "$P/transcripts/open/m.jsonl" 1; ago "$L/$(slug "$P/open")/m.jsonl" 2
+check "$("$W" --days 7 | grep -c MERGEOLD) $("$W" --days 7 | grep -c MERGENEW)" "1 0" "the newest file wins, whichever folder it is in"
+# a line with no uuid is keyed by its time and words: two copies of it count once
+{ printf '{"type": "user", "origin": {"kind": "human"}, "sessionId": "nouuid-11", "timestamp": "%s", "message": {"content": "NOUUID words"}}\n' "$T1"; } > "$P/transcripts/open/n.jsonl"
+cp "$P/transcripts/open/n.jsonl" "$L/$(slug "$P/open")/n.jsonl"
+check "$("$W" --days 7 | grep -c NOUUID)" 1 "a line with no uuid in both copies counts once"
+rm -f "$P/transcripts/open/m.jsonl" "$L/$(slug "$P/open")/m.jsonl" "$P/transcripts/open/n.jsonl" "$L/$(slug "$P/open")/n.jsonl"
+
 [ "$fails" -eq 0 ] && echo "week-digest: all ok" || { echo "week-digest: $fails failed"; exit 1; }
