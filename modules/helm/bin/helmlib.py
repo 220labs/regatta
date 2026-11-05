@@ -893,19 +893,22 @@ _guarded_repo = guarded  # the older name, kept for its callers
 DOC_TEXT = ("section", "summary", "doc_title", "options", "worktree")
 
 
-def guard_unread(fresh=False):
+def guard_unread(fresh=False, missing_ok=False):
     """True when guarded() cannot be trusted to name every guarded repo: keel's gate did not load (the
     fallback list knows no confidential scope), its `regatta/guarded` key did not read where the
     overlay is installed (PRIVATE_UNREAD), or its confidential roots did not read (None: a torn
     registry, no core). What leaves the machine on guarded()'s word — the stall road's issues — fails
-    closed on it. fresh: the roots read again (they are cached per process). Never raises."""
+    closed on it. fresh: the roots read again (they are cached per process). missing_ok: a host with no
+    `regatta/guarded` at all (the node, a stranger's install) reads as its list, nothing guarded by name, for a
+    road that only refuses on it (ask's resume and git road, runs-exit-when-done round 6); a key that did not
+    read, no gate and a torn registry still fail closed. Never raises."""
     g = _sheep_gate
     if g is None:
         return True
     try:
         if getattr(g, "PRIVATE_UNREAD", False):
             return True
-        if getattr(g, "_GUARDED", ()) is None:
+        if getattr(g, "_GUARDED", ()) is None and not missing_ok:
             return True   # no `regatta/guarded` at all, overlay or not: an empty file is "nothing guarded", a missing one is unknown
 
         roots = getattr(g, "confidential_roots", None)

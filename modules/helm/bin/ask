@@ -9,29 +9,42 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         registry) is `none` — unless this Mac runs a standing skipper (asklib.standing_skipper,
         docs/stray-manager-2026-10-14.md M5), which then takes the ask. Prints the backend, the target, the verdict
         (sent | live | busy | queued | none | unreachable) and the line to end the turn on.
+        A skipper on another host that no backend reaches (no ssh alias for it, no Talk key here: the
+        Linux node and the laptop) is asked by git instead (git_road, 2026-10-31): an empty commit whose
+        `Ask:` and `Ask-Skipper:` trailers name the item and the skipper, pushed at once; the skipper's
+        host's `ask poll` reads it and hails the skipper. The file road, which waits for the skipper's
+        next prompt, also hails it (`--when idle`), so an idle skipper gets a turn.
         --plan names the ship the relay is for (else $DISPATCH_SHIP's), and is fenced by its lease
         (skipper-resilience S4): a ship laid with `wharf apply --yard` is held at a generation, and a
         relay --plan from a caller at another one is refused (exit 4). A relay for a leased ship
         tells the skipper to answer with --plan, so its answer is fenced too.
     ask answer <doc> <Dn> "<text>" --from <name> [--source "yes item"] [--to SESSION] [--task T]
                [--to-account DIR] [--space PAGE] [--plan ID] [--no-commit] [--no-send] [--dry-run]
-               [--send-only] [--gen N]
+               [--send-only] [--gen N] [--branch B --repo R]
         the skipper's (or the owner's relayed) answer into the item's ➤ Answer: block, committed (R5),
-        recorded under the run's task in the plan, and sent back only where the run listens (its
-        page with a key — the relay gives --space only then — or a live same-login SendMessage).
+        recorded under the run's task in the plan, and sent back only where the session listens (its
+        page with a key — the relay gives --space only for a typed session's listener — or a live
+        same-login SendMessage).
         A worktree the run holds gets the answer sent; with no road it waits as a pending answer
         the run applies at its next start. --send-only never reads the doc (it may be another Mac's).
         --source is who answered: only one of the owner's routes ("<owner>'s form", "<owner>'s
         GitHub", "<owner>, chat", "<owner>, Session tab (signed)", the name `regatta/owner`'s;
         asklib.owner_source) keeps it the owner's — anything else, the bare name too, is the
         skipper's, and keel status reads it as taken.
+        --branch B --repo R (a dispatched run's reply carries both since 2026-10-31): the run ends a minute
+        after its RELAYED line, so the answer goes to a fresh run of B instead (resume: `dispatch B --note`,
+        the fleet queue's, --replace behind a run of B still going), whose note carries the line for `ask
+        apply --answer`; the doc need not be on this Mac. Not while the asker, or the doc's worktree's
+        holder, is live here and busy: the roads above then. Refused with the doc here: those roads keep
+        it; with the doc elsewhere, exit 1.
         With --plan, the ship it names is fenced by its lease, when it has one: a caller at a stale
         generation is refused before anything is written. Without it, never: the plan an answer is
         recorded under falls back to $DISPATCH_SHIP and this session's id, and a ship of the
         answerer's own is no reason to refuse an answer for another (S4 finish review).
-    ask apply [--no-commit] [--plan ID [--gen N]]
+    ask apply [--no-commit] [--answer REL DN LINE] [--plan ID [--gen N]]
         the run's side: write and commit this worktree's pending answers (dispatch's prompt runs it
-        at the start; a run's listener keeps an ANSWER it hears there too). With --plan, fenced by
+        at the start; a run's listener keeps an ANSWER it hears there too). --answer adds one first: the
+        relayed line a resumed run's note carries (`answer`'s resume road), refused unless it is one. With --plan, fenced by
         that ship's lease as answer is; without it, never (the run is no holder of its ship's lease).
     ask listen [--session ID] [--plan ID] [--max N] [--replays N]
         the skipper's wake: the Talk CLI's `talk listen --once` in a loop that appends each REPORT line
@@ -44,7 +57,8 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
     ask poll [--dry-run] [--repos DIR...]
         the laptop's bell (R6): fetch each repo's claude/* branches into a cache mirror, find D-items
         with an empty ➤ Answer: and `Ask:` commit trailers whose item is still open, raise one
-        banner per new ask (S3). The first run seeds without banners. A repo whose scan fails keeps the
+        banner per new ask (S3) — or, for one whose `Ask-Skipper:` trailer names a skipper live on this
+        host, a hail to that skipper instead (poll_hail; the banner rings when it does not take). The first run seeds without banners. A repo whose scan fails keeps the
         last poll's rows, marked `carried`, and asks.json's `partial` names it (the lookout keeps watching).
         Every pass runs under one deadline, ASK_POLL_BUDGET (20 min): each peer's job gets what is left
         of it, capped by its own limit, and starts none with under a minute left. In order:
@@ -72,6 +86,7 @@ plain shell; any other session is refused).
 """
 import argparse
 import datetime as dt
+import glob
 import json
 import os
 import re
@@ -147,6 +162,22 @@ def background_ok():
     """A background shell is allowed here: dispatch sets CLAUDE_CODE_DISABLE_BACKGROUND_TASKS for a
     run whose brief forbids background work (run_env), and Claude Code then refuses one."""
     return not os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
+
+
+def ends_at_its_line():
+    """This session is a run dispatch-rc ends a minute after its closing line (runs-exit-when-done,
+    2026-10-31): an unattended caller (REGATTA_UNATTENDED or CLAUDE_UNATTENDED: dispatch's, autofinish's),
+    never a scope skipper's own. Nothing of it listens for an answer, so its reply carries --branch and a
+    fresh run of the branch takes the answer (resume). A typed session keeps its page and its listener,
+    and its answer comes back to it as before (the round-1 review: a typed session's answer went to a
+    dispatched run beside it)."""
+    # DISPATCH_DEPTH is dispatch's own (its chain, every run it starts): the marker alone is also an Orca or
+    # Codex worker's, which no dispatch-rc watches and which keeps listening (round 2). A Codex child counts
+    # DISPATCH_DEPTH up too (harness's codex adapter, as dispatch counts a chain), and inherits a run's: its
+    # PLAN_HARNESS says it is no Claude run dispatch-rc ends (the finish review, 2026-11-05)
+    return bool(os.environ.get("REGATTA_UNATTENDED") or os.environ.get("CLAUDE_UNATTENDED")) \
+        and bool(os.environ.get("DISPATCH_DEPTH")) and not os.environ.get("SKIPPER_SCOPE") \
+        and os.environ.get("PLAN_HARNESS", "claude") in ("", "claude")
 
 
 def ask_file(top):
@@ -261,7 +292,10 @@ def cmd_relay(a):
     task = a.task or os.environ.get("DISPATCH_TASK") or branch.rsplit("-", 1)[-1] or "run"
     rev = it.get("reversible") or "unmarked"
     rec = " ".join((it.get("recommended") or "").split()) or "none"
-    guarded = helmlib.guarded(repo)
+    # a guard list that did not read fails closed on what leaves the Mac (helmlib.guard_unread): the title (the
+    # message's and the plan event's summary), the message's Recommended, the git road (round 4: the title was
+    # chosen before the widening)
+    guarded = helmlib.guarded(repo) or helmlib.guard_unread()
     title = "an ask in a guarded session" if guarded else it["title"]
     space = own_space(top, rel)
     # skipper-modes S1: the run's mode, read now (plan.json first); the skipper's prompt reads it from
@@ -273,24 +307,38 @@ def cmd_relay(a):
     # registry heals and refuses the skipper for good (the second landing review)
     kept = None if getattr(helmlib, "torn_read", lambda pair: False)(read) else mode
     order = surfaces.row("ask.relay")
-    # Whether this run will hear an answer over Talk (finding 2): its own doc page is the address,
-    # and its listener is a background shell, which CLAUDE_CODE_DISABLE_BACKGROUND_TASKS forbids
-    # (finding 3). Only then does the reply carry --space, so the skipper's `answer` sends only
-    # to a run that is listening and otherwise writes the answer as a commit.
-    listens = bool(space) and "talk" in order and surfaces.row("ask.listen") == "talk" and background_ok()
+    # Whether this session will hear an answer over Talk (finding 2): its own doc page is the address,
+    # and its listener a background shell, which CLAUDE_CODE_DISABLE_BACKGROUND_TASKS forbids (finding 3).
+    # Only then does the reply carry --space. A run dispatch-rc ends never listens (runs-exit-when-done,
+    # 2026-10-31): it ends a minute after its RELAYED line, a listener read as idle, so an answer sent to
+    # its page would reach nobody — and the Talk road in `answer` cannot tell a dead page from a live one.
+    # Its reply carries --branch instead (a claude/* one: dispatch takes no other), and the skipper's
+    # `answer` hands the answer to a fresh run of the branch (resume).
+    run = ends_at_its_line()
+    listens = not run and bool(space) and "talk" in order and surfaces.row("ask.listen") == "talk" and background_ok()
+    # a guarded repo's run resumes too, but only where its doc is, from a pending row and with no answer text in
+    # the note (resume's guarded road, round 3): ended a minute after RELAYED, it would otherwise never hear one
+    resumable = run and branch.startswith("claude/")
     # A skipper on another Mac cannot open this path: its reply sends without reading the doc
-    # (second review, finding 6). With no page here there is no road back at all; R5 says so.
-    # A live skipper on a peer (read over ssh, peer-manager-relay) cannot open it either, and its
-    # `answer --send-only` needs this run's page to send to: with none, the skipper could hear the ask
-    # and never answer it, so the run parks for the owner as before (finish review).
+    # (second review, finding 6). A live skipper on a peer (read over ssh, peer-manager-relay) cannot
+    # open it either: with no page and no branch, the skipper could hear the ask and never answer it, so
+    # such a run parks for the owner as before (finish review); with a branch its answer resumes it.
     peer_live = mstate[0] == "live" and asklib.elsewhere(ctx) and not asklib.registry(ctx["manager"])
     remote = mstate[0] == "remote" or peer_live
     # a leased ship's answer names it, so the skipper's `answer` is fenced by that ship's lease (S4);
     # a ship with no lease keeps the reply it always had
     plan_flag = (" --plan " + ctx["plan"]) if leased(ctx.get("plan")) else ""
     # the reply's road back, kept in the ship's event too: the scope skipper's re-hail carries it (S5)
-    reply_flags = "%s%s%s" % ((" --to-account " + shlex.quote(ctx["account"])) if ctx.get("account") else "",
-                              (" --space " + space) if listens else "", " --send-only" if remote else "")
+    # --branch and --repo (runs-exit-when-done, 2026-10-31): where a fresh run takes the answer when
+    # nothing listens at this one any more — the asker ends a minute after its RELAYED line (dispatch-rc)
+    # and the run's mode and --needs (round 6): the fresh run is a plain dispatch, so a dnd or yolo run came
+    # back at its host's default and never reached its own launch, and a Mac-only step could go to any host;
+    # resume passes the mode on only where it is no raise (resume_extra). `kept`: a mode read while repos.json
+    # was torn is no mode to hand on
+    resume_flags = resume_flags_of(kept, os.environ.get("DISPATCH_NEEDS")) if resumable else ""
+    reply_flags = "%s%s%s%s" % ((" --branch %s --repo %s%s" % (shlex.quote(branch), shlex.quote(repo), resume_flags)) if resumable else "",
+                                (" --to-account " + shlex.quote(ctx["account"])) if ctx.get("account") else "",
+                                (" --space " + space) if listens else "", " --send-only" if remote else "")
     text = "ASK %s %s — %s — Reversible: %s — Recommended: %s%s — doc: %s:%s#L%d — from: %s%s — reply: bin/ask answer %s %s \"<text>\" --from <name> --to %s --task %s%s%s" % (
         repo, a.item, title, rev, rec if not guarded else "—",
         (" — mode: ask (nobody answers but the owner: card it)" if mode == "ask" else " — mode: %s" % mode) if mode else "",
@@ -301,11 +349,23 @@ def cmd_relay(a):
         tctx = dict(ctx, manager=ctx.get("manager") or "$DISPATCH_SKIPPER", space=ctx.get("space") or "$DISPATCH_PLAN_SPACE")
         print(asklib.BACKENDS["talk"].curl(tctx, text))
         return 0
-    if peer_live and not listens:
+    if peer_live and not listens and not resumable:
         name, verdict, tried = None, "unreachable", []
         detail = "the skipper is live on %s, but this run has no page of its own to hear its answer on" % ctx.get("manager_host")
     else:
         name, verdict, detail, tried = asklib.relay(ctx, text, order, dry=a.dry_run, resolved=resolved)
+    # the git road only for a run whose answer resumes its branch, and never where the skipper may not take
+    # it (the round-1 review): a guarded repo, whose branches the poll never scans; mode ask, whose answer is
+    # the owner's (the trailers carry no mode, so the skipper's host could not refuse it); a leased ship,
+    # whose answer must name it (--plan) to be fenced by its lease. Each parks for the owner, as before.
+    # Never on guard_unread's missing key (round 5): a host with no `regatta/guarded` (the node, a stranger's
+    # install) read as unread, which turned this road off where it was built for; a key that did not read and a
+    # torn registry still refuse it (round 6: a confidential repo then reads as not guarded)
+    if (verdict == "unreachable" and resumable and not helmlib.guarded(repo) and not helmlib.guard_unread(missing_ok=True)
+            and mode != "ask" and not plan_flag):
+        road = git_road(top, branch, rel, a.item, ctx, dry=a.dry_run, resume=resume_flags)
+        if road:
+            name, verdict, detail = road
     for b, why in tried:
         print("  %s: skipped — %s" % (b, why))
     print("message: %s" % text)
@@ -334,23 +394,161 @@ def cmd_relay(a):
                                            # and who it went to — the scope skipper's re-hail and deaf rule read both
                                            "doc": str(doc), "to": ctx.get("manager") if verdict not in ("none", "unreachable") else None,
                                            "to_host": ctx.get("manager_host") or None, "reply_flags": reply_flags})
-    if verdict in ("none", "unreachable"):
+    if verdict in ("none", "unreachable") or name == "git":
+        # the git road too: the skipper's host learns of it by a poll, which may find the skipper gone (its
+        # liveness is unknown from here), so the PR's Asks section keeps it in the owner's sight
         pr_asks(top, branch, data["asks"])
+    if verdict in ("none", "unreachable"):
         print("%s: the ask waits for the owner. Park what rests on %s, build the rest, then end on:"
               % ("no live skipper" if verdict == "none" else "no road reaches the skipper", a.item))
         print("  " + WAITING_LINE % ("%s in %s (%s)" % (a.item, rel, it["title"][:60])))
     else:
         who = skipper_name(ctx)
-        # finding 3: a run whose background tasks are off cannot keep a listener; telling it to
-        # start one sends it into a refusal. It ends on the RELAYED line, and the answer comes as
-        # a commit (or a pending answer it applies at its next start).
-        listen = " start `bin/ask listen` as a background shell," if background_ok() else ""
-        print("relayed. Park what rests on %s, build the rest, report (bin/helm report --status relayed --parked %s),%s"
-              " then end on:" % (a.item, a.item, listen))
+        if run:
+            # no listener: a run ends a minute after this line since 2026-10-31, and the answer comes
+            # with a fresh run of the branch (resume), or, off a claude/* branch, as a commit
+            print("relayed. Park what rests on %s, build the rest, report (bin/helm report --status relayed --parked %s),"
+                  " then end on the line below; this run then ends, and %s:" % (
+                      a.item, a.item, "a fresh run of the branch takes the answer" if resumable else "the answer comes as a commit"))
+        else:
+            # finding 3: a session whose background tasks are off cannot keep a listener; telling it to
+            # start one sends it into a refusal. It ends on the RELAYED line, and the answer comes as
+            # a commit (or a pending answer it applies at its next start).
+            listen = " start `bin/ask listen` as a background shell," if background_ok() else ""
+            print("relayed. Park what rests on %s, build the rest, report (bin/helm report --status relayed --parked %s),%s"
+                  " then end on:" % (a.item, a.item, listen))
         print("  " + _relayed_mark() + RELAYED_LINE % (who, "%s, %s" % (a.item, it["title"][:60])))
         if name == "sendmessage":
             print("  (sendmessage: call SendMessage to %s with the message line above before ending)" % who)
+        if name == "file":
+            # the file road waits for the skipper's next prompt, and an idle attended skipper may not have
+            # one for an hour (three asks, 2026-10-31): a hail gives it the turn
+            print(wake_skipper(ctx, "%s:%s:%s#%s" % (repo, branch, rel, a.item) if branch else None,
+                               "a relayed ask from run %s waits in your ask queue: read it with bin/ask queue, "
+                               "then answer it with the reply line it carries" % (ctx.get("session") or "?")[:8]))
     return 0
+
+
+# The git road (runs-exit-when-done, 2026-10-31): a run whose skipper is on another host it cannot reach — no
+# ssh alias for that host, no Talk key here (the Linux node has neither for the laptop) — had no way to ask
+# it, and three runs ended on a WAITING line the skipper never saw. The branch reaches every host through
+# GitHub, and the skipper's host polls it (`ask poll`, every 5 min): so the ask becomes a commit whose
+# trailers name the item and the skipper, pushed at once, and that poll hails the skipper (poll_hail).
+SKIPPER_TRAILER = "Ask-Skipper"
+
+
+RESUME_TRAILER = "Ask-Resume"   # `<doc>#Dn --mode M --needs N`: the run's mode and needs, for the hail (round 6)
+NEEDS_RE = r"[a-z0-9][a-z0-9._-]{0,39}(,[a-z0-9][a-z0-9._-]{0,39})*"   # dispatch's needs_re (dispatch-queue's NEED_RE), comma-joined
+RESUME_FLAGS_RE = re.compile(r"( --mode (ask|dnd|yolo))?( --needs %s)?" % NEEDS_RE)
+
+
+def resume_flags_of(mode, needs):
+    """The road back's `--mode M --needs N` (each when it says something): the run's mode bar default, and its
+    step's --needs (dispatch's DISPATCH_NEEDS). A value of another shape is dropped, never quoted into a line a
+    skipper runs."""
+    out = " --mode %s" % mode if mode in ("ask", "dnd", "yolo") else ""
+    if needs and re.fullmatch(NEEDS_RE, needs):
+        out += " --needs %s" % needs
+    return out
+
+
+def resume_extra(a, top, pinned=False):
+    """dispatch's flags for a fresh run from the answer's --mode and --needs. The mode only where this host reads
+    the branch's mode as the same (helmlib.branch_mode: the plan task, a `helm mode --branch`, the newest run
+    record), or reads none and the mode is ask: landing follows the mode, so a raise is a yes to merge, and a
+    mode on a reply line is the run's word, not the owner's (AGENTS.md: a flag that stands for a person's yes);
+    and dispatch writes a given mode over the branch's entry, so a reply's older word must not replace a newer
+    one the host holds (round 7: a stale ask over the owner's later default). Elsewhere the fresh run's host
+    reads the mode at fire time. PINNED (the guarded road, `--pin here`): never dnd or yolo — the queue claims
+    those only on an armed host, so a pinned entry on a disarmed one was never claimed, while this host's fire
+    time reads the same mode anyway (round 7)."""
+    extra, m = [], getattr(a, "mode", None)
+    if m and m != "default":
+        try:
+            old = helmlib.branch_mode(a.branch, str(top))[0]
+        except Exception:   # noqa: BLE001
+            old = None
+        if pinned and m in ("dnd", "yolo"):
+            print("ask: mode %s is not named on a step pinned here: its fire time reads the mode again" % m)
+        elif m != old and not (old is None and m == "ask"):
+            print("ask: mode %s is not what this host reads of the branch (%s), so the fresh run takes the mode its host reads"
+                  % (m, old or "none"))
+        else:
+            extra += ["--mode", m]
+    if getattr(a, "needs", None):
+        extra += ["--needs", a.needs]
+    return extra
+
+
+def git_road(top, branch, rel, item, ctx, dry=False, resume=""):
+    """(backend, verdict, detail) of the ask relayed by git, or None where that road does not apply: no
+    skipper, one on this host (git changes nothing for a road this host lacks), a skipper's own ask, no
+    claude/* branch or no origin. The commit is empty and made without the index — `commit-tree` on HEAD's
+    own tree, the branch moved by compare-and-swap — so nothing the session staged rides in it. The push is
+    the branch's own, never forced; a refused push leaves the commit for the checkpoint's push at the end."""
+    if not ctx.get("manager") or not asklib.elsewhere(ctx) or os.environ.get("SKIPPER_SCOPE"):
+        return None
+    if not branch.startswith("claude/") or not git(top, "config", "--get", "remote.origin.url", check=False):
+        return None
+    host = ctx.get("manager_host")
+    if dry:
+        return "git", "dry-run", "would commit the ask's trailers on %s and push it; %s's ask poll hails the skipper" % (branch, host)
+    msg = ("Ask relay: %s %s, by git to its skipper on %s\n\nThis host has no road to %s (no ssh alias, no Talk key): "
+           "its ask poll reads this branch and hails the skipper (bin/ask, git_road).\n\nAsk: %s#%s\n%s: %s#%s %s\n%s"
+           % (rel, item, host, host, rel, item, SKIPPER_TRAILER, rel, item, ctx["manager"],
+              ("%s: %s#%s%s\n" % (RESUME_TRAILER, rel, item, resume)) if resume else ""))
+    try:
+        # the tree of the head read here, not HEAD's again: a commit in between would be lost from it (the
+        # compare-and-swap below refuses that case anyway). A git that fails — no identity on a node, a
+        # checkpoint commit winning the swap — leaves the road untaken: the relay parks for the owner, its
+        # WAITING line and ask.json written, never an exit that leaves the run no line to end on (round 1)
+        head = git(top, "rev-parse", "HEAD")
+        new = git(top, "commit-tree", head + "^{tree}", "-p", head, "-m", msg)
+        git(top, "update-ref", "-m", "ask relay: git road", "refs/heads/" + branch, new, head)
+    except SystemExit as e:
+        print("  git: skipped — %s" % str(e)[:200])
+        return None
+    try:
+        # 45 s: the relay is one Bash call of two minutes, pr_asks after it included (round 3)
+        r = subprocess.run(["git", "-C", str(top), "push", "-q", "origin", "refs/heads/%s:refs/heads/%s" % (branch, branch)],
+                           capture_output=True, text=True, timeout=45)
+        pushed = None if r.returncode == 0 else ((r.stderr or "").strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]
+    except (OSError, subprocess.TimeoutExpired) as e:
+        pushed = e.__class__.__name__
+    if pushed is not None:
+        # an ask no poll can see is no relay (round 3): the run parks for the owner, its WAITING line and the PR's
+        # Asks section; the commit stays, and once the checkpoint's push carries it the poll still hails
+        print("  git: skipped — commit %s on %s, not pushed (%s): the skipper's host cannot read it yet" % (new[:8], branch, pushed))
+        return None
+    return "git", "queued", "git: the ask is commit %s on %s, pushed; %s's ask poll hails the skipper" % (new[:8], branch, host)
+
+
+def hail_cmd():
+    """wharf-runs' hail as an argv, or None — peer_tool's rule, the poll's own: ASK_HAIL stands in (a
+    test's stub; a path that is no file stands for an absent hail)."""
+    p = peer_tool("hail")
+    return [sys.executable, str(p)] if p else None
+
+
+def wake_skipper(ctx, about, text):
+    """Hail the skipper so an idle one gets a turn (`--when idle`: a busy one is hailed once it idles), on
+    its host when that is another (hail --host). One line saying what happened; never raises."""
+    cmd = hail_cmd()
+    if not cmd or not ctx.get("manager"):
+        return "  wake: no hail here (wharf-runs) — the skipper reads it at its next prompt"
+    argv = cmd + [ctx["manager"], "--kind", "ask", "--when", "idle", "--text", text]
+    if about:
+        argv += ["--about", about]
+    if asklib.elsewhere(ctx):
+        argv += ["--host", ctx["manager_host"]]
+    try:
+        # 45 s, not hail's own 90 s over ssh: the relay is one Bash call, whose default limit is two minutes,
+        # and a relay timed out there is run again, a second ASK queued (round 1)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=45)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "  wake: hail failed (%s) — the skipper reads it at its next prompt" % e.__class__.__name__
+    said = ((r.stdout or r.stderr or "").strip().splitlines() or ["exit %d" % r.returncode])[0][:200]
+    return "  wake: %s" % said
 
 
 def held_by_other(top):
@@ -382,11 +580,16 @@ def pr_asks(top, branch, asks):
         pr = common.find_pr(slug, branch, tok) if tok else None
         if not pr:
             return
-        rows = ["- **%s** — %s (`%s`, Reversible: %s, Recommended: %s)" % (
-            x["item"], x["title"], x["rel"], x.get("reversible"), x.get("recommended")) for x in asks if not x.get("answered")]
+        # an ask relayed to a skipper (git_road's included, whose skipper's liveness is unknown from here) is marked,
+        # so the owner answers it only if the skipper does not (round 4: the heading said nobody was relayed to)
+        rows = ["- **%s** — %s (`%s`, Reversible: %s, Recommended: %s)%s" % (
+            x["item"], x["title"], x["rel"], x.get("reversible"), x.get("recommended"),
+            " — relayed to a skipper (%s); yours if it does not answer" % x.get("backend")
+            if x.get("verdict") not in (None, "none", "unreachable") else "")
+            for x in asks if not x.get("answered")]
         body = ASKS_RE.sub("", pr.get("body") or "").rstrip()
         if rows:
-            body += "\n\n## Asks\n\nOpen, waiting for the owner (bin/ask; nobody to relay to):\n\n" + "\n".join(rows) + "\n"
+            body += "\n\n## Asks\n\nOpen (bin/ask), waiting for the owner unless marked relayed:\n\n" + "\n".join(rows) + "\n"
         common.edit_pr(slug, pr["number"], tok, body=body)
         print("PR #%s: Asks section updated" % pr["number"])
     except Exception as e:  # the ask is recorded already; the PR body is a second view
@@ -554,6 +757,56 @@ def cmd_answer(a):
     no = ask_mode_refusal(a, a.doc)
     if no:
         raise SystemExit(no)
+    if a.branch and not a.no_send:
+        # runs-exit-when-done (2026-10-31): the asker ends a minute after its RELAYED line, so the answer goes
+        # to a fresh run of the branch, wherever the queue puts it — unless the asker, or whoever holds the
+        # doc's worktree here, is still at work: then by the roads it always had (round 1: a second run beside
+        # a live one). A run idle on its closing line is no longer at work, a SendMessage road to it included:
+        # it is ended within the minute, and a message or a pending row would reach nobody (round 1).
+        road, why = answer_road(a)
+        # the doc is here only as the branch's own checkout (round 2): never under --send-only (finding 2: the
+        # path may be another Mac's, a stale worktree of the same topic here included), and never a checkout
+        # on another branch — a relative path the poll's hail names resolves against the skipper's cwd, a main
+        # checkout whose doc lacks the item or would take the answer onto main
+        local = Path(a.doc).resolve() if not a.send_only and Path(a.doc).is_file() else None
+        ltop = repo_top(local) if local else None
+        other_branch = bool(ltop) and git(ltop, "symbolic-ref", "-q", "--short", "HEAD", check=False) != a.branch
+        if other_branch:
+            local = ltop = None   # read as another host's: the fresh run takes it, and nothing is written here
+        if local:
+            it, _ = item_of(local, a.item)
+            if it.get("answer") and not a.force:
+                raise SystemExit("ask: %s is answered already (%s); --force to overwrite" % (a.item, it["answer"][:80]))
+        # missing_ok (round 6): a host with no `regatta/guarded` (the node) would otherwise read every repo as
+        # guarded and skip resume, the only road back to a run that ended at its RELAYED line; a key that did
+        # not read and a torn registry still fail closed, since resume's note carries the answer's text
+        guarded = helmlib.guarded(a.repo) or helmlib._guarded_repo(a.doc) or helmlib.guard_unread(missing_ok=True)
+        busy = asker_at_work(a, ltop)
+        # the finish review (2026-11-05): a typed session (no run record: a pickup tab, the owner's own) holding
+        # the doc's worktree here, and no road to the asker — a fresh run would start beside it, and nothing
+        # queues behind a typed session; its pending row instead, which ask_guard shows it at its next prompt
+        typed_holder = bool(busy and not road and ltop and busy != a.to and busy == held_by_other(ltop)
+                            and run_record(busy) is None)
+        # the roads below while the asker still works and one reaches it; else a fresh run (round 2: a busy
+        # asker no road reaches — another login — ends at its RELAYED line, and a pending row alone waited for
+        # a run nothing queued). A guarded repo's only with its doc here (resume's guarded road: no text leaves
+        # the Mac); --force overwrites an answer, which the fresh run's apply would drop (round 3).
+        if not a.force and not typed_holder and (ltop or not guarded) and not (busy and road):
+            rc = resume(a, line, why if not road else "%s, but the run is on its closing line: it is ended within a minute" % road, ltop,
+                        guarded=guarded)
+            if rc is not None:
+                return rc
+            # the fresh run was refused, and the doc is here: the roads below keep the answer (a pending row
+            # the branch's next run applies, or the commit), never lost; a run on its closing line is sent
+            # nothing it dies before reading
+            a.send_only = False
+            if not busy:
+                a.no_send = True
+        if other_branch and not a.send_only:
+            # no fresh run took it (a guarded repo, --force): the roads below would write that other checkout's doc,
+            # a main checkout's onto main (round 4's second review)
+            raise SystemExit("ask: %s is on another branch than %s here — answer from that branch's checkout, or with "
+                             "--send-only" % (a.doc, a.branch))
     if a.send_only:
         # finding 2: the doc may be another Mac's path — never read it; the relay's own path is the
         # run's, so the ANSWER carries it as given
@@ -613,6 +866,289 @@ def cmd_answer(a):
     return send_answer(a, rel, line, road, guarded=guarded)
 
 
+def asker_at_work(a, top=None):
+    """The session that relayed (--to), or the one holding the doc's worktree here (held_by_other), when it
+    is live on this host and not idle: it still works, so an answer for it never starts a second run of its
+    branch. Idle (a run on its closing line) or no record here reads as not at work: the fleet queue then
+    puts a fresh run behind any run of the branch still going (one branch, one host)."""
+    for sid in filter(None, [a.to, held_by_other(top) if top else None]):
+        rec = asklib.registry(sid)
+        if rec and asklib.pid_alive(rec.get("pid")) and (rec.get("status") != "idle" or not said_its_end(sid)):
+            return sid
+    return None
+
+
+_RC = []
+
+
+def _dispatch_rc():
+    """wharf-runs' dispatch-rc as a module, or None: the one rule for when a run is ended (round 3)."""
+    if not _RC:
+        try:
+            from importlib.machinery import SourceFileLoader
+            p = helmlib.peer("dispatch-rc")
+            _RC.append(SourceFileLoader("dispatch_rc", str(p)).load_module() if p else None)
+        except Exception:   # noqa: BLE001 — no wharf-runs, or one that does not load: no rule here
+            _RC.append(None)
+    return _RC[0]
+
+
+def said_its_end(sid):
+    """dispatch-rc ends this idle session within the minute. With the run's record here (dispatch-rc's RUNS, the
+    newest not ended whose session is SID), its own idle_limit decides (round 4: a run with its own `idle`, a
+    `.next` waiter or the hand-over line ends in a minute even after a person typed into it). False with no
+    such record, or no dispatch-rc here, or when it cannot tell: a session dispatch-rc does not watch is never
+    ended by it — a typed session holding the worktree (round 7: read by the plain-run rule, its one prompt and
+    its WAITING line made it "ended", and resume started a run beside it) — and a live dispatched asker always
+    has its un-ended record here. False keeps the answer on the roads that reach the session."""
+    d = _dispatch_rc()
+    rec = run_record(sid)
+    if d is None or rec is None:
+        return False
+    try:
+        return d.idle_limit(*rec) <= d.NEXT_IDLE
+    except Exception:   # noqa: BLE001 — a reader's fault: cannot tell
+        return False
+
+
+def run_record(sid):
+    """(path, record) of the newest un-ended dispatch-rc run record whose session is SID, or None: none, no
+    dispatch-rc here, or a reader's fault. None is a session dispatch-rc does not watch (a typed one)."""
+    d = _dispatch_rc()
+    if d is None or not sid:
+        return None
+    try:
+        for path in sorted(glob.glob(os.path.join(d.RUNS, "*.json")), reverse=True):
+            try:
+                st = d.load(path)
+            except (OSError, ValueError):   # one torn record is no other run's verdict
+                continue
+            if st.get("session") == sid and not st.get("ended"):
+                return path, st
+    except Exception:   # noqa: BLE001 — a reader's fault: cannot tell
+        return None
+    return None
+
+
+def doc_rel(doc, repo, top=None, branch=None, read=True):
+    """The repo-relative path of DOC as the relay named it: this Mac's file under its top, else another
+    host's path cut after its worktree (`.claude/worktrees/<topic>/`) or after a `/<repo>/` — the first cut
+    whose rest the branch (or the clone here) holds, since the repo's name may recur in the path (a home
+    named like it, a module folder); else the last cut; else as given. A relative path is already the repo's
+    (what `ask poll`'s hail names) and is kept whole: cutting `modules/regatta/docs/x.md` at `/regatta/` named
+    a doc the branch lacks, and the fresh run dropped the answer (runs-exit-when-done D2-C)."""
+    d = Path(doc)
+    if read and d.is_file():
+        try:
+            top = repo_top(d.resolve())
+            return d.resolve().relative_to(top).as_posix()
+        except (SystemExit, ValueError, OSError):
+            pass
+    t = str(doc)
+    if not t.startswith(("/", "~")):
+        return t[2:] if t.startswith("./") else t
+    m = re.search(r"/\.claude/worktrees/[^/]+/(.+)$", t)
+    if m:
+        return m.group(1)
+    name = Path(repo).name if repo and repo.startswith(("/", "~")) else repo   # --repo may be the clone's path
+    sep = "/%s/" % name if name else None
+    if sep and sep in t:
+        parts = t.split(sep)
+        rests = [sep.join(parts[i:]) for i in range(1, len(parts))]
+        for rest in rests if top else ():
+            refs = ["origin/" + branch, branch] if branch else []
+            if any(subprocess.run(["git", "-C", str(top), "cat-file", "-e", "%s:%s" % (r, rest)],
+                                  capture_output=True).returncode == 0 for r in refs) or (Path(top) / rest).is_file():
+                return rest
+        return rests[-1]
+    return t
+
+
+def repo_dir(repo, doc):
+    """The repo's main checkout on this host: the doc's own when it is here, else the clone the core's
+    registry names (common.cloned_repos()), matched by name; an absolute path as given; or None."""
+    d = Path(doc) if doc else None
+    if d and d.is_file():
+        try:
+            return main_checkout(repo_top(d.resolve()))
+        except SystemExit:
+            pass
+    if repo and repo.startswith(("/", "~")):
+        p = Path(repo).expanduser()
+        return p if p.is_dir() else None
+    try:
+        return next((Path(p) for p in helmlib._common().cloned_repos() if Path(p).name == repo), None)
+    except Exception:   # noqa: BLE001 — no core or no registry: no clone known
+        return None
+
+
+def dispatch_cmd():
+    """wharf-runs' dispatch as an argv, or None: ASK_DISPATCH stands in (a test's stub)."""
+    if os.environ.get("ASK_DISPATCH"):
+        return shlex.split(os.environ["ASK_DISPATCH"])
+    p = helmlib.peer("dispatch")
+    return [str(p)] if p else None
+
+
+RESUME_NOTE = ("Your skipper answered %(items)s after the run that relayed it had ended, so the answer comes with this "
+               "run. Write it first, with the bin/ask this prompt names: %(cmds)s (each commits its answer, and drops it "
+               "when the item holds an answer already). Then build what rested on it and carry the brief on from where "
+               "the branch stands; your build review is a loop of your own, from its first round.")
+
+
+def resumed_rows(branch, repo, rel, item, line=None):
+    """The answers this host resumed onto BRANCH in the last three days, newest per item, this item's
+    replaced by LINE when given (and then recorded): a second answer's put replaces the first's queued entry
+    and its note (dispatch-queue's put by the same skipper), so each note carries every earlier one, and the
+    fresh run's apply drops those already written (round 2)."""
+    p = cache_dir() / "resumed.jsonl"
+    rows, now = {}, time.time()
+    try:
+        for x in p.read_text().splitlines():
+            try:
+                r = json.loads(x)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("branch") == branch and r.get("repo") == repo and now - r.get("t", 0) < 3 * 86400:
+                rows[(r.get("rel"), r.get("item"))] = r
+    except OSError:
+        pass
+    if line is not None:
+        rows.pop((rel, item), None)
+        rows[(rel, item)] = {"t": int(now), "branch": branch, "repo": repo, "rel": rel, "item": item, "line": line}
+    return list(rows.values())
+
+
+def record_resumed(row):
+    try:
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        with open(cache_dir() / "resumed.jsonl", "a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+NOTE_MAX = 3800   # dispatch-queue takes a --note of 4000 at most (its args pattern), and refuses the put past it
+# no item, no doc name, no text: a guarded repo's pointer, as send_answer's (K6)
+GUARDED_NOTE = ("Your skipper answered an ask of this branch after the run that relayed it had ended: the answer waits in this "
+                "worktree as a pending row, which the bin/ask apply this prompt starts with writes. Then build what rested on "
+                "it and carry the brief on from where the branch stands; your build review is a loop of your own, from its "
+                "first round.")
+
+
+def unattended_caller():
+    return bool(os.environ.get("REGATTA_UNATTENDED") or os.environ.get("CLAUDE_UNATTENDED")
+                or os.environ.get("AUTOFINISH_CALLER_UNATTENDED"))
+
+
+def resume(a, line, why, local_top=None, guarded=False):
+    """The answer for a run nothing listens at any more: a fresh run of the branch (`dispatch BRANCH --note`,
+    the fleet queue's, unpinned) whose note carries the answer line, written there by `ask apply --answer` —
+    the branch's own run is its one writer, on whatever host it lands. The asker's host is never needed: an
+    answer committed here or onto origin would race the old run's last push. A queue that refuses it because
+    a run of the branch still holds the entry elsewhere (the asker, building on after its relay) is asked
+    again with --replace, which queues the step behind that run — an attended caller only: dispatch refuses
+    --replace to an unattended one (round 3: the retry was futile). A guarded repo's (GUARDED, the doc here in
+    LOCAL_TOP): a pending row in the worktree and a step pinned here (--pin here), whose note names no text
+    (K6: a guarded answer never leaves the doc's Mac). On a refusal with the doc here, None hands the answer to
+    cmd_answer's own roads. Exit 0 handed on, 1 not (no doc here)."""
+    # the doc is read only where it is the branch's own checkout (round 3): a relative path under --send-only
+    # resolves against the skipper's cwd, which may be another repo's checkout
+    top = repo_dir(a.repo, a.doc if local_top else "")
+    rel = Path(a.doc).resolve().relative_to(local_top).as_posix() if local_top else doc_rel(a.doc, a.repo, top, a.branch, read=False)
+    cmd = dispatch_cmd()
+    if not top or not cmd:
+        if local_top:
+            print("ask: no %s here — the answer is kept where the doc is" % ("clone of %s" % a.repo if not top else "dispatch"))
+            return None
+        raise SystemExit("ask: nothing listens at %s (%s), and %s — the answer was not handed on"
+                         % (a.to or "the run", why, "no clone of %s here" % (a.repo or "the repo") if not top else
+                            "no dispatch here (wharf-runs)"))
+    rows = []
+    if guarded:
+        note = GUARDED_NOTE
+        argv = cmd + [a.branch, "--repo", str(top), "--pin", "here", "--note", note]
+    else:
+        # every answer this host resumed onto the branch lately (a second put replaces the first's entry and its
+        # note), all of them or none: dropping an earlier one to fit the queue's cap lost it when its entry was
+        # still queued (round 4), so past the cap the answer is kept where the doc is, or refused
+        rows = resumed_rows(a.branch, Path(str(top)).name, rel, a.item, line)
+        note = RESUME_NOTE % {"items": ", ".join("%s of %s" % (r["item"], r["rel"]) for r in rows),
+                              "cmds": ", then ".join("`<that ask> apply --answer %s %s %s`" % (
+                                  shlex.quote(r["rel"]), r["item"], shlex.quote(r["line"])) for r in rows)}
+        if len(note) > NOTE_MAX:
+            if local_top:
+                print("ask: the answer is too long for a dispatch note (%d characters): kept where the doc is" % len(note))
+                return None
+            print("ask: the answer is too long for a dispatch note (%d characters, %d at most%s): answer where the doc "
+                  "is, or shorter" % (len(note), NOTE_MAX, ", with %d earlier answer(s) of this branch it carries" % (len(rows) - 1)
+                                      if len(rows) > 1 else ""), file=sys.stderr)
+            return 1
+        argv = cmd + [a.branch, "--repo", str(top), "--note", note]
+    extra = resume_extra(a, top, pinned=guarded)
+    argv += extra
+    if a.dry_run:
+        print("would resume: nothing listens at %s (%s) — %s" % (a.to or "the run", why, " ".join(shlex.quote(x) for x in argv)))
+        return 0
+    if guarded:
+        # before the put: the row is what the pinned run applies, and what a refusal leaves for the roads below
+        add_pending(local_top, rel, a.item, line, "skipper (resumed)")
+    until = time.time() + 100   # an attended skipper's Bash call stops at two minutes: both tries fit in it
+
+    # a ship's answer (--plan) keeps its ship on the fresh run (round 5): dispatch reads the skipper's road from
+    # the caller's environment, and the scope skipper's has none, so a plain re-dispatch dropped the ship, its
+    # scope skipper and its mode (AGENTS.md: a plain re-dispatch of a skippered branch drops its skipper)
+    env = None
+    if getattr(a, "plan", None):
+        env = dict(os.environ, DISPATCH_SHIP=a.plan, DISPATCH_PLAN=a.plan)
+        if a.task:
+            env["DISPATCH_TASK"] = a.task
+
+    def run(av):
+        left = until - time.time()
+        if left < 10:
+            return -1, "no time left for dispatch"
+        try:
+            r = subprocess.run(av, capture_output=True, text=True, timeout=left, env=env)
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            return r.returncode, out
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return -1, "dispatch did not finish (%s)" % e.__class__.__name__
+    rc, out = run(argv)
+    # dispatch's raise check reads the caller's own mode where this host knows none of the branch's: refused as a
+    # raise, the answer still goes, at the mode the fresh run's host reads, and says so (round 6)
+    if rc == 2 and "--mode" in extra and "is a raise" in out:
+        i = argv.index("--mode")
+        argv = argv[:i] + argv[i + 2:]
+        print("ask: dispatch refused mode %s as a raise here, so the fresh run takes the mode its host reads" % extra[extra.index("--mode") + 1])
+        rc, out = run(argv)
+    # dispatch's refusal for an entry of the branch another host holds: "B is running on HOST (queue entry Q) —
+    # one branch, one host" (its q_res with "busy " cut), or claimed or waiting there. Not "queued by session":
+    # --replace would take over another session's step (a landing), dropping it
+    if rc == 2 and re.search(r" is (running|claimed|waiting) on \S+ \(queue entry ", out) and not unattended_caller():
+        rc, out = run(argv + ["--replace"])
+    for l in out.splitlines()[-6:]:
+        print("  dispatch: %s" % l)
+    # "claimed here already": this host's job of the branch holds the step and nothing was queued, so the
+    # note was dropped — not handed on (round 1)
+    if rc != 0 or "is claimed here already" in out:
+        why2 = "dispatch exit %d" % rc if rc != 0 else "its job here holds the step, the note dropped"
+        if local_top:
+            print("ask: the fresh run of %s was not queued (%s): the answer is kept where the doc is" % (a.branch, why2))
+            return None
+        print("ask: the fresh run of %s was not queued (%s): the answer is not handed on — answer again once the "
+              "branch's run has ended, or where the doc is" % (a.branch, why2), file=sys.stderr)
+        return 1
+    if rows:
+        record_resumed(rows[-1])
+    print("answered %s: %s" % (a.item, line))
+    print("resumed: nothing listens at %s (%s), so a fresh run of %s takes the answer (%s)"
+          % (a.to or "the run", why, a.branch, "a pending row here, pinned here" if guarded else "its note"))
+    log_answer(a, rel)
+    plan_answered(a, rel)
+    return 0
+
+
 def log_answer(a, rel, run_session=None, cwd=None):
     """answered: the skipper settled it from the item or its context (R5) — an interruption avoided;
     escalated: the answer is the owner's, relayed — --source names one of the owner's routes
@@ -653,6 +1189,13 @@ def cmd_apply(a):
     elif a.gen is not None:
         raise SystemExit("ask apply: --gen goes with --plan")
     top = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+    if a.answer:
+        # a resumed run's answer (resume's note): the line its skipper wrote, kept as a pending row and
+        # applied below with the rest — a relayed line only, as `answer` writes it
+        rel, item, line = a.answer
+        if not asklib.RELAYED_HEAD_RE.match(line):
+            raise SystemExit("ask apply --answer: %r is no relayed answer line (Relayed from <who> (<source>, <date>): …)" % line[:80])
+        add_pending(top, rel, item, line, "skipper (resumed)")
     p = pending_file(top)
     if not p.exists():
         print("no pending answers here")
@@ -958,6 +1501,7 @@ def scan_repo(repo, m, dry=False, ended=None):
                 ended.append({"repo": name, "src": str(repo), "branch": ref})
             continue
         t = int(ts) if ts.isdigit() else 0
+        first = len(out)   # this branch's rows start here (the Ask-Skipper trailers below name theirs)
         wt = trees.get(ref)
         files = git(mirror, "diff", "--name-only", "--diff-filter=AM", "%s...%s" % (base, ref), "--", "*.md", check=False).splitlines()
         for f in files:
@@ -976,6 +1520,15 @@ def scan_repo(repo, m, dry=False, ended=None):
                     "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
                     "key": "%s:%s:%s#%s" % (name, ref, f, it["id"]), "t": t, "sha": sha,
                     "worktree": None if unread else wt}))   # a path's folders: home while the guard list may be short
+        # `Ask-Skipper: <doc>#Dn <session>` trailers (git_road): the skipper a run on another host could not
+        # reach, which poll_hail wakes when it lives here. The newest trailer for an item wins.
+        skippers = {}
+        for line in git(mirror, "log", "--format=%%(trailers:key=%s,valueonly,separator=;)" % SKIPPER_TRAILER,
+                        "%s..%s" % (base, ref), check=False).splitlines():
+            for v in [x.strip() for x in line.split(";") if x.strip()]:
+                k, _, sid = v.rpartition(" ")
+                if k and sid and k not in skippers:
+                    skippers[k] = sid
         # `Ask: <doc>#Dn` trailers: a cloud brief's commit (bin/ask is not there). A trailer counts
         # only while its item is open in the doc at the branch's tip (finding 16): an answered one,
         # or one the doc does not hold, would ring every five minutes for as long as the branch lives.
@@ -996,6 +1549,22 @@ def scan_repo(repo, m, dry=False, ended=None):
                         "repo": name, "src": str(repo), "branch": ref, "rel": rel, "item": did, "title": it["title"][:100],
                         "reversible": it.get("reversible"), "recommended": (it.get("recommended") or "")[:80],
                         "key": key, "via": "Ask: trailer on %s" % line.partition(" ")[0][:7], "t": t, "sha": sha, "worktree": wt}))
+        # `Ask-Resume: <doc>#Dn --mode M --needs N` (round 6): the run's mode and needs, which the hail names so
+        # the fresh run keeps them; a value of any other shape is dropped. The newest trailer for an item wins.
+        resumes = {}
+        if skippers:
+            for line in git(mirror, "log", "--format=%%(trailers:key=%s,valueonly,separator=;)" % RESUME_TRAILER,
+                            "%s..%s" % (base, ref), check=False).splitlines():
+                for v in [x.strip() for x in line.split(";") if x.strip()]:
+                    k, sp, flags = v.partition(" ")
+                    if k and sp and k not in resumes and RESUME_FLAGS_RE.fullmatch(" " + flags):
+                        resumes[k] = " " + flags
+        for o in out[first:] if skippers else ():
+            sid = skippers.get("%s#%s" % (o["rel"], o["item"]))
+            if sid:
+                o["skipper"] = sid
+                if resumes.get("%s#%s" % (o["rel"], o["item"])):
+                    o["resume"] = resumes["%s#%s" % (o["rel"], o["item"])]
     return out
 
 
@@ -1242,15 +1811,35 @@ def cmd_poll(a):
         # would be a wall of them. It seeds silently and says how many (a dry run still lists them).
         print("ask poll: first run — %d open ask(s) seeded without a banner; new ones ring from now on" % len(found))
         new = []
+    # the hail of a skipper an Ask-Skipper trailer names (git_road) is judged on its own key, not only for a
+    # new row: the D-item's commit may have reached origin, and been seen, before the trailer did (a pushed
+    # turn, a re-relay), and a hail kept to new rows never came (round 1). A hail that did not take is tried
+    # again at the next poll; the first poll seeds the hails as it seeds the banners.
+    hailed_keys, rung = set(), set()
+    for f in found:
+        hk = "hailed|%s|%s" % (f["key"], f.get("skipper"))
+        if not f.get("skipper") or hk in seen:
+            continue
+        if first_run and not a.dry_run:
+            hailed_keys.add(hk)
+            continue
+        said = poll_hail(f, dry=a.dry_run, deadline=deadline)
+        if said:
+            print(said)
+            hailed_keys.add(hk)
+            if said.startswith(("hailed ", "would hail ")):
+                rung.add(f["key"])
     for f in new:
         line = "%s %s — %s" % (f["repo"], f["item"], f["title"])
+        if f["key"] in rung:
+            continue
         if a.dry_run:
             print("would raise: %s (%s)" % (line, f["branch"]))
         else:
             print("%s: %s" % (notify("Ask waiting · %s" % f["repo"], line), line))
     if not a.dry_run:
         cache_dir().mkdir(parents=True, exist_ok=True)
-        seen_p.write_text(json.dumps(sorted(seen | {f["key"] for f in found})))
+        seen_p.write_text(json.dumps(sorted(seen | {f["key"] for f in found} | hailed_keys)))
         # stalls.poll_asks reads a WAITING run on these branches as asked, as it did while their rows were
         # here: dropping the rows alone raised a new S6 for each dead run the board now hides (S1 review)
         # `asked`: when this poll first saw the item (repo, doc, item; any branch), its branch tip's time at the
@@ -1283,6 +1872,54 @@ def cmd_poll(a):
     if not (a.dry_run or a.repos) and surfaces.host() == laptop_name():
         poll_board(deadline)
     return 0
+
+
+def poll_hail(f, dry=False, deadline=None):
+    """A new ask whose branch names its skipper (an Ask-Skipper trailer, git_road) and that skipper lives on
+    this host: hail it, `--when idle`, so it answers now rather than at some later prompt; the line said, or
+    None when the row names no skipper live here or the hail did not take (the owner's banner then rings, as
+    before), or a "not hailed" line when hail refused it (recorded, never tried again; the banner rings). The
+    skipper answers with --branch, and a fresh run of the branch takes the answer (resume)."""
+    sid = f.get("skipper")
+    rec = asklib.registry(sid) if sid else None
+    if not rec or not asklib.pid_alive(rec.get("pid")):
+        return None
+    cmd = hail_cmd()
+    if not cmd:
+        return None
+    # the command first and whole (round 2: a node's branch and doc left 4 of hail's 400 characters), the doc
+    # read on origin's branch (--about names it); --send-only, so the answer never reads a file of that path
+    # here — the skipper's cwd may be a main checkout, whose doc lacks the item or would take it onto main
+    text = ("answer with: bin/ask answer %s %s \"<text>\" --from <you> --send-only --branch %s --repo %s%s — an ask a run on "
+            "another host relayed by git (read the doc on origin's branch); a fresh run of the branch takes the answer"
+            % (shlex.quote(f["rel"]), f["item"], shlex.quote(f["branch"]), shlex.quote(f["repo"]), f.get("resume") or ""))
+    # quoted (round 7): a ref name may hold `;`, `|`, `$(` and backticks, a doc path `$(…)`, and both come from
+    # whoever pushed the branch — this is the command the skipper is told to run; the item and the resume flags
+    # are matched whole (open_items' ids, RESUME_FLAGS_RE)
+    if len(text) > 400:   # hail's TEXT_MAX: a pointer, so the command goes and the pointer stays
+        text = "an ask relayed by git from a run on another host: read %s %s on origin's branch and answer it with --send-only --branch" % (shlex.quote(f["rel"]), f["item"])
+    argv = cmd + [sid, "--kind", "ask", "--when", "idle", "--text", text,
+                  "--about", "%s:%s:%s#%s" % (f["repo"], f["branch"], f["rel"], f["item"])]
+    if dry:
+        return "would hail skipper %s: %s %s (%s)" % (sid[:8], f["repo"], f["item"], f["branch"])
+    # within the poll's one deadline (ASK_POLL_BUDGET), a minute at most: the skipper is on this host
+    left = 60 if deadline is None else min(60, deadline - time.time())
+    if left < 5:
+        return None
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=left)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        # hail refused it (its own validation: a refusal no later poll changes): recorded, never retried each
+        # poll at up to a minute of the poll's budget; the owner's banner rings (round 4). A timeout above is
+        # tried again
+        why = ((r.stderr or r.stdout or "").strip().splitlines() or ["exit %d" % r.returncode])[-1][:160]
+        return "not hailed: skipper %s for %s %s (%s): %s" % (sid[:8], f["repo"], f["item"], f["branch"], why)
+    said = ((r.stdout or "").strip().splitlines() or ["hailed"])[0][:160]
+    # hail's file road (`queued via file`) wakes nobody: the skipper reads it at its next prompt, so the
+    # owner's banner rings too; the hail is not sent again either way (round 2)
+    return ("" if " via file " in said else "hailed ") + "skipper %s for %s %s (%s): %s" % (sid[:8], f["repo"], f["item"], f["branch"], said)
 
 
 def carry_forward(failed, field="asks"):
@@ -1561,11 +2198,15 @@ def main(argv=None):
     s.add_argument("--no-commit", action="store_true"); s.add_argument("--no-send", action="store_true")
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--force", action="store_true")
     s.add_argument("--send-only", action="store_true"); s.add_argument("--gen", type=int)
+    s.add_argument("--branch"); s.add_argument("--repo")
+    # the run's mode and needs from its road back, for the fresh run resume starts (round 6)
+    s.add_argument("--mode", choices=("ask", "default", "dnd", "yolo")); s.add_argument("--needs")
     s = sp.add_parser("listen"); s.add_argument("--session"); s.add_argument("--plan"); s.add_argument("--max", type=int, default=3)
     s.add_argument("--replays", type=int, default=30)
     s = sp.add_parser("poll"); s.add_argument("--dry-run", action="store_true"); s.add_argument("--repos", nargs="*")
     sp.add_parser("status")
     s = sp.add_parser("apply"); s.add_argument("--no-commit", action="store_true")
+    s.add_argument("--answer", nargs=3, metavar=("REL", "DN", "LINE"))
     s.add_argument("--plan"); s.add_argument("--gen", type=int)
     s = sp.add_parser("queue"); s.add_argument("--session"); s.add_argument("--clear", action="store_true")
     s = sp.add_parser("backends"); s.add_argument("--set")

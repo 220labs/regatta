@@ -43,6 +43,16 @@
   step) with its slip in days, the hill's counts (answered of the docs' decisions, built of the steps) and the
   money with where each number comes from; the timeline's bars end at the projected end, and `helm show`
   prints the row. The header's count of what needs the owner leaves out the cards Later holds.
+- Asks outlive the asker (runs-exit-when-done): a dispatched run's relay carries `--branch`/`--repo`, and `ask answer`
+  with nothing listening queues a fresh run of the branch whose note carries the answer (`ask apply --answer` writes
+  it; a guarded repo's only where its doc is, from a pending row). A skipper on another host no backend reaches is
+  asked by git (an empty commit with `Ask:` and `Ask-Skipper:` trailers, pushed), and `ask poll` on its host hails it.
+  The road back names the run's mode (bar default) and its step's `--needs` (`--mode`, `--needs`; an `Ask-Resume:`
+  trailer on the git road), and the fresh run takes them, the mode only where it is no raise over the branch's mode
+  as the answering host reads it. A typed session holding the doc's worktree (no run record) gets the answer as a
+  pending row, never a fresh run beside it, and a Codex child (`PLAN_HARNESS=codex`) relays as a typed session
+  does. `asklib.this_host` falls back to the kernel's short name off macOS. Cases:
+  `tests/test_ask.sh`.
 - node-road (2026-11-02): `helm send` reaches a confidential scope's yard by its node folder's own
   `ssh` (orca-host's `node_peers`), never `wharf-runs/ssh`, and refuses one no node folder names; a node peer's
   yard goes the same way for any scope. In a sandboxed session (`SRT_SSH_PROXY_COMMAND`) its ssh is
