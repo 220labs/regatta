@@ -1,0 +1,203 @@
+/* engine.css — the Engine room's rules (docs/engine-room-2026-11-02.md S3), on keel's tokens and the shell's board.css.
+   Every rule is scoped under .eroom, the view's own wrapper, so nothing here restyles a class the shell or Decide
+   draws. The first block is the prototype's board.css rules the view reuses (fable/r6 round 6b: .cats/.cat, .kpis/.kpi/
+   .kbar, .sec, .hosts/.host/.pips/.gl, .tblw/.tbl, .qstep/.qwhy, .rts/.rt, .opsline, .standing), which the landed shell's
+   board.css does not carry; the rest is the prototype's engine.css: a source chip, the needs list, a host's runs, an
+   actions column, the inline confirm, and the phone's layout for each. Fleet's pointer line is last, outside .eroom. */
+
+/* ── the prototype board.css rules the view reuses ── */
+.eroom .cats { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 32px; padding-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.eroom .cat { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: var(--r-pill); border: 1px solid var(--rule); background: var(--surface);
+  font: 600 14.5px/1 var(--sans); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.eroom .cat b { font: 650 13px/1 var(--mono); color: var(--graphite); }
+.eroom .cat:hover { border-color: var(--rule-strong); }
+.eroom .cat.on { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+.eroom .cat.on b { color: inherit; opacity: .8; }
+.eroom .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 0 0 24px; }
+.eroom .kpi { border: 1px solid var(--rule); border-radius: 18px; padding: 20px 22px; background: var(--surface); }
+.eroom .kpi .kl { font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite); }
+.eroom .kpi .kv { font: 650 32px/38px var(--display); margin-top: 10px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.eroom .kpi .kv small { font: 500 15px/1 var(--sans); color: var(--graphite); letter-spacing: 0; }
+.eroom .kbar { display: block; height: 6px; border-radius: 3px; background: var(--wash-2); margin: 14px 0 12px; overflow: hidden; }
+.eroom .kbar i { display: block; height: 100%; border-radius: 3px; }
+.eroom .kbar i.run, .eroom .kbar i.ok { background: var(--ink-2); }
+.eroom .kbar i.wait { background: var(--wait); }
+.eroom .kbar i.bad { background: var(--bad); }
+.eroom .kpi .ks { font: var(--t-small); color: var(--graphite); }
+.eroom .sec { margin-top: 64px; }
+.eroom .sec.first { margin-top: 0; }
+.eroom .hosts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+.eroom .host { border: 1px solid var(--rule); border-radius: 18px; padding: 18px 20px; background: var(--surface); }
+.eroom .host.asleep, .eroom .host.unread { background: transparent; border-style: dashed; border-color: var(--rule-strong); }
+.eroom .host .hn { display: flex; align-items: center; gap: 8px; }
+.eroom .host .hnm { font: 700 16px/1 var(--mono); }
+.eroom .host .os { font: 500 12px/1 var(--mono); color: var(--graphite); }
+.eroom .host .hn .st { margin-left: auto; }
+.eroom .host .pips { display: flex; gap: 5px; margin: 18px 0 14px; }
+.eroom .host .pips i { flex: 1; max-width: 36px; height: 8px; border-radius: 3px; background: var(--wash-2); }
+.eroom .host .pips i.on { background: var(--ink-2); }
+.eroom .host .gl { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; margin: 0; font: var(--t-small); }
+.eroom .host .gl dt { color: var(--graphite); }
+.eroom .host .gl dd { margin: 0; text-align: right; font: 600 13px/19px var(--mono); color: var(--ink); }
+.eroom .host .note { margin-top: 14px; font: var(--t-small); color: var(--graphite); }
+.eroom .tblw { overflow-x: auto; border: 1px solid var(--rule); border-radius: 18px; background: var(--surface); }
+.eroom table.tbl { width: 100%; border-collapse: collapse; font: var(--t-small); color: var(--ink); }
+.eroom table.tbl th { text-align: left; font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite); padding: 13px 16px; border-bottom: 1px solid var(--rule); background: var(--wash); white-space: nowrap; }
+.eroom table.tbl td { padding: 15px 16px; border-top: 1px solid var(--rule); vertical-align: top; }
+.eroom table.tbl tbody tr:first-child td { border-top: 0; }
+.eroom table.tbl td.m { font: var(--t-mono); color: var(--graphite); white-space: nowrap; }
+.eroom table.tbl td.r { text-align: right; }
+.eroom table.tbl a { color: var(--ink); }
+.eroom .qstep { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eroom .qstep .mono { font: 650 13px/1 var(--mono); }
+.eroom .qwhy { font: var(--t-small); color: var(--graphite); margin-top: 6px; max-width: 34ch; }
+.eroom .rts { display: flex; flex-wrap: wrap; gap: 6px; }
+.eroom .rt { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 8px; font: 600 12px/1 var(--mono); white-space: nowrap; border: 1.5px solid var(--rule-strong); color: var(--ink-2); background: var(--surface); }
+.eroom .rt.hard { border-color: var(--ink); color: var(--ink); background: var(--wash); }
+.eroom .rt.soft { border-style: dashed; border-color: var(--run); color: var(--run); }
+.eroom .rt.held { border-color: transparent; color: var(--wait); background: var(--wait-wash); }
+.eroom .rt.need { border-color: transparent; color: var(--park); background: var(--park-wash); }
+.eroom .rt.any { border-color: transparent; color: var(--graphite); background: transparent; padding: 0; }
+.eroom .queue td .st { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; }
+.eroom .opsline { margin: 16px 0 0; font: var(--t-small); color: var(--graphite); }
+.eroom .opsline b { color: var(--ink); }
+.eroom .lbl2 { font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite); margin-right: 8px; }
+.eroom .standing { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.eroom .standing .cib { display: grid; gap: 16px; }
+.eroom .kbar { position: relative; }
+.eroom .kbar em { position: absolute; top: -3px; bottom: -3px; width: 0; border-left: 2px solid var(--ink); }
+.eroom .kbar.sm { display: inline-block; width: 120px; height: 6px; margin: 0; vertical-align: middle; }
+
+
+/* ── the reused rules' narrower widths (the prototype board.css's own media rules for them) ── */
+@media (max-width: 1100px) {
+  .eroom .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .eroom .standing { grid-template-columns: minmax(0, 1fr); }
+  .eroom .standing .cib { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 760px) {
+  .eroom .cats { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -14px 20px; padding: 0 14px 16px; }
+  .eroom .cats::-webkit-scrollbar { display: none; }
+  .eroom .cat { height: 36px; padding: 0 13px; font-size: 14px; }
+  .eroom .hosts { gap: 12px; }
+  .eroom .host { padding: 16px; }
+}
+@media (max-width: 520px) {
+  .eroom .kpis { gap: 10px; }
+  .eroom .kpi { padding: 14px 16px; }
+  .eroom .kpi .kv { font-size: 26px; line-height: 30px; }
+  .eroom .cats { margin-bottom: 14px; padding-bottom: 12px; }
+  .eroom .kbar.sm { width: 64px; }
+  .eroom .standing .cib { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── the Engine room's own (the prototype's engine.css) ── */
+/* a verified kind off the token road: the shell's dashed disabled button, its border shown on a ghost too */
+.eroom .eacts .btn.off, .eroom .hruns .btn.off, .eroom .hf .btn.off, .eroom .needs .btn.off { border-color: var(--rule-strong); border-style: dashed; }
+.eroom .host .gl dd.t-bad { color: var(--bad); }
+.eroom .host .gl dd.t-wait { color: var(--wait); }
+.eroom .qwhy.nowrap { white-space: nowrap; }
+.eroom .kbar.sm { margin: 0 8px 0 0; }
+/* a source chip: where a section's numbers came from and how old they are — graphite, amber past 15 min, red past 30 */
+.eroom .src { display: inline-flex; align-items: center; gap: 7px; font: var(--t-small); color: var(--graphite); white-space: nowrap; }
+.eroom .src.wait { color: var(--wait); }
+.eroom .src.bad { color: var(--bad); }
+.eroom .srcs { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: -8px 0 0; }
+.eroom .gh .src { margin-left: 14px; }
+.eroom .gh .src + .src { margin-left: 18px; }
+/* the capacity row: a limit mark on a bar (the reserve line, the pace mark) */
+.eroom .kbar { position: relative; overflow: visible; }
+.eroom .kbar em { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--ink); border-radius: 1px; opacity: .55; }
+.eroom .kbar.sm { width: 92px; display: inline-block; margin: 0 8px 0 0; vertical-align: middle; }
+.eroom .mm { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+/* needs a hand: one line each, the dot, the text, the action on the right */
+.eroom .needs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: 18px; background: var(--surface); overflow: hidden; }
+.eroom .needs li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 8px 14px; align-items: center; padding: 14px 20px; border-top: 1px solid var(--rule); font: var(--t-meta); color: var(--ink-2); position: relative; }
+.eroom .needs li:first-child { border-top: 0; }
+.eroom .needs li .sd { transform: translateY(0); }
+.eroom .needs li .nt { min-width: 0; }
+.eroom .needs li .na { display: flex; gap: 8px; align-items: center; }
+.eroom .needs li .econfirm { grid-column: 1 / -1; }
+/* a row the keys walk: the same wash and bar a card gets in the feed */
+.eroom .erow.focus { background: var(--wash); }
+.eroom .host.erow.focus { box-shadow: inset 3px 0 0 var(--ink); }
+.eroom tr.erow.focus td { background: var(--wash); }
+.eroom .needs li.erow.focus { box-shadow: inset 3px 0 0 var(--ink); }
+.eroom .eacts .btn.kfocus, .eroom .needs .btn.kfocus, .eroom .hruns .btn.kfocus, .eroom .hf .btn.kfocus, .eroom .stale .btn.kfocus { box-shadow: 0 0 0 2px var(--ink); }
+/* a host card: two across at 1440 (its runs need the room), a reserved slot, the runs with their logins, the stale pile, the footer with its limits */
+.eroom .ehosts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.eroom .host .hnm { white-space: nowrap; }
+.eroom .hrole { margin-top: 6px; font: var(--t-small); color: var(--graphite); }
+.eroom .host .pips i.res { background: repeating-linear-gradient(90deg, var(--rule-strong) 0 4px, transparent 4px 7px); }
+.eroom .host .gl dd small { font: 500 11px/1 var(--mono); color: var(--graphite); }
+.eroom .host.full { border-color: var(--wait); }
+.eroom .host .note.t-wait { color: var(--wait); }
+.eroom .hruns { list-style: none; margin: 14px 0 0; padding: 12px 0 0; border-top: 1px solid var(--rule); display: grid; gap: 8px; }
+.eroom .hruns li { display: flex; align-items: center; gap: 8px; font: var(--t-small); min-width: 0; flex-wrap: wrap; }
+.eroom .hruns li .rs { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.eroom .hruns li .rs.run { background: var(--run); }
+.eroom .hruns li .rs.wait { background: var(--wait); }
+.eroom .hruns li .rs.park { background: var(--park); }
+.eroom .hruns li .rs.bad { background: var(--bad); }
+.eroom .hruns li .mono { font: 600 12.5px/1 var(--mono); }
+.eroom .hruns li .rl { color: var(--graphite); }
+.eroom .hruns li .ra { margin-left: auto; }
+.eroom .hruns li.conf .rl { color: var(--graphite); font-style: italic; }
+.eroom .stale { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 10px 12px; border-radius: 12px; background: var(--wait-wash); font: var(--t-small); color: var(--wait); }
+.eroom .stale .btn { margin-left: auto; }
+.eroom .hf { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.eroom .hf .btn small, .eroom .eacts .btn small { font: 500 11px/1 var(--mono); color: var(--graphite); margin-left: 6px; }
+.eroom .lock { font: var(--t-small); color: var(--graphite); font-style: italic; }
+/* the queue's and the logins' actions column; the route chips drawn twice, shown once per width */
+.eroom .acts-td { min-width: 180px; }
+.eroom .eacts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.eroom .rts.inrow { display: none; margin-top: 8px; }
+.eroom .rcpt { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; }
+.eroom .econfirm { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--flag-wash); border: 1px solid var(--flag-line); font: var(--t-small); color: var(--ink); }
+.eroom .econfirm > span { flex: 1 1 24ch; }
+@media (max-width: 1100px) {
+  .eroom .ehosts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .eroom .gh .src { display: none; }
+}
+@media (max-width: 760px) {
+  .eroom .ehosts { grid-template-columns: minmax(0, 1fr); }
+  .eroom .srcs { gap: 6px 16px; }
+}
+@media (max-width: 520px) {
+  .eroom .ekpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .eroom .ecats { margin-bottom: 16px; }
+  .eroom .needs li { grid-template-columns: 8px minmax(0, 1fr); padding: 12px 14px; font-size: 14px; line-height: 20px; }
+  .eroom .needs li .na { grid-column: 2; }
+  /* the queue and the logins as stacked rows, never a sideways scroll: the step, its route chips, the state with the age, the actions */
+  .eroom .equeue thead, .eroom .elogins thead { display: none; }
+  .eroom .equeue, .eroom .equeue tbody, .eroom .equeue tr, .eroom .elogins, .eroom .elogins tbody, .eroom .elogins tr { display: block; width: 100%; }
+  .eroom .equeue tr, .eroom .elogins tr { padding: 12px 14px 14px; border-top: 1px solid var(--rule); }
+  .eroom .equeue tr:first-child, .eroom .elogins tr:first-child { border-top: 0; }
+  .eroom .equeue td, .eroom .elogins td { display: block; padding: 3px 0; border: 0; white-space: normal; }
+  .eroom .equeue td:nth-child(2), .eroom .equeue td:nth-child(3), .eroom .equeue td:nth-child(4), .eroom .elogins td:nth-child(3) { display: none; }
+  .eroom .equeue td:nth-child(5), .eroom .equeue td:nth-child(6), .eroom .elogins td:nth-child(1), .eroom .elogins td:nth-child(4) { display: inline-block; width: auto; margin-right: 10px; vertical-align: middle; }
+  .eroom .equeue td:nth-child(5) { font: var(--t-mono); color: var(--graphite); }
+  .eroom .equeue td.acts-td, .eroom .elogins td.acts-td { padding-top: 8px; min-width: 0; }
+  .eroom .rts.inrow { display: flex; }
+  .eroom .eintake th:nth-child(3), .eroom .eintake td:nth-child(3), .eroom .eintake th:nth-child(4), .eroom .eintake td:nth-child(4) { display: none; }
+  .eroom .hruns li .ra { margin-left: 0; width: 100%; }
+  .eroom .pointer a.go { margin-left: 0; }
+}
+/* a held pin (dispatch-queue's held_here): the host holds what the step needs, so no Unpin — a hard chip, amber */
+.eroom .rt.hard.held { border-color: var(--wait); color: var(--wait); background: transparent; }
+/* Logins and CI on the Engine room: the table takes the column whole (five columns and a why line need it), the budget cards in a row under it; two across under 1100 px, one on a phone (board.css .standing is the half-and-half Fleet drew) */
+.eroom #e-logins .standing { grid-template-columns: minmax(0, 1fr); }
+.eroom #e-logins .standing .cib { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.eroom #e-logins .elogins .qwhy { max-width: 44ch; white-space: normal; }
+@media (max-width: 1100px) {
+  .eroom #e-logins .standing .cib { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 520px) {
+  .eroom #e-logins .standing .cib { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Fleet's one line pointing at the Engine room (the shell's .engine-line, given its counts) ── */
+.engine-line.pointer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: -8px 0 28px; padding: 12px 18px; border: 1px solid var(--rule); border-radius: 14px; font: var(--t-meta); color: var(--ink-2); background: var(--surface); }
+.engine-line.pointer .lbl2 { font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite); }
+.engine-line.pointer a.go { margin-left: auto; color: var(--ink); font-weight: 600; text-decoration: none; }
+@media (max-width: 520px) { .engine-line.pointer a.go { margin-left: 0; } }

@@ -10,6 +10,9 @@
 <style>
 {{BOARD_CSS}}
 </style>
+<style>
+{{ENGINE_CSS}}
+</style>
 </head>
 <body>
 <header class="strip" id="strip"></header>
@@ -27,6 +30,10 @@
 <div class="csheet" id="csheet"></div>
 <div id="toast" class="toast" role="status"></div>
 <script type="application/json" id="snapshot">{{STATE}}</script>
+<script type="application/json" id="engine-snapshot">{{ENGINE}}</script>
+<script>
+{{ENGINE_JS}}
+</script>
 <script>
 {{BOARD_JS}}
 </script>

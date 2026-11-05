@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- The Engine room (docs/engine-room-2026-11-02.md S3): the board's sixth view, its own document. `helm board` runs
+  lighthouse's `hosts --json`, `ops status --json` and `ops intake --json` (each ops verb once, shared with the board's
+  ops line and Intake cards) and reads `ci-budgets.json` and `ci-budget-alarms.json`, keeps each through the page's
+  field allowlist (`ENGINE_ALLOW`: no session id but a pin's first 8, no home, env, email, path, address, desk `why`,
+  url or scope passes; a guarded repo's runs and entries are counted, never listed, as the board guards its cards) and
+  writes `engine.json` beside `state.json`, each source with its own state (`ok`, `off`, `unread`) and `at`; the page
+  inlines the first one and polls it every 30 s. `bin/engine_adapter.js` maps it onto the view, `bin/engine.js` draws
+  the head, counted section tabs (`?sec=`), the capacity row with a source chip per feed, Needs a hand, the hosts, the
+  fleet queue, the logins and CI budgets and Intake, and `bin/engine.css` styles it under `.eroom`. A source that did
+  not read says unread, never zero. S4's fields (`checks`, `features`, `pin_kind`, `pinned_why`, `by`, `pin_login`) are
+  read when present and as unknown when absent; Unpin only for a typed pin no login holds, no Pin on a finish; Pin,
+  Unpin and the verified kinds by the token road only; a press is recorded on the page and said not sent (the executor
+  is S5's). Fleet's line points at it with its counts; the view's badge counts what needs a hand. `board_sig` counts
+  the Engine room without its clocks, gauges and history, so an unchanged fleet does not redeploy. `PLAN_NO_HOSTS`
+  keeps a suite off `hosts --json`; `HELM_HOSTS` replaces it. `tests/test_engine.sh`: the adapter's and the view's
+  proof in node (84 cases), the document's allowlist, states and sig, and under headless Chrome the view at 1440, 720
+  and a true 390 in both themes and both roads (248 reads); `HELM_BOARD_ANY_OS=1` runs the Chrome frames off a Mac,
+  here and in `test_board.sh`.
 - `helm yard-on` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
   `wharf-runs/ssh` row: it reaches no node yet, and `scopes set` writes a node yard meanwhile (2026-11-03).
 - The board's shell (helm-board-ux S3), to the helm council's round-6 prototype: `bin/board.html`, `board.css` and

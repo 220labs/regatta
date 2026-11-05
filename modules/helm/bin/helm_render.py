@@ -31,6 +31,7 @@ import html
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -82,11 +83,14 @@ def page(state, title):
 # scanned again, so a `{{STATE}}` inside board.js stays text. Without keel or a file that will not read, the board
 # falls back to PAGE, said on stderr at every render, never a traceback: the tick deploys the board unattended.
 BOARD_FILES = ("board.html", "board.css", "board.js")
-BOARD_SLOT = re.compile(r"\{\{(TITLE|FOUNDATION|BOARD_CSS|BOARD_JS|STATE)\}\}")
+# the Engine room (engine-room S3): its rules, its adapter and its view, inlined before board.js, which calls them
+ENGINE_FILES = ("engine.css", "engine_adapter.js", "engine.js")
+BOARD_SLOT = re.compile(r"\{\{(TITLE|FOUNDATION|BOARD_CSS|BOARD_JS|STATE|ENGINE_CSS|ENGINE_JS|ENGINE)\}\}")
 
 
-def board_page(state, title):
-    """The board: board.html with board.css, board.js, keel's foundation and the first snapshot inlined."""
+def board_page(state, title, engine=None):
+    """The board: board.html with board.css, board.js, the Engine room's files, keel's foundation, the first snapshot
+    and the Engine room's first document inlined (null when the caller has none: the page says unread)."""
     k = _keel()
     try:
         tpl, css, js = ((HERE / n).read_text(encoding="utf-8") for n in BOARD_FILES)
@@ -97,8 +101,16 @@ def board_page(state, title):
     if not head:
         print("helm: keel's foundation not found: the plain page", file=sys.stderr)
         return page(state, title)
+    try:   # the Engine room's own: without them the board stands, its ops line and Intake cards as before (board.js)
+        ecss, eadapt, ejs = ((HERE / n).read_text(encoding="utf-8") for n in ENGINE_FILES)
+    except Exception as e:  # noqa: BLE001 — any miss leaves the Engine room out, never the board
+        print("helm: the Engine room's files unreadable (%s): the board without it" % type(e).__name__, file=sys.stderr)
+        ecss = eadapt = ejs = ""
     fill = {"TITLE": html.escape(title), "FOUNDATION": head, "BOARD_CSS": css.replace("</", "<\\/"),
             "BOARD_JS": js.replace("</script", "<\\/script"),
+            "ENGINE_CSS": ecss.replace("</", "<\\/"),
+            "ENGINE_JS": (eadapt + "\n" + ejs).replace("</script", "<\\/script"),
+            "ENGINE": snapshot(engine),
             "STATE": snapshot(state)}
     return BOARD_SLOT.sub(lambda m: fill[m.group(1)], tpl)
 
@@ -1255,42 +1267,54 @@ def timeline(states, at=None):
     return rows
 
 
-def ops_row():
-    """The desk's ops row (lighthouse-ops S2): lighthouse's `ops status --json`, which owns the row's format —
-    its one line, its staleness and its sig (the row without its clocks and gauges, for board_sig). None when
-    lighthouse is absent, no sample was taken on this host (no subprocess then, on every poll), or the read
-    fails. HELM_OPS replaces the tool (the tests')."""
+# the file each ops verb's answer needs on this host: without it no desk runs here (no subprocess then, on every poll)
+OPS_FILES = {"status": "ops.jsonl", "intake": "intake-state.json"}
+OPS_OFF = "off"   # ops_json's answer for a host with no desk: no file, or no lighthouse
+
+
+def ops_json(verb):
+    """lighthouse's `ops <verb> --json` as a dict (status exits 3 with `row` null when no sample reads, still an
+    answer); OPS_OFF where lighthouse is absent or this host has no desk's file for the verb; None when the read
+    failed (a crash, a timeout, JSON that will not parse) — the Engine room says unread then, never zero.
+    HELM_OPS replaces the tool (the tests')."""
     stub = os.environ.get("HELM_OPS")
     try:
         path = Path(stub) if stub else helmlib.peer("ops")
-        if not path or not (stub or (helmlib._common().LOG_DIR / "ops.jsonl").exists()):
-            return None
-        cp = subprocess.run([sys.executable, str(path), "status", "--json"], capture_output=True, text=True,
+        if not path or not (stub or (helmlib._common().LOG_DIR / OPS_FILES[verb]).exists()):
+            return OPS_OFF
+        cp = subprocess.run([sys.executable, str(path), verb, "--json"], capture_output=True, text=True,
                             timeout=10, stdin=subprocess.DEVNULL)
-        d = json.loads(cp.stdout) if cp.returncode == 0 else None
-    except (ImportError, OSError, ValueError, subprocess.TimeoutExpired):
+        d = json.loads(cp.stdout) if cp.returncode in (0, 3) else None
+    except ImportError:
+        return OPS_OFF
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
+    return d if isinstance(d, dict) else None
+
+
+_READ = object()   # ops_row's and intake_cards' default: read the verb now
+
+
+def ops_row(doc=_READ):
+    """The desk's ops row (lighthouse-ops S2): lighthouse's `ops status --json`, which owns the row's format —
+    its one line, its staleness and its sig (the row without its clocks and gauges, for board_sig). None when
+    lighthouse is absent, no sample was taken on this host, or the read fails. `doc` is that verb's answer
+    when the caller read it already (overview_state reads each verb once)."""
+    d = ops_json("status") if doc is _READ else doc
     if not isinstance(d, dict) or not isinstance(d.get("line"), str):
         return None
     return {"line": d["line"], "sig": d.get("sig"), "stale": bool(d.get("stale"))}
 
 
-def intake_cards():
+def intake_cards(doc=_READ):
     """One card per open issue the desk's intake holds (lighthouse-ops S4): lighthouse's `ops intake --json`,
     which judges each against the registry as it reads now (a torn one gives none, a fenced scope's are
     dropped). The card carries no title of the issue — a contact is a stranger's text — only its kind and
     number, and links to GitHub; `label` is the kind, the lane the page groups it by. Its `updated` (the
     issue's creation) is a clock board_sig never reads. [] when lighthouse is absent, this host has no intake,
-    or the read fails. HELM_OPS replaces the tool (the tests')."""
-    stub = os.environ.get("HELM_OPS")
-    try:
-        path = Path(stub) if stub else helmlib.peer("ops")
-        if not path or not (stub or (helmlib._common().LOG_DIR / "intake-state.json").exists()):
-            return []
-        cp = subprocess.run([sys.executable, str(path), "intake", "--json"], capture_output=True, text=True,
-                            timeout=10, stdin=subprocess.DEVNULL)
-        d = json.loads(cp.stdout) if cp.returncode == 0 else None
-    except (ImportError, OSError, ValueError, subprocess.TimeoutExpired):
+    or the read fails. `doc` is that verb's answer when the caller read it already."""
+    d = ops_json("intake") if doc is _READ else doc
+    if not isinstance(d, dict):
         return []
     try:
         # on a confidential scope's own yard ops keeps its issues; the shared page guards them, as skipperlib does
@@ -1561,7 +1585,15 @@ def absorb_polled(cards, polled):
     return cards + [c for c in polled if id(c) not in took]
 
 
+# each ops verb's answer as overview_state read it, for overview()'s Engine room document (engine_state): one read
+# of each serves the board and the Engine room. A module dict, not an argument: suites stub overview_state whole
+OPS_READ = {}
+
+
 def overview_state():
+    ops_doc, intake_doc = ops_json("status"), ops_json("intake")
+    OPS_READ.clear()
+    OPS_READ.update(ops=ops_doc, intake=intake_doc)
     states = []
     at = time.time()   # one clock for every ship's ladder and the timeline's bars
     for pid in helmlib.list_plans():
@@ -1606,7 +1638,7 @@ def overview_state():
     pr, wip_idle = pr_cards(prs, live)
     cards += [c for c in pr if c.get("url") not in held_urls]
     cards += done_cards(prs)
-    cards += intake_cards()
+    cards += intake_cards(intake_doc)
     cards = embark_first(cards)
     owner = helmlib.columns()[0]
     key_cards([c for c in cards if c.get("column") == owner])
@@ -1620,7 +1652,7 @@ def overview_state():
         c.pop("doc_title", None)
     cols = [{"name": n, "cards": [c for c in cards if c["column"] == n]} for n in board_columns()]
     today_cost = sum(t.get("cost") or 0 for st in states for t in st["tasks"] if _today(t.get("updated")))
-    ops = ops_row()
+    ops = ops_row(ops_doc)
     try:   # the board prints effective prices only ($0.07e, S3): the week's list-to-effective ratio, None when unread
         ratio = helmlib._common().cost_ratio()[0]
     except Exception:   # noqa: BLE001 — no core: the page says list prices as such
@@ -1646,11 +1678,12 @@ BOARD_SIG_KEYS = ("column", "kind", "repo", "ref", "url", "doc", "session", "run
                   "hash", "recommended", "reversible")   # S2: an item's text, its pick or its lock changed is a new version
 
 
-def board_sig(st):
+def board_sig(st, eng=None):
     """What the board shows that is worth a new version: each card's identity and its title without
     ages, and the owner's column's count — never the header's week line ("sampled N min ago"), the timeline's
     `now` or `as_of`, which move on every poll (re-review of landing review 10). The ops row counts by its
-    `ops_sig` alone, never its line, which carries the sample's age and the gauges (lighthouse-ops S2)."""
+    `ops_sig` alone, never its line, which carries the sample's age and the gauges (lighthouse-ops S2). `eng`, the
+    Engine room's document, counts by engine_sig(): no ages, no gauges, no `history` (engine-room S3)."""
     def card(c):
         if not isinstance(c, dict):
             return c
@@ -1667,24 +1700,37 @@ def board_sig(st):
                                        # is a branch tip's commit time)
                                        "queue": st.get("queue"),
                                        # a snooze or a done moves a card off the feed: a new version, as its keys say
-                                       "later": sorted(str(r.get("key")) for r in st.get("later") or () if isinstance(r, dict))},
+                                       "later": sorted(str(r.get("key")) for r in st.get("later") or () if isinstance(r, dict)),
+                                       "engine": engine_sig(eng)},
                                      ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
+BOARD_DEPLOYED = ("index.html", "state.json", "engine.json")
+
+
 def overview(deploy=False, as_json=False):
+    OPS_READ.clear()
+    hp = None if as_json else hosts_start()   # hosts' reads run beside overview_state's, inside the poll's board budget
     st = overview_state()
     if as_json:
         return json.dumps(st, ensure_ascii=False, sort_keys=True)
+    try:   # a stubbed overview_state leaves OPS_READ empty: engine_state reads ops itself
+        eng = engine_state(dict(OPS_READ), hosts=hp)
+    except Exception as e:  # noqa: BLE001 — the unattended board never ends in a traceback: the room reads unread
+        print("helm: the Engine room's document failed (%s): every source unread" % type(e).__name__, file=sys.stderr)
+        hosts_collect(hp)
+        eng = {"at": time.time(), "sources": {k: {"state": "unread", "at": None} for k in ENGINE_SOURCES}}
     d = cache_root() / "overview"
     _write(d / "state.json", json.dumps(st, ensure_ascii=False, sort_keys=True))
-    _write(d / "index.html", board_page(st, "Helm · board"))
+    _write(d / "engine.json", json.dumps(eng, ensure_ascii=False, sort_keys=True))
+    _write(d / "index.html", board_page(st, "Helm · board", eng))
     out = ["overview: %s — %d need %s" % (d / "index.html", st["header"]["needs_owner"], st["header"]["owner"])]
     if deploy and not os.environ.get("PLAN_NO_DEPLOY"):
         pin = cache_root() / "overview-space.txt"
         # ask poll deploys every 5 min: a board whose cards are what the pinned page shows already is
         # not deployed again (landing review 10: ~288 versions a day otherwise), but at least hourly, so
         # the ages and the week line the check leaves out never go stale for long
-        sig = board_sig(st)
+        sig = board_sig(st, eng)
         last = cache_root() / "overview-deployed.sha"
         try:
             space = pin.read_text().strip() or None
@@ -1701,7 +1747,7 @@ def overview(deploy=False, as_json=False):
         now = st.get("header", {}).get("sheep")
         if now != before:   # the crossing (the deployed page says it, the log once) or the resume
             _write(d / "state.json", json.dumps(st, ensure_ascii=False, sort_keys=True))
-            _write(d / "index.html", board_page(st, "Helm · board"))
+            _write(d / "index.html", board_page(st, "Helm · board", eng))
         if held:
             # the poll's log says the pause once, at the crossing; a hand-run says why nothing deployed
             if now != before or not os.environ.get("HELM_BOARD_POLL"):
@@ -1713,7 +1759,7 @@ def overview(deploy=False, as_json=False):
         if now and now != before:
             out.append("sheep: " + now + " (after this deploy)")
         try:
-            uuid, url = deploy_dir(d, ("index.html", "state.json"), space=space, title="Helm · board",
+            uuid, url = deploy_dir(d, BOARD_DEPLOYED, space=space, title="Helm · board",
                                    message=time.strftime("%Y-%m-%d %H:%M"), by="helm-board")
             _write(pin, uuid)
             _write(last, sig)
@@ -1721,6 +1767,328 @@ def overview(deploy=False, as_json=False):
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             out.append("sheep: deploy failed — %s" % e)
     return out
+
+
+# ---------------------------------------------------------------------------- the Engine room's document
+
+# docs/engine-room-2026-11-02.md S3: the poll's five reads for the Engine room — lighthouse's `hosts --json`, `ops
+# status --json` and `ops intake --json` (the last two the board's own reads, once each), the config dir's
+# lighthouse/ci-budgets.json and the log dir's ci-budget-alarms.json — each through the page's own field allowlist
+# (ENGINE_ALLOW, not helmlib.public(), which filters a ship's plan only), written as engine.json beside state.json.
+# The page's adapter (engine_adapter.js) maps it onto what the view draws. Each source carries its own read state and
+# `at` under `sources`: `ok`, `off` (no desk, no file on this host) or `unread` (the read failed), so the page says
+# unread where a source did not read, never zero (the design's reviews.md, finding 10).
+# What the allowlist keeps: names, numbers and the tools' own fixed words (a pin's `by` as a session's first 8, as
+# S4's hosts cuts it). It drops a login's home, env, email and same_as; a run's session; a guarded repo's runs and
+# entries (engine_guard: counted, never listed); an entry's args, env, note and caller (hosts drops those first); a budget's user, org and
+# org_slug and every `why` the desk prints (a path under the home folder: reviews.md, finding 4); an intake card's url,
+# slug, label and scope. Every string that passes is cut of anything that reads as a path or an address.
+_V = True    # a scalar (a string, a number, a bool, null) or a list of scalars
+_HIST = "history"   # a list of samples, each a list of numbers
+ENGINE_ALLOW = {
+    "hosts": {
+        "at": _V, "here": _V,
+        "hosts": {"*": {
+            "host": _V, "os": _V, "role": _V, "at": _V, "no_sample": _V, "source": _V,
+            "load": {"per_core_5m": _V}, "mem": {"avail": _V, "swap_gb": _V, "swap_total_gb": _V, "rate": _V},
+            "headroom": {"room": _V, "reason": _V, "near": _V},
+            "limits": {"cap": _V, "avail": _V, "swap": _V, "rate": _V, "load_max": _V},
+            "slots": {"cap": _V, "busy": _V, "reserved": _V},
+            "fence": {"confined": _V, "unreadable": _V, "runs_unread": _V},
+            "runs": [{"topic": _V, "repo": _V, "login": _V, "state": _V, "prio": _V, "started": _V}],
+            "records": {"stale": _V, "oldest_days": _V},
+            "checks": {"busy": _V, "cap": _V, "waiting": _V}, "features": _V,   # S4's: absent until it lands
+            "history": _HIST}},
+        "queue": {"entries": [{"qid": _V, "topic": _V, "repo": _V, "state": _V, "priority": _V, "kind": _V, "host": _V,
+                               "prefer": _V, "prefer_off": _V, "running_on": _V, "queued_at": _V, "claimed_at": _V,
+                               "claimed_by": _V, "attempts": _V, "needs": _V, "last_refusal": _V,
+                               "refused_by": {"*": _V}, "after": _V,
+                               "pin_kind": _V, "pinned_why": _V, "by": _V, "pin_login": _V}],   # the last four S4's
+                  "dropped": _V, "fence_unreadable": _V, "unreadable": _V, "guard_unread": _V},
+        "logins": [{"label": _V, "eligible": _V, "primary": _V, "parked": _V, "why": _V, "sampled": _V,
+                    "limits": {"plan": _V, "five_hour": _V, "five_hour_resets": _V, "seven_day": _V,
+                               "seven_day_resets": _V, "fable_week": _V}}],
+        "records": {"stale": _V, "oldest_days": _V},
+        "ref": {"unreadable": _V, "offline": _V}},
+    "ops": {"row": {"host": _V, "as_of": _V, "partial": _V, "check": {"slots_busy": _V, "waiting": _V},
+                    "budget": {"*": {"state": _V, "used": _V, "week_used": _V, "unit": _V, "net_amount": _V,
+                                     "cap": _V, "share": _V}}},
+            "age_s": _V, "stale": _V},
+    "budgets": {"reserve": _V, "accounts": {"*": {"provider": _V, "reserve": _V, "month_credits": _V,
+                                                  "month_minutes": _V, "margin": _V, "week_share": _V}}},
+    "alarms": {"*": {"level": _V, "issue": _V, "since": _V}},
+    "intake": {"open": [{"repo": _V, "number": _V, "kind": _V, "created": _V, "author": _V}], "guarded": {"*": _V}},
+}
+# lighthouse's bin/hosts' scrub, in its order (URLISH, PATHISH, ADDRISH; PATHISH is dispatch-queue's, the gate's), and a
+# path after any other punctuation: a second layer over what hosts cut already, never weaker than it
+ENGINE_URLISH = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|git@\S+")
+ENGINE_PATHISH = re.compile(r"(?:^|(?<=[\s(\[\"'=,:`<|;>{}]))(?:~/|/[A-Za-z])[^\s,;)\]\"'`>|]*")
+ENGINE_ADDRISH = re.compile(r"[^\s@()<>\"',;]+@[^\s@()<>\"',;]+")
+
+
+def _scalar(v):
+    if isinstance(v, str):
+        return ENGINE_ADDRISH.sub("<address>", ENGINE_PATHISH.sub("<path>", ENGINE_URLISH.sub("<url>", v)))[:240]
+    return v if v is None or isinstance(v, (bool, int, float)) else None
+
+
+def engine_pick(v, spec):
+    """`v` kept to what `spec` names (ENGINE_ALLOW's shape): a dict keeps its listed keys (`*` stands for every key,
+    a host's name or a budget's), a list each item by the one spec, a scalar as itself, cut of paths. A value of the
+    wrong shape is dropped (None in a list, absent in a dict), never passed through."""
+    if spec is _V:
+        if isinstance(v, list):
+            return [x for x in (_scalar(y) for y in v) if x is not None]
+        return _scalar(v)
+    if spec == _HIST:
+        return [[x if isinstance(x, (int, float)) and not isinstance(x, bool) else None for x in p]
+                for p in v if isinstance(p, list)][-48:] if isinstance(v, list) else None
+    if isinstance(spec, list):
+        return [engine_pick(x, spec[0]) for x in v if isinstance(x, dict)] if isinstance(v, list) else None
+    if not isinstance(v, dict):
+        return None
+    out = {}
+    for k, x in v.items():
+        sub = spec.get(k, spec.get("*")) if isinstance(k, str) else None
+        if sub is None:
+            continue
+        kept = engine_pick(x, sub)
+        if kept is not None or x is None:
+            out[_scalar(k) if "*" in spec and k not in spec else k] = kept
+    return out
+
+
+ENGINE_SOURCES = ("hosts", "ops", "budgets", "alarms", "intake")
+HOSTS_TIMEOUT = 60   # s; started before overview_state, so the board's own reads overlap it
+
+
+def hosts_start():
+    """lighthouse's `hosts --json` (S2), started: a Popen in its own process group, OPS_OFF where lighthouse is absent
+    or PLAN_NO_HOSTS keeps a suite off it (it fetches the queue home) — off, never a failed read — None when it will not
+    start. HELM_HOSTS replaces the tool (the tests')."""
+    if os.environ.get("PLAN_NO_HOSTS"):
+        return OPS_OFF
+    stub = os.environ.get("HELM_HOSTS")
+    try:
+        path = Path(stub) if stub else helmlib.peer("hosts")
+        if not path:
+            return OPS_OFF
+        return subprocess.Popen([sys.executable, str(path), "--json"], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    except (ImportError, OSError):
+        return None
+
+
+def hosts_collect(p):
+    """hosts_start()'s answer read: every host's row, the fleet queue, the logins and this host's records, fenced by
+    `hosts` itself; OPS_OFF passed on; None when the read fails or outlasts HOSTS_TIMEOUT, whose whole group is
+    killed then (its fetch included: an orphan every poll otherwise)."""
+    if p is None or p == OPS_OFF:
+        return p
+    try:
+        out, _ = p.communicate(timeout=HOSTS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        return None
+    try:
+        d = json.loads(out) if p.returncode == 0 else None
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def hosts_json():
+    return hosts_collect(hosts_start())
+
+
+def _engine_file(path):
+    """(doc, state, at) for one of the desk's JSON files: `off` when it is absent, `unread` when it will not read."""
+    try:
+        at = path.stat().st_mtime
+        d = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return None, "off", None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None, "unread", None
+    return (d, "ok", at) if isinstance(d, dict) else (None, "unread", at)
+
+
+def engine_intake(d):
+    """The intake's answer as the page may see it: the cards the board's own intake_cards() would list, never the desk's
+    `why`. A confidential scope's or a guarded repo's card is counted by its kind under `guarded` (a fixed word: the page
+    counts an alarm among the alarms), never listed, as the board keeps it as a guarded card; when the scopes do not
+    read, every card is counted so and `torn` says it (the source then reads unread, never "no alarms")."""
+    try:
+        # one parse judges the tear and names the scopes (AGENTS.md: scope_registry() reads a torn file as no scopes)
+        common = helmlib._common()
+        reg, torn = common.read_registry()
+        conf = common.confidential_scopes(reg=reg) if reg is not None else {}
+    except Exception:  # noqa: BLE001 — scopes that do not read guard every card
+        common, conf, torn = None, {}, True
+    try:
+        blind = bool(helmlib.guard_unread())   # guarded() cannot be trusted: every card counted, as engine_guard does
+    except Exception:  # noqa: BLE001
+        blind = True
+
+    def confidential(c):
+        if c.get("scope") in conf:
+            return True
+        for n, sc in conf.items():   # every scope that lists the repo, not ops' first (an umbrella "*" hides one)
+            try:
+                if common.scope_of_repo(c["repo"], reg={"scopes": {n: sc}})[0]:
+                    return True
+            except Exception:  # noqa: BLE001 — a scope that will not judge guards the card
+                return True
+        return False
+    keep, hid = [], {}
+    for c in d.get("open") if isinstance(d.get("open"), list) else []:
+        if not isinstance(c, dict) or not c.get("repo") or c.get("number") is None:
+            continue
+        if torn or blind or not isinstance(c.get("scope"), (str, type(None))) or confidential(c) or helmlib.guarded(c["repo"]):
+            k = re.sub(r"[^a-z]", "", str(c.get("kind") or "other").lower())[:16] or "other"
+            hid[k] = hid.get(k, 0) + 1
+        else:
+            keep.append(c)
+    return {"open": keep, "guarded": hid, "torn": torn}
+
+
+def engine_guard(h):
+    """The hosts document without a guarded repo's runs and entries (helmlib.guarded(), the board's K6: strip_guarded
+    turns such cards into "guarded"): `hosts` fences confidential scopes only. Each dropped run counts in its row's
+    fence.confined and each entry in the queue's `dropped`, so the page counts them and never lists them; every run and
+    entry is dropped when guarded() cannot be trusted (guard_unread)."""
+    if not isinstance(h, dict):
+        return h
+    try:
+        torn = helmlib.guard_unread()
+    except Exception:  # noqa: BLE001 — a guard that does not read guards everything
+        torn = True
+    hid = (lambda repo: True) if torn else (lambda repo: helmlib.guarded(repo))
+    for r in (h.get("hosts") or {}).values():
+        if isinstance(r, dict) and isinstance(r.get("runs"), list):
+            keep = [x for x in r["runs"] if isinstance(x, dict) and not hid(x.get("repo"))]
+            gone = len(r["runs"]) - len(keep)
+            if gone:
+                r["runs"] = keep
+                if not isinstance(r.get("fence"), dict):
+                    r["fence"] = {}
+                fn = r["fence"]
+                fn["confined"] = (fn.get("confined") if isinstance(fn.get("confined"), int) else 0) + gone
+    q = h.get("queue")
+    if torn and isinstance(q, dict):
+        q["guard_unread"] = True   # every entry hidden: the page says the queue is unknown, never empty
+    if isinstance(q, dict) and isinstance(q.get("entries"), list):
+        keep = [e for e in q["entries"] if isinstance(e, dict) and not hid(e.get("repo"))]
+        gone = len(q["entries"]) - len(keep)
+        if gone:
+            q["entries"] = keep
+            q["dropped"] = (q.get("dropped") if isinstance(q.get("dropped"), int) else 0) + gone
+    return h
+
+
+def engine_state(raw=None, at=None, hosts=_READ):
+    """The Engine room's document (engine.json): the five sources through ENGINE_ALLOW, each with its state and `at`.
+    `raw` holds overview_state's ops answers (`ops`, `intake`); without it they are read here."""
+    raw = raw if isinstance(raw, dict) else {}
+    at = time.time() if at is None else at
+    srcs, out = {}, {"at": at}
+    h = hosts_json() if hosts is _READ else hosts_collect(hosts)
+    hoff = h == OPS_OFF
+    h = None if hoff else h
+    out["hosts"] = engine_guard(engine_pick(h, ENGINE_ALLOW["hosts"])) if h else None
+    srcs["hosts"] = {"state": "ok" if h else "off" if hoff else "unread", "at": h.get("at") if h and isinstance(h.get("at"), (int, float)) else (at if h else None)}
+    o = raw["ops"] if "ops" in raw else ops_json("status")
+    if o == OPS_OFF:
+        out["ops"], srcs["ops"] = None, {"state": "off", "at": None}
+    elif isinstance(o, dict):
+        row = o.get("row") if isinstance(o.get("row"), dict) else None
+        out["ops"] = engine_pick(o, ENGINE_ALLOW["ops"])
+        # ops_json answered OPS_OFF where no desk's file is: a file there with no row that reads is a failed read
+        srcs["ops"] = {"state": "ok" if row else "unread", "at": row.get("as_of") if row else None}
+    else:
+        out["ops"], srcs["ops"] = None, {"state": "unread", "at": None}
+    try:
+        common = helmlib._common()
+        files = {"budgets": common.CONFIG / "lighthouse" / "ci-budgets.json", "alarms": common.LOG_DIR / "ci-budget-alarms.json"}
+    except ImportError:
+        files = {}
+    for k in ("budgets", "alarms"):
+        d, st, t = _engine_file(files[k]) if k in files else (None, "unread", None)
+        out[k] = engine_pick(d, ENGINE_ALLOW[k]) if d is not None else None
+        srcs[k] = {"state": st, "at": t}
+    i = raw["intake"] if "intake" in raw else ops_json("intake")
+    if i == OPS_OFF:
+        out["intake"], srcs["intake"] = None, {"state": "off", "at": None}
+    elif isinstance(i, dict):
+        try:
+            t = (helmlib._common().LOG_DIR / OPS_FILES["intake"]).stat().st_mtime
+        except (ImportError, OSError):
+            t = None
+        # ops_json answered OPS_OFF where no intake file is: a `why` here is a read that failed (a torn registry, a file
+        # that will not read), which ops answers with no cards; unread then, never "no alarms"
+        ei = engine_intake(i)
+        bad = (bool(i.get("why")) and not i.get("open")) or ei["torn"]
+        out["intake"] = None if bad else engine_pick(ei, ENGINE_ALLOW["intake"])
+        srcs["intake"] = {"state": "unread" if bad else "ok", "at": None if bad else t}
+    else:
+        out["intake"], srcs["intake"] = None, {"state": "unread", "at": None}
+    for e in ((out.get("hosts") or {}).get("queue") or {}).get("entries") or []:
+        if isinstance(e.get("by"), str):   # a session's first 8, as S4's hosts cuts it: never a whole id
+            e["by"] = e["by"][:8]
+    out["sources"] = srcs
+    return out
+
+
+# what moves on every sample of an unchanged fleet: clocks, gauges and the history, never worth a new version
+ENGINE_SIG_DROP = {"at", "as_of", "age_s", "sampled", "created", "queued_at", "claimed_at", "started", "since",
+                   "five_hour_resets", "seven_day_resets", "history", "load", "mem", "five_hour", "seven_day",
+                   "fable_week", "used", "week_used", "share", "net_amount", "oldest_days", "near"}
+ENGINE_SIG_TEXT = {"reason", "why", "last_refusal", "no_sample"}   # a judge's line carries the gauges in digits
+ENGINE_STALE_S = 30 * 60   # a row this old reads unread on the page: crossing it is a change
+
+
+def engine_sig(eng, now=None):
+    """What the Engine room shows that is worth a new version: its document without ENGINE_SIG_DROP's clocks, gauges
+    and `history`, its judges' lines without their digits, a released preference as a flag, and each host row only
+    as fresh or past the page's 30 minutes (AGENTS.md: a change check over a rendered state never fires when it holds
+    clocks)."""
+    if not isinstance(eng, dict):
+        return None
+    hat = ((eng.get("sources") or {}).get("hosts") or {}).get("at")
+    # the page's own time for a row (engine_adapter's docAt): the hosts source's at, else the document's
+    now = hat if now is None and isinstance(hat, (int, float)) else eng.get("at") if now is None and isinstance(eng.get("at"), (int, float)) else (now or time.time())
+
+    def walk(v, k=None):
+        if isinstance(v, dict):
+            o = {}
+            for kk, x in v.items():
+                if kk in ENGINE_SIG_DROP:
+                    continue
+                if kk == "refused_by" and isinstance(x, dict):
+                    o[kk] = sorted(x)   # the page names the refusing hosts; their stamps are clocks
+                elif kk in ("check", "checks") and isinstance(x, dict):
+                    o[kk] = {c: bool(n) for c, n in x.items()}   # a check starts and ends all day: only "any" shows
+                else:
+                    o[kk] = bool(x) if kk == "prefer_off" else walk(x, kk)
+            return o
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        if k in ENGINE_SIG_TEXT and isinstance(v, str):
+            return re.sub(r"\d+(?:[.,]\d+)?", "#", v)
+        return v
+    d = walk(eng)
+    rows = ((eng.get("hosts") or {}).get("hosts") or {}) if isinstance(eng.get("hosts"), dict) else {}
+    for name, r in rows.items():
+        if isinstance(r, dict) and isinstance(d["hosts"]["hosts"].get(name), dict):
+            t = r.get("at")
+            d["hosts"]["hosts"][name]["_old"] = not isinstance(t, (int, float)) or now - t > ENGINE_STALE_S
+    d.pop("sources", None)
+    d["states"] = {k: (v or {}).get("state") for k, v in (eng.get("sources") or {}).items()}
+    return hashlib.sha256(json.dumps(d, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------- the page

@@ -17,6 +17,18 @@
   var S = JSON.parse(snap ? snap.textContent : '{}');
   var q = new URLSearchParams(location.search || window.__q || '');
   var B = window.HELM = { S: function () { return S; } };
+  /* the Engine room (engine_adapter.js, engine.js; docs/engine-room-2026-11-02.md S3): its own document, engine.json beside
+     state.json, adapted at each render (the ages move with the clock), so every count the shell shows of it agrees */
+  var esnap = document.getElementById('engine-snapshot');
+  var ES = (function () { try { return JSON.parse(esnap ? esnap.textContent : 'null'); } catch (e) { return null; } })();
+  var EC = null;
+  function E() {
+    if (EC) return EC;
+    var A = window.ENGINE_ADAPT;
+    try { EC = A ? A(ES || { sources: { hosts: { state: 'unread' }, ops: { state: 'unread' }, intake: { state: 'unread' } } }, Date.now() / 1000) : null; } catch (e) { EC = null; }
+    return EC;
+  }
+  B.E = E;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   function get(k, d) { try { return localStorage.getItem('helm-' + k) || d; } catch (e) { return d; } }
@@ -25,7 +37,14 @@
                ['skippers', 'navigator', 'Skippers'], ['reports', 'plumb', 'Reports']];
   var ENGINE = ['engine', 'lighthouse', 'Engine room'];
   var NAMES = VIEWS.concat([ENGINE]).map(function (v) { return v[0]; });
-  var V = { view: NAMES.indexOf(q.get('view')) >= 0 ? q.get('view') : NAMES.indexOf(get('view', '')) >= 0 ? get('view', '') : 'decide', find: '', g: 0 };
+  var V = { view: NAMES.indexOf(q.get('view')) >= 0 ? q.get('view') : NAMES.indexOf(get('view', '')) >= 0 ? get('view', '') : 'decide', find: '', g: 0, esec: q.get('sec') || 'all' };
+  var ev = null;
+  function EV() {   // the Engine room's view, built once; it reads E() at every call
+    if (!E()) return null;   // a document the adapter refused: the fallback below, never a view over nothing
+    if (ev || !window.ENGINE_VIEW) return ev;
+    return (ev = window.ENGINE_VIEW({ E: E, V: V, esc: esc, plural: plural, N: N, hhmm: hhmm, road: q.get('road'), render: function () { render(); }, url: function () { url(); }, toast: function (m) { toast(m); },
+      week: function () { var w = String((S.header || {}).week || ''), m = w.match(/(\d+(?:\.\d+)?)\s*%/); return { pct: m ? Math.round(+m[1]) : null, line: w }; } }));
+  }
   if (q.get('sky') === '0') document.documentElement.classList.add('nosky');
   var ao = location.ancestorOrigins;
   if (q.get('sheep') === '1' || (ao && ao.length && /spacesheep\./.test(ao[ao.length - 1]))) document.documentElement.classList.add('sheep');
@@ -80,7 +99,8 @@
     var late = ships().filter(function (r) { return (r.bars || []).some(function (b) { return b.overrun; }); }).length;
     return { owed: h.needs_owner || 0, docs: (queue().docs || []).length, land: land, unstick: unstick, people: groupKeys('people').length,
              memo: groupKeys('memo').length, later: (S.later || []).length, blocked: col('Blocked').length, running: col('Running').length,
-             parked: col('Parked / Relayed').length, done: col('Done today').length, intake: col('Intake').length, late: late, stalled: h.stalled == null ? null : h.stalled };
+             parked: col('Parked / Relayed').length, done: col('Done today').length, intake: col('Intake').length, late: late, stalled: h.stalled == null ? null : h.stalled,
+             needs: E() ? E().needs.length : null };
   }
 
   /* ── the sky strip: the mark, the fleet sailing toward the finish, the time and the week ── */
@@ -139,7 +159,7 @@
   function badge(v, c) {   // a count is graphite unless it is an alarm or a late ship; Decide's keeps the flag
     return v === 'decide' ? ['flag', c.owed, c.owed + ' need you'] : v === 'fleet' ? ['bad', c.blocked, c.blocked + ' blocked'] :
       v === 'ships' ? ['bad', c.late, c.late + ' past an ETA'] : v === 'reports' ? ['', c.done, c.done + ' done today'] :
-      v === 'engine' ? ['bad', c.intake, c.intake + ' in Intake'] : ['', 0, ''];
+      v === 'engine' ? (c.needs == null ? ['bad', c.intake, c.intake + ' in Intake'] : ['bad', c.needs, c.needs + ' need a hand in the Engine room']) : ['', 0, ''];
   }
   function viewLink(v, cls, c) {
     var b = badge(v[0], c);
@@ -167,10 +187,19 @@
   function watchList() {
     var c = tally(), at = ts(S.as_of);
     var rows = [['flag', plural(c.owed, 'card') + ' need you', 'decide'], ['run', c.running + ' running', 'fleet'], ['bad', c.blocked + ' blocked', 'fleet'],
-      ['bad', c.stalled == null ? 'stalls unknown: the judge did not read' : plural(c.stalled, 'stall'), 'decide'], ['bad', c.late + ' ships past an ETA', 'ships'], ['ok', c.done + ' done today', 'reports'], ['wait', c.intake + ' in Intake', 'engine']];
+      ['bad', c.stalled == null ? 'stalls unknown: the judge did not read' : plural(c.stalled, 'stall'), 'decide'], ['bad', c.late + ' ships past an ETA', 'ships'], ['ok', c.done + ' done today', 'reports']].concat(engineWatch(c));
     return '<div class="ctx-h"><span class="lbl">On watch</span><span class="ctx-s">as of ' + (at ? hhmm(at) : '—') + (S.host ? ' on ' + esc(S.host) : '') + '</span></div><ul class="watch">' + rows.map(function (r) {
-      return '<li data-k="w-' + r[2] + '-' + r[0] + '"><a href="?view=' + r[2] + '" data-view="' + r[2] + '"><i class="sd ' + r[0] + '"></i><span>' + r[1] + '</span></a></li>';
+      return '<li data-k="w-' + r[2] + '-' + (r[3] || r[0]) + '"><a href="?view=' + r[2] + '" data-view="' + r[2] + '"><i class="sd ' + r[0] + '"></i><span>' + r[1] + '</span></a></li>';
     }).join('') + '</ul>';
+  }
+
+  function engineWatch(c) {
+    var e = E();
+    if (!e) return [['wait', c.intake + ' in Intake', 'engine']];
+    var intake = [e.alarms ? 'bad' : 'wait', e.unread.intake ? 'Intake unread' : (e.intake.length + (e.intakeGuarded || 0)) + ' in Intake' + (e.alarms ? ', ' + plural(e.alarms, 'alarm') : ''), 'engine', 'intake'];
+    if (e.unread.hosts) return [['wait', 'the hosts unread', 'engine', 'queue'], intake];
+    var cant = e.queued.filter(function (x) { return x.tone === 'bad'; }).length;
+    return [['wait', e.queueUnknown ? 'the queue unread' : e.queued.length + ' queued · ' + cant + ' cannot start', 'engine', 'queue'], intake];
   }
 
   /* ── each view's head: an eyebrow, one sentence, the counts that matter in their colours; the page's notes ── */
@@ -203,9 +232,11 @@
       e = 'Skippers · read, hail, answer'; h1 = 'Every skipper on watch.'; sub = 'Each skipper\'s watch card, its open asks and its hail come in a later build.';
     } else if (V.view === 'reports') {
       e = 'Reports · Completed'; h1 = plural(c.done, 'card') + ' done today.'; sub = 'Today\'s spend ' + (money(h.today_cost || 0)) + '. The day-by-day reports come in a later build.';
+    } else if (EV()) {
+      var eh = EV().head(); e = eh.e; h1 = eh.h1; sub = eh.sub;
     } else {
       e = 'Engine room'; h1 = 'Hosts, the queue, logins, CI, budgets and Intake.';
-      sub = 'Its own design; what the board knows of it today is below. <a href="?view=fleet" data-view="fleet">← Fleet</a>';
+      sub = 'Its document did not load on this page. <a href="?view=fleet" data-view="fleet">← Fleet</a>';
     }
     return '<header class="vh" data-k="vh">' + notes() + '<div class="eyebrow"><span class="lbl">' + e + '</span></div><h1>' + h1 + '</h1><p class="vsub">' + sub + '</p></header>';
   }
@@ -259,7 +290,7 @@
     return h + '</div>';
   }
   function fleetHTML() {
-    var h = '<p class="engine-line" data-k="eline">Hosts, the queue, logins, CI, budgets and Intake → <a href="?view=engine" data-view="engine">Engine room</a></p>', people = cols()[1];
+    var h = engineLine(), people = cols()[1];
     if (people && people.cards.length) h += grp('people-col', esc(people.name), 'the people the owner works with', people.cards, '');
     [['Blocked', 'bad', 'a step that cannot go on'], ['Running', '', 'runs at work now'], ['Parked / Relayed', '', 'parked by a skipper, or relayed to one'], ['Done today', '', 'what ended since the morning']].forEach(function (x, i) {
       h += grp('c' + i, x[0], x[2], col(x[0]), x[1]);
@@ -267,6 +298,20 @@
     return h;
   }
   var FILL = { running: 'var(--run)', relayed: 'var(--park)', parked: 'var(--park)', waiting: 'var(--wait)', blocked: 'var(--bad)', failed: 'var(--bad)', done: 'var(--ok)', landed: 'var(--ok)', launched: 'var(--ok)', planned: 'var(--rule-strong)' };
+  function engineLine() {   // Fleet's one line pointing at the Engine room, with its counts and its freshness (the owner, 2026-11-02)
+    var e = E();
+    if (!e) return '<p class="engine-line" data-k="eline">Hosts, the queue, logins, CI, budgets and Intake → <a href="?view=engine" data-view="engine">Engine room</a></p>';
+    var span = function (k, t) { return '<span data-k="el-' + k + '">' + t + '</span>'; }, x = [];
+    if (e.unread.hosts) x.push(span('runs', '<span class="t-wait">hosts ' + (e.sources.hosts.off ? 'off here' : 'unread') + '</span>'));
+    else {
+      var cant = e.queued.filter(function (q) { return q.tone === 'bad'; }).length, awake = e.hosts.filter(function (h) { return h.state === 'awake'; }).length;
+      x.push(span('runs', (e.ops.runsUnknown ? '<span class="t-wait">runs unread</span>' : (e.ops.runsPartial ? 'at least ' : '') + e.ops.runs[0] + ' runs') + ' on ' + plural(awake, 'host')), span('q', e.queueUnknown ? '<span class="t-wait">the queue unread</span>' : e.queued.length + ' queued' + (cant ? ', <span class="t-bad">' + cant + ' cannot start</span>' : '')));
+    }
+    x.push(span('al', e.unread.intake ? '<span class="t-wait">Intake unread</span>' : e.alarms ? '<span class="t-bad">' + plural(e.alarms, 'alarm') + '</span> in Intake' : 'no alarms'));
+    x.push(span('ci', 'CI ' + (e.ops.ci == null ? (e.ciRead ? 'no week share' : '<span class="t-wait">' + (e.sources.ci.off ? 'off here' : 'unread') + '</span>') : '<span class="' + (e.ops.ci >= 80 ? 't-bad' : '') + '">' + e.ops.ci + ' %</span>')));
+    x.push(span('at', '<span class="dim">as of ' + (e.at ? hhmm(e.at * 1000) : '—') + '</span>'));
+    return '<p class="engine-line pointer" data-k="eline"><span class="lbl2" data-k="el-l">Engine room</span>' + x.join('') + '<a class="go" data-k="el-go" href="?view=engine" data-view="engine">Open the Engine room →</a></p>';
+  }
   function shipsHTML() {   // the timeline as it was (milestones, ask flags, the parked hatch), in the tokens' colours, until S12's ladder
     var rows = ships(); if (!rows.length) return '<div class="empty-big" data-k="noships">' + art('quietNight', 120) + '<p>No ships with tasks.</p></div>';
     var now = (ts(S.as_of) || Date.now()) / 1000, lo = now, hi = now;
@@ -295,7 +340,8 @@
   }
   function skippersHTML() { return '<div class="empty-big" data-k="nosk">' + art('noSkippers', 120) + '<p>Not built yet: each skipper\'s watch card.</p></div>'; }
   function reportsHTML() { return grp('done', 'Done today', 'every card that ended since the morning', col('Done today'), '', 'Nothing ended yet today.'); }
-  function engineHTML() {
+  function engineHTML() {   // the Engine room's body (engine.js); without its files, the board's ops line and Intake cards as before
+    if (EV()) return EV().html();
     var h = S.header || {};
     return (h.ops ? '<p class="ops' + (h.ops_stale ? ' t-wait' : '') + '" data-k="ops">' + esc(h.ops) + '</p>' : '') + grp('intake', 'Intake', 'the desk\'s open issues, by kind', col('Intake'), 'bad', 'Intake is empty.');
   }
@@ -456,6 +502,7 @@
     });
   }
   function render() {
+    EC = null;   // the adapter again: the ages move with the clock
     var snapN = window.FX && FX.snap ? FX.snap() : null;
     reconcile($('#strip'), strip()); placeBoats();
     reconcile($('#side'), sideHTML());
@@ -473,7 +520,13 @@
     V.view = v; put('view', v); closeSheets(); render(); url(); scrollTo(0, 0);
   }
   B.go = go;
-  function url() { try { var p = new URLSearchParams(location.search); p.set('view', V.view); history.replaceState(null, '', '?' + p.toString()); } catch (e) { /* a file: or srcdoc page */ } }
+  function url() {
+    try {
+      var p = new URLSearchParams(location.search); p.set('view', V.view);
+      if (V.view === 'engine' && V.esec && V.esec !== 'all') p.set('sec', V.esec); else p.delete('sec');
+      history.replaceState(null, '', '?' + p.toString());
+    } catch (e) { /* a file: or srcdoc page */ }
+  }
   function theme() {
     var r = document.documentElement, t = r.dataset.theme === 'dark' ? 'light' : 'dark';
     r.dataset.theme = t; try { localStorage.setItem('helm-theme', t); } catch (e) { /* private window */ }
@@ -487,7 +540,9 @@
   document.addEventListener('click', function (e) {
     // only the triggers: #main and <body> carry data-view as state, so a bare [data-view] matched every click
     // (a card's links never opened, a click in a sheet closed it); a modified click opens its new tab as a link does
-    var a = e.target.closest('a[data-view], [data-act], [data-jump]'); if (!a) return;
+    var a = e.target.closest('a[data-view], [data-act], [data-jump], [data-esec], [data-verb]'); if (!a) return;
+    if (a.dataset.esec) { V.esec = a.dataset.esec; V.econfirm = null; render(); url(); return; }
+    if (a.dataset.verb && a.dataset.verb.slice(0, 2) === 'e:' && EV()) { var ep = a.dataset.verb.split(':'); EV().verb(ep[1], ep[2], ep.slice(3).join(':')); return; }
     if (a.dataset.view) { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); go(a.dataset.view); return; }
     if (a.dataset.jump) { var t = document.getElementById(a.dataset.jump); if (t) { e.preventDefault(); closeSheets(); scrollTo(0, t.getBoundingClientRect().top + scrollY - 90); } return; }
     var act = a.dataset.act;
@@ -502,7 +557,7 @@
   });
   document.addEventListener('keydown', function (e) {
     var typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable]');
-    if (e.key === 'Escape') { if ($('#sheet.on, #csheet.on')) { e.preventDefault(); closeSheets(); } else if (typing) e.target.blur(); return; }
+    if (e.key === 'Escape') { if ($('#sheet.on, #csheet.on')) { e.preventDefault(); closeSheets(); } else if (V.view === 'engine' && EV() && EV().escape()) e.preventDefault(); else if (typing) e.target.blur(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { if (V.view === 'decide') { e.preventDefault(); doSave(); } return; }   // the save strip is Decide's
     if (typing || e.metaKey || e.ctrlKey || e.altKey) { V.g = 0; return; }
     var gAt = V.g; V.g = 0;
@@ -516,7 +571,13 @@
   addEventListener('resize', function () { if (Math.abs(innerWidth - lastW) > 40) { lastW = innerWidth; render(); } placeBoats(); });
 
   /* ── the poll: one fetch of state.json beside the page, every 30 s; a new snapshot is reconciled, never redrawn ── */
-  function poll() { fetch('state.json', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { if (j && j.as_of !== S.as_of) apply(j); }).catch(function () { /* offline, file: */ }); }
+  function poll() {
+    fetch('state.json', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { if (j && j.as_of !== S.as_of) apply(j); }).catch(function () { /* offline, file: */ });
+    // the Engine room's document beside it: a new `at` is reconciled like the board (a page with none keeps its snapshot)
+    fetch('engine.json', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { if (j && typeof j === 'object' && (!ES || j.at !== ES.at)) applyEngine(j); }).catch(function () { /* offline, file: */ });
+  }
+  function applyEngine(next) { if (!next || typeof next !== 'object') return; ES = next; EC = null; render(); }
+  B.applyEngine = applyEngine;
   B.poll = poll;
   render();
   if (q.get('help')) help();

@@ -18,7 +18,7 @@ python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.p
   || { echo "FAIL: the core does not load here (its line above)"; rc=1; }
 echo "== peers"; bash "$D/peers.sh" || rc=1
 echo "== hooks"; bash "$D/hooks.sh" || rc=1
-# test_ask, test_helm and the extension share nothing (each its own mktemp dir; the suites their own config dir
+# test_ask, test_helm, test_board, test_engine and the extension share nothing (each its own mktemp dir; the suites their own config dir
 # and HOME, the extension npm's cache in the caller's HOME): side by side,
 # each printed whole in this order once it ends (suite-time, 2026-10-23)
 O=$(mktemp -d); pids=()
@@ -39,10 +39,10 @@ vscode() {
   mkdir "$O/vscode-build" && tar -C "$M/vscode" --exclude=./node_modules --exclude=./out --exclude='*.vsix' -cf - . \
     | tar -C "$O/vscode-build" -xf - && cd "$O/vscode-build" && npm ci --no-audit --no-fund --ignore-scripts && npm run check
 }
-for s in test_ask test_helm test_board; do bash "$D/$s.sh" > "$O/$s" 2>&1 & pids+=($!); done
+for s in test_ask test_helm test_board test_engine; do bash "$D/$s.sh" > "$O/$s" 2>&1 & pids+=($!); done
 vscode > "$O/vscode" 2>&1 & pids+=($!)
 i=0
-for s in test_ask test_helm test_board vscode; do
+for s in test_ask test_helm test_board test_engine vscode; do
   wait "${pids[$i]}" || rc=1; i=$((i+1))
   echo "== $s"; cat "$O/$s"; rm -f "$O/$s"
 done
