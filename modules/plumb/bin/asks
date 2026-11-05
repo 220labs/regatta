@@ -5,6 +5,9 @@
     asks numbers [--days 7] [--json]
     asks baseline [--corpus DIR] [--model] [--refresh]
     asks ship <theme> <ref>
+    asks merge [--dry-run] [--force]
+    asks cusum [--days 60] [--json]
+    asks golden add|list|check
 
 Every improvement the owner asks for by hand is evidence the loop missed something. `run` is the
 weekly pass (aurora's weekly-run runs it once a week, zero attended tokens):
@@ -36,13 +39,24 @@ loop's cost. `baseline` replays the 60-day model-labelled corpus (the owner's pr
 Mac only: read, never copied) through the sieve, and with --model through the gate, and prints the
 agreement per dimension — counts only. `ship` records that a mechanism shipped for a theme.
 
+Follow-ups (Evolve S11): `merge` is the theme ledger's merge pass, one `evolve.theme` call a month over the model
+slugs (255 over 386 asks was the first baseline: the model names one need with different slugs across weeks, so
+the repeat share read 15 % where the hand read 59 %); `run` makes it when it is due and the ledger holds enough
+slugs, and `theme-merges.json` keeps old slug -> kept slug, which `numbers` follows. `numbers` reports G1's
+three rows apart, eligible E and N asks (an N sensor adds nothing to E's recall), lead time as the finding's
+time minus the ask's (negative when the loop was first). `cusum` replays the memo-acceptance CUSUM on the
+owner's answers in timestamp order. `golden` is the fixture behind a change to the `evolve.ask` prompt or labels
+(Ring 0): ids and verified labels in git (golden/manifest.json), the prompts' text only in the state dir.
+
 The prompts, the labels and the matcher's causes are Ring 0 (docs/self-improvement-loop-2026-10-30.md):
 they decide who counts as detectable, so only the owner changes them. Gate rows: the core's
 settings/models.json (`evolve.ask`, `evolve.match`). State: ASKS_STATE, else <log dir>/plumb/asks.
 """
 import argparse
+import contextlib
 import csv
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -64,6 +78,15 @@ BASELINE_DIR = Path.home() / ".local" / "state" / "regatta" / "plumb" / "asks-ba
 LOOKBACK_DAYS = 60
 CHUNK = 50          # items per gate call; a failed call ends the model labelling for the run (sieve week)
 TEXT_MAX = 1200     # characters of a prompt the gate sees
+HASHED = re.compile(r"t[0-9a-f]{6}")   # a theme id made of hashed words, no model slug
+MERGE_EVERY_DAYS = 28   # the merge pass is one call a month
+MERGE_RETRY_DAYS = 7    # a pass that spent a call and failed is tried again after a week, not every night
+MERGE_MIN = 20          # `run` makes the pass only for a ledger of at least this many model slugs
+MERGE_LIST_MAX = 500    # slugs one call sees (the most-asked first)
+MERGE_GROUP_MAX = 30    # a group of more slugs than this is held, never folded: a degenerate "everything is X"
+CUSUM_K, CUSUM_H, CUSUM_WEEKS, CUSUM_BASE_MIN = 0.10, 8, 8, 10   # provisional (the memo-acceptance CUSUM)
+GOLDEN_PRECISION, GOLDEN_RECALL, GOLDEN_MIN = 0.80, 0.85, 30     # provisional bars (Ring 0); fewer labels cannot tell
+GOLDEN = Path(os.environ.get("ASKS_GOLDEN") or Path(__file__).resolve().parent.parent / "golden" / "manifest.json")
 
 # ---- Ring 0: the labels. The owner changes these; the loop never does. -------------------------------
 
@@ -284,7 +307,7 @@ class Gate:
 def short_error(e):
     """The first line of an error, cut before any quoted reply, so no model or prompt text reaches a ledger."""
     msg = str(e).split("\n")[0]
-    return re.split(r"""['"`]""", msg, 1)[0].rstrip(" :")[:160]
+    return re.split(r"""['"`]""", msg, maxsplit=1)[0].rstrip(" :")[:160]
 
 
 THEME_PROMPT = (
@@ -326,21 +349,8 @@ def theme_slugs(gate, items, known, sources=None):
                             "Items, one per line as `id: text`:"] + ["%s: %s" % (k, v.replace("\n", " ")) for k, v in part.items()])
         schema = {"type": "object", "additionalProperties": False, "required": list(part),
                   "properties": {k: {"type": "string"} for k in part}}
-        cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", *gate.mod.claude_flags(row), "--output-format", "json",
-               "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(schema)]
-        try:
-            p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600,
-                               env={k: v for k, v in os.environ.items() if k != "CLAUDECODE"})
-            res = json.loads(p.stdout)
-            got = res.get("structured_output")
-            if not isinstance(got, dict):
-                got = json.loads(res.get("result") or "")
-            gate.cost += float(res.get("total_cost_usd") or 0)
-            gate.calls += 1
-            if res.get("is_error") or not isinstance(got, dict):
-                raise ValueError("the reply is not a JSON object of slugs")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            gate.error = "evolve.theme: %s" % short_error(e)
+        got = claude_object(gate, row, prompt, schema, "evolve.theme")
+        if got is None:
             return out
         for k, v in got.items():
             if k in part and isinstance(v, str) and SLUG.fullmatch(v.strip().lower()):
@@ -404,6 +414,36 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+_LOCK = {"fd": None, "depth": 0}
+
+
+@contextlib.contextmanager
+def ledger_lock(hold=True):
+    """One writer of the ledger at a time: `run`, `ship` and the merge pass each read the ledger, take minutes over a
+    gate call, and write it back, so two at once lost the first one's write. Re-entrant within a process (`run` makes
+    the merge pass under its own hold); hold=False (a dry run, which writes nothing) takes none."""
+    if not hold:
+        yield
+        return
+    if _LOCK["depth"] == 0:
+        STATE.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(STATE / ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("asks: another pass holds the ledger; waiting for it to end", file=sys.stderr)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        _LOCK["fd"] = fd
+    _LOCK["depth"] += 1
+    try:
+        yield
+    finally:
+        _LOCK["depth"] -= 1
+        if _LOCK["depth"] == 0:
+            os.close(_LOCK["fd"])
+            _LOCK["fd"] = None
+
+
 def ask_id(session, ts, text):
     return hashlib.sha1(f"{session}|{ts}|{text}".encode()).hexdigest()[:12]
 
@@ -455,7 +495,8 @@ def match_rows(gate, rows, texts, findings):
         m = {"label": lab}
         if lab == "anticipated":
             f = cands[r["id"]][0]
-            m.update(finding=f["id"], lead_days=(dt.date.fromisoformat(r["date"]) - dt.date.fromisoformat(f["date"])).days)
+            # lead time = the finding's time minus the ask's: negative when the loop was first (findings carry a day)
+            m.update(finding=f["id"], lead_days=(dt.date.fromisoformat(f["date"]) - dt.date.fromisoformat(r["date"])).days)
         r["match"] = m
     return len(got), None
 
@@ -498,9 +539,22 @@ def overrule_rows(days):
 
 
 def cmd_run(a):
+    with ledger_lock(not a.dry_run):
+        return run_pass(a)
+
+
+def run_pass(a):
     digest = read_digest(a.days, a.digest)
     prior = {r["id"]: r for r in read_jsonl(STATE / "asks.jsonl")}
-    themes = read_json(STATE / "themes.json", {})
+    try:
+        themes = themes_ledger()
+    except MapUnreadable as e:
+        print(f"asks: {e}; nothing labelled or written", file=sys.stderr)
+        return 1
+    try:
+        merges, map_bad = theme_merges(), None
+    except MapUnreadable as e:   # labelled without the map, and no merge pass over it: the map stays as it is
+        merges, map_bad = {}, str(e)
     texts, fresh, machine, fenced = {}, [], 0, int((digest.get("fenced") or {}).get("sessions", 0))
     for s in digest.get("sessions", []):
         for p in s["prompts"]:
@@ -532,12 +586,12 @@ def cmd_run(a):
     # themes, oldest prompt first, so a theme's first session is its first
     asked = sorted((r for r in fresh if r["target"] in ("system", "question")), key=lambda r: r["ts"])
     # KNOWN slugs, most recently asked last: theme_slugs shows the last 150, and themes.json is key-sorted
-    known = sorted((t for t in themes if not re.fullmatch(r"t[0-9a-f]{6}", t)),
+    known = sorted((t for t in themes if not HASHED.fullmatch(t)),
                    key=lambda t: ((themes[t].get("last") or {}).get("date", ""), t))
     slugs = theme_slugs(gate, {r["id"]: texts[r["id"]] for r in asked}, known, src) if by == "model" else {}
     for r in asked:
         sig = signature(texts[r["id"]])
-        tid = slugs.get(r["id"])
+        tid = canon(merges, slugs[r["id"]]) if slugs.get(r["id"]) else None   # a slug folded into another keeps its keeper
         if not tid:
             if len(sig) < 3:
                 continue
@@ -565,22 +619,31 @@ def cmd_run(a):
         old.update({r["id"]: r for r in over})
         write_jsonl(STATE / "overrules.jsonl", sorted(old.values(), key=lambda r: r["date"] or ""))
     write_jsonl(STATE / "runs.jsonl", read_jsonl(STATE / "runs.jsonl") + [run])
+    merged = None
+    if map_bad:
+        merged = "theme merge: not run (%s)" % map_bad
+    elif by == "model" and not a.no_model and merge_due() and sum(not HASHED.fullmatch(t) for t in themes) >= MERGE_MIN:
+        # decided on the run's own labelling and --no-model, never gate.off: an evolve.match that is off or failed sets
+        # that flag, and the merge pass judges evolve.theme's own row through a Gate of its own
+        merged = do_merge(Gate(enabled=True))   # the month's one evolve.theme call over the ledger's slugs
     asks = {(r["session"], r.get("theme")) for r in fresh if r["target"] == "system" and r.get("theme")}
     print(f"asks: {len(fresh)} new owner prompts ({machine} machine, {fenced} confidential sessions not opened), "
           f"{sum(r['target'] == 'system' for r in fresh)} improvement asks in {len(asks)} session-themes, "
           f"labelled by {by}" + (f" ({gate.error})" if gate.error else "") + f"; match: {why or str(matched) + ' matched'}; "
-          f"gate {common.cost_text(gate.cost)}" + (f"; overrules: {len(over)}" if over is not None else f"; overrules: {over_why}"))
+          f"gate {common.cost_text(gate.cost)}" + (f"; overrules: {len(over)}" if over is not None else f"; overrules: {over_why}")
+          + (f"; {merged}" if merged else ""))
     return 0
 
 
 # ---- numbers -------------------------------------------------------------------------------------------
 
-def repeated(rows, today):
-    """The (session, theme) asks, and which of them repeat a theme an earlier session raised (60-day lookback)."""
+def repeated(rows, today, merges=None):
+    """The (session, theme) asks, and which of them repeat a theme an earlier session raised (60-day lookback).
+    A theme folded into another by the merge pass counts under the one it was folded into."""
     first = {}
     for r in rows:
         if r["target"] == "system" and r.get("theme"):
-            key = (r["session"], r["theme"])
+            key = (r["session"], canon(merges or {}, r["theme"]))
             first[key] = min(first.get(key, "9"), r["date"])
     by_theme = defaultdict(list)
     for (s, t), d in first.items():
@@ -603,20 +666,38 @@ def numbers(days=7, today=None):
     if not rows:
         return {"measured": False, "why": "no pass has run yet (asks run)"}
     win = [r for r in rows if r["date"] > lo]
-    asks_all, rep = repeated(rows, today)
-    ask_keys = {(r["session"], r["theme"]) for r in win if r["target"] == "system" and r.get("theme")}
+    try:
+        merges, map_bad = theme_merges(), None
+    except MapUnreadable:   # counted unmerged, and said so: numbers that look merged would be wrong
+        merges, map_bad = {}, True
+    asks_all, rep = repeated(rows, today, merges)
+    ask_keys = {(r["session"], canon(merges, r["theme"])) for r in win if r["target"] == "system" and r.get("theme")}
     ask_rows = [r for r in win if r["target"] == "system"]
     det = Counter(r.get("detect") for r in ask_rows)
     known = det["E"] + det["N"] + det["J"]
     matched = [r for r in ask_rows if r.get("match")]
     antic = [r for r in matched if r["match"]["label"] == "anticipated"]
-    detectable = [r for r in matched if r.get("detect") in ("E", "N") and r["match"]["label"] != "J"]
-    leads = [r["match"]["lead_days"] for r in antic if r["match"].get("lead_days") is not None]
+    findings = bool(load_findings())
+
+    def g1(cls):
+        """G1's row for one detectability class: eligible (matched, not J), anticipated, recall, mean lead time.
+        E and N are apart on purpose: an N sensor that appears later adds a row, it never moves E's recall."""
+        elig = [r for r in matched if r.get("detect") == cls and r["match"]["label"] != "J"]
+        hit = [r for r in elig if r["match"]["label"] == "anticipated"]
+        lead = [r["match"]["lead_days"] for r in hit if r["match"].get("lead_days") is not None]
+        return {"eligible": len(elig), "anticipated": len(hit),
+                "recall": (round(100 * len(hit) / len(elig)) if elig else None) if findings else "no findings yet",
+                "lead_days": (round(sum(lead) / len(lead), 1) if lead else None) if findings else "no findings yet"}
+    gE, gN = g1("E"), g1("N")
+    anticipated_keys = {(r["session"], canon(merges, r["theme"])) for r in antic if r.get("theme")}
+    residual = len(ask_keys - anticipated_keys)
     cut = (today - dt.timedelta(days=28)).isoformat()
-    week_runs = [x for x in runs if x["ts"][:10] > lo]
+    spend = list(runs) + [   # the merge log's rows carry their own spend
+        {"ts": x["ts"], "cost_usd": x.get("cost_usd") or 0} for x in merge_log() if isinstance(x, dict) and isinstance(x.get("ts"), str)]
+    week_runs = [x for x in spend if x["ts"][:10] > lo]
+    weekly = runs   # the weekly passes only: the merge pass logs to theme-merges.jsonl
     all_over = read_jsonl(STATE / "overrules.jsonl")
     over = [r for r in all_over if r["date"] and r["date"] > lo]
-    findings = bool(load_findings())
     return {
         "measured": True, "window_days": days, "from": lo, "owner_prompts": len(win),
         "asks": len(ask_keys), "ask_prompts": len(ask_rows), "question_prompts": sum(r["target"] == "question" for r in win),
@@ -625,13 +706,19 @@ def numbers(days=7, today=None):
         "judgement_share": round(100 * det["J"] / known) if known else None,
         "repeat_share": round(100 * sum(k in rep for k in ask_keys) / len(ask_keys)) if ask_keys else None,
         "themes": len({t for _, t in ask_keys}),
-        "recall": (round(100 * len(antic) / len(detectable)) if detectable else None) if findings else "no findings yet",
-        "lead_days": (round(sum(leads) / len(leads), 1) if leads else None) if findings else "no findings yet",
+        # G1, three rows apart (the headline recall and lead time are E's): E eligible and N eligible, then what no
+        # finding anticipated per 100 owner prompts; the J, unknown and not-yet-matched counts are printed beside them
+        "recall": gE["recall"], "lead_days": gE["lead_days"],
+        "g1_E": gE, "g1_N": gN,
+        "residual_asks": residual, "residual_per_100": round(100 * residual / len(win), 1) if win else None,
+        "j_asks": det["J"], "unknown_asks": sum(n for k, n in det.items() if k not in ("E", "N", "J")),
+        "unmatched_eligible": sum(1 for r in ask_rows if r.get("detect") in ("E", "N") and not r.get("match")),
         "labelled_by_sieve": sum(r.get("by") == "sieve" for r in win),
         "cost_week_usd": round(sum(x["cost_usd"] for x in week_runs), 4),
-        "cost_4w_usd": round(sum(x["cost_usd"] for x in runs if x["ts"][:10] > cut), 4),
+        "cost_4w_usd": round(sum(x["cost_usd"] for x in spend if x["ts"][:10] > cut), 4),
         "overrules_week": len(over), "overrules_ledger": len(all_over),
-        "last_run": runs[-1]["ts"] if runs else None, "last_gate_error": runs[-1].get("gate_error") if runs else None,
+        "theme_merges": "unreadable" if map_bad else len(merges), "last_theme_merge": ([r for r in merge_log() if isinstance(r, dict)] or [{}])[-1].get("ts"),
+        "last_run": weekly[-1]["ts"] if weekly else None, "last_gate_error": weekly[-1].get("gate_error") if weekly else None,
     }
 
 
@@ -645,19 +732,543 @@ def cmd_numbers(a):
         return 0
     print(f"asks, last {n['window_days']} days: {n['asks']} in {n['themes']} themes, {n['asks_per_100']} per 100 owner prompts "
           f"({n['owner_prompts']}); detectable {n['detectable_share']} %, owner's judgement {n['judgement_share']} %; "
-          f"repeating a theme (60 d) {n['repeat_share']} %; recall {n['recall']}; "
+          f"repeating a theme (60 d) {n['repeat_share']} %; recall E {n['g1_E']['recall']}, N {n['g1_N']['recall']}, "
+          f"residual {n['residual_per_100']} per 100; lead time (days, finding minus ask) E {n['g1_E']['lead_days']}; "
           f"cost {common.cost_text(n['cost_week_usd'])} this week, {common.cost_text(n['cost_4w_usd'])} in 4 weeks")
     return 0
 
 
 def cmd_ship(a):
-    themes = read_json(STATE / "themes.json", {})
+    with ledger_lock():
+        return ship(a)
+
+
+def ship(a):
+    try:
+        themes = themes_ledger()
+        a.theme = canon(theme_merges(), a.theme)   # a slug folded into another is shipped under the keeper
+    except MapUnreadable as e:
+        print(f"asks: {e}; nothing shipped", file=sys.stderr)
+        return 1
     if a.theme not in themes:
         print(f"asks: no theme {a.theme}", file=sys.stderr)
         return 1
     themes[a.theme]["shipped"] = {"ref": a.ref, "on": dt.date.today().isoformat()}
     write_json(STATE / "themes.json", themes)
     return 0
+
+
+# ---- the theme merge pass (Evolve S11) -------------------------------------------------------------------
+
+MERGE_PROMPT = (
+    "Each line below is a THEME slug from a ledger of what the owner asked a coding-agent system to change, with "
+    "the number of sessions that raised it. Group the slugs that name the SAME need, whatever words they use; "
+    "a slug that stands alone is left out. Two slugs for different needs are never grouped, however close the "
+    "words. Reply with only a JSON object {\"groups\": [[slug, slug, ...], ...]}, each group of two or more "
+    "slugs from the list, each slug in at most one group. Never invent a slug.")
+
+
+class MapUnreadable(Exception):
+    pass
+
+
+def themes_ledger():
+    """themes.json, {} when there is none. A ledger that is there and does not read raises MapUnreadable: it is in
+    no git, and a pass that read it as empty would write the week's themes over every earlier one."""
+    try:
+        got = json.loads((STATE / "themes.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise MapUnreadable("themes.json does not read: %s" % short_error(e))
+    if not isinstance(got, dict) or not all(isinstance(v, dict) for v in got.values()):
+        raise MapUnreadable("themes.json does not read: not an object of slug to record")
+    return got
+
+
+def theme_merges():
+    """{old slug: kept slug} from theme-merges.json; {} when there is none. A map that is there and does not read
+    raises MapUnreadable: it is in no git, and a merge pass that read it as empty would write its own folds over
+    every earlier one, whose themes are already gone from the ledger."""
+    try:
+        got = json.loads((STATE / "theme-merges.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise MapUnreadable("theme-merges.json does not read: %s" % short_error(e))
+    if not isinstance(got, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in got.items()):
+        raise MapUnreadable("theme-merges.json does not read: not an object of slug to slug")
+    return got
+
+
+def canon(merges, theme):
+    """The theme a slug was folded into, following a chain (a -> b -> c); a loop stops where it began."""
+    seen = set()
+    while theme in merges and theme not in seen:
+        seen.add(theme)
+        theme = merges[theme]
+    return theme
+
+
+def claude_object(gate, row, prompt, schema, what):
+    """One `claude -p` call on a generate row; the JSON object it answers, else None (gate.error says why)."""
+    try:   # a row naming another provider raises GateError from claude_flags: said as the call's failure, never a traceback
+        cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", *gate.mod.claude_flags(row), "--output-format", "json",
+               "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(schema)]
+        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600,
+                           env={k: v for k, v in os.environ.items() if k != "CLAUDECODE"})
+        res = json.loads(p.stdout)
+        if not isinstance(res, dict):   # `null` or an error list on stdout: the call failed, never a traceback
+            raise ValueError("the reply is not a JSON object")
+        gate.cost += float(res.get("total_cost_usd") or 0)   # a paid call is counted before its answer is read
+        gate.calls += 1
+        got = res.get("structured_output")
+        if not isinstance(got, dict):
+            got = json.loads(res.get("result") or "")
+        if res.get("is_error") or not isinstance(got, dict):
+            raise ValueError("the reply is not a JSON object")
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError, gate.mod.GateError) as e:
+        gate.error = "%s: %s" % (what, short_error(e))
+        return None
+    return got
+
+
+def merge_components(groups, offered):
+    """[[slug, ...]] -> the connected sets of slugs the groups name (a slug in two groups joins them), only
+    slugs the call was offered, two or more each."""
+    parent = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for g in groups if isinstance(groups, list) else []:
+        names = [x for x in (g if isinstance(g, list) else []) if isinstance(x, str) and x in offered]
+        for x in names[1:]:
+            parent[find(x)] = find(names[0])
+    comps = defaultdict(set)
+    for x in list(parent):
+        comps[find(x)].add(x)
+    return sorted((sorted(c) for c in comps.values() if len(c) > 1), key=lambda c: c[0])
+
+
+def keep_of(themes, comp):
+    """The slug a group is kept under: the one most sessions raised, then the earliest first, then the name."""
+    return sorted(comp, key=lambda t: (-len(themes[t].get("sessions") or {}), (themes[t].get("first") or {}).get("date", "9"), t))[0]
+
+
+def fold_theme(into, other):
+    """Union `other`'s record into `into`: sessions (the earliest day of each), words, first, last, the newest shipped."""
+    for sess, day in (other.get("sessions") or {}).items():
+        into["sessions"][sess] = min(day, into["sessions"].get(sess, day))
+    into["sig"] = sorted(set(into.get("sig") or []) | set(other.get("sig") or []))[:60]
+    firsts = [t["first"] for t in (into, other) if t.get("first")]
+    if firsts:
+        into["first"] = min(firsts, key=lambda f: f.get("date", "9"))
+    lasts = [t["last"] for t in (into, other) if t.get("last")]
+    if lasts:
+        into["last"] = max(lasts, key=lambda f: f.get("date", ""))
+    shipped = [t["shipped"] for t in (into, other) if t.get("shipped")]
+    into["shipped"] = max(shipped, key=lambda x: x.get("on", "")) if shipped else None   # the newest mechanism: recurrence counts from it
+    into["count"] = len(into["sessions"])
+
+
+def merge_themes(gate, themes, merges, dry_run=False):
+    """One `evolve.theme` call over the model slugs. -> (themes', merges', info); info says what happened.
+    The call sends slugs only (the model's names for needs, never the owner's words); a guarded repo's asks
+    carry hashed themes, which are not sent."""
+    slugs = {t: v for t, v in themes.items() if not HASHED.fullmatch(t)}
+    info = {"slugs": len(slugs), "groups": 0, "folded": 0, "held": 0, "called": False}
+    if gate.off or gate.mod is None:
+        info["why"] = gate.error or "the gate is off"
+        return themes, merges, info
+    if len(slugs) < 2:
+        info["why"] = "fewer than two slugs"
+        return themes, merges, info
+    try:
+        row = gate.mod.resolve("evolve.theme")
+    except Exception as e:  # noqa: BLE001
+        info["why"] = "evolve.theme: %s" % str(e).split("\n")[0][:160]
+        return themes, merges, info
+    if row is None:
+        info["why"] = "evolve.theme is off"
+        return themes, merges, info
+    offered = sorted(slugs, key=lambda t: (-len(slugs[t].get("sessions") or {}), t))[:MERGE_LIST_MAX]
+    prompt = "\n".join([MERGE_PROMPT, "", "Slugs, one per line as `slug (sessions)`:"] +
+                       ["%s (%d)" % (t, len(slugs[t].get("sessions") or {})) for t in offered])
+    schema = {"type": "object", "additionalProperties": False, "required": ["groups"],
+              "properties": {"groups": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}}
+    if dry_run:
+        info.update(called=True, dry=True, offered=len(offered))
+        return themes, merges, info
+    got = claude_object(gate, row, prompt, schema, "evolve.theme (merge)")
+    info["called"] = True
+    if got is None:
+        info["why"] = gate.error
+        return themes, merges, info
+    if not isinstance(got.get("groups"), list):   # logged failed, so the pass is tried again in a week, not a month
+        info["why"] = "the reply has no groups list"
+        return themes, merges, info
+    themes, merges = json.loads(json.dumps(themes)), dict(merges)
+    for comp in merge_components(got.get("groups"), set(offered)):
+        if len(comp) > MERGE_GROUP_MAX:
+            info["held"] += 1
+            continue
+        keep = keep_of(themes, comp)
+        for t in comp:
+            if t == keep:
+                continue
+            fold_theme(themes[keep], themes.pop(t))
+            merges[t] = keep
+            for old, new in list(merges.items()):   # a chain is shortened to its end
+                if new == t:
+                    merges[old] = keep
+            info["folded"] += 1
+        info["groups"] += 1
+    return themes, merges, info
+
+
+def merge_log():
+    return read_jsonl(STATE / "theme-merges.jsonl")
+
+
+def merge_due(now=None):
+    """True when the last merge pass that worked is a month old and the last attempt a week. The weekly pass
+    starts at a different minute each week, so a day less than the interval counts as the interval."""
+    return merge_hold(now) is None
+
+
+def merge_hold(now=None):
+    """None when the merge pass is due, else why not, in words."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    rows = [r for r in merge_log() if isinstance(r, dict)]
+
+    def age(rs):
+        try:
+            return (now - dt.datetime.strptime(rs[-1]["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)).total_seconds() / 86400 if rs else None
+        except (KeyError, TypeError, ValueError):   # a row that does not read counts as no row: the pass is tried again
+            return None
+    ok, tried = age([r for r in rows if r.get("status") == "ok"]), age(rows)
+    if ok is not None and ok < MERGE_EVERY_DAYS - 1:
+        return "a pass worked within %d days" % MERGE_EVERY_DAYS
+    if tried is not None and tried < MERGE_RETRY_DAYS - 1:
+        return "the last attempt failed on %s, tried again after %d days" % (rows[-1].get("ts"), MERGE_RETRY_DAYS)
+    return None
+
+
+def do_merge(gate, dry_run=False, force=True):
+    """The pass over the ledger on disk; the one-line account. Writes the ledger, the map and the merge log (its spend:
+    `numbers` adds it to the week's cost), under the ledger's lock from the read to the last write."""
+    with ledger_lock(not dry_run):
+        return merge_pass(gate, dry_run, force)
+
+
+def merge_pass(gate, dry_run, force):
+    hold = None if force else merge_hold()   # judged again under the hold: a pass that held the ledger meanwhile may have merged
+    if hold:
+        return "theme merge: not due (%s; --force asks again)" % hold
+    try:
+        themes, merges = themes_ledger(), theme_merges()
+    except MapUnreadable as e:
+        return "theme merge: not run (%s)" % e
+    new_themes, new_merges, info = merge_themes(gate, themes, merges, dry_run)
+    if info.get("dry"):   # a dry run spends nothing: the paid call is the pass's, and its log is what numbers counts
+        return ("theme merge: %d slugs, %d would be offered to one evolve.theme call [dry run: no call made, nothing written]"
+                % (info["slugs"], info["offered"]))
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not info["called"]:
+        return "theme merge: not run (%s)" % info.get("why", "nothing to do")
+    status = "ok" if "why" not in info else "failed"
+    line = ("theme merge: %d slugs, %d groups folded %d slugs (%d held as too broad), %s%s"
+            % (info["slugs"], info["groups"], info["folded"], info["held"], "one call, " + common.cost_text(gate.cost)
+               if status == "ok" else "the call failed", "" if status == "ok" else " (%s)" % info["why"]))
+    if dry_run:
+        return line + " [dry run, nothing written]"
+    if status == "ok":   # the map first: one over an unfolded ledger reads right, a folded ledger with no map loses slugs
+        write_json(STATE / "theme-merges.json", new_merges)
+        write_json(STATE / "themes.json", new_themes)
+    write_jsonl(STATE / "theme-merges.jsonl", merge_log() + [{
+        "ts": ts, "status": status, "slugs": info["slugs"], "groups": info["groups"], "folded": info["folded"],
+        "held": info["held"], "cost_usd": round(gate.cost, 4), "gate_error": info.get("why")}])
+    # runs.jsonl stays the weekly pass's own log: evolve's loop lens reads its newest row as "the week's run landed"
+    return line
+
+
+def cmd_merge(a):
+    hold = None if a.force else merge_hold()
+    if hold:
+        print("theme merge: not due (%s; --force asks again)" % hold)
+        return 0
+    print(do_merge(Gate(enabled=True), a.dry_run, a.force))
+    return 0
+
+
+# ---- the memo-acceptance CUSUM, replayed (Evolve S11) ---------------------------------------------------------
+
+def parse_when(ts):
+    """An aware UTC datetime from an ISO second, a bare day or an epoch (what `interruptions` stamps its rows with)."""
+    ts = str(ts)
+    if re.fullmatch(r"\d+(\.\d+)?", ts):
+        return dt.datetime.fromtimestamp(float(ts), dt.timezone.utc)
+    when = dt.datetime.fromisoformat(ts.replace("Z", "+00:00") if "T" in ts else ts + "T00:00:00+00:00")
+    return when if when.tzinfo else when.replace(tzinfo=dt.timezone.utc)
+
+
+def cusum_replay(items, k=CUSUM_K, h=CUSUM_H, weeks=CUSUM_WEEKS, base_min=CUSUM_BASE_MIN, order="ts"):
+    """The lower CUSUM per answered item over `items` [(ts, id, took)], took 1 (the owner took the pick) or 0.
+
+    Each item is read against the trailing `weeks` before it (its own baseline p0, from at least `base_min` items;
+    until then it only warms the window): S = max(0, S + (p0 - k) - took), and S >= h is a firing, after which S
+    restarts at 0. Rows are read in timestamp order, ties by id, so no outcome decides the order of two answers
+    (`order="declines-first"` sorts a day's 0s ahead of its 1s: the delta round's replay did, and its CUSUM
+    read a day's deficit before the day's recoveries; kept for the suite and for anyone checking the claim).
+    -> {"items", "read", "fired": [{ts, s, p0}], "max_s", "last_s"}."""
+    key = (lambda x: (x[0], x[1])) if order == "ts" else (lambda x: (x[0][:10], x[2], x[0], x[1]))
+    rows = sorted(items, key=key)
+    s, fired, max_s, read, window = 0.0, [], 0.0, 0, []
+    horizon = dt.timedelta(weeks=weeks)
+    for ts, ident, took in rows:
+        when = parse_when(ts)
+        window = [(w, v) for w, v in window if when - w <= horizon]
+        if len(window) >= base_min:
+            p0 = sum(v for _, v in window) / len(window)
+            s = max(0.0, s + (p0 - k) - took)
+            read += 1
+            max_s = max(max_s, s)
+            if s >= h:
+                fired.append({"ts": ts, "s": round(s, 2), "p0": round(p0, 2)})
+                s = 0.0
+        window.append((when, took))
+    return {"items": len(rows), "read": read, "fired": fired, "max_s": round(max_s, 2), "last_s": round(s, 2)}
+
+
+def answer_rows(days):
+    """[(ts, id, took)] of the owner's memo and chat answers that offered a pick, from `interruptions`."""
+    tool = common.tool("interruptions")
+    if not tool:
+        return None, "interruptions is not installed"
+    try:
+        r = subprocess.run([sys.executable, tool, "--days", str(days), "--json", "--list", "all"],
+                           capture_output=True, text=True, timeout=900)
+        rows = json.loads(r.stdout)["rows"]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+        return None, "interruptions: %s" % str(e)[:100]
+    out = []
+    for x in rows:
+        if x.get("channel") not in ("ask", "memo") or x.get("fenced") or x.get("project") == getattr(common, "CONFIDENTIAL", "(confidential)"):
+            continue
+        if x.get("kind") not in ("recommended", "overruled", "other-option", "free-text") or not (x.get("ts") or x.get("date")):
+            continue
+        if x["kind"] == "free-text" and x.get("channel") == "ask" and not x.get("recommended"):
+            continue   # the owner's own words to a question that marked no pick: nothing was refused
+        stamp = (dt.datetime.fromtimestamp(float(x["ts"]), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                 if isinstance(x.get("ts"), (int, float)) else str(x.get("ts") or x["date"]))   # interruptions stamps an epoch
+        out.append((stamp, ask_id(x.get("session", ""), x.get("ts", ""), x.get("question", "")),
+                    1 if x["kind"] == "recommended" else 0))
+    return out, None
+
+
+def cmd_cusum(a):
+    items, why = answer_rows(a.days)
+    if items is None:
+        print("asks: cusum not replayed — " + why, file=sys.stderr)
+        return 1
+    r = cusum_replay(items)
+    r["declines_first"] = cusum_replay(items, order="declines-first")["max_s"]
+    r.update(days=a.days, k=CUSUM_K, h=CUSUM_H, weeks=CUSUM_WEEKS,
+             verdict="would have fired %d time(s)" % len(r["fired"]) if r["fired"] else "never fires on this history")
+    if a.json:
+        print(json.dumps(r, indent=1))
+    else:
+        print("cusum over %d answers (%d read against the trailing %d weeks, k %s, h %s), timestamp order: %s; "
+              "highest deficit %s of %s; a day's declines read first would have reached %s"
+              % (r["items"], r["read"], CUSUM_WEEKS, CUSUM_K, CUSUM_H, r["verdict"], r["max_s"], CUSUM_H, r["declines_first"]))
+    return 0
+
+
+# ---- the golden fixture (Evolve S11; Ring 0) ----------------------------------------------------------------
+# Ids and the owner's verified labels in git (GOLDEN, golden/manifest.json); the prompts' text only in the state
+# dir (golden/texts.jsonl), because it is the owner's words. A change to the evolve.ask prompt or its labels is
+# refused under precision 0.80 or recall 0.85 of the detectable class (a system ask the records could have
+# shown, E or N), the bars provisional; fewer than GOLDEN_MIN labelled prompts with their text cannot tell.
+
+def golden_manifest():
+    """The fixture's manifest; an empty one where none exists. ValueError when the file is there and does not read."""
+    try:
+        text = GOLDEN.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"version": 1, "labels": {}}
+    except OSError as e:
+        raise ValueError("%s does not read (%s)" % (GOLDEN, e.strerror))
+    try:
+        got = json.loads(text)
+    except ValueError:
+        got = None
+    if not (isinstance(got, dict) and isinstance(got.get("labels"), dict)):
+        raise ValueError("%s does not read as a manifest (a merge's markers, a hand edit?); fix it before adding" % GOLDEN)
+    return got
+
+
+def golden_texts():
+    """{id: row} of the fixture's text; empty where none exists. ValueError when the file is there and a line does not
+    read: an add would write the rows it could read over the owner's text, which is in no git."""
+    path = STATE / "golden" / "texts.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise ValueError("%s does not read (%s)" % (path, getattr(e, "strerror", None) or e.__class__.__name__))
+    out = {}
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            r = None
+        if not (isinstance(r, dict) and r.get("id")):
+            raise ValueError("%s: line %d does not read as a row; fix it before adding" % (path, n))
+        out[r["id"]] = r
+    return out
+
+
+def valid_label(entry):
+    """The labels of one verified prompt, or a reason it is refused."""
+    t = entry.get("target")
+    if t not in DIMS["target"][1]:
+        return "target %r is no label" % t
+    for dim in ("kind", "level", "detect"):   # a system ask carries all three; any other target, those it names
+        if (t == "system" or entry.get(dim)) and entry.get(dim) not in DIMS[dim][1]:
+            return "%s %r is no label" % (dim, entry.get(dim))
+    return None
+
+
+def unattended():
+    """The core's one rule (unattended_caller: the marker and a peer job's AUTOFINISH_CALLER_UNATTENDED), plus a
+    dispatched run's background switch."""
+    rule = getattr(common, "unattended_caller", None)
+    return bool((rule and rule()) or any(os.environ.get(v) for v in (
+        "CLAUDE_UNATTENDED", "REGATTA_UNATTENDED", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")))
+
+
+def in_git(folder):
+    """True when the folder sits in a git work tree (a plugin install's cache folder does not)."""
+    d = Path(folder)
+    while not d.exists() and d != d.parent:
+        d = d.parent
+    try:
+        r = subprocess.run(["git", "-C", str(d), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and r.stdout.strip() == "true"
+
+
+def on_main(folder):
+    """True when the folder sits in a git checkout whose HEAD is the branch main."""
+    d = Path(folder)
+    while not d.exists() and d != d.parent:
+        d = d.parent
+    try:
+        r = subprocess.run(["git", "-C", str(d), "symbolic-ref", "--short", "-q", "HEAD"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and r.stdout.strip() == "main"
+
+
+def cmd_golden(a):
+    try:
+        golden_manifest(), golden_texts()
+    except ValueError as e:   # an add would write the new labels over the old; a check could tell nothing
+        print("asks: golden %s: %s" % (a.what, e), file=sys.stderr)
+        return 4 if a.what == "check" else 2
+    if a.what == "list":
+        m, texts = golden_manifest()["labels"], golden_texts()
+        det = Counter((v.get("target"), v.get("detect")) for v in m.values())
+        print("golden: %d verified labels in the manifest, %d with their text in the state dir (need %d to judge a change); %s"
+              % (len(m), sum(i in texts for i in m), GOLDEN_MIN,
+                 ", ".join("%s/%s %d" % (t, d or "-", n) for (t, d), n in sorted(det.items(), key=str)) or "none yet"))
+        return 0
+    if a.what == "add":
+        if unattended():   # a verified label is the owner's word: an unattended session cannot give it
+            print("asks: golden add is the owner's verification and refuses an unattended run", file=sys.stderr)
+            return 2
+        if not os.environ.get("ASKS_GOLDEN") and on_main(GOLDEN.parent):
+            # the shims run the main checkout's copy: a write there leaves main's tree dirty and stops its fast-forward
+            print("asks: golden add writes %s, a tracked file of a checkout on main; run it from a worktree's bin/asks, "
+                  "or with ASKS_GOLDEN=<worktree>/modules/plumb/golden/manifest.json" % GOLDEN, file=sys.stderr)
+            return 2
+        if not os.environ.get("ASKS_GOLDEN") and not in_git(GOLDEN.parent):
+            # an install's own folder: an update replaces it, and the labels are to be in git
+            print("asks: golden add writes %s, which is in no git checkout (an install's folder an update replaces); "
+                  "set ASKS_GOLDEN=<a checkout>/modules/plumb/golden/manifest.json" % GOLDEN, file=sys.stderr)
+            return 2
+        batch = json.loads(Path(a.batch).read_text(encoding="utf-8")) if a.batch else [
+            {k: v for k, v in dict(id=a.id, target=a.target, kind=a.kind, level=a.level, detect=a.detect).items() if v}]
+        if not batch or not isinstance(batch, list) or not all(isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"] for e in batch):
+            print("asks: golden add wants --id (with --target …) or --batch FILE of {id, target, …}", file=sys.stderr)
+            return 2
+        for e in batch:
+            bad = valid_label(e)
+            if bad:
+                print("asks: %s: %s" % (e["id"], bad), file=sys.stderr)
+                return 2
+        digest = read_digest(a.days, a.digest)
+        found = {}
+        for s in digest.get("sessions", []):
+            for p in s["prompts"]:
+                found[ask_id(s["session"], p["ts"], p["text"])] = {"project": s["project"], "text": p["text"]}
+        m, texts = golden_manifest(), golden_texts()
+        gone = [e["id"] for e in batch if e["id"] not in found and e["id"] not in texts]
+        if gone:
+            print("asks: no prompt with id %s in the last %d days (--days)" % (", ".join(gone), a.days), file=sys.stderr)
+            return 1
+        today = dt.date.today().isoformat()
+        for e in batch:
+            m["labels"][e["id"]] = dict({k: e[k] for k in ("target", "kind", "level", "detect") if e.get(k)}, on=today)
+            if e["id"] in found:
+                texts[e["id"]] = dict(id=e["id"], **found[e["id"]])
+        write_json(GOLDEN, m)
+        write_jsonl(STATE / "golden" / "texts.jsonl", sorted(texts.values(), key=lambda r: r["id"]))
+        print("golden: %d labels added; %d in the manifest (commit %s); the text stays in the state dir"
+              % (len(batch), len(m["labels"]), GOLDEN))
+        return 0
+    # check
+    m, texts = golden_manifest()["labels"], golden_texts()
+    have = {i: texts[i] for i in m if i in texts}
+    if len(have) < GOLDEN_MIN:
+        print("golden: cannot tell — %d verified labels have their text here, %d are needed (golden list)" % (len(have), GOLDEN_MIN))
+        return 4
+    gate = Gate()
+    shown = {i: "[%s] %s" % (r.get("project"), r["text"]) for i, r in have.items()}
+    got = classify_rows(gate, shown, {i: r.get("project") for i, r in have.items()})
+    if got is None:
+        print("golden: cannot tell — the gate gave no labels (%s)" % (gate.error or "off"))
+        return 4
+    labelled = [i for i in have if got.get(i, {}).get("target")]
+    if len(labelled) < 0.9 * len(have):
+        print("golden: cannot tell — the gate labelled %d of %d prompts (%s)" % (len(labelled), len(have), gate.error or "refused repos"))
+        return 4
+    pos = lambda lab: lab.get("target") == "system" and lab.get("detect") in ("E", "N")   # noqa: E731
+    tp = sum(pos(m[i]) and pos(got[i]) for i in labelled)
+    fp = sum(not pos(m[i]) and pos(got[i]) for i in labelled)
+    fn = sum(pos(m[i]) and not pos(got[i]) for i in labelled)
+    if tp + fn == 0 and fp == 0:   # not one detectable label in the fixture: recall is undefined, never a verdict on the change
+        print("golden: cannot tell — the fixture holds no detectable (E or N) label yet (golden list)")
+        return 4
+    prec, rec = (tp / (tp + fp) if tp + fp else 0.0), (tp / (tp + fn) if tp + fn else 0.0)
+    agree = {d: "%d/%d" % (sum(got[i].get(d) == m[i].get(d) for i in labelled if m[i].get(d)), sum(1 for i in labelled if m[i].get(d)))
+             for d in ("target", "kind", "level", "detect")}
+    fp_ctx = hashlib.sha1(json.dumps([CONTEXT, DIMS], sort_keys=True).encode()).hexdigest()[:10]
+    ok = prec >= GOLDEN_PRECISION and rec >= GOLDEN_RECALL
+    print("golden: %s — detectable (E or N) precision %.2f (bar %.2f), recall %.2f (bar %.2f) over %d verified prompts; "
+          "agreement %s; prompt and labels %s; gate %s"
+          % ("meets the bars" if ok else "BELOW THE BARS, the change is refused", prec, GOLDEN_PRECISION, rec, GOLDEN_RECALL,
+             len(labelled), ", ".join("%s %s" % kv for kv in agree.items()), fp_ctx, common.cost_text(gate.cost)))
+    return 0 if ok else 3
 
 
 # ---- baseline replay -----------------------------------------------------------------------------------
@@ -824,8 +1435,25 @@ def main():
     s = sub.add_parser("ship")
     s.add_argument("theme")
     s.add_argument("ref")
+    m = sub.add_parser("merge", help="the theme ledger's merge pass (one evolve.theme call a month)")
+    m.add_argument("--dry-run", action="store_true")
+    m.add_argument("--force", action="store_true")
+    c = sub.add_parser("cusum", help="replay the memo-acceptance CUSUM on the owner's answers, timestamp order")
+    c.add_argument("--days", type=int, default=60)
+    c.add_argument("--json", action="store_true")
+    g = sub.add_parser("golden", help="the fixture behind a change to the evolve.ask prompt or labels (Ring 0)")
+    g.add_argument("what", choices=["add", "list", "check"])
+    g.add_argument("--id")
+    g.add_argument("--target")
+    g.add_argument("--kind")
+    g.add_argument("--level")
+    g.add_argument("--detect")
+    g.add_argument("--batch", help="add: a JSON list of {id, target, kind, level, detect}")
+    g.add_argument("--days", type=int, default=60, help="add: how far back the prompt's text is looked for")
+    g.add_argument("--digest")
     a = ap.parse_args()
-    return {"run": cmd_run, "numbers": cmd_numbers, "baseline": cmd_baseline, "ship": cmd_ship}[a.cmd](a)
+    return {"run": cmd_run, "numbers": cmd_numbers, "baseline": cmd_baseline, "ship": cmd_ship, "merge": cmd_merge,
+            "cusum": cmd_cusum, "golden": cmd_golden}[a.cmd](a)
 
 
 if __name__ == "__main__":
