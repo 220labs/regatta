@@ -172,12 +172,22 @@ git -C "$T/repo" add docs; git -C "$T/repo" commit -qm seed; git -C "$T/repo" pu
 CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-att "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" "an attended session with no force mark: refused"
 has "$T/err" "use the force" "  naming the owner's words"
 CLAUDECODE=1 "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" "  a session that dropped its id: refused too (CLAUDECODE)"
-uc=$(python3 -c 'import importlib.machinery, sys; q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module(); print(q.under_claude())' "$QB")
-if [ "$uc" = True ]; then
+# The probe asks ancestry() first: a `ps` that times out on a loaded runner reads as a
+# session there (fails closed), while dispatch's own read a moment later finds no claude and passes the call: the
+# likely cause, not observed, of the case failing on a self-hosted runner Mac with no session above it (regatta#489's
+# check, 2026-11-04; that runner's ancestry, read after, holds no claude). "Could not tell" skips the case; a real
+# claude ancestor runs it; a probe that printed none of its three words crashed, and fails.
+uc=$(python3 -c 'import importlib.machinery, sys
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+print("unknown" if q.ancestry() is None else q.under_claude())' "$QB")
+if [ "$uc" != True ] && [ "$uc" != False ] && [ "$uc" != unknown ]; then
+  check "$uc" "True, False or unknown" "  the ancestry probe ran (a crash would skip the case for good)"
+elif [ "$uc" = True ]; then
   env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" \
     "  one that dropped both: refused by its ancestry (a claude among dispatch's parents)"
+  has "$T/err" "use the force" "  for want of the owner's words, not another refusal"
 else
-  echo "  --   skipped: no Claude session above this suite (the ancestry case needs one)"
+  echo "  --   skipped: no Claude session above this suite, or ps could not tell ($uc; the ancestry case needs one)"
 fi
 CLAUDECODE=1 python3 "$QB" enqueue --repo "$T/repo" --branch "$BR-d3" --priority force "${QC[@]}" > /dev/null 2> "$T/err"; check "$?" "2" \
   "dispatch-queue enqueue by path: the same force check (it is on the Bash PATH)"
@@ -201,9 +211,14 @@ CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-att "$B/dispatch" "$BR-d2" --repo "$T/repo
 rm_own "$LA"/*.plist
 # the owner's terminal: no session variables and no claude above it — a process reparented away from this
 # suite's own parents (the subshell that started it exits at once), so the case holds inside a session too
-rm -f "$T/term.rc"
-( ( sleep 1; "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/term.out" 2> "$T/term.err"; echo $? > "$T/term.rc" ) & )
-for i in $(seq 1 60); do [ -s "$T/term.rc" ] && break; sleep 0.5; done
+# A ps that fails or times out on a loaded runner reads as a session (under_claude() fails closed) and refuses this
+# call too; one more try lets a refusal stand only when two reads agree (engineering: verify, then retry once).
+for try in 1 2; do
+  rm -f "$T/term.rc"
+  ( ( sleep 1; "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/term.out" 2> "$T/term.err"; echo $? > "$T/term.rc" ) & )
+  for i in $(seq 1 60); do [ -s "$T/term.rc" ] && break; sleep 0.5; done
+  [ "$(cat "$T/term.rc" 2>/dev/null)" = 0 ] && break
+done
 hasnt "$T/term.err" "use the force" "outside any session (the owner's terminal): the flag is the owner's typing"
 check "$(cat "$T/term.rc" 2>/dev/null)" "0" "  that dispatch ran and passed (exit 0)"
 mkdir -p "$FM"; echo x > "$FM/s-old"; touch -t 202610280000 "$FM/s-old"
