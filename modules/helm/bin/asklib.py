@@ -186,16 +186,25 @@ def pid_alive(pid):
 
 
 def this_host():
-    """The Mac this runs on, as dispatch names it (laptop, buildbox): PLAN_HOST, DISPATCH_HOST, else
-    the LocalHostName."""
+    """The host this runs on, as dispatch names it (laptop, buildbox, a Linux node): PLAN_HOST,
+    DISPATCH_HOST, else macOS's LocalHostName, else the kernel's short name — dispatch's local_host()
+    and the core's host_name(), so a node's relay knows it is not on its skipper's Mac. Until 2026-10-31
+    there was no fallback: off macOS this read None, elsewhere() read False, and every relay from the
+    Linux node to a skipper on the laptop said "no live skipper" (three runs, 2026-10-31, each ending
+    on a WAITING line the skipper never saw). ASK_SCUTIL stands in for scutil (tests)."""
     h = os.environ.get("PLAN_HOST") or os.environ.get("DISPATCH_HOST")
     if h:
         return h
+    name = ""
     try:
-        r = subprocess.run(["/usr/sbin/scutil", "--get", "LocalHostName"], capture_output=True, text=True, timeout=5)
-        return r.stdout.strip().lower() or None
+        r = subprocess.run([os.environ.get("ASK_SCUTIL") or "/usr/sbin/scutil", "--get", "LocalHostName"],
+                           capture_output=True, text=True, timeout=5)
+        name = r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        pass
+    import socket
+    name = name or socket.gethostname().split(".")[0]
+    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or None
 
 
 def elsewhere(ctx):

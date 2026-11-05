@@ -66,7 +66,8 @@ def run_mode():
 # skipper-modes S1: what each mode adds to the denial — where the question goes instead
 MODE_TEXT = {
     "ask": " This run is in mode ask: nobody answers it but the owner — the relay cards it on the board, and "
-           "the run waits; past an hour it is ended and a successor is briefed from it.",
+           "the run ends a minute after its closing line; the owner's answer comes as a commit, which a later run "
+           "of its branch builds on (`ask answer --branch` queues one).",
     "dnd": " This run is in mode dnd: first run `keel yolo --dnd <doc>` — it takes every bare pick but the "
            "held classes (money, physical, a deletion or publish, a third party, no pick, conditional, "
            "unmarked, reopened) — and relay only what it prints as held.",

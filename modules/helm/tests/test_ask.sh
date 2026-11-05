@@ -69,8 +69,11 @@ export ASK_TICK_CMD="$T/tick-ok"
 # the caller's own run and login must not leak in: a session on ~/.claude-w would read as another account
 unset DISPATCH_MANAGER DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_MANAGER_ACCOUNT DISPATCH_MANAGER_HOST ASK_ACCOUNT DISPATCH_TASK \
       DISPATCH_SKIPPER DISPATCH_SHIP DISPATCH_SKIPPER_ACCOUNT DISPATCH_SKIPPER_HOST \
-      DISPATCH_REPO CLAUDE_UNATTENDED CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_BACKGROUND_TASKS MEMO_SHEEP_BIN
-unset ASK_LISTEN_PAUSE
+      DISPATCH_REPO CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_BACKGROUND_TASKS MEMO_SHEEP_BIN
+unset ASK_LISTEN_PAUSE AUTOFINISH_CALLER_UNATTENDED   # unattended_caller() reads it too
+# every DISPATCH_* the run that runs this suite carries, by pattern (AGENTS.md: a fixed list goes stale):
+# DISPATCH_DEPTH makes a relay a dispatched run's, DISPATCH_MODE flips the git road (round 3)
+for v in $(compgen -e | grep '^DISPATCH_'); do unset "$v"; done
 unset SKIPPER_GEN SKIPPER_SCOPE SKIPPER_ACCOUNT HELM_HOLD_EVERY HELM_HOLD_PARENT   # the lease's inputs (S4)
 export SPACESHEEP_KEY="" CLAUDE_CODE_SESSION_ID=run-1 ASK_NO_PR=1
 # the account's plan (the core's sheep_plan): Pro, as every case before plans were read assumed; never
@@ -86,6 +89,28 @@ sleep 0 & DEAD=$!; wait $DEAD
 # HOME; an alias with no folder is unreachable. The fixture names buildbox:buildbox-ssh, so no case may
 # reach a real Mac.
 mkdir -p "$T/peers"
+# hail's stand-in for every case (runs-exit-when-done): the relay's wake and the poll's hail of a skipper
+# log their argv here and never reach a session; a case that wants another stub sets ASK_HAIL itself. It
+# refuses what the real hail refuses (AGENTS.md: a stub that takes any argument hides the tool's refusal):
+# its parse_about pattern, a text over TEXT_MAX or one carrying an answer, a missing target or --kind
+cat > "$T/hail-log" <<'EOF'
+#!/usr/bin/env python3
+import os, re, sys
+av = sys.argv[1:]
+opt = {av[i][2:]: av[i + 1] for i in range(1, len(av) - 1) if av[i].startswith("--")}
+ans = re.compile(r"➤\s*Answer|Relayed from .*\): ", re.I)
+about = opt.get("about")
+if about is not None and (not re.match(r"^([^:\s]+):([^:\s]+):([^#\s]+)(?:#(D\d+))?$", about) or len(about) > 300 or ans.search(about)):
+    sys.exit("hail: --about is REPO:BRANCH:DOC[#Dn] (got %r)" % about)
+text = opt.get("text") or ""
+if not av or av[0].startswith("-") or opt.get("kind") not in ("event", "report", "ask") or not text.strip() \
+        or len(text) > 400 or ans.search(text) or opt.get("when") not in (None, "idle", "now"):
+    print("hail: refused — %r" % av, file=sys.stderr); sys.exit(2)
+open(os.environ["HAIL_LOG"], "a").write(" ".join(av) + "\n")
+print(("queued via file → " if os.environ.get("HAIL_STUB") == "file" else "delivered via socket → ") + av[0])
+EOF
+export HAIL_LOG="$T/hails.log"
+chmod +x "$T/hail-log"; export ASK_HAIL="$T/hail-log"
 cat > "$T/ssh" <<EOF
 #!/bin/sh
 while [ "\$1" = "-o" ]; do shift 2; done
@@ -229,7 +254,23 @@ live mgr-1 coding-7
 out=$(env "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "backend: sendmessage · verdict: live" "the local road is taken when Talk has no address"
 has "$out" "RELAYED TO coding-7 — D1" "the RELAYED line names the skipper"
-has "$out" "start \`bin/ask listen\` as a background shell" "background allowed: the listen step is printed"
+has "$out" "start \`bin/ask listen\` as a background shell" "a typed session, background allowed: the listen step is printed"
+hasnt "$out" " --branch " "  …and its reply carries no --branch: its answer comes back to it, never to a dispatched run beside it (round 1)"
+out=$(env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
+hasnt "$out" "bin/ask listen" "runs-exit-when-done: a dispatched run gets no listen step even with background allowed — it ends a minute after its RELAYED line"
+has "$out" "this run then ends, and a fresh run of the branch takes the answer" "  …and the relay says what takes the answer instead"
+has "$out" " --branch claude/laptop/2026-10-10-demo --repo repo" "  the reply carries the branch and repo a fresh run takes the answer on"
+out=$(env REGATTA_UNATTENDED=dispatch DISPATCH_DEPTH=2 "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" " --branch claude/laptop/2026-10-10-demo" "  REGATTA_UNATTENDED, the marker's other name, reads the same"
+out=$(env CLAUDE_UNATTENDED=dispatch "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
+hasnt "$out" " --branch " "  the marker without dispatch's DISPATCH_DEPTH (an Orca or Codex worker, no dispatch-rc watches it): no --branch (round 2)"
+out=$(env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=2 PLAN_HARNESS=codex "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
+hasnt "$out" " --branch " "  a Codex child of a dispatched run (its DISPATCH_DEPTH counted up, PLAN_HARNESS=codex): no --branch (the finish review)"
+git checkout -q --detach
+out=$(env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
+hasnt "$out" " --branch " "  off a claude/* branch: no --branch, which dispatch would refuse (round 1)"
+has "$out" "this run then ends, and the answer comes as a commit" "  …the answer comes as a commit"
+git checkout -q claude/laptop/2026-10-10-demo
 out=$(env CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 "$E_SKIP"=mgr-1 "$B/ask" relay docs/demo-2026-10-10.md D1)
 hasnt "$out" "bin/ask listen" "finding 3: background tasks off — no listen step"
 has "$out" "RELAYED TO coding-7 — D1" "  …still the RELAYED line"
@@ -250,6 +291,9 @@ out=$(env "$E_SKIP"=mgr-1 "$E_SKIP_ACCOUNT"=claude-a ASK_ACCOUNT=claude-w "$B/as
 has "$out" "sendmessage: skipped — a different login" "no road across accounts"
 has "$out" "backend: file · verdict: queued" "the file queue takes it on this Mac"
 check "$("$B/ask" queue --session mgr-1 | grep -c '^..:.. ASK ')" "1" "the queue holds one ASK line"
+check "$(tail -1 "$T/hails.log")" "mgr-1 --kind ask --when idle --text a relayed ask from run run-1 waits in your ask queue: read it with bin/ask queue, then answer it with the reply line it carries --about repo:claude/laptop/2026-10-10-demo:docs/demo-2026-10-10.md#D1" \
+  "  runs-exit-when-done: the file road hails the skipper too, when it idles, so it gets a turn (no --host: it is on this Mac)"
+has "$out" "wake: delivered via socket → mgr-1" "  …and says what the hail did"
 "$B/ask" queue --session mgr-1 --clear > /dev/null; check "$("$B/ask" queue --session mgr-1 | wc -l | tr -d ' ')" "0" "--clear empties it"
 
 echo "relay: the skipper on another Mac and no key → unreachable, never silence"
@@ -264,21 +308,31 @@ has "$out" "file: skipped — the skipper is not on this Mac (ssh buildbox-ssh: 
 echo "peer-manager-relay: a skipper live on a peer is judged by its registry there, over the ssh wharf-runs/ssh names"
 PH="$T/peers/buildbox-ssh"; mkdir -p "$PH/.claude/sessions"
 printf '{"pid": %d, "sessionId": "far-1", "name": "coding-far", "status": "idle", "cwd": "/a", "updatedAt": 2}' $$ > "$PH/.claude/sessions/far-1.json"
-echo "  …a run with no page of its own: the skipper could hear it and never answer, so it parks (finish review)"
+echo "  …a run with no page of its own and no branch (a detached HEAD): the skipper could hear it and never answer, so it parks (finish review)"
+git checkout -q --detach
 out=$(env "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "verdict: unreachable · the skipper is live on buildbox, but this run has no page of its own" "  unreachable, said why"
 has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and the run ends on the WAITING line"
 check "$(ls "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl" 2>/dev/null | wc -l | tr -d ' ')" "0" "  …nothing queued there"
-echo "  …a run with its own page (a keel pin): relayed, and the answer comes back over Talk"
+git checkout -q claude/laptop/2026-10-10-demo
+echo "  …a dispatched run on its branch (runs-exit-when-done): relayed — the skipper's answer starts a fresh run of the branch, so no page is needed"
+out=$(env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
+has "$out" "backend: file · verdict: queued · file: $PH/Library/Logs/claude-weekly/asks/far-1.jsonl on buildbox" "  the file road writes the skipper's own queue on its Mac"
+has "$out" "RELAYED TO coding-far — D1" "  …and the run ends on the RELAYED line"
+hasnt "$out" " --space " "  no --space: the run will not be there to hear an answer on a page"
+has "$out" " --branch claude/laptop/2026-10-10-demo --repo repo" "  the branch instead, for the resume"
+has "$(tail -1 "$T/hails.log")" "far-1 --kind ask --when idle" "  the skipper is hailed…"
+has "$(tail -1 "$T/hails.log")" " --host buildbox" "  …on its own host"
+echo "  …a typed session with its own page (a keel pin): relayed, and the answer comes back over Talk"
 mkdir -p "$T/ms"; printf '{"repo@claude/laptop/2026-10-10-demo:docs/demo-2026-10-10.md": {"space": "space-own"}}' > "$T/ms/sheep.json"
 out=$(env MEMO_SHEEP_STATE="$T/ms" "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "talk: skipped — no plan space" "no plan page: Talk has no address (board-cleanup's D2, 2026-10-26)"
-has "$out" " --space space-own" "  the reply sends to the run's own page"
+has "$out" " --space space-own" "  the reply sends to its own page (no dispatch-rc ends a typed session)"
 has "$out" "backend: file · verdict: queued · file: $PH/Library/Logs/claude-weekly/asks/far-1.jsonl on buildbox" \
   "  relayed, not parked: the file road writes the skipper's own queue on its Mac"
 has "$out" "RELAYED TO coding-far — D1" "  the RELAYED line names it by its registry name there"
 has "$out" " --send-only" "  its reply sends without reading the doc, which is not on its Mac"
-check "$(grep -c 'ASK repo D1 ' "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "1" "  the queue there holds the ASK line"
+check "$(grep -c 'ASK repo D1 ' "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "2" "  the queue there holds the two ASK lines"
 check "$(ls "$T/q"/far-1.jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" "  …and nothing waits in this Mac's queue"
 check "$(python3 -c "import json; print(json.load(open('.git/claude/ask.json'))['verdict'])")" "queued" "  ask.json says queued, which the Stop hook reads as relayed"
 echo "  the same skipper gone there: parked for the owner, as a gone skipper here is"
@@ -296,7 +350,7 @@ printf '{"pid": %d, "sessionId": "far-1", "name": "coding-orca", "status": "idle
 out=$(env MEMO_SHEEP_STATE="$T/ms" "$E_SKIP"=far-1 "$E_SKIP_HOST"=buildbox "$B/ask" relay docs/demo-2026-10-10.md D1)
 has "$out" "RELAYED TO coding-orca — D1" "  the Orca profile's record names it"
 rm -rf "$PH/Library/Application Support" "$T/ms"
-check "$(grep -c . "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "2" "  …the dead and missing cases queued nothing more there (the two lines are the two live relays)"
+check "$(grep -c . "$PH/Library/Logs/claude-weekly/asks/far-1.jsonl")" "3" "  …the dead and missing cases queued nothing more there (the three lines are the three live relays)"
 echo "  the listen reminder's read: a peer's live runs that relay over Talk (asklib.peer_runs, keel's Stop hook)"
 PR="$PH/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$PR"
 printf '{"manager": "far-1", "topic": "build", "plan_space": "sp", "pid": %d}' $$ > "$PR/a.json"
@@ -1323,6 +1377,342 @@ check "$(python3 -c "import json; print(sorted(k.split(':')[1].split('/')[-1] fo
   "  seen.json keeps every row's key in its old form"
 out=$(PLAN_NO_GH=1 ASK_CACHE_DIR="$BC/cache" PLAN_CACHE_DIR="$BC/plancache" "$B/ask" poll --repos "$BR" "$TW")
 has "$out" "ask poll: 6 open" "GitHub unread (PLAN_NO_GH): every branch is scanned as before, the fixture and template still skipped"
+
+echo "runs-exit-when-done (2026-10-31): a run ends at its RELAYED line, so the ask reaches its skipper and the answer a fresh run"
+check "$(env -u PLAN_HOST -u DISPATCH_HOST ASK_SCUTIL="$T/no-scutil" python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.this_host())")" \
+  "$(python3 -c "import re, socket; print(re.sub(r'[^a-z0-9-]', '-', socket.gethostname().split('.')[0].lower()).strip('-'))")" \
+  "this_host off macOS (no scutil): the kernel's short name, as dispatch's local_host() — it read None, so a node's relay called its laptop skipper gone"
+check "$(env -u PLAN_HOST -u DISPATCH_HOST ASK_SCUTIL="$T/no-scutil" python3 -c "import sys; sys.path.insert(0, '$B'); import asklib; print(asklib.elsewhere({'manager_host': 'farmac-x'}))")" "True" \
+  "  …so a skipper on another host reads as elsewhere there"
+X="$T/exit"; git init -q --bare "$X.git"; git init -q -b main "$X"; mkdir -p "$X/docs"
+echo "# exit" > "$X/README.md"; git -C "$X" add -A; git -C "$X" commit -qm init
+git -C "$X" remote add origin "$X.git"; git -C "$X" push -q origin main 2>/dev/null
+XB=claude/laptop/2026-10-31-exit
+git -C "$X" checkout -q -b "$XB"
+printf '# Exit\n\n## Decisions\n\n- **D1 — Where the loop goes on**\n  - A — a Mac\n  - B — here\n\n  Reversible: yes\n\n  ➤ Recommended: A\n\n  ➤ Answer:\n\n' > "$X/docs/exit-2026-10-31.md"
+git -C "$X" add -A; git -C "$X" commit -qm "the D-item"
+mkdir -p "$T/xc"
+xpoll() { ASK_CACHE_DIR="$T/xc" PLAN_NO_GH=1 ASK_OSASCRIPT=/usr/bin/true SURFACES_HOST=laptop "$B/ask" poll --repos "$X"; }
+xpoll > /dev/null   # the first poll seeds: nothing on origin's claude/* yet
+echo "  no git road where the skipper may not take the answer, or nothing resumes (round 1)"
+out=$(cd "$X" && env "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+hasnt "$out" "backend: git" "  a typed session: no git road (its answer comes back to it)"
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 DISPATCH_MODE=ask "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+hasnt "$out" "backend: git" "  mode ask: no git road — the trailers carry no mode, so the skipper's host could not refuse the answer"
+GX="$T/gx/transcripts"; mkdir -p "$GX/docs"; git init -q --bare "$T/gx/t.git"; git init -q -b "$XB" "$GX"
+cp "$X/docs/exit-2026-10-31.md" "$GX/docs/"; git -C "$GX" add -A; git -C "$GX" commit -qm d; git -C "$GX" remote add origin "$T/gx/t.git"
+out=$(cd "$GX" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+hasnt "$out" "backend: git" "  a guarded repo: no git road — the poll never scans its branches, so nobody would be hailed"
+mv "$T/config/regatta/guarded" "$T/guarded.aside"
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+mv "$T/guarded.aside" "$T/config/regatta/guarded"
+has "$out" "backend: git" "  a host with no regatta/guarded (the node): the git road still runs (round 5: guard_unread turned it off)"
+has "$out" "an ask in a guarded session" "  …while the title still fails closed there"
+xtip=$(git -C "$X" rev-parse HEAD)
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 GIT_COMMITTER_NAME= GIT_AUTHOR_NAME= "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 2>&1); rc=$?
+check "$rc" "0" "  a git that fails on the road (no identity): the relay still ends well…"
+has "$out" "git: skipped" "  …says the road was skipped"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …and parks on the WAITING line, never an exit with no line to end on"
+check "$(git -C "$X" rev-parse HEAD)" "$xtip" "  …the branch unmoved"
+X2="$T/gx2/exit"; mkdir -p "$X2/docs"; git init -q -b "$XB" "$X2"; cp "$X/docs/exit-2026-10-31.md" "$X2/docs/"
+git -C "$X2" add -A; git -C "$X2" commit -qm d; git -C "$X2" remote add origin "$T/gx2/nowhere.git"
+out=$(cd "$X2" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1 2>&1)
+has "$out" "not pushed" "  a push that fails: no poll can see the ask (round 3)…"
+has "$out" "SAM, THIS SESSION IS WAITING FOR YOU" "  …so the run parks on the WAITING line, not RELAYED"
+echo "  the git road: a skipper on another host no backend reaches (no ssh alias, no key) is asked by a commit on the branch"
+echo "staged" > "$X/staged.txt"; git -C "$X" add staged.txt
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 DISPATCH_MODE=dnd DISPATCH_NEEDS=macos "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x "$B/ask" relay docs/exit-2026-10-31.md D1)
+has "$out" "backend: git · verdict: queued" "  queued by git, not parked: the node's three asks of 2026-10-31 reached nobody"
+has "$out" "RELAYED TO" "  …and the run ends on the RELAYED line"
+has "$out" "on $XB, pushed" "  the commit is pushed at once"
+check "$(git -C "$X.git" log -1 --format='%(trailers:key=Ask,valueonly)|%(trailers:key=Ask-Skipper,valueonly)' "$XB" | tr -d '\n')" \
+  "docs/exit-2026-10-31.md#D1|docs/exit-2026-10-31.md#D1 sk-far" "  origin's branch tip names the item and the skipper in its trailers"
+check "$(git -C "$X.git" log -1 --format='%(trailers:key=Ask-Resume,valueonly)' "$XB" | tr -d '\n')" "docs/exit-2026-10-31.md#D1 --mode dnd --needs macos" \
+  "  …and the run's mode and needs in its own trailer (round 6)"
+check "$(git -C "$X" rev-parse HEAD^ HEAD^{tree} | tr '\n' ' ')" "$xtip $(git -C "$X" rev-parse "$xtip^{tree}") " "  an empty commit on the old tip: the tree unchanged"
+check "$(git -C "$X" diff --cached --name-only)" "staged.txt" "  what the session had staged stays staged, out of the commit"
+git -C "$X" reset -q staged.txt; rm -f "$X/staged.txt"
+echo "  the skipper's host polls the branch and hails a skipper live there, in place of the owner's banner"
+live sk-far coding-far
+: > "$T/hails.log"
+out=$(xpoll)
+has "$out" "hailed skipper sk-far for exit D1 ($XB)" "  the poll hails the skipper the trailer names"
+hasnt "$out" "banner:" "  …and rings no banner for it"
+has "$(cat "$T/hails.log")" "sk-far --kind ask --when idle --text answer with: bin/ask answer docs/exit-2026-10-31.md D1" "  --when idle: an idle skipper gets the turn at once, a busy one when it idles; the command first"
+has "$(cat "$T/hails.log")" "--send-only --branch $XB --repo exit" "  the hail names --send-only (never a file of that path here: round 2) and the --branch, so the answer resumes the branch"
+has "$(cat "$T/hails.log")" "--branch $XB --repo exit --mode dnd --needs macos" "  …with the run's mode and needs, so the fresh run keeps them (round 6)"
+has "$(cat "$T/hails.log")" "--about exit:$XB:docs/exit-2026-10-31.md#D1" "  …and points at the item"
+out=$(xpoll)
+hasnt "$out" "hailed skipper" "  the next poll hails it no more"
+printf '["exit:%s:docs/exit-2026-10-31.md#D1"]' "$XB" > "$T/xc/seen.json"; : > "$T/hails.log"
+out=$(xpoll)
+has "$out" "hailed skipper sk-far for exit D1" "  an item seen before its trailer came (a pushed turn, a re-relay): hailed all the same (round 1)"
+hasnt "$out" "banner:" "  …and no banner: it was rung before"
+echo '[]' > "$T/xc/seen.json"; rm -f "$T/sess/sk-far.json"
+out=$(xpoll)
+has "$out" "banner: exit D1 — Where the loop goes on" "  a skipper not live here: the owner's banner, as before"
+echo '[]' > "$T/xc/seen.json"; live sk-far coding-far
+out=$(ASK_HAIL="$T/hailbad" xpoll)
+has "$out" "banner: exit D1" "  a hail that does not take: the banner rings"
+has "$out" "not hailed: skipper sk-far" "  …and says hail refused it"
+out=$(ASK_HAIL="$T/hailbad" xpoll)
+hasnt "$out" "not hailed" "  …recorded: the next poll spends no hail on it again (round 4)"
+echo '[]' > "$T/xc/seen.json"
+out=$(HAIL_STUB=file xpoll)
+has "$out" "skipper sk-far for exit D1" "  a hail that took only hail's file road…"
+has "$out" "banner: exit D1" "  …rings the banner too: the file wakes nobody (round 2)"
+out=$(HAIL_STUB=file xpoll)
+hasnt "$out" "skipper sk-far" "  …and is not sent again"
+rm -f "$T/sess/sk-far.json"
+echo "  the resume: nothing listens at the run any more, so the answer starts a fresh run of its branch"
+# dispatch's stand-in: it refuses what the real one refuses on this road (AGENTS.md's stub trap) — no claude/*
+# branch, no --repo folder, no --note, --replace from an unattended caller — and DISPATCH_STUB picks its answer:
+# queued (default), busy (the branch's entry runs elsewhere: its real line, until --replace; claimed-there the same
+# for an entry claimed there), claimed (this
+# host's job holds the step: exit 0, nothing queued), refused (exit 1)
+cat > "$T/dispatch-log" <<'EOF'
+#!/usr/bin/env python3
+import json, os, sys
+av = sys.argv[1:]
+open(os.environ["DISPATCH_LOG"], "a").write(json.dumps(av, ensure_ascii=False) + "\n")
+open(os.environ["DISPATCH_LOG"] + ".ship", "a").write("%s|%s\n" % (os.environ.get("DISPATCH_SHIP", ""), os.environ.get("DISPATCH_PLAN", "")))
+opt = {av[i]: av[i + 1] for i in range(1, len(av) - 1) if av[i] in ("--repo", "--note")}
+if not av or not av[0].startswith("claude/"):
+    sys.exit("dispatch: %r is no claude/* branch" % (av[:1],))
+if not os.path.isdir(opt.get("--repo") or "/nonexistent") or not (opt.get("--note") or "").strip():
+    sys.exit("dispatch: --repo DIR and --note TEXT")
+rep = "--replace" in av
+if rep and (os.environ.get("REGATTA_UNATTENDED") or os.environ.get("CLAUDE_UNATTENDED")):
+    print("dispatch: --replace takes over another run's step, and an unattended caller is refused it", file=sys.stderr); sys.exit(2)
+mode = os.environ.get("DISPATCH_STUB", "queued")
+if mode == "raise" and "--mode" in av:
+    print("dispatch: mode dnd over default is a raise, and only the owner raises a mode (an unattended caller)", file=sys.stderr); sys.exit(2)
+if mode == "busy" and not rep:
+    print("dispatch: %s is running on node-x (queue entry q1) — one branch, one host: end with the WAITING line — the next step waits for a run to end (that one; dispatch --end it there)" % av[0], file=sys.stderr); sys.exit(2)
+if mode == "claimed-there" and not rep:
+    print("dispatch: %s is claimed on node-x (queue entry q1) — one branch, one host: end with the WAITING line — the next step waits for a run to end (that one; dispatch %s --cancel there boots its job out)" % (av[0], av[0]), file=sys.stderr); sys.exit(2)
+if mode == "claimed":
+    print("%s is claimed here already (queue entry q1): its job runs the step, nothing queued again (dispatch --queue)" % av[0]); sys.exit(0)
+if mode == "refused":
+    print("FAILED: the queue refused it"); sys.exit(1)
+print("queued as fleet:exit--exit (normal)%s" % (" behind the run on node-x" if rep else ""))
+EOF
+chmod +x "$T/dispatch-log"; export DISPATCH_LOG="$T/dispatch.calls"
+FARDOC=/srv/far/projects/exit/.claude/worktrees/exit/docs/exit-2026-10-31.md
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A — a Mac" --from coding-far --to run-gone --task exit \
+      --branch "$XB" --repo "$X" --send-only); rc=$?
+check "$rc" "0" "  answered with --branch, nothing listening: exit 0"
+has "$out" "resumed: nothing listens at run-gone" "  …said: a fresh run of the branch takes it"
+check "$(python3 -c "import json; c=json.loads(open('$T/dispatch.calls').read().splitlines()[-1]); print(c[0], c[1], c[2], c[3])")" "$XB --repo $X --note" \
+  "  dispatch BRANCH --repo <this host's clone> --note: the fleet queue's, no host typed"
+has "$(tail -1 "$T/dispatch.calls")" "apply --answer docs/exit-2026-10-31.md D1 'Relayed from coding-far (skipper, $(date +%F)): A — a Mac'" \
+  "  the note carries the answer line for ask apply --answer, the doc's path cut to the repo's (another host's path)"
+hasnt "$(cat "$X/docs/exit-2026-10-31.md")" "Relayed from" "  …and nothing is written here: the branch's own run is the one writer"
+mkdir -p "$X/modules/exit/docs"; cp "$X/docs/exit-2026-10-31.md" "$X/modules/exit/docs/x.md"; git -C "$X" add -A; git -C "$X" commit -qm "a module's doc"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "/srv/far/projects/exit/modules/exit/docs/x.md" D1 "A" --from coding-far --to run-gone \
+      --branch "$XB" --repo "$X" --send-only)
+has "$(tail -1 "$T/dispatch.calls")" "apply --answer modules/exit/docs/x.md D1" \
+  "  a main checkout's path with a module folder named like the repo: cut where the branch holds the rest (round 1), not at the last /exit/"
+out=$(cd "$T" && ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "modules/exit/docs/x.md" D1 "A" --from coding-far --to run-gone \
+      --branch "$XB" --repo "$X" --send-only)
+has "$(tail -1 "$T/dispatch.calls")" "apply --answer modules/exit/docs/x.md D1" \
+  "  a repo-relative path under a folder named like the repo (ask poll's hail): kept whole, never cut at /exit/ (D2-C)"
+check "$(tail -1 "$T/dispatch.calls.ship")" "|" "  an answer with no ship: dispatch gets none"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --task exit --plan ship-x \
+      --branch "$XB" --repo "$X" --send-only)
+check "$(tail -1 "$T/dispatch.calls.ship")" "ship-x|ship-x" \
+  "  a ship's answer (--plan): the fresh run keeps its ship, so its scope skipper and mode (round 5: a plain re-dispatch dropped them)"
+echo "  the run's mode and needs ride the road back (round 6): a plain re-dispatch brought a dnd or yolo run back default"
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 DISPATCH_MODE=dnd DISPATCH_NEEDS=macos "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x \
+      "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+has "$out" "--branch $XB --repo exit --mode dnd --needs macos" "  the relay's reply names the run's mode and its step's --needs beside --branch"
+out=$(cd "$X" && env CLAUDE_UNATTENDED=dispatch DISPATCH_DEPTH=1 DISPATCH_NEEDS='mac;x' "$E_SKIP"=sk-far "$E_SKIP_HOST"=farmac-x \
+      "$B/ask" relay docs/exit-2026-10-31.md D1 --dry-run)
+hasnt "$out" "--needs" "  a needs value of another shape is dropped, never quoted into the line a skipper runs"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" \
+      --send-only --mode dnd --needs macos)
+check "$(tail -1 "$T/dispatch.calls" | python3 -c "import json, sys; c=json.loads(sys.stdin.read()); print('--mode' in c, c[c.index('--needs') + 1])")" "False macos" \
+  "  a mode this host reads no record of is a raise: dropped, the needs kept"
+has "$out" "mode dnd is not what this host reads of the branch (none)" "  …said"
+ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only --mode ask > /dev/null
+check "$(tail -1 "$T/dispatch.calls" | python3 -c "import json, sys; c=json.loads(sys.stdin.read()); print(c[c.index('--mode') + 1])")" "ask" \
+  "  a lowering (mode ask) always goes: a resumed ask run never lands by itself"
+RR6="$T/home/Library/Logs/claude-weekly/run-seed-runs"   # the suite's HOME (exported above): helmlib.runs_dir()
+mkdir -p "$RR6"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "dnd", "topic": "exit", "started": 1}\n' "$XB" "$X" > "$RR6/r6-mode.json"
+out=$(DISPATCH_STUB=raise ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" \
+      --send-only --mode dnd 2>&1); rc=$?
+check "$rc/$(tail -2 "$T/dispatch.calls" | python3 -c "import json, sys; print(['--mode' in json.loads(l) for l in sys.stdin])")" "0/[True, False]" \
+  "  the run's record here reads dnd: passed on; dispatch refusing it as a raise, the answer still goes without it"
+has "$out" "dispatch refused mode dnd as a raise here" "  …said"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "default", "topic": "exit", "started": 1}\n' "$XB" "$X" > "$RR6/r6-mode.json"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only --mode ask)
+hasnt "$(tail -1 "$T/dispatch.calls")" '"--mode"' \
+  "  a reply's ask where this host reads default (a newer word): not passed, so dispatch never writes the older over it (round 7)"
+mv "$RR6/r6-mode.json" "$T/r6-mode.json"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "dnd", "topic": "exit", "started": 1}\n' "$XB" "$GX" > "$RR6/r7-guarded.json"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$GX/docs/exit-2026-10-31.md" D1 "B" --from coding-far --to run-gone --branch "$XB" --repo "$GX" --mode dnd)
+rm -f "$GX/.git/claude/pending-answers.jsonl"; mv "$RR6/r7-guarded.json" "$T/r7-guarded.json"
+check "$(tail -1 "$T/dispatch.calls" | python3 -c "import json, sys; c=json.loads(sys.stdin.read()); print('--pin' in c, '--mode' in c)")" "True False" \
+  "  the guarded road, pinned here: no dnd or yolo named — a disarmed host never claims such an entry, its fire time reads the mode anyway (round 7)"
+has "$out" "not named on a step pinned here" "  …said"
+check "$(python3 - "$B" <<'PY'
+import sys
+sys.dont_write_bytecode = True
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_r7", sys.argv[1] + "/ask").load_module()
+d = ask._dispatch_rc()
+if d is not None:
+    d.last_answer = lambda sid: "SAM, THIS SESSION IS WAITING FOR YOU — D3"
+    d.used_again = lambda st: False
+print(ask.said_its_end("typed-sid-r7"))
+PY
+)" "False" "  a session no run record here names (a typed one holding the worktree, on its WAITING line): never read as ended (round 7)"
+live sk-far coding-far; : > "$T/hails.log"
+python3 - "$B" <<'PY'
+import sys
+sys.dont_write_bytecode = True
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_r7h", sys.argv[1] + "/ask").load_module()
+ask.poll_hail({"skipper": "sk-far", "rel": "docs/$(id).md", "item": "D1", "branch": "claude/x;echo${IFS}hi", "repo": "exit"})
+PY
+has "$(tail -1 "$T/hails.log")" "--branch 'claude/x;echo\${IFS}hi' --repo exit" \
+  "  the hail's command quotes the branch a pusher named (a ref may hold ; and \$): never a payload in the line the skipper runs (round 7)"
+has "$(tail -1 "$T/hails.log")" "answer 'docs/\$(id).md' D1" "  …and the doc's path"
+mv "$T/config/regatta/guarded" "$T/guarded.aside"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+mv "$T/guarded.aside" "$T/config/regatta/guarded"
+check "$rc" "0" "  a host with no regatta/guarded (the node): --send-only --branch still resumes (round 6: guard_unread read every repo as guarded)"
+has "$out" "resumed: nothing listens at run-gone" "  …said"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only --dry-run)
+has "$out" "would resume: nothing listens at run-gone" "  --dry-run says what it would dispatch"
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$n0" "  …and dispatches nothing"
+echo "  the asker still runs elsewhere, building on after its relay: the queue refuses a second run of the branch (round 1)"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(DISPATCH_STUB=busy ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "0" "  an attended skipper: handed on"
+check "$(tail -2 "$T/dispatch.calls" | python3 -c "import json, sys; print(['--replace' in json.loads(l) for l in sys.stdin])")" "[False, True]" \
+  "  …asked again with --replace, which queues it behind the run still going"
+has "$out" "behind the run on node-x" "  …said"
+out=$(CLAUDE_UNATTENDED=skipper DISPATCH_STUB=busy ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "1" "  an unattended skipper, the doc on another host: dispatch refuses it --replace, exit 1"
+has "$out" "answer again once the branch's run has ended" "  …said what to do, never silent"
+out=$(DISPATCH_STUB=claimed ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "1" "  \"claimed here already\" exits 0 but queues nothing and drops the note: not handed on (round 1)"
+hasnt "$out" "resumed:" "  …and never said resumed"
+out=$(DISPATCH_STUB=refused ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "1" "  a dispatch that is refused: exit 1"
+has "$out" "the answer is not handed on" "  …said, so the skipper answers again"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo no-such-repo-x --send-only 2>&1); rc=$?
+check "$rc" "1" "  no clone of the repo on this host: refused, never silent"
+echo "  the asker live on this host"
+# its run record, as a live dispatched asker always has here (round 7: with none, nothing reads it as ending)
+# and its registry record where dispatch-rc reads it (the run's config dir, by pid): the live record below
+mkdir -p "$T/cfg-live/sessions"; ln -sf "$T/sess/run-live.json" "$T/cfg-live/sessions/$$.json"
+printf '{"session": "run-live", "pid": %d, "config_dir": "%s", "branch": "%s", "repo": "%s", "topic": "exit", "started": %d}\n' \
+  "$$" "$T/cfg-live" "$XB" "$X" "$(date +%s)" > "$RR6/r7-live.json"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+live run-live coding-live; sed -i.bak 's/"status": "idle"/"status": "busy"/' "$T/sess/run-live.json" && rm -f "$T/sess/run-live.json.bak"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "sent back: backend sendmessage" "  busy: the answer goes to it, as before"
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$n0" "  …and no fresh run is started beside it"
+live run-live coding-live
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "sent back: backend sendmessage" \
+  "  idle, its transcript not here: dispatch-rc cannot tell either and keeps it the hour, so SendMessage wakes it (round 3: the one rule)"
+TP="$T/home/.claude/projects/x"; mkdir -p "$TP"; printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Still reading the brief."}]}}\n' > "$TP/run-live.jsonl"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "sent back: backend sendmessage" "  idle on another reply (dispatch-rc keeps it the hour): SendMessage wakes it (round 2)"
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$n0" "  …and no fresh run"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"RELAYED TO coding-far — D1, where"}]}}\n' >> "$TP/run-live.jsonl"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "resumed: nothing listens at run-live (sendmessage, but the run is on its closing line" "  idle on its RELAYED line: the fresh run"
+printf '{"type":"user","origin":{"kind":"human"},"message":{"content":"go"}}\n{"type":"user","origin":{"kind":"human"},"message":{"content":"and the second host?"}}\n' >> "$TP/run-live.jsonl"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"RELAYED TO coding-far — D1, where"}]}}\n' >> "$TP/run-live.jsonl"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "sent back: backend sendmessage" "  …but a person typed into it: dispatch-rc keeps it the hour, so SendMessage (round 3)"
+sed -i.bak 's/"status": "idle"/"status": "busy"/' "$T/sess/run-live.json" && rm -f "$T/sess/run-live.json.bak"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(ASK_ACCOUNT=claude-w ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D1 "A" --from coding-far --to run-live --to-account claude-a --branch "$XB" --repo "$X" --send-only)
+has "$out" "resumed: nothing listens at run-live" "  busy, but on another login no road reaches: a fresh run behind it, not a row nothing applies (round 2)"
+rm -f "$T/sess/run-live.json" "$TP/run-live.jsonl"; mv "$RR6/r7-live.json" "$T/r7-live.json"
+echo "  a second answer while the first's run is still queued: its note carries both (round 2: the put replaces the entry and its note)"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D2 "B" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only)
+has "$(tail -1 "$T/dispatch.calls")" "apply --answer docs/exit-2026-10-31.md D1 " "  the earlier D1…"
+has "$(tail -1 "$T/dispatch.calls")" "apply --answer docs/exit-2026-10-31.md D2 'Relayed from coding-far (skipper, $(date +%F)): B'" "  …and the new D2"
+out=$(DISPATCH_STUB=claimed-there ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D2 "B" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "0" "  the entry claimed on another host: asked again with --replace too (round 2)"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+long3=$(python3 -c "print('y' * 3000)")
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D3 "$long3" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc $(wc -l < "$T/dispatch.calls" | tr -d ' ')" "1 $n0" \
+  "  a third answer that fits alone but not with the earlier ones: refused, never a note that drops them while their entry waits (round 4)"
+has "$out" "earlier answer(s) of this branch it carries" "  …said"
+echo "  the doc on this host"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+mkdir -p "$X/.git/claude"; printf '{"session": "run-hold", "seen": %d}' "$(date +%s)" > "$X/.git/claude/owner.json"
+live run-hold coding-hold; sed -i.bak 's/"status": "idle"/"status": "busy"/' "$T/sess/run-hold.json" && rm -f "$T/sess/run-hold.json.bak"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$X/docs/exit-2026-10-31.md" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X")
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$n0" \
+  "  a typed session (no run record) holds the doc's worktree: no fresh run beside it, nothing queues behind it (the finish review)"
+has "$out" "is held by session run-hold" "  …the answer waits for it…"
+has "$(cat "$X/.git/claude/pending-answers.jsonl")" "Relayed from coding-far" "  …as a pending row, which ask_guard shows it at its next prompt"
+rm -f "$X/.git/claude/pending-answers.jsonl"
+printf '{"session": "run-hold", "pid": %d, "branch": "%s", "repo": "%s", "topic": "exit", "started": %d}\n' \
+  "$$" "$XB" "$X" "$(date +%s)" > "$RR6/r8-hold.json"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$X/docs/exit-2026-10-31.md" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X")
+has "$out" "resumed: nothing listens at run-gone" "  a busy dispatched run holds it (its run record here) and no road reaches it: a fresh run, queued behind it (round 2)"
+mv "$RR6/r8-hold.json" "$T/r8-hold.json"
+rm -f "$T/sess/run-hold.json" "$X/.git/claude/owner.json" "$X/.git/claude/pending-answers.jsonl"
+echo "  a checkout of the doc on another branch (the skipper's main checkout): never read, never written (round 2)"
+XM="$T/xm"; git clone -q "$X.git" "$XM" 2>/dev/null; git -C "$XM" checkout -q main; mkdir -p "$XM/docs"; cp "$X/docs/exit-2026-10-31.md" "$XM/docs/"
+git -C "$XM" add -A; git -C "$XM" commit -qm "the doc on main"; xm0=$(git -C "$XM" rev-parse HEAD)
+out=$(DISPATCH_STUB=refused ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$XM/docs/exit-2026-10-31.md" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" 2>&1); rc=$?
+check "$rc" "1" "  the fresh run refused: exit 1, as for a doc elsewhere"
+check "$(git -C "$XM" rev-parse HEAD) $(ls "$XM/.git/claude/pending-answers.jsonl" 2>/dev/null | wc -l | tr -d ' ')" "$xm0 0" "  …nothing committed onto main, no row in main's git dir"
+hasnt "$(cat "$XM/docs/exit-2026-10-31.md")" "Relayed from" "  …the doc there untouched"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$XM/docs/exit-2026-10-31.md" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --force 2>&1); rc=$?
+check "$rc $(git -C "$XM" rev-parse HEAD)" "1 $xm0" "  --force (no fresh run) with the doc here on main: refused, never written onto main (round 4's second review)"
+has "$out" "is on another branch than" "  …said"
+out=$(DISPATCH_STUB=refused ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$X/docs/exit-2026-10-31.md" D1 "A" --from coding-far --to run-gone --branch "$XB" --repo "$X" --no-commit 2>&1); rc=$?
+check "$rc" "0" "  the fresh run refused, the doc here: kept, not lost (round 1)"
+has "$out" "the answer is kept where the doc is" "  …said"
+has "$out" "answered D1" "  …by the roads it always had: here, written"
+git -C "$X" checkout -q -- docs/exit-2026-10-31.md; rm -f "$X/.git/claude/pending-answers.jsonl"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$X/docs/exit-2026-10-31.md" D1 "A — a Mac" --from coding-far --to run-gone --branch "$XB" --repo "$X")
+has "$out" "resumed: nothing listens at run-gone" "  handed on with the doc here…"
+check "$(ls "$X/.git/claude/pending-answers.jsonl" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "  …by its note alone: a row here would pin the later steps of the branch here, its run elsewhere (round 3)"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$X/docs/exit-2026-10-31.md" D1 "B" --from coding-far --to run-gone --branch "$XB" --repo "$X" --force --no-commit)
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$n0" "  --force: no fresh run, whose apply would drop an overwrite (round 3)…"
+has "$out" "answered D1" "  …written here"
+git -C "$X" checkout -q -- docs/exit-2026-10-31.md
+echo "  the note past the queue's cap: refused, never a one-shot that loses it (round 3)"
+long=$(python3 -c "print('x' * 3900)")
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$FARDOC" D3 "$long" --from coding-far --to run-gone --branch "$XB" --repo "$X" --send-only 2>&1); rc=$?
+check "$rc" "1" "  exit 1"
+has "$out" "too long for a dispatch note" "  …said"
+echo "  a guarded repo: resumed only where the doc is, pinned here, its answer a pending row and never in the note (round 3)"
+n0=$(wc -l < "$T/dispatch.calls" | tr -d ' ')
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$GX/docs/exit-2026-10-31.md" D1 "pay from the savings account" --from coding-far --to run-gone --branch "$XB" --repo "$GX")
+has "$out" "a pending row here, pinned here" "  resumed"
+has "$(tail -1 "$T/dispatch.calls")" '"--pin", "here"' "  …pinned here"
+hasnt "$(tail -1 "$T/dispatch.calls")" "savings" "  …the note names no text"
+hasnt "$(tail -1 "$T/dispatch.calls")" "exit-2026" "  …nor the doc's name"
+has "$(cat "$GX/.git/claude/pending-answers.jsonl")" "savings" "  …the worktree holds it"
+rm -f "$GX/.git/claude/pending-answers.jsonl"
+out=$(ASK_DISPATCH="$T/dispatch-log" "$B/ask" answer "$GX/docs/exit-2026-10-31.md" D1 "pay from savings" --from coding-far --to run-gone --branch "$XB" --repo "$GX" --send-only 2>&1); rc=$?
+check "$(wc -l < "$T/dispatch.calls" | tr -d ' ')" "$((n0 + 1))" "  …and never from a doc it may not read (--send-only): no fresh run carries it"
+echo "  the fresh run writes the line its note carries"
+out=$(cd "$X" && "$B/ask" apply --answer docs/exit-2026-10-31.md D1 "Relayed from coding-far (skipper, 2026-10-31): A — a Mac")
+has "$out" "applied docs/exit-2026-10-31.md D1" "  ask apply --answer writes it"
+has "$(cat "$X/docs/exit-2026-10-31.md")" "Relayed from coding-far (skipper, 2026-10-31): A — a Mac" "  …into the item's answer"
+has "$(git -C "$X" log -1 --format=%s)" "Answer: docs/exit-2026-10-31.md D1 relayed from skipper (resumed)" "  …committed"
+out=$(cd "$X" && "$B/ask" apply --answer docs/exit-2026-10-31.md D1 "B — just take it" 2>&1); rc=$?
+check "$rc" "1" "  a line that is no relayed answer: refused"
 
 echo
 [ "$fails" = 0 ] && echo "test_ask ($HELM_NAMES names): all passed" || { echo "test_ask ($HELM_NAMES names): $fails failed"; exit 1; }
