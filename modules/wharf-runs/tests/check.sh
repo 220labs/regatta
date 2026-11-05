@@ -32,6 +32,10 @@ if [ -f "$M/lib/core_path.py" ] && [ -f "$M/../wharf/lib/core_path.py" ]; then
 else
   echo "  --   skipped: no lib/core_path.py here, or no wharf beside it"
 fi
+# check_scope.py reads paths, so it would skip this module's suites on a change to a peer its tools resolve by
+# name (common.tool) and no file spells out: modules/lighthouse (account, hosts), modules/plumb (usage-report,
+# tier_check.py), modules/aurora (scope-pass), modules/atlas (knowledge-commit), modules/helloworld. Named here
+# for the macOS share's scope; test_check.sh holds the list to it.
 # Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
 # Linux launcher, stood in), test_autofinish (made
 # portable and run on ubuntu in the overlay's CI since 2026-10-07), test_builder_coin (written portable, trim S6) and test_kick_socket (the sheep road's socket

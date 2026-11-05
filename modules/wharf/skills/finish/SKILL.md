@@ -254,10 +254,10 @@ session's work sharing the branch — note them; they're reported separately.
    `check` runs the line **scoped** (its header; since 2026-10-23): a module's suite only when this
    branch changed that module or one it uses, said as `SKIP <command> — <why>` lines that DONE does
    not count, and a script that already passed on this exact tree (the build run's check, an earlier
-   try) as `PASSED <when> <command>`, counted as passed. Both are the check passing, not a gap: CI runs
-   the whole line on the pull request and the merge waits for it. `--full --fresh` when the branch
+   try) as `PASSED <when> <command>`, counted as passed. Both are the check passing: the pull request's CI
+   runs the line, its shares scoped by the same rules, the merge waits for it, and main's nightly run is the whole line. `--full --fresh` when the branch
    changed what neither the scope nor the memory can see (a timer, an environment, a peer tool's
-   behaviour: `--full` alone still lets the memory answer); `--full` when the summary's `check: scope —`
+   behaviour, a peer reached by name, not path: `--full` alone still lets the memory answer); `--full` when the summary's `check: scope —`
    line names the wrong modules; `--fresh` after a fix that left the tree unchanged (a file outside
    the checkout).
    **`--unattended`**: the launcher runs with background tasks off and a cap on each Bash call, so

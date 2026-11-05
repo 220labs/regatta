@@ -392,6 +392,96 @@ if [ -f "$ROOT/.github/ci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HE
   commit stray-scope-case.txt
   check "$(bash "$T/sc/.github/ci/share.sh" scope "$at")" "RUN the whole line: stray-scope-case.txt changed, outside modules/" "a change outside modules/: the whole line, RUN"
   check "$(bash "$T/sc/.github/ci/share.sh" scope no-such-base > /dev/null 2>&1; echo $?)" "2" "a base it cannot read: exit 2 (the trigger runs)"
+  echo "the Macs' PR job is scoped: share.sh macos --scoped (free-ci S3)"
+  # A fixture repo: three module suites that each leave a `ran-<name>` file, a on the Linux list, c declaring
+  # nothing, so the macOS share holds b and c. A pull request's checkout is a merge commit: HEAD^1 the base.
+  mk() {   # a fresh fixture in $T/mac, base committed
+    rm -rf "$T/mac"; mkdir -p "$T/mac/.circleci/parts" "$T/mac/.github/workflows" "$T/mac/.github/ci" "$T/mac/modules/wharf-runs/bin"
+    cp "$ROOT/.github/ci/share.sh" "$T/mac/.github/ci/"; printf 'a\n' > "$T/mac/.github/ci/linux-ids"
+    [ ! -f "$ROOT/.circleci/twin-linux.sh" ] || cp "$ROOT/.circleci/twin-linux.sh" "$T/mac/.circleci/"
+    cp "$B/check_scope.py" "$T/mac/modules/wharf-runs/bin/check_scope.py"
+    printf '          id: [a]\n' > "$T/mac/.circleci/parts/check-linux.yml"
+    printf 'jobs:\n  check:\n    steps:\n      - name: check, the macOS share\n        run: bash .github/ci/share.sh macos --scoped\n      - name: check\n        run: |\n          bash modules/a/tests/check.sh && bash modules/b/tests/check.sh && bash modules/c/tests/check.sh\n' \
+      > "$T/mac/.github/workflows/check.yml"
+    for m in a b c; do
+      mkdir -p "$T/mac/modules/$m/tests" "$T/mac/modules/$m/.claude-plugin" "$T/mac/modules/$m/bin"
+      echo '{}' > "$T/mac/modules/$m/.claude-plugin/plugin.json"; echo x > "$T/mac/modules/$m/bin/tool"
+      printf 'touch "$(dirname "$0")/../../../ran-%s"\n' "$m" > "$T/mac/modules/$m/tests/check.sh"
+    done
+    ( cd "$T/mac" && git init -q -b main . && git add -A && git -c user.name=t -c user.email=t@t commit -qm base ) > /dev/null 2>&1
+  }
+  pr() {   # <path…>: a head branch changing each path, merged --no-ff into the base, as GitHub's merge ref
+    ( cd "$T/mac" && git checkout -q -b topic && for f in "$@"; do mkdir -p "$(dirname "$f")"; echo "# y" >> "$f"; done \
+      && git add -A && git -c user.name=t -c user.email=t@t commit -qm head \
+      && git checkout -q main && git -c user.name=t -c user.email=t@t merge -q --no-ff -m pr topic ) > /dev/null 2>&1
+    # a name no root ref can match (`head` is .git/HEAD on a case-insensitive disk); no merge commit would run every case whole
+    [ "$(git -C "$T/mac" rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = 3 ] || { echo "  FAIL the fixture's pull request made no merge commit"; fails=$((fails + 1)); }
+    true
+  }
+  ranof() { ( cd "$T/mac" && ls ran-* 2>/dev/null | sed 's/ran-//' | tr '\n' ' ' | sed 's/ $//' ); }
+  mac() { ( cd "$T/mac" && bash .github/ci/share.sh macos "$@" 2>&1 ); }
+  mk; pr docs/note.md
+  check "$(mac --scoped | grep -c '^SKIP [bc]:')" "2" "a docs-only head: both macOS suites say SKIP"
+  check "$(ranof)" "" "a docs-only head: no suite ran"
+  check "$(mac --scoped | grep -E '^(SKIP|PASS|FAIL|===)' | sed -E 's/ [0-9]+s//' | grep 'SKIP b')" "SKIP b: no change under modules/b or what it uses since the pull request's base" "…the line names the suite and why"
+  check "$(cd "$T/mac" && bash .github/ci/share.sh macos-scope | grep -v '^SCOPE' | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" "a SKIP,b SKIP,c SKIP," "macos-scope says it, runs nothing (a, on Linux, is judged too)"
+  check "$(ranof)" "" "…and ran nothing"
+  mk; pr modules/c/bin/tool
+  mac --scoped > "$T/mac.out"
+  check "$(ranof)" "c" "a one-module head: that module's suite runs, the other is left out"
+  check "$(grep -c '^SKIP b' "$T/mac.out"):$(grep -c 'PASS.* c$' "$T/mac.out"):$(grep -c 'LINUX  a' "$T/mac.out")" "1:1:1" "…SKIP b, PASS c, a left to Linux"
+  mk; pr modules/c/bin/tool
+  printf 'import sys\nsys.exit(1)\n' > "$T/mac/modules/wharf-runs/bin/check_scope.py"
+  mac --scoped > "$T/mac.out"
+  check "$(ranof)" "b c" "a scope that cannot be read (check_scope.py fails): the whole share runs"
+  check "$(grep -c 'the whole line: check_scope.py could not judge the change' "$T/mac.out")" "1" "…and says why"
+  mk; pr modules/c/bin/tool; ( cd "$T/mac" && git reset -q --hard HEAD^1 ) > /dev/null 2>&1
+  mac --scoped > "$T/mac.out"
+  check "$(ranof)" "b c" "a head that is no merge: the whole share runs"
+  check "$(grep -c 'the whole line: HEAD is not the merge of a pull request' "$T/mac.out")" "1" "…and says why"
+  mk; pr .github/workflows/check.yml
+  mac --scoped > "$T/mac.out"
+  check "$(ranof):$(grep -c 'the whole line: .github/workflows/check.yml changed' "$T/mac.out")" "b c:1" "a changed workflow: the whole share runs, and says why"
+  mk; pr .github/ci/share.sh
+  mac --scoped > "$T/mac.out"
+  check "$(ranof):$(grep -c 'the whole line: .github/ci/share.sh changed: the CI or the scope' "$T/mac.out")" "b c:1" "a change to the shares' own scripts: the whole share runs (share.sh does not judge its own change)"
+  mk; pr stray.txt
+  mac --scoped > "$T/mac.out"
+  check "$(ranof):$(grep -c 'the whole line: stray.txt changed, outside modules/' "$T/mac.out")" "b c:1" "a change outside modules/: the whole share runs, and says why"
+  mk; pr docs/note.md
+  mac > /dev/null
+  check "$(ranof)" "b c" "no --scoped (a push, the nightly run, a hand start run the whole line): every suite runs"
+  check "$(mac bogus > /dev/null; echo $?)" "2" "an unknown flag: exit 2"
+  mk; pr modules/b/tests/check.sh
+  mac --scoped > "$T/mac.out"
+  check "$(ranof)" "b" "a suite's own change: that suite alone"
+  check "$(grep -c '^SKIP c:' "$T/mac.out"):$(grep -c 'PASS.* b$' "$T/mac.out")" "1:1" "…SKIP c, PASS b"
+  mk; pr modules/wharf-runs/bin/check_scope.py
+  mac --scoped > "$T/mac.out"
+  check "$(ranof)" "b c" "a change to check_scope.py itself: the whole share runs (a scope does not judge its own change)"
+  check "$(grep -c 'the whole line: modules/wharf-runs/bin/check_scope.py changed' "$T/mac.out")" "1" "…and says why"
+  mk; pr modules/c/bin/tool
+  printf 'print("SCOPE\\tx")\nprint("RUN\\tz")\n' > "$T/mac/modules/wharf-runs/bin/check_scope.py"
+  mac --scoped > "$T/mac.out"
+  check "$(ranof):$(grep -c 'the whole line: check_scope.py gave a verdict list that does not match' "$T/mac.out")" "b c:1" "a verdict list shorter than the line: the whole share runs, and says why"
+  mk; printf '          id: [a, b]\n' > "$T/mac/.circleci/parts/check-linux.yml"; printf 'a\nb\n' > "$T/mac/.github/ci/linux-ids"
+  ( cd "$T/mac" && git -c user.name=t -c user.email=t@t commit -qam two ) > /dev/null 2>&1
+  pr modules/wharf-runs/bin/check_scope.py modules/a/bin/tool
+  check "$(cd "$T/mac" && bash .github/ci/share.sh linux-ids HEAD^1)" '["a", "b"]' "linux-ids: an edited check_scope.py does not cut the Linux matrix"
+  # The real tree: a suite that runs a peer by name is reached by that peer's change (the landing review:
+  # check_scope.py reads paths, and a SKIP here is run by nothing on the pull request).
+  verdict_of() {   # <path> <id>: RUN or SKIP for the real line
+    local pairs n
+    pairs="$(bash "$ROOT/.github/ci/share.sh" ids)"
+    n="$(printf '%s\n' "$pairs" | cut -f1 | grep -n -x "$2" | cut -d: -f1)"
+    CHECK_CMDS="$(printf '%s\n' "$pairs" | cut -f2-)" python3 "$B/check_scope.py" "$ROOT" base "$1" | grep -v '^SCOPE' | sed -n "${n}p" | cut -f1
+  }
+  for m in keel wharf-runs wharf plumb; do check "$(verdict_of "modules/$m/bin/zz" sextant)" "RUN" "sextant's suite is reached by modules/$m, which it runs by name"; done
+  for m in lighthouse plumb aurora atlas helloworld; do check "$(verdict_of "modules/$m/bin/zz" wharf-runs)" "RUN" "wharf-runs' suite is reached by modules/$m, which its tools resolve by name"; done
+  check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "steps.carry.outputs.carry != 'true'")" "1" "check.yml's macOS step yields to a carried green"
+  check "$(grep -c -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml")" "1" "check.yml's macOS step asks for the scope"
+  check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "github.event_name == 'pull_request'")" "1" "…on a pull_request event only"
+  check "$(grep -c "fetch-depth: \${{ github.event_name == 'pull_request' && 2 || 1 }}" "$ROOT/.github/workflows/check.yml")" "1" "…its checkout holds both parents of the merge commit"
 else
   echo "  --   skipped: no .github/ci/share.sh or not a git checkout"
 fi

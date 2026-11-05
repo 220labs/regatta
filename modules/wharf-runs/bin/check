@@ -7,7 +7,7 @@
 # Scoped by default (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
 # the checkout changed something under modules/<m>/ since it forked from origin/main (main without a
 # remote), or under a module <m> uses — one its plugin.json `dependencies` names, or one its files name
-# by path (`modules/<x>`) in any file of its own but Markdown — declared ones followed through (helm
+# by path (`modules/<x>` or `../<x>/`) in any file of its own but Markdown — declared ones followed through (helm
 # uses wharf-runs uses wharf: a wharf change runs all three), a mention one hop (followed through, a
 # loose one would reach everything). A change under a module's tests/ or to its Markdown bar skills/
 # and agents/ (behaviour another suite may read) runs that module's suite alone; a file moved out of
@@ -22,14 +22,15 @@
 # which checks it. A `.<m>/` folder is module m's (.helloworld/). Each suite left out is a `SKIP
 # <command> — <why>` line, in the summary and on stdout, not counted in DONE; the scope is said once
 # (`check: scope — …`) after the logs line. What the scope cannot see is a suite reading another
-# module's files at test time with no path in its own files: CI runs the whole line on the pull
-# request, and `pr merge` waits for it.
+# module's files at test time with no path in its own files: name the path in the suite, as sextant's and
+# wharf-runs' tests/check.sh do. The pull request's macOS share runs by these same verdicts, so only main's
+# nightly run, the whole line, closes such a gap.
 # Why: a full check took 58–80 min on the laptop and 40 on the quiet build Mac, and every landing ran it
 # three or four times (the build run, /finish, the PR's CI, main's CI) while the Macs sat at load 98
-# (docs/check-load-2026-10-23.md). CI still runs the whole line on the pull request, and `pr merge`
-# refuses until it passed (an admin token is not refused by the protection): the scope is for the
-# session's own loop, the proof stays whole (bar the PR's Linux share, which skips a PR of docs only:
-# .github/ci/share.sh scope asks check_scope.py the same question).
+# (docs/check-load-2026-10-23.md). `pr merge` refuses until the pull request's CI passed (an admin
+# token is not refused by the protection), and that CI is scoped by the same rules (.github/ci/share.sh:
+# the Linux share since 2026-10-30, the macOS share since free-ci S3, while CI_LINUX_ELSEWHERE is `true`);
+# the whole line is main's nightly run.
 # A pass is remembered per tree: after a run, each script that passed is recorded under
 # $CHECK_LOGS/passed/<tree> (the checkout's exact content, `git write-tree` over a scratch index,
 # uncommitted files included), and a later run of the same tree reports it `PASSED <when> <command>`

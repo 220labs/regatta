@@ -55,7 +55,9 @@ names = sorted(set(mods) | own)
 def mentions(m):
     """the modules m's files (not Markdown) name by path"""
     out = set()
-    pat = re.compile(r"modules/(%s)(?![\w-])" % "|".join(re.escape(x) for x in names if x != m))
+    # a suite names a peer as `modules/<peer>` or `$D/../<peer>/` (sextant's principal.sh runs wharf's council
+    # that way): both read as a use, which errs only towards RUN (free-ci S3's finish review)
+    pat = re.compile(r"(?:modules|\.\.)/(%s)(?![\w-])" % "|".join(re.escape(x) for x in names if x != m))
     for root, dirs, files in os.walk(os.path.join(wt, "modules", m)):
         dirs[:] = [d for d in dirs if not d.startswith(".") or d == ".claude-plugin"]
         for f in files:
