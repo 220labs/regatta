@@ -71,6 +71,10 @@ except ImportError: sys.exit(0 if t.startswith("---\nname: sounding\ndescription
 m = yaml.safe_load(t.split("---")[1]); sys.exit(0 if m["name"] == "sounding" and m["description"] else 1)' "$SK"
 ok $? "skills/sounding: its frontmatter names it and says what it does"
 for h in architect sr-architect sounder; do grep -q "| \`$h\` |" "$SK"; ok $? "  …and picks \`$h\` by scope"; done
+# check_scope.py reads paths (`modules/<peer>` and `$D/../<peer>/`), so a peer named any other way skips this
+# suite on that peer's change. This comment is that path for the peers run by name (keep the spelling): modules/keel
+# (these flags), modules/wharf-runs (soundings.sh's queue_holds.py, pickup, dispatch), modules/wharf (principal.sh's
+# council receipt) and modules/plumb (trimlib, usage-report's config reader); wharf-runs' test_check.sh holds a case per peer.
 KEEL=$(python3 "$D/../regatta/bin/regatta" which keel 2>/dev/null) || KEEL=""   # through the core, as wharf's test_agents.sh
 if [ -n "$KEEL" ]; then
   for v in lint line light yolo pull; do python3 "$KEEL" "$v" --help >/dev/null 2>&1; ok $? "  keel $v, which it runs, is a keel verb"; done

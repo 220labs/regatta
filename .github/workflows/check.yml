@@ -23,7 +23,7 @@
 name: check
 on:
   # A push to main runs the check unless the repository variable CI_SKIP_MAIN_PUSH is `true` (the job's
-  # condition). Set it where every merge is a rebase of a pull request whose own run checked that tree:
+  # condition). Set it where every merge is a rebase of a pull request whose own run checked that tree, as far as its scope reached:
   # there the run main's push started took 40–77 min of the one runner for each of the day's dozen
   # landings — about 40 % of its load, and the queue every PR waited in (docs/check-load-2026-10-23.md).
   # What it gives up: a PR's run tests main as it was when the run started (the protection's `strict` is
@@ -143,7 +143,12 @@ jobs:
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
           echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
           echo "REGATTA_CONFIG=$RUNNER_TEMP/regatta-config" >> "$GITHUB_ENV"
+      # A pull request's checkout is its merge commit (refs/pull/N/merge); depth 2 brings both parents, so
+      # the macOS share below can ask what the PR adds to its base (HEAD^1..HEAD, share.sh macos --scoped).
+      # Anything else needs one commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -182,15 +187,23 @@ jobs:
       # (the twin, forks), the Linux list runs in the `suite` jobs below and this job only the rest, on
       # every event. Exactly one of the three steps runs. The `check` step keeps its name and its one
       # `run:` block: share.sh, twin-linux.sh and ci-provider read the line from it.
+      # The share is scoped (free-ci S3, 2026-11-04): on a pull request only the suites the head's change
+      # reaches run, by wharf-runs' check_scope.py, the verdicts a session's `check <worktree>` gives, and
+      # the rest print `SKIP <id>`. A head whose change cannot be read, or that changes a workflow, .github/ci/
+      # or check_scope.py itself, runs the whole share. The push, the nightly run and a hand start never
+      # reach this step: they run the whole line below, so a scope miss shows in main's 09:17 UTC run
+      # (a push of main runs nothing where CI_SKIP_MAIN_PUSH is set), read by hand: no card reads it yet
+      # (TODO.md [free-ci-main-red]). While CI_LINUX_ELSEWHERE is not `true` the whole line runs, unscoped
+      # (TODO.md [free-ci-s3-share-off]).
       # The carry (wharf's `pr restack`, 2026-11-04): a push whose patch is the previous head's, list files
-      # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of the whole line. It is what `pr restack`
+      # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of running again. It is what `pr restack`
       # pushes when GitHub marks a ready PR DIRTY on a list file alone, and the 85-min re-run it would start
       # tested nothing new: the PR's code is the tested code, and main's own commits between the two bases are
       # what `strict: false` (main-protection.json) already lands untested. No suite reads this repo's lists bar
       # `todo-md lint`, which runs here. `pr carry` judges it from git alone, and the judge is the base's copy (a
       # worktree of origin/$BASE), never the PR's own: a push that broke carry_verdict would otherwise decide its
       # own test (the build review). Any doubt (the newest `check` on the previous head not green, a commit not
-      # fetchable, a code path, mode or type that differs) runs the whole line as before.
+      # fetchable, a code path, mode or type that differs) runs the check as before (on a pull request, the scoped share below).
       - name: carry the previous head's green
         id: carry
         if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
@@ -206,20 +219,20 @@ jobs:
           green="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
                      "https://api.github.com/repos/$REPO/commits/$BEFORE/check-runs?check_name=check&filter=latest" \
                    | jq -r '[.check_runs[]? | select(.app.slug == "github-actions")] | (length > 0 and all(.conclusion == "success"))' 2>/dev/null)" || green=false
-          [ "$green" = true ] || { echo "carry: ${BEFORE:0:8}'s newest check is not green: the whole line runs"; exit 0; }
+          [ "$green" = true ] || { echo "carry: ${BEFORE:0:8}'s newest check is not green: the check runs"; exit 0; }
           git fetch -q --no-tags --unshallow origin "$BEFORE" "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" 2>/dev/null \
             || git fetch -q --no-tags origin "$BEFORE" "$SHA" "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
-            || { echo "carry: ${BEFORE:0:8} could not be fetched: the whole line runs"; exit 0; }
+            || { echo "carry: ${BEFORE:0:8} could not be fetched: the check runs"; exit 0; }
           J="$RUNNER_TEMP/carry-judge"; git worktree prune || true   # a prune that fails is no reason to fail the check: `add` below decides
           git worktree add -q --detach "$J" "origin/$BASE" && [ -f "$J/modules/wharf/libexec/pr" ] \
-            || { echo "carry: the base has no pr carry: the whole line runs"; exit 0; }
-          verdict="$(python3 "$J/modules/wharf/libexec/pr" carry "$BEFORE" "$SHA" --base "origin/$BASE")" || { echo "carry: $verdict: the whole line runs"; exit 0; }
-          { [ ! -f TODO.md ] || python3 "$J/modules/wharf/bin/todo-md" lint .; } || { echo "carry: todo-md lint fails: the whole line runs"; exit 0; }
+            || { echo "carry: the base has no pr carry: the check runs"; exit 0; }
+          verdict="$(python3 "$J/modules/wharf/libexec/pr" carry "$BEFORE" "$SHA" --base "origin/$BASE")" || { echo "carry: $verdict: the check runs"; exit 0; }
+          { [ ! -f TODO.md ] || python3 "$J/modules/wharf/bin/todo-md" lint .; } || { echo "carry: todo-md lint fails: the check runs"; exit 0; }
           echo "carry: $verdict, green on ${BEFORE:0:8}: not run again"
           echo "carry=true" >> "$GITHUB_OUTPUT"
       - name: check, the macOS share
         if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
-        run: bash .github/ci/share.sh macos
+        run: bash .github/ci/share.sh macos --scoped
       - name: check, the rest
         if: ${{ steps.carry.outputs.carry != 'true' && !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL }}
         run: bash .github/ci/share.sh rest

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The macOS share's scope (free-ci S3's landing review): the suites name the peers they run by name, so a change to
+  keel or wharf-runs runs sextant's and one to lighthouse, plumb, aurora, atlas or helloworld runs this module's;
+  `share.sh linux-ids` no longer lets an edited `check_scope.py` cut the Linux matrix.
 - `check`'s scope (`check_scope.py`): a change under `.github/ci/`, where share.sh, linux-tools.sh and the Linux
   list moved from `.circleci/` (free CI's S2, 2026-11-04), runs the whole line, as `.circleci/` did; a change to
   `.github/workflows/check.yml` or `check-linux.yml` runs wharf's suite, which reads both. `autofinish`'s brief
@@ -33,6 +36,13 @@
 - `yard-node`'s named-node payload writes `wharf-runs/node/scope`, the scope the node serves (empty on a shared
   node): the core's `nodes_here` reads it to tell the node as its scope's own yard (scopes-node-yard).
 
+- free-ci S3 (the owner's D1 answer, E with A, 2026-11-04): the Macs' PR `check` job is scoped. check.yml's macOS-share
+  step runs `.github/ci/share.sh macos --scoped`: `check_scope.py`'s verdicts over what the pull request's merge commit
+  adds to its base (HEAD^1..HEAD; the checkout's fetch-depth is 2 on a pull request), a `SKIP <id>` line for each suite
+  the change does not reach. A head whose change cannot be read (HEAD no merge, git or `check_scope.py` failing, a verdict
+  list that does not match) or that touches `.github/workflows/`, `.github/ci/` or `check_scope.py` runs the whole share. A push, the nightly run and a hand start
+  never take the step and run the whole line (a scope miss shows in the nightly run). Cases in `tests/test_check.sh`; `share.sh macos-scope` says the verdicts,
+  nothing run.
 - The armed sweep's last step runs wharf's `pr restack --all` in each repo (`restack_dirty()`): a ready claude/* PR
   GitHub marks DIRTY on a list file alone is restacked and pushed, anything else gets its finding on the PR; one
   `restack <repo> #<n> <branch>: …` line each, printed and logged (dirty-pr-rebase, 2026-11-04).
