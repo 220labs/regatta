@@ -1861,5 +1861,29 @@ check "$(CLAUDE_REPOS_JSON="$T/open.json" TQ claude/laptop/2026-10-30-rqtwice)" 
 rm_own "$CACHE" "$PA" "$PEER_HOME"
 cd "$R"
 
+# run(): an exec the OS refuses (a sandboxed session may not run ps) is a failed result, never a raise
+echo "run: an exec refused (PermissionError) or missing is a failed CompletedProcess"
+printf 'not runnable\n' > "$T/noexec-ps"; chmod 644 "$T/noexec-ps"
+cat > "$T/run_oserror.py" <<'PY'
+import importlib.machinery, importlib.util, os, subprocess, sys
+loader = importlib.machinery.SourceFileLoader("pickup_run", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("pickup_run", loader)); loader.exec_module(m)
+r = m.run([sys.argv[2], "-o", "lstart=", "-p", "1"])
+print(r.returncode, r.stdout == "", bool(r.stderr))
+r = m.run([sys.argv[2] + ".missing"])
+print(r.returncode)
+real = subprocess.run
+def deny(args, **kw):
+    if args[0] == "ps":
+        raise PermissionError(1, "Operation not permitted", "ps")
+    return real(args, **kw)
+m.subprocess.run = deny
+print(m.running(os.getpid(), "Mon Jan  1 00:00:00 2001"))
+PY
+python3 "$T/run_oserror.py" "$B/pickup" "$T/noexec-ps" > "$T/run_oserror.out" 2>&1
+check "$(sed -n 1p "$T/run_oserror.out")" "126 True True" "run: a file it may not exec: 126, the error in stderr"
+check "$(sed -n 2p "$T/run_oserror.out")" "127" "run: a missing program: 127"
+check "$(sed -n 3p "$T/run_oserror.out")" "True" "running: ps refused, kill(0) alive: alive, never read as dead"
+
 echo
 [ "$fails" -eq 0 ] && echo "all pickup tests pass" || { echo "$fails pickup test(s) FAILED"; exit 1; }

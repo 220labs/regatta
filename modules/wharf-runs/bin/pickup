@@ -436,15 +436,24 @@ class Stop(Exception):
 
 # ---- small helpers ----------------------------------------------------------------------
 
-def run(args, timeout=30, env=None, input=None):
+def run(args, timeout=30, env=None, input=None, exec_raises=False):
+    """A failed CompletedProcess, never a raise: a sandboxed session may not exec `ps` at all
+    (PermissionError), and a crash there stopped `pickup seed`, so `helm send --text` from any
+    confidential scope's session (2026-11-04). 126/127 as a shell says: not executable, not found.
+    `exec_raises` keeps the raise for git, whose `out()` reads stdout alone: a git that cannot run
+    would read as an empty answer, and a lock path built on it would land in the cwd."""
     try:
         return subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env, input=input)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 124, "", f"timed out after {timeout} s")
+    except OSError as e:
+        if exec_raises:
+            raise
+        return subprocess.CompletedProcess(args, 127 if isinstance(e, FileNotFoundError) else 126, "", f"{args[0]}: {e}")
 
 
 def git(where, *args, timeout=30):
-    return run(["git", "-C", str(where), *args], timeout=timeout)
+    return run(["git", "-C", str(where), *args], timeout=timeout, exec_raises=True)
 
 
 def out(where, *args):
@@ -691,6 +700,8 @@ def running(pid, proc_start):
     if not proc_start:
         return True
     r = run(["ps", "-o", "lstart=", "-p", str(pid)], env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+    if r.returncode in (126, 127):   # ps cannot run here (a sandbox): kill(0) said alive, and a live
+        return True                  # session read as dead would lose its worktree to a stranger
     return " ".join(r.stdout.split()) == " ".join(proc_start.split())
 
 
@@ -3075,6 +3086,8 @@ def ssh_bytes(alias, command, data, timeout=300):
                               input=data, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess([], 124, b"", b"timed out")
+    except OSError as e:   # no ssh here, or one the sandbox may not exec: a result, as run() gives
+        return subprocess.CompletedProcess([], 127 if isinstance(e, FileNotFoundError) else 126, b"", str(e).encode())
 
 
 def peer_json(alias, script, *argv, timeout=120):
