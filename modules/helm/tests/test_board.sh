@@ -4,7 +4,8 @@
 # plain page; overview() writes the shell; the header carries the week's ratio. Then, under headless Chrome, the shell at
 # 1440, 720 and a true 390 (an iframe of that width: headless Chrome lays a narrower window out at 500), both themes,
 # read by tests/board_selftest.js, and the poll's reconcile case: a typed answer and the find field survive three polls,
-# a reorder and their card leaving. Without Chrome the render cases say they are skipped. No network, no model.
+# a reorder and their card leaving. Without Chrome the render cases say they are skipped; off a Mac too, unless
+# HELM_BOARD_ANY_OS=1. No network, no model.
 #   bash modules/helm/tests/test_board.sh
 set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
@@ -15,7 +16,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export PLANS_DIR="$T/plans" PLAN_HOST=testhost PLAN_PROJECTS_DIR="$T/projects" PLAN_CACHE_DIR="$T/cache" HOME="$T/home" \
   PLAN_NO_GH=1 PLAN_NO_DEPLOY=1 SURFACES_FILE="$T/surfaces.json" ASK_SESSIONS_DIR="$T/sess" ASK_CACHE_DIR="$T/askcache" \
   COST_RATIO="$T/ratio.json" PLAN_NO_MEMO=1 PLAN_PROJECTS_ROOT="$T/projects-root" \
-  STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 STALLS_CANARY=0 PLAN_NO_WHARF=1   # test_helm.sh's guards: no ssh, no Orca app, no real repo
+  STALLS_PEERS= STALLS_REPOS= STALLS_ORCA=0 STALLS_CANARY=0 PLAN_NO_WHARF=1 PLAN_NO_HOSTS=1   # test_helm.sh's guards (PLAN_NO_HOSTS: no `hosts --json`, test_engine.sh's): no ssh, no Orca app, no real repo
 unset CLAUDE_CONFIG_DIR   # the week line from the moved HOME, never this login's
 printf %s "{\"providers\": {\"anthropic\": {\"ratio\": 0.0166, \"week_ending\": \"2026-11-01\"}}}" > "$T/ratio.json"
 unset CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS HELM_BOARD_POLL
@@ -120,8 +121,10 @@ sys.path.insert(0, sys.argv[1])
 import helm_render as h
 k = h._keel()
 chrome = k.chrome_path() if k else None
-if sys.platform != "darwin":   # as keel's ui.sh: a Linux runner's Chrome would judge these frames unseen
-    print("SKIP the render cases run on a Mac only (keel's frames do the same)")
+# as keel's ui.sh: a Linux runner's Chrome would judge these frames unseen; HELM_BOARD_ANY_OS=1 asks for them anyway
+# (a Linux session with a Chrome of its own, KEEL_CHROME: engine-room S3 ran them so, 184 of 184)
+if sys.platform != "darwin" and os.environ.get("HELM_BOARD_ANY_OS") != "1":
+    print("SKIP the render cases run on a Mac only (keel's frames do the same; HELM_BOARD_ANY_OS=1 runs them here)")
     sys.exit(0)
 if not chrome:
     print("SKIP no headless Chrome here (keel's chrome_path): the render cases are not run")
