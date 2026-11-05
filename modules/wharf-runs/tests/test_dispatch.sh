@@ -2822,9 +2822,29 @@ reg("idle"); out.append(int(d.idle_limit(a, dict(st, idle=None))))
 said("RELAYED TO coding-7 — D1, the cadence"); out.append(int(d.idle_limit(a, st)))
 said(d.common.PENDING_PREFIX + "the two reviewers"); out.append(int(d.idle_limit(a, st)))
 said(d.common.HANDOVER_LINE); out.append(int(d.idle_limit(a, st)))
+# a build run (no `idle` of its own) on each closing line, and on none (runs-exit-when-done, 2026-10-31)
+b = dict(st, idle=None)
+said("RELAYED TO coding-7 — D1, the cadence"); out.append(int(d.idle_limit(a, b)))
+said(d.common.WAITING_PREFIX + "D1 in docs/x.md (land it)"); out.append(int(d.idle_limit(a, b)))
+said(d.common.PENDING_PREFIX + "the check"); out.append(int(d.idle_limit(a, b)))
+said("Still working on the second round."); out.append(int(d.idle_limit(a, b)))
+# a person typed into it since its start (round 1 of the build review): the hour for a build, as before for a --start run;
+# only a prompt of human origin counts (round 3), and not the watcher nudge or a hail
+def asked(text, origin="human", **kw):
+    e = dict({"type": "user", "timestamp": "2026-11-02T10:00:00Z", "message": {"content": text}}, **kw)
+    if origin:
+        e["origin"] = {"kind": origin}
+    with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+asked("Read the brief at docs/handoff/x.md and do what it says."); asked(d.NUDGE_FRAME % ("server_error", "x")); asked("HAIL ask from sk — read D1")
+asked("This session is being continued from a previous conversation", origin=None, isCompactSummary=True)
+asked("<task-notification>done</task-notification>", origin="task-notification"); asked("ANSWER D1 from the skipper", origin=None)
+said(d.common.WAITING_PREFIX + "D1 in docs/x.md (land it)"); out.append(int(d.idle_limit(a, b)))
+asked("and what about the second host?"); said(d.common.WAITING_PREFIX + "D1 in docs/x.md (land it)")
+out.append(int(d.idle_limit(a, b))); out.append(int(d.idle_limit(a, st)))
 print(*out)
 PY2
-)" "600 60 600 3600 600 600 60" "  a --start run idle on its closing line (a stopped /finish): 1 min, not 10; busy, a run someone may pick up again, or one waiting on its skipper (RELAYED) or its own work, as before (skipper, 2026-10-19); the hand-over line: 1 min (review D2)"
+)" "600 60 600 60 60 600 60 60 60 3600 3600 60 3600 60" "  idle on a closing line, a --start run's (a stopped /finish) or a build's: 1 min, its slot back (the owner 2026-10-31: \"exit as soon as their work is done\"); RELAYED too, and a WAITING line; busy, WAITING FOR SOMETHING (its own work wakes it) or no closing line: as before; the hand-over line: 1 min (review D2); a build a person typed into since its start: the hour (round 1), a nudge or a hail no person's"
 kill $ENDP 2>/dev/null
 sleep 300 & ENDP=$!
 check "$(env -u DISPATCH_IDLE -u DISPATCH_NEXT_IDLE python3 - "$B/dispatch-rc" "$T/lim.json" "$ENDP" <<'PY2'
@@ -2841,23 +2861,23 @@ h = {"pid": pid, "session": sid, "handed": 1, "task_mode": "default"}
 plain = dict(h); plain.pop("handed")
 out = []
 reg("idle"); said("Built.\nSAM, THIS SESSION IS WAITING FOR YOU — D1 of docs/d.md")
-out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # WAITING: the hour, and claims at parking
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # WAITING: a minute as any run's closing line, no launch, claims at parking
 said("Built.\n" + d.common.HANDOVER_LINE)
 out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # the hand-over line: a minute, its slot to the landing
 with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:   # Claude Code's own entry after it: no reply of the run's
     f.write(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "No response requested."}]}}, separators=(",", ":")) + "\n")
 out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # still the hand-over: a minute
+out.append("%d/%s" % (d.idle_limit(a, plain), d.lands_after(plain)))   # the same line, switch off at its start: a closing line's minute, no launch
 with open("%s/.claude/projects/x/%s.jsonl" % (home, sid), "a") as f:   # woken, its next turn ends on an API error: no reply,
     f.write(json.dumps({"type": "assistant", "isApiErrorMessage": True, "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "API Error: Connection dropped"}]}}, separators=(",", ":")) + "\n")
 out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # never the hand-over of the turn before: the hour
-out.append("%d/%s" % (d.idle_limit(a, plain), d.lands_after(plain)))   # the same line, switch off at its start: untouched
 reg("busy")
 out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # busy again: never ended, no hand-over read
 reg("idle"); said("RELAYED TO coding-7 — D1, the cadence")
-out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # waiting on its skipper: the hour
+out.append("%d/%s" % (d.idle_limit(a, h), d.lands_after(h)))           # relayed: a minute (the answer starts a fresh run), no launch
 print(*out)
 PY2
-)" "3600/False 60/True 60/True 3600/False 3600/False 3600/False 3600/False" "a handed=1 run (task-shape S3): a WAITING line keeps its hour and claims at parking; the hand-over line ends it in a minute and leaves its slot to the landing, a <synthetic> entry after it read past, a later turn ended on an API error not; a run started with the switch off, a busy one and a RELAYED one are untouched"
+)" "60/False 60/True 60/True 60/False 3600/False 3600/False 60/False" "a handed=1 run (task-shape S3): a WAITING line ends it in a minute as any run's closing line (runs-exit-when-done) and claims at parking, no launch; the hand-over line ends it in a minute and leaves its slot to the landing, a <synthetic> entry after it read past, a later turn ended on an API error not; a run started with the switch off launches nothing, a busy one is untouched, a RELAYED one ends without a launch"
 kill $ENDP 2>/dev/null
 
 echo "an API-error end is nudged once, not ended as idle (the dropped connection of 2026-10-22)"

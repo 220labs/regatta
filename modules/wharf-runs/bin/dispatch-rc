@@ -3,10 +3,12 @@
 
     dispatch-rc window STATE   open a Terminal window on the run's screen, titled "run · <topic>",
                                on the claude desktop, where yabai tiles it (laptop only; bin/tiling)
-    dispatch-rc watch STATE    wait for the session to finish, then end it: once idle DISPATCH_IDLE
-                               (the prompt cache's hour) after it was first busy -> close the
-                               window, SIGTERM the claude process, quit the screen, log the session
-                               id. Never ends a busy session — bar one DISPATCH_MAX_H old (default
+    dispatch-rc watch STATE    wait for the session to finish, then end it: once idle a minute on
+                               its closing line (done, WAITING, RELAYED, the hand-over: its work is
+                               over and its slot goes back; WAITING FOR SOMETHING excepted), else
+                               idle DISPATCH_IDLE (the prompt cache's hour) after it was first busy
+                               -> close the window, SIGTERM the claude process, quit the screen, log
+                               the session id. Never ends a busy session — bar one DISPATCH_MAX_H old (default
                                8; up to DISPATCH_CHECK_GRACE_H, 2, more while its own check runs and
                                its last turn hit no usage limit; what the cap cut goes in the record's
                                `cut`). A session idle a minute on a turn that ended on an API error
@@ -148,12 +150,14 @@ TITLE = "run · "
 PICK = "\u2733 "   # pickup's own windows: `claude --name "<name>"` with no screen around it
 # seconds; the env overrides are for bin/test_dispatch.sh
 POLL = float(os.environ.get("DISPATCH_POLL", "15"))
-# A finished session is kept alive while its prompt cache is warm — the hour these sessions get —
-# because resuming one inside that hour is cheap, and past it a fresh session is the better buy
-# (the owner, 2026-10-06: "keep each session open while its cache is warm - anything else and it's better
-# to start a fresh one anyways"; it was 10 min until then, D1 of docs/sweep-cold-2026-10-06.md). The
-# window stays with it: the claude desktop is *for* these sessions and is not clutter — only a dead
-# or cold one is swept (the owner, same day, D2).
+# A session idle with no closing line is kept alive while its prompt cache is warm — the hour these
+# sessions get — because resuming one inside that hour is cheap, and past it a fresh session is the
+# better buy (the owner, 2026-10-06: "keep each session open while its cache is warm - anything else and
+# it's better to start a fresh one anyways"; it was 10 min until then, D1 of docs/sweep-cold-2026-10-06.md).
+# A session idle on its closing line is not kept for it any more (idle_limit, NEXT_IDLE): the owner,
+# 2026-10-31, "They should exit as soon as their work is done" — three node runs ended on a landing ask
+# and held all three slots of the node idle for an hour while the queue had work. The window stays
+# with a kept one: the claude desktop is *for* these sessions — only a dead or cold one is swept (D2).
 IDLE = float(os.environ.get("DISPATCH_IDLE", "3600"))
 START_WAIT = float(os.environ.get("DISPATCH_START_WAIT", "300"))  # no prompt in its transcript by then: it is stuck
 SNAP_EVERY = float(os.environ.get("DISPATCH_SNAP_EVERY", "60"))  # a run not busy yet: its screen is read this often
@@ -397,9 +401,9 @@ def session_record(st):
 # Claude Code reports a session holding any background shell as `shell`, not `idle` — every session
 # with the waiter, so a finished run read busy (the shell note in bin/autofinish-run's header). A tuple
 # is a command's basename and the words after it; a command line with a shell operator in it is never
-# a listener. Not `ask listen`: a relayed run holds it for its skipper's answer, and nothing
-# re-dispatches the parked work if the run is ended meanwhile, so it stays busy as before S13
-# (the S13 landing review, 2026-10-23).
+# a listener. Not `ask listen`: a typed session holds it for its skipper's answer, so it stays busy as
+# before S13 (the S13 landing review, 2026-10-23); a dispatched run starts none since runs-exit-when-done
+# (2026-10-31): it ends a minute after its RELAYED line, and `ask answer --branch` queues a fresh run.
 LISTENERS = (("sessionpipe", "wait"), ("spacesheep", "talk", "listen"))
 _OPS = re.compile(r"[;&|<>`\n]|\$\(")
 _NOTE_ID = re.compile(r"<tool-use-id>([^<\s]+)</tool-use-id>")
@@ -574,18 +578,73 @@ def idle_limit(path, st):
     rec = session_record(st)
     if left_behind(rec):
         return min(base, NEXT_IDLE)
-    # a run nobody picks up again (its own `idle`: autofinish-run's /finish, a --yolo build) that is idle on
-    # its closing line has said its outcome: a minute, not ten. A stopped /finish held its
-    # worktree's lock those ten minutes, and the builder who had to fix what its review found could
-    # not write (wharf S5, 12:38-12:41, 2026-10-19). Busy, it is never ended: the watcher's own test
-    if st.get("idle") and said_its_end(st, rec):
+    # a run idle on its closing line has said its outcome: a minute, not the hour. First for a run nobody
+    # picks up again (its own `idle`: autofinish-run's /finish, a --yolo build) — a stopped /finish held
+    # its worktree's lock ten minutes, and the builder who had to fix what its review found could not
+    # write (wharf S5, 12:38-12:41, 2026-10-19) — and since 2026-10-31 for every run, the warm hour
+    # included: a run whose work is done holds a slot the queue could use (the owner: "They should exit
+    # as soon as their work is done"). A RELAYED run too: the answer no longer needs the asker alive —
+    # `ask answer` hands it to a fresh run of the branch when nothing listens (helm's bin/ask). Busy, it
+    # is never ended: the watcher's own test. Not a run a person has typed into since its start (the owner on
+    # the phone, asking a follow-up): its closing line answers that person, who may type again, so the warm
+    # hour holds for it as it does after a hand-off (left_behind's "used again"; round 1 of the build review)
+    if said_its_end(st, rec) and (st.get("idle") or not used_again(st)):
         return min(base, NEXT_IDLE)
     # a hand-over run (task-shape S3: started with the landing switch on, `handed=1`) has no `idle` of its
-    # own: it keeps the warm hour unless its reply is the hand-over line, which dispatch's launch waits on.
-    # A WAITING line (a D-item, a stopped review loop) keeps the hour, as for any `default` run
+    # own: its reply's hand-over line, which dispatch's launch waits on, ends it in a minute even after a person
+    # typed into it. A WAITING line (a D-item, a stopped review loop) launches nothing; it ends as any run's
+    # closing line does, above (the owner's 2026-10-31 word, newer than S3's "keeps its hour")
     if handed_said(st, rec):
         return min(base, NEXT_IDLE)
     return base
+
+
+_USED = {}   # transcript path → (size, used again?)
+
+
+def used_again(st):
+    """A prompt of a person reached the run's session after the one it started with: crew-report's typed
+    rule (a `user` entry of origin human, not isMeta, not isSidechain, or a queued_command attachment of
+    origin human: typed while it worked). Not a compaction summary, a relay, a task notice or a peer's
+    hand-back (no origin, or their own kinds; round 3), nor the watcher's nudge (NUDGE_FRAME) or a hail
+    (`HAIL …`), which ride the human road. False when it cannot tell (no session, no transcript): the
+    minute then holds, as the rule's own default."""
+    path = transcript(st.get("session")) if st.get("session") else None
+    try:
+        size = os.path.getsize(path) if path else None
+    except OSError:
+        size = None
+    if size is None:
+        return False
+    if _USED.get(path, (None,))[0] != size:
+        typed = 0
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if '"human"' not in line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    att = e.get("attachment") or {}
+                    if att.get("type") == "queued_command" and (att.get("origin") or {}).get("kind") == "human":
+                        c = att.get("prompt")
+                    elif e.get("type") == "user" and not e.get("isMeta") and not e.get("isSidechain") \
+                            and not e.get("isCompactSummary") and (e.get("origin") or {}).get("kind") == "human":
+                        c = (e.get("message") or {}).get("content")
+                    else:
+                        continue
+                    text = c if isinstance(c, str) else " ".join(
+                        x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text") if isinstance(c, list) else ""
+                    text = text.lstrip()
+                    if not text or text.startswith(NUDGE_FRAME.split("%")[0]) or text.startswith("HAIL "):
+                        continue
+                    typed += 1
+        except OSError:
+            typed = 0
+        _USED[path] = (size, typed > 1)
+    return _USED[path][1]
 
 
 def handed_said(st, rec=None):
@@ -622,12 +681,14 @@ def said_its_end(st, rec):
     """The run's session is idle and its last reply ends on a closing line (common.ending: /finish's
     fixed line, done or stopped alike, or a WAITING line) — the same reply autofinish-run reads its
     outcome from (read_outcome), bar Claude Code's unflagged "No response requested.", which last_answer
-    reads past and autofinish-run's last_reply does not (task-shape S3). A RELAYED line is no end: that run waits for its skipper's answer
-    (a --yolo build, review 2026-10-19); nor is WAITING FOR SOMETHING: its own work wakes it. The
-    hand-over line (the core's `handed` kind) is an end: dispatch's launch waits for this watcher. So is
-    WAITING FOR NOTHING (`idle`, 2026-10-29): nothing goes on and nothing is owed. A mark before any of
-    them changes nothing (common.ending reads past it). False whenever it cannot tell."""
-    return last_kind(st, rec) not in (None, "relayed", "pending")
+    reads past and autofinish-run's last_reply does not (task-shape S3). WAITING FOR SOMETHING is no end: its own work wakes it. A RELAYED
+    line is one since 2026-10-31: it waited for its skipper's answer until then (a --yolo build,
+    review 2026-10-19), and now the answer starts a fresh run of the branch when the asker is gone
+    (bin/ask answer's resume road), so the slot goes back. The hand-over line (the core's `handed`
+    kind) is an end: dispatch's launch waits for this watcher. So is WAITING FOR NOTHING (`idle`,
+    2026-10-29): nothing goes on and nothing is owed. A mark before any of them changes nothing
+    (common.ending reads past it). False whenever it cannot tell."""
+    return last_kind(st, rec) not in (None, "pending")
 
 
 def left_behind(rec):
@@ -1496,7 +1557,7 @@ def lands_after(st, rec=None):
     yolo or dnd run, and a claim at its parking took the slot and refused the landing at its cap (the
     third landing review's item 11). Its fire path claims after the launch instead. A hand-over run
     (`handed=1`, task-shape S3) only once its reply is the hand-over line: parked on a WAITING line it
-    waits on a person, its hour as any `default` run's, and its slot is claimed at parking."""
+    launches nothing, its slot is claimed at parking, and it ends as any run on its closing line."""
     return st.get("yolo") == 1 or st.get("task_mode") in ("yolo", "dnd") or handed_said(st, rec)
 
 

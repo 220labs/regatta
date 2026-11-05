@@ -70,6 +70,12 @@
 
 - `harness` research mode builds the Codex arm's seatbelt with its scratch `config.toml`, `AGENTS.md`, `hooks.json`
   and `auth.json` read-only (the core's `fence.codex_ro`), as council's `arm_home` names them; it named none.
+- dispatch-rc ends any run idle a minute on its closing line — done, WAITING, RELAYED, the hand-over; not WAITING
+  FOR SOMETHING — unless a person typed into it since its start (`used_again`), its slot back to the queue (the
+  owner, 2026-10-31: "They should exit as soon as their work is done"); one with no closing line keeps
+  `DISPATCH_IDLE`. A build's prompt says the run ends after its RELAYED or WAITING line and starts no listener
+  (runs-exit-when-done; cases: `tests/test_dispatch.sh`). A run's environment carries its step's `--needs` as
+  `DISPATCH_NEEDS`, which helm's `ask relay` names on the road back.
 - node-road (2026-11-02): orca-host's fence case names helm send as a reader of a node folder (its
   yard's ssh), beside orca-host and yard-node.
 - `yard-node words --node NAME | --all [--check] [--dry-run]` (node-lands D1, carried by node-lands-base): the publish
@@ -114,8 +120,8 @@
   `autofinish arm --landings` (`~/.local/state/autofinish/landings`; off by default, refused unattended, a plain
   `disarm` turns it off with `armed`), read once at a `default` build's prompt. On, the prompt names the hand-over line
   for a done last step and the run's record says `handed=1`; dispatch-rc ends it a minute after a reply of the
-  `handed` kind and leaves its slot to the landing (`idle_limit`, `lands_after`), while a WAITING line keeps its hour
-  and claims at parking; `yolo_launch` starts `autofinish-run --by handed --rule C` (rule L for a deployed branch),
+  `handed` kind and leaves its slot to the landing (`idle_limit`, `lands_after`), while a WAITING or RELAYED line
+  launches nothing and claims at parking (it ends a minute after, as any run on its closing line: runs-exit-when-done); `yolo_launch` starts `autofinish-run --by handed --rule C` (rule L for a deployed branch),
   needing the switch at the launch, not `armed`, and tries a cap refusal once more after `NEXT_IDLE`. Off, nothing
   changes. dispatch-rc's `last_answer` (the watcher, `ask_guard`, dispatch-queue's requeue quote) and the harness's
   `last_reply` (helm) read past Claude Code's unflagged `<synthetic>` "No response requested.", as `yolo_launch` did;
