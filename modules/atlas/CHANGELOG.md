@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `knowledge-commit --in` never launches a checkpoint's commit under the hook's line: a branch whose every
+  commit is a checkpoint (a `wip:` or `wip(no-summary):` subject, or the hook's session trailer on a subject taken
+  from the reply), this run's own commit aside, is folded into one commit under the caller's
+  message, keeping their `Co-Authored-By` lines; a branch holding one beside its own commits is refused, naming
+  both, with this run's commit taken back (G21). Checkpoints that net to nothing are "nothing to launch", and a
+  relative message file is read where the caller is. With the edits already committed by the checkpoint hook,
+  `-m` had committed nothing, and a layer PR merged `wip: changes between turns` onto main (2026-11-04).
 - `knowledge-home init` on an existing anchor names a `dreams/` missing from its `in_place`, with the exact
   edit, and `check` says it as a note: aurora's scope-pass is not ready without it, and its message pointed at
   an init that said all was well (Evolve S2's landing review, finding 15).

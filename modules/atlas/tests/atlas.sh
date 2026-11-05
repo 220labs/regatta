@@ -143,6 +143,53 @@ grep -q "^carried $L --pull" "$RAN"; check $? 0 "  then carried.py --pull on the
 git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$(git -C "$wt2" symbolic-ref --short HEAD)" >/dev/null; check $? 0 "  the branch was pushed to origin"
 echo "$out" | grep -q "wharf is not installed"; check $? 1 "  and no word of a local launch"
 
+echo "G21: a checkpoint's commit never launches under its own line"
+subj() { git -C "$T/origin.git" log -1 --format=%s "refs/heads/$(git -C "$1" symbolic-ref --short HEAD)" 2>/dev/null; }
+m0=$(git -C "$T/origin.git" rev-parse main)
+count() { git -C "$T/origin.git" rev-list --count "$m0..refs/heads/$(git -C "$1" symbolic-ref --short HEAD)" 2>/dev/null; }
+wt4=$("$KC" mylayer --open wipped 2>/dev/null); echo e > "$wt4/docs/e.md"
+git -C "$wt4" add -A && git -C "$wt4" commit -qm "wip: changes between turns (interrupted turn or edits outside Claude)"
+echo f > "$wt4/docs/f.md"; git -C "$wt4" add -A && git -C "$wt4" commit -qm "wip(no-summary): add f"; : > "$RAN"
+out=$("$KC" mylayer --in "$wt4" -m "Docs: e and f" 2>&1); rc=$?
+check "$rc" 0 "only checkpoint commits, nothing new staged: it launches"
+check "$(subj "$wt4")" "Docs: e and f" "  under the caller's message, not the hook's"
+check "$(count "$wt4")" 1 "  as one commit"
+check "$(git -C "$wt4" show HEAD:docs/f.md 2>/dev/null)/$(git -C "$wt4" show HEAD:docs/e.md 2>/dev/null)" "f/e" "  holding both checkpoints' files"
+echo "$out" | grep -q "folded 2 checkpoint commit(s)"; check $? 0 "  and says it folded them"
+wt5=$("$KC" mylayer --open mixed 2>/dev/null); echo g > "$wt5/docs/g.md"
+git -C "$wt5" add -A && git -C "$wt5" commit -qm "Docs: g"
+echo h > "$wt5/docs/h.md"; git -C "$wt5" add -A && git -C "$wt5" commit -qm "wip: left by session 1234abcd, committed at session start"
+tip5=$(git -C "$wt5" rev-parse HEAD); echo i > "$wt5/docs/i.md"; : > "$RAN"
+"$KC" mylayer --in "$wt5" -m "Docs: g and h" >/dev/null 2>"$T/g21.err"; rc=$?
+check "$rc" 1 "a checkpoint commit beside the branch's own: refused"
+grep -q "wip: left by session 1234abcd" "$T/g21.err"; check $? 0 "  naming the checkpoint"
+check "$(git -C "$wt5" rev-parse HEAD)" "$tip5" "  the branch untouched, this run's own commit taken back"
+check "$(git -C "$wt5" diff --cached --name-only)" "docs/i.md" "  its edit left staged"
+git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$(git -C "$wt5" symbolic-ref --short HEAD)" >/dev/null; check $? 1 "  and nothing pushed"
+grep -q "^pr " "$RAN"; check $? 1 "  nor any pr verb run"
+wt6=$("$KC" mylayer --open wipdirt 2>/dev/null); echo j > "$wt6/docs/j.md"
+git -C "$wt6" add -A && git -C "$wt6" commit -qm "wip: changes between turns (interrupted turn or edits outside Claude)"
+echo k > "$wt6/docs/k.md"
+out=$("$KC" mylayer --in "$wt6" -m "Docs: j and k" 2>&1); rc=$?
+check "$rc" 0 "a checkpoint, then fresh edits this run commits: it launches"
+check "$(subj "$wt6")/$(count "$wt6")" "Docs: j and k/1" "  as one commit under the caller's message"
+wt7=$("$KC" mylayer --open summed 2>/dev/null); echo l > "$wt7/docs/l.md"
+git -C "$wt7" add -A && git -C "$wt7" commit -qm "Done. The rule is in the layer now." \
+  -m "Co-Authored-By: Claude Opus 5.5 <agent>
+claude-session: abcdef12"
+echo "Docs: l" > "$T/g21.msg"
+out=$(cd "$T" && "$KC" mylayer --in "$wt7" g21.msg 2>&1); rc=$?
+check "$rc" 0 "a checkpoint titled from the reply (its trailer only), a relative message file: it launches"
+check "$(subj "$wt7")" "Docs: l" "  under the caller's message"
+git -C "$T/origin.git" log -1 --format=%B "refs/heads/$(git -C "$wt7" symbolic-ref --short HEAD)" | grep -q "^Co-Authored-By: Claude Opus 5.5"
+check $? 0 "  keeping the checkpoint's Co-Authored-By"
+wt8=$("$KC" mylayer --open netzero 2>/dev/null); echo m > "$wt8/docs/m.md"
+git -C "$wt8" add -A && git -C "$wt8" commit -qm "wip: changes between turns"
+git -C "$wt8" rm -q docs/m.md && git -C "$wt8" commit -qm "wip(no-summary): drop m"
+out=$("$KC" mylayer --in "$wt8" -m "Docs: m" 2>&1); rc=$?
+check "$rc" 0 "checkpoints that net to nothing"
+echo "$out" | grep -q "net to nothing"; check $? 0 "  say there is nothing to launch"
+
 echo "F6: knowledge-commit never ends a rebase it did not start, and a rebase of its own drops no commit"
 # stale_rebase <dir> <tracked file>: commit a change to the file, rebase it onto a conflicting one,
 # and put back the rebase-merge folder the abort removed: HEAD on its branch, a rebase still "open",

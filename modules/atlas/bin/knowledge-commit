@@ -40,14 +40,15 @@
 # into a `Vault:` commit as a gitlink by vault_commit.py (gap review item 1). `--in` first
 # commits and pushes the primary's in_place dirt by the straight form (a main ahead of origin by
 # its own records cannot fast-forward to the merge, gap review item 3), then commits what is
-# dirty in the worktree, rebases on origin/main, runs the check (the layer: only bootstrap.sh
+# dirty in the worktree, folds a branch of checkpoint commits under the given message (refusing one
+# that mixes them with commits of its own, G21), rebases on origin/main, runs the check (the layer: only bootstrap.sh
 # --check when every changed path is prose, its hooks suite and bootstrap.sh --check otherwise; the vault:
 # <the vault's variable>=<worktree> bootstrap.sh --check of the live layer, so the vault's budgets are the
 # branch's), pushes the branch, readies and merges its PR with wharf's `pr`, and fast-forwards
 # the primary checkout — live from then on. No token, no origin, CLAUDE_HOOK_NO_GITHUB, or no
 # wharf module (G20: `pr` and `carried.py` are its, found through the core): it fast-forwards
-# the primary locally instead and says main is ahead of origin. A failing check launches nothing
-# and leaves the branch as it is. A diff touching an in_place path is refused: main appends
+# the primary locally instead and says main is ahead of origin. A failing check launches nothing;
+# the branch keeps the fold and the rebase this run made (the same files; the old commits in the reflog). A diff touching an in_place path is refused: main appends
 # that file all week, and a PR carrying it conflicts (gap review item 4).
 #
 # Reviewed before it launches (the owner, 2026-09-29, as amended): a change to anything but a
@@ -201,13 +202,17 @@ if [ "${1:-}" = "--in" ]; then
   # The primary too: a fast-forward of its main past a leftover rebase is undone by the next `rebase --abort`.
   refuse_busy "$repo" "nothing committed or launched"
   if [ "${1:-}" = "-m" ]; then msgargs=(-m "$2"); shift 2
-  elif [ -f "${1:-}" ]; then msgargs=(-F "$1"); shift
+  # Absolute: `git -C "$wt" commit -F` reads a relative path inside the worktree, not where -f found it.
+  elif [ -f "${1:-}" ]; then msgargs=(-F "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"); shift
   else echo "knowledge-commit: need -m <msg> or a message file" >&2; exit 2; fi
   for a in "$@"; do  # an option after the message would be taken for a path
     case "$a" in --*) echo "knowledge-commit: $a goes before -m (--in <path> [--review <report>] -m …)" >&2; exit 2 ;; esac
   done
   if [ $# -gt 0 ]; then git -C "$wt" add -- "$@"; else git -C "$wt" add -A; fi
+  head0=$(git -C "$wt" rev-parse HEAD)
   git -C "$wt" diff --cached --quiet || git -C "$wt" commit -q "${msgargs[@]}"
+  # This run's own commit, if it made one: it carries the caller's message, so it is never the branch's own (G21).
+  mine=; [ "$(git -C "$wt" rev-parse HEAD)" = "$head0" ] || mine=$(git -C "$wt" rev-parse HEAD)
   # The primary's in_place dirt first, committed and pushed by the straight form (item 3).
   if on_workflow && [ -n "$(wf_list main in_place)" ]; then
     "$0" "$which" -m "Vault: records written in place, before launching $b" >&2 || true
@@ -229,6 +234,47 @@ if [ "${1:-}" = "--in" ]; then
   if [ $online = 1 ] && git -C "$wt" fetch -q origin main 2>/dev/null; then base=origin/main; else online=0; fi
   if [ -z "$(git -C "$wt" rev-list "$base..HEAD")" ]; then
     echo "$(basename "$repo"): nothing to launch from $b — it holds nothing $base lacks"; launched
+  fi
+  # A checkpoint's commit is no message a launch may land (G21). The checkpoint hook commits a turn's edits under
+  # commit-summary.md's line, the turn's reply, or `wip: …` / `wip(no-summary): …` (sync.py a dead session's as
+  # `wip: left by session …`), always with its session trailer, the session id's first 8 characters (`unknown` from sync.py); a
+  # curated commit's is a URL. git matches a trailer key in any case, so the key is spelt in lower case. A branch whose edits the hook took first has nothing staged here, the -m above
+  # commits nothing, and the branch launched under the hook's line (the layer's PR merged `wip: changes between
+  # turns` onto main, 2026-11-04). Every commit the branch adds a checkpoint's, or this run's own: fold them into
+  # one under the caller's message, which is what -m meant, keeping their Co-Authored-By lines (the agent mark keel
+  # reads); the tree is the same, so the review diff still stands. A commit of the branch's own beside them:
+  # refuse, naming each, as folding would drop its message, and take back this run's commit. Commits $base
+  # already holds by patch (a launch GitHub's rebase merge rewrote) are not the branch's own.
+  ckpt=(); own=(); wipre='^wip(\([a-z-]+\))?: '
+  while IFS=$'\x1f' read -r h s t; do
+    [ -n "$h" ] || continue
+    [ "$h" = "$mine" ] && continue
+    if [[ $s =~ $wipre ]] || printf '%s\n' "$t" | tr '\035' '\n' | grep -qE '^([0-9a-f]{1,8}|unknown)$'; then
+      ckpt+=("${h:0:8} $s")
+    else own+=("${h:0:8} $s"); fi
+  done < <(git -C "$wt" log --no-merges --cherry-pick --right-only \
+             --format='%H%x1f%s%x1f%(trailers:key=claude-session,valueonly,separator=%x1d)' "$base...HEAD")
+  if [ ${#ckpt[@]} -gt 0 ]; then
+    if [ ${#own[@]} -gt 0 ]; then
+      [ -z "$mine" ] || git -C "$wt" reset -q --soft "$head0"
+      echo "$(basename "$repo"): NOT launched — $b holds ${#ckpt[@]} checkpoint commit(s) beside its own; a launch would land their message:" >&2
+      printf '  %s\n' "${ckpt[@]}" >&2
+      echo "  beside:" >&2; printf '  %s\n' "${own[@]}" >&2
+      echo "  A session in $(basename "$repo") curates the branch with /finish, which launches it" >&2
+      exit 1
+    fi
+    tip=$(git -C "$wt" rev-parse HEAD); mb=$(git -C "$wt" merge-base "$base" HEAD)
+    if git -C "$wt" diff --quiet "$mb" HEAD; then
+      echo "$(basename "$repo"): nothing to launch from $b — its checkpoint commits net to nothing"; launched
+    fi
+    tr=()
+    while IFS= read -r v; do [ -n "$v" ] && tr+=(--trailer "Co-Authored-By: $v"); done \
+      < <(git -C "$wt" log --format='%(trailers:key=Co-Authored-By,valueonly,separator=%x0a)' "$mb..HEAD" | awk 'NF && !seen[$0]++')
+    if ! { git -C "$wt" reset -q --soft "$mb" && git -C "$wt" commit -q "${msgargs[@]}" ${tr[@]+"${tr[@]}"}; }; then
+      git -C "$wt" reset -q --soft "$tip" 2>/dev/null || true
+      echo "$(basename "$repo"): NOT launched — folding $b's checkpoint commits failed; the branch is back at ${tip:0:8}" >&2; exit 1
+    fi
+    echo "$(basename "$repo"): folded ${#ckpt[@]} checkpoint commit(s) on $b into one under the given message" >&2
   fi
   if ! rebase_own "$wt" "$base"; then
     echo "$(basename "$repo"): NOT launched — $b does not rebase cleanly on $base; resolve in $wt" >&2; exit 1
