@@ -21,6 +21,13 @@
   own ptys, never the owner's terminals), the OS's db folder to its timezone, the pasteboard's mach service and
   Homebrew's `var` and `etc` denied; F4's probe asks for each.
 
+- The gate's module table (`settings/models.json`) carries a row for every site the modules name as a constant (evolve S11): `scope.brief`,
+  `plan.stall` (classify, Sonnet 5.5, fail), `review-gate.reviewer` and `review-gate.code-review` (review, Claude),
+  `review-gate.merge` (generate, Opus 5.5 `medium`, skip), `review-gate.same-shadow` (off, skip), `sparks.shape` (generate, fail),
+  `sparks.route` (generate, skip) and `sparks.redact` (off, fail until a vendor is approved); nine of eighteen had none, and
+  a stranger's install met "no row for" at each. New `tests/gate_sites.sh` (run by `check.sh`; `tests/gate_sites.py` is its AST walk)
+  finds every site by the syntax tree, never a regex (a name in a comment or a docstring is no site), and resolves each under an
+  empty config with every `GATE_*` variable cleared; an `off` row is a row.
 - `hooks/fence.py` (the isolation design's S5): `outcomes(cli, log)`, the shell commands a CLI's own log shows run
   with their output and exit; `offered(cli, log)`, the tools its init event offers; `features_diff(listing)`,
   `codex features list` against the pinned `CODEX_FEATURES` (new, gone), which `codex_features` now reads through.

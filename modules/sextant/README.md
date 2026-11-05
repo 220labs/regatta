@@ -136,13 +136,13 @@ note is still filed.
 | atlas (`knowledge-commit`, its layer and vault keys) | `/sextant`'s worktrees, its launch, where it works | `where` says MISSING and the pass stops |
 
 The model for each call is a row in the core's gate table (`sparks.shape`, `sparks.route`,
-`sparks.redact`). The core's default table has none of them, so a pass waits ("no row for
-sparks.shape") until your own table — `regatta/models.json` in the config dir, which wins over the
-default row by row (a site it lacks runs the core's row) — carries them, for example:
+`sparks.redact`). The core's default table carries all three (shape and route on Claude, redact off), so a
+stranger's install runs them as they stand; your own table — `regatta/models.json` in the config dir, which wins
+over the default row by row (a site it lacks runs the core's row) — changes any of them, for example:
 
 ```json
-"sparks.shape":  {"kind": "generate", "provider": "claude", "when_off": "fail"},
-"sparks.route":  {"kind": "generate", "provider": "claude", "when_off": "skip"},
+"sparks.shape":  {"kind": "generate", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "fail"},
+"sparks.route":  {"kind": "generate", "provider": "claude", "model": "claude-sonnet-5-5", "when_off": "skip"},
 "sparks.redact": {"kind": "classify", "provider": "off", "when_off": "fail"}
 ```
 
