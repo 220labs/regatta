@@ -146,7 +146,9 @@ another seat. A tenant's own row is not confined to its repos: its own deny list
 may run (an organisation's seat wants the vault on it). Entries are repo keys as in a deny list,
 or a glob (`acme-*`; `*` spans `/`) matched against the key and, when git cannot answer, the path,
 so a repo cloned later is the tenant's the day it lands. With no reading of the tenant login's
-limits, pick runs it there rather than nothing, as the primary's rule has it: no other row may. `holds_denied` ignores tenancy, a folder
+limits, pick runs it there rather than nothing, as no other row may; a tenant of several logins runs the first unread
+one only once every row was tried, so a later login of the tenant with room runs first (tenant-unknown-last), while the
+primary's rule still runs at once. `holds_denied` ignores tenancy, a folder
 holding a tenant's repo loads nothing of it, bar one tenant: the one holding the vault (`lighthouse/vault`), whose files the
 default dir's CLAUDE.md imports. A folder holding any of that tenant's repos is off every row but the tenant's, the default dir's
 included (confidential-reach S7, 2026-10-26: the vault is a tenant like any other, and its tenant replaces the work seats' deny
@@ -282,7 +284,7 @@ deny lists — is the same for it: a login Orca holds is still a config dir.
 A ship stays on one login (same doc): `pick --ship KEY` returns the login KEY was pinned to while
 that row is enabled, here, on its own login and allowed in the repo — waiting (exit 3) rather than
 moving when it has no room, except the primary with unreadable limits, which runs as plain pick
-has it. A ship with no pin gets the walk's pick and is pinned to it; `--no-pin` leaves that to
+has it, and a tenant's login with unreadable limits, which moves when plain pick finds another row with room. A ship with no pin gets the walk's pick and is pinned to it; `--no-pin` leaves that to
 the caller (`ships --pin KEY LABEL` once its worker started). Pins live in SHIPS, per Mac, written
 under a lock, and go after PIN_DAYS unused or on `ships --release KEY` (the ship landed).
 """
@@ -1494,8 +1496,8 @@ def tenant_entry(r):
 
 
 def own_tenant(reg, a, path):
-    """True when path is a repo of row a's own tenant: there it is the one row that may run it, so an
-    unreadable reading runs the step rather than nothing, as the primary's does (review 2026-10-20). A confined
+    """True when path is a repo of row a's own tenant: there only the tenant's rows may run it, so an
+    unreadable reading runs the step rather than nothing once no other row may (review 2026-10-20; pick). A confined
     row's own are only the tenant's repos its `confined` entry also covers (tenant_confined)."""
     t = a.get("tenant")   # a list or object here would be unhashable: no tenant, never a crash (review 2026-10-21)
     entries = (reg.get("tenants") or {}).get(t) if isinstance(t, str) else None
@@ -2703,7 +2705,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         rows = [a for a in rows if a.get("primary")]
     if not rows:
         raise Short([(prov, f"no enabled {prov} account{' marked primary' if bound else ''} in {REGISTRY}")])
-    skipped = []
+    skipped, unread_own = [], None
     own = scope_login_of(repo)
     if own and not own[1]:
         raise Short([("registry", f"{own[0]}: no run picks a seat until it does")])
@@ -2749,9 +2751,18 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             # never one whose room is unknown.
             return a, "limits unknown — the primary runs it rather than nothing", skipped
         if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
-            # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever
-            return a, "limits unknown — the tenant's own login runs it rather than nothing", skipped
+            # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever;
+            # but a tenant has several logins, and an unread one first in the walk (a login not signed in yet)
+            # must not shadow a later one that is eligible: held, and run only once every row was tried
+            # (tenant-unknown-last, 2026-11-04: a tenant's new login, not signed in yet, was picked over a sibling with room)
+            if unread_own is None:
+                unread_own = (a, len(skipped))
+            skipped.append((a["label"], why))
+            continue
         skipped.append((a["label"], why))
+    if unread_own:
+        held, at = unread_own
+        return held, "limits unknown — the tenant's own login runs it rather than nothing", skipped[:at] + skipped[at + 1:]
     raise Short(skipped)
 
 
@@ -3826,7 +3837,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
         pinned = ships.get(key)
         prov = provider_for(reg, kind, provider)
         a = next((r for r in reg["accounts"] if pinned and r["label"] == pinned.get("label")), None)
-        moved = None
+        moved, alt = None, None
         if a is not None:
             d = denied(a, repo)
             own = scope_login_of(repo)
@@ -3854,7 +3865,16 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
                 elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
                         and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
-                    ok, why = True, "limits unknown — the tenant's own login runs it rather than nothing"
+                    # and as pick walks it: another row with room runs before an unread tenant login (tenant-unknown-last)
+                    try:
+                        alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room)
+                    except Short:
+                        alt = None
+                    if alt and alt[0]["label"] != a["label"] and not alt[1].startswith("limits unknown"):
+                        gone = f"of unknown limits, and {alt[0]['label']} has room"
+                    else:
+                        alt = None
+                        ok, why = True, "limits unknown — the tenant's own login runs it rather than nothing"
                 if ok and not gone:
                     if pin:  # a pin lasts PIN_DAYS from its last use, so a long ship keeps it
                         ships[key]["at"] = int(now())
@@ -3865,7 +3885,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             moved = f"{pinned['label']} is {gone}"
         elif pinned:
             moved = f"{pinned.get('label')} is no row any more"
-        a, why, skipped = pick(reg, kind, provider, False, cached, repo, allow_overage, room)
+        a, why, skipped = alt or pick(reg, kind, provider, False, cached, repo, allow_overage, room)
         if pin:
             ships[key] = {"label": a["label"], "at": int(now())}
             write_json(SHIPS, ships)

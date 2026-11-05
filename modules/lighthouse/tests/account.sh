@@ -1741,6 +1741,27 @@ rm -f "$L/stub-usage" "$L/usage-probe.json"
 check "$(TA pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "the tenant login's limits unreadable → it runs there rather than nothing (no other row may)"
 has "$T/out" "the tenant's own login runs it rather than nothing" "…saying so"
 check "$(TA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "…while elsewhere an unreadable non-primary is skipped, as before"
+# a tenant of two logins, the unreadable one first (a login not signed in yet): the readable one runs it
+# (tenant-unknown-last, 2026-11-04: a tenant's new login, not signed in yet, shadowed an eligible one)
+echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
+  {"label": "work", "provider": "claude", "home": "~/.claude-work", "tenant": "acme"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
+ "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.tu"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 work" "a tenant's unreadable first login never shadows its eligible second"
+check "$(python3 -c "import json;print([x[0] for x in json.load(open('$T/out'))['skipped']])")" "['lab']" "…which skips it, saying so"
+touch "$L/stub-nologin"; rm -f "$L/usage-probe.json"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 work" "…nor does one whose reading has no window figures (signed out)"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A ships --pin acme/s1 lab; ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --ship acme/s1 --repo "$PR/acme-one" --json) $(field "['account']")" "0
+0 work" "a ship pinned to the unread tenant login moves to the tenant's login with room"
+has "$T/out" "lab is of unknown limits, and work has room" "…saying why"
+rm -f "$L/stub-nologin" "$L/usage-probe.json"
+mv "$F/stub-usage" "$F/stub-usage.off"; rm -f "$F/usage-probe.json"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "…and with both unreadable the first still runs it rather than nothing"
+has "$T/out" "the tenant's own login runs it rather than nothing" "…saying so"
+check "$(python3 -c "import json;print([x[0] for x in json.load(open('$T/out'))['skipped']])")" "['work', 'main']" "…the others listed as tried"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A ships --pin acme/s2 lab; ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --ship acme/s2 --repo "$PR/acme-one" --json) $(field "['account']")" "0
+0 lab" "…and a ship pinned there stays on it when no other row has room"
+mv "$F/stub-usage.off" "$F/stub-usage"; rm -f "$F/usage-probe.json"
 use "$L" "10 10"; rm -f "$L/usage-probe.json"
 echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
   {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "primary": true}],

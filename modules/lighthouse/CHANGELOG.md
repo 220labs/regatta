@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- tenant-unknown-last (2026-11-04): `pick --repo` of a tenant's repo runs an unreadable own login (one not
+  signed in yet) only once every row was tried, so it no longer shadows a later login of the tenant that is
+  eligible; `pick --ship` moves a ship pinned to such a login there too.
 - The budgets file's edges (budgets-edges, 2026-11-02, from #360 and #401): an owner's cap is a cap — inside a row's
   `reserve` window (`day` or `last_hours`) a budgeted `week_max` that tightens the row (below the registry's own
   `week_max`) and is lower than the reserve's reads in its place, named `<the window>, capped by budgets.json`
