@@ -5,8 +5,8 @@ runner, not a model: it starts `claude` or `codex` as a supervised worker in a w
 so `--agent claude|codex` picks which. One Orca Dispatch (one attempt at one Task) is one session
 here: its id is the record's session_id.
 
-What it runs: the `orca` CLI with `--json` — HARNESS_ORCA, else `orca` on PATH, else the app's own
-/Applications/Orca.app/Contents/Resources/bin/orca — always with ELECTRON_RUN_AS_NODE cleared: a
+What it runs: the `orca` CLI with `--json` — HARNESS_ORCA, else on Linux `orca-ide` on PATH, else
+`orca` on PATH, else the app's own /Applications/Orca.app/Contents/Resources/bin/orca — always with ELECTRON_RUN_AS_NODE cleared: a
 Claude Code session in VS Code inherits it from the extension host, and Orca then runs as plain
 Node and exits 9 (lessons/claude-code.md, "A session in VS Code cannot start an Electron app as-is").
 
@@ -61,6 +61,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 HARNESS = "orca"
@@ -70,18 +71,67 @@ AGENTS = ("claude", "codex")
 _FINAL = ("completed", "failed", "canceled")
 
 
+def _linux():
+    """Linux by HARNESS_ORCA_PLATFORM (the suites), else this Python's own platform."""
+    return (os.environ.get("HARNESS_ORCA_PLATFORM") or sys.platform).startswith("linux")
+
+
 def _bin():
-    return os.environ.get("HARNESS_ORCA") or shutil.which("orca") or (APP_CLI if os.path.exists(APP_CLI) else None)
+    """HARNESS_ORCA; on Linux `orca-ide` alone, as orca-host and kicklib's orca_bin look (a bare `orca`
+    there is GNOME's screen reader, or serve's start-up shim); on a Mac `orca` on PATH, then the app's CLI."""
+    if os.environ.get("HARNESS_ORCA"):
+        return os.environ["HARNESS_ORCA"]
+    if _linux():
+        return shutil.which("orca-ide")
+    return shutil.which("orca") or (APP_CLI if os.path.exists(APP_CLI) else None)
+
+
+# What a running Orca looks like, per OS. On a Mac, the app bundle's binary, by `pgrep -f` anchored at
+# the line's start, so neither a probe's own shell nor a prompt that names the path matches. On Linux
+# the .deb's Electron binary `orca-ide` (/opt/Orca/orca-ide, or wherever a server was installed) as the
+# first word of a process's argv, read from /proc (no exec, so a sandbox that may not run pgrep still
+# reads): the desktop app runs it with no CLI script, the headless server as `<orca-ide>
+# <...>/out/cli/index.js serve --pairing-address …` (read on a Linux yard node, 2026-11-04). Every CLI
+# call runs as `<orca-ide> <...>/cli/index.js <verb>` too, so a call in flight with no server is not
+# Orca up; nor is the bash launcher (`bash .../bin/orca-ide serve`), whose argv starts with bash. The
+# Mac pattern alone read every Linux yard as "Orca is not running here", so wharf apply exited 3.
+MAC_PROC = r"^[^ ]*/Orca\.app/Contents/MacOS/Orca( |$)"
+PROC = "/proc"
+
+
+def _orca_argv(argv):
+    """This argv (a list) is a running Orca app or server on Linux."""
+    if not argv or os.path.basename(argv[0]) != "orca-ide":
+        return False
+    cli = [k for k, a in enumerate(argv) if a.endswith("/cli/index.js")]
+    if not cli:
+        return True                                  # the desktop app, or one of its Electron children
+    k = cli[0]
+    return len(argv) > k + 1 and argv[k + 1] == "serve"
 
 
 def _app_up():
-    """The Orca app is running here. A read never starts it (an `orca` call may launch the runtime;
-    not probed), so with the app down there is nothing live to read and V1 refuses. A stub
-    (HARNESS_ORCA, the tests) stands in for the app."""
+    """The Orca app (or its headless server) is running here. A read never starts it (an `orca` call
+    may launch the runtime; not probed), so with the app down there is nothing live to read and V1
+    refuses. A stub (HARNESS_ORCA, the tests) stands in for the app."""
     if os.environ.get("HARNESS_ORCA"):
         return True
+    if _linux():
+        try:
+            pids = [d for d in os.listdir(PROC) if d.isdigit()]
+        except OSError:
+            return False
+        for d in pids:
+            try:
+                with open(os.path.join(PROC, d, "cmdline"), "rb") as f:
+                    raw = f.read()
+            except OSError:
+                continue                             # gone meanwhile, or not ours to read
+            if _orca_argv([a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]):
+                return True
+        return False
     try:
-        return subprocess.run(["pgrep", "-f", "Orca.app/Contents/MacOS/Orca"], capture_output=True, timeout=5).returncode == 0
+        return subprocess.run(["pgrep", "-f", MAC_PROC], capture_output=True, timeout=5).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
@@ -96,7 +146,7 @@ def _call(ctx, args, timeout=60):
     """(result, None) or (None, error message) of `orca ARGS --json`."""
     b = _bin()
     if not b:
-        return None, "no orca CLI (HARNESS_ORCA, PATH, %s)" % APP_CLI
+        return None, "no orca CLI (HARNESS_ORCA, %s)" % ("orca-ide on PATH" if _linux() else "PATH, " + APP_CLI)
     try:
         r = subprocess.run([b] + list(args) + ["--json"], env=_env(), capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -118,7 +168,10 @@ START_WAIT = float(os.environ.get("HARNESS_ORCA_START_WAIT") or 90)   # s for a 
 # Orca's Yolo mode's flag per agent (its bundle's map, 1.4.225): any of them in an agent's default args
 # starts that agent with its approvals or its sandbox bypassed
 BYPASS = ("--dangerously-bypass-approvals-and-sandbox", "--dangerously-skip-permissions", "--yolo", "--yes-always")
-ORCA_DATA = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "orca")
+# Electron's userData for the app name `orca`, as orca-host's default_data reads it per OS
+ORCA_DATA = (os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "orca")
+             if (os.environ.get("HARNESS_ORCA_PLATFORM") or sys.platform).startswith("linux")
+             else os.path.join(os.path.expanduser("~"), "Library", "Application Support", "orca"))
 
 
 def orca_settings():
