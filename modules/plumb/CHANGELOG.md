@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- `asks` (evolve S11, S1's follow-ups): `asks merge`, the theme ledger's merge pass over the model slugs, one
+  `evolve.theme` call a month (`run` makes it when due and the ledger holds twenty slugs; a group of more than thirty
+  is held; `theme-merges.json` keeps old → kept and `numbers`, `ship` and new runs follow it; its cost is its row in `theme-merges.jsonl`,
+  which `numbers` adds to the week's spend; `runs.jsonl` stays the weekly pass's own log);
+  `numbers` reports G1's rows apart, E and N (`g1_E`, `g1_N`; the headline `recall` is E's alone), residual asks per 100
+  owner prompts and the J, unknown and not-yet-matched counts; lead time is now the finding's day minus the ask's
+  (negative when the loop was first; it was the other way round, with no finding yet to carry it); `asks cusum` replays
+  the memo-acceptance CUSUM on the owner's answers in timestamp order; `asks golden add|list|check` and
+  `golden/manifest.json`: the Ring 0 fixture (ids and verified labels in git, the text in the state dir, refused
+  under precision 0.80 or recall 0.85; `add` refuses a checkout on `main`, and every `golden` verb a manifest or a
+  text file that does not read). `cusum` skips a free-text answer to a question that
+  marked no pick; a merge pass whose row names another provider is said failed, never a traceback. `knowledge-numbers` prints the rows apart.
+  A `theme-merges.json` that is there and does not read is refused, never read as empty (`merge` and `run` make no
+  pass over it, `ship` refuses, `numbers` says `unreadable`); `run`, `ship` and the merge pass hold one lock on the
+  ledger from read to write; an `evolve.match` that is off no longer stops `run`'s merge pass; a reply that is no
+  JSON object is the call's failure, never a traceback, its spend counted all the same; `run --no-model` makes no
+  merge pass, and `merge` judges the pass due again once it holds the ledger.
+  A `themes.json` that does not read is refused the same way (`run`, `ship`, `merge`); folding keeps the newest
+  shipped mark; a merge reply whose groups is no list is a failed call; `merge --dry-run` makes no paid call; `golden
+  add` refuses a peer's unattended job and a manifest in no git checkout (an install's folder).
 - `usage-report tick` keeps the last 6 lines of lighthouse's `account refresh`, not 4 (budgets-edges, 2026-11-02:
   the budgets link and its copy took the room), and its docstring names the budgets file.
 - trim reads the builder rotation's rows (S6 of the Trim design): a vertical's `builders` source

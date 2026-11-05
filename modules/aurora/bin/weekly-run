@@ -598,7 +598,7 @@ plan() {
       trim)     if [ -z "${WEEKLY_TRIM:-}$TRIM" ]; then what="plumb's trim is not installed (regatta which trim)"
                 else what="plumb's trim collect, report --write and verdict --write --night in $(trim_repos | grep -c .) repo(s), no session; on a Sunday night it waits until 00:30 for every host's day files"; fi ;;
       asks)     if [ -z "${WEEKLY_ASKS:-}$ASKS" ]; then what="plumb's asks is not installed (regatta which asks)"
-                else what="plumb's asks run — the owner's week of prompts through the gate (one batched call per dimension per 50 prompts, about 15 a week, and a theme call per 50 asks), ids and counts into plumb's state dir; no session"; fi ;;
+                else what="plumb's asks run — the owner's week of prompts through the gate (one batched call per dimension per 50 prompts, about 15 a week, and a theme call per 50 asks; once a month one evolve.theme merge call over the slugs), ids and counts into plumb's state dir; no session"; fi ;;
       charts)   what="claude -p \"/aurora charts\" from $C, then its PR" ;;
       review)   what="not built (skills/aurora/SKILL.md: planned)" ;;
       dream)    what="claude -p \"/aurora dream\" from $cwd, then dreams/<day>.md must be on $VAULT_NAME main" ;;

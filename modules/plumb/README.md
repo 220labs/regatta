@@ -196,6 +196,9 @@ asks run [--days 7] [--no-model] [--dry-run]   # the week's pass: intake, sieve,
 asks numbers [--json]                          # asks per 100 prompts, detectable share, repeat share, recall, cost
 asks baseline [--corpus DIR] [--model]         # replay a labelled corpus; agreement per dimension, counts only
 asks ship <theme> <ref>                        # a mechanism shipped for a theme
+asks merge [--dry-run] [--force]               # the theme ledger's merge pass: one evolve.theme call a month over the slugs
+asks cusum [--days 60] [--json]                # the memo-acceptance CUSUM replayed on the owner's answers, timestamp order
+asks golden add|list|check                     # the fixture behind a change to the evolve.ask prompt or labels
 ```
 
 `run` reads `week-digest --json` (a confidential scope's sessions are counted and never opened), drops what a launcher
@@ -204,6 +207,21 @@ batched call each), `evolve.theme` (a slug naming the need) and `evolve.match` (
 dated before it, idle until a findings folder exists). The ledger in plumb's state dir (`asks/`, or `ASKS_STATE`) holds
 ids, labels, counts, model theme slugs and short unsalted word hashes, never a prompt's text (a word list can reverse a hash: the state dir is the owner's alone); a prompt from a guarded repo (jev's GUARDED) is refused per repo and keeps the sieve's labels; with a gate row off or failing the sieve's labels stand and each row
 says so. The prompts and label set are the owner's to change, not the loop's.
+
+The model names one need with different slugs across weeks (255 slugs over 386 asks on the first baseline), so the
+repeat share reads low until a merge pass groups them: `merge` sends the slugs (never the owner's words) to the
+`evolve.theme` row in one call, folds each group into the slug most sessions raised, and keeps old → kept in
+`theme-merges.json`, which `numbers` follows. `run` makes the pass itself once a month, for a ledger of twenty slugs
+or more; a group of more than thirty slugs is held, not folded. `numbers` reports G1's rows apart: recall of the E
+asks and of the N asks (an N sensor never moves E's), residual asks per 100 owner prompts, and lead time as the
+finding's day minus the ask's, negative when the loop was first; J, unknown and not-yet-matched asks are counted
+beside them. `cusum` replays the per-item CUSUM (slack 0.10, threshold 8 items, trailing eight weeks) on the owner's
+memo and chat answers in the order of their timestamps, with ties by id; it says whether it would have fired and how
+high the deficit went, and how high a day's overrules read first would have taken it (the replay that fired).
+`golden` is the Ring 0 fixture: `golden/manifest.json` holds ids and the owner's verified labels, the prompts' text
+lives only in the state dir (`add` writes the manifest of the checkout the tool runs from, and refuses one on `main`, what the shims run: run it from a worktree, or name the file with `ASKS_GOLDEN`), `add` refuses an unattended run, and `check` runs the live prompt and labels over the
+fixture and exits 3 under precision 0.80 or recall 0.85 of the detectable class (E or N), 4 when it cannot tell
+(fewer than thirty labels with their text, a gate that gave nothing). The bars are provisional.
 
 ## Private values
 

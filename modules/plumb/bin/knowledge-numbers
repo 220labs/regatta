@@ -679,6 +679,20 @@ def asks_numbers(scope, tool=None):
         return {"measured": False, "why": "bin/asks is not installed or did not answer"}
 
 
+def g1_text(asks):
+    """G1's rows apart (evolve S11): recall of the E asks and of the N asks, residual asks per 100 owner prompts,
+    lead time (the finding's day minus the ask's: negative when the loop was first). A ledger from before S11
+    has only `recall`."""
+    pc = lambda v: v if isinstance(v, str) else "–" if v is None else f"{v}%"
+    num = lambda v, unit: v if isinstance(v, str) else "–" if v is None else f"{v} {unit}"
+    if "g1_E" not in asks:
+        return f"recall {pc(asks.get('recall'))}; "
+    e, n = asks["g1_E"], asks["g1_N"]
+    return (f"recall of E asks {pc(e['recall'])} ({e['eligible']} eligible), of N asks {pc(n['recall'])} ({n['eligible']} eligible); "
+            f"residual {num(asks['residual_per_100'], 'per 100 prompts')}; lead time {num(e['lead_days'], 'days')} (E); "
+            f"not counted: J {asks['j_asks']}, unknown {asks['unknown_asks']}, not yet matched {asks['unmatched_eligible']}; ")
+
+
 def main():
     scope = sys.argv[sys.argv.index("--scope") + 1] if "--scope" in sys.argv[:-1] else None
     if "--scope" in sys.argv and (not scope or scope.startswith("--")):
@@ -888,7 +902,7 @@ def main():
         print(f"| the owner's asks, last {asks['window_days']} days (`bin/asks`) | {asks['asks']} in {asks['themes']} themes, "
               f"{asks['asks_per_100']} per 100 owner prompts ({asks['owner_prompts']}); a record could have shown {pc(asks['detectable_share'])}, "
               f"the owner's judgement {pc(asks['judgement_share'])}; repeating a theme (60 days) {pc(asks['repeat_share'])}; "
-              f"recall {asks['recall']}{'%' if isinstance(asks['recall'], int) else ''}; "
+              + g1_text(asks) +
               f"loop cost {common.cost_text(asks['cost_week_usd'])} this week, {common.cost_text(asks['cost_4w_usd'])} in 4 weeks |")
     else:
         print(f"| the owner's asks (`bin/asks`) | not measured — {asks.get('why')} |")
