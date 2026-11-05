@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `yard-node cloud` learns `provider: oci` (free-ci S5): `tofu/oci/` makes one pay-as-you-go `VM.Standard.A1.Flex`
+  (4 OCPU / 24 GB, Ubuntu 24.04 aarch64, as Oracle lists no 26.04) with a 150 GB boot volume under `prevent_destroy`,
+  its own VCN with ssh from the tailnet only (`ssh-from` opens one address, briefly), the A1 quota pinned to 4 cores and 24 GB and
+  a one-dollar budget alert, both before the instance; the render goes as its user-data, base64 of its gzip. Oracle's API key reaches tofu as
+  `TF_VAR_*` only, from the node's secrets file. The guest's Node and Orca installers pick their build by `uname -m`,
+  the arm64 Node pinned by its own sha256. A stand-in user-data (a render that refused, for a recorded instance)
+  applies only through a saved plan that creates no instance; a region with more than one availability domain is refused.
 - `autofinish-run` no longer lets the landing ladder pin a mode or hand-over finish to a host that cannot claim one:
   where this host lacks `finish-queue` (off a Mac with no feature line), that pin is dropped, the entry goes to the
   fleet, and a hold the ladder judged here rides in its rights as a ready PR. A node's handed landing waited for a

@@ -641,7 +641,8 @@ def runtime_up():
 
 def deb_arch_ok(name):
     """True when a release asset is this machine's .deb: the arm64 one on arm, the other elsewhere
-    (the guest's installer takes the non-arm one, as Orca ships one of each)."""
+    (the guest's orca-ide-install applies the same rule by `uname -m` on x86_64 and arm; on any other
+    machine it installs nothing, where this takes the non-arm .deb)."""
     arm = platform.machine().lower() in ("aarch64", "arm64")
     return name.endswith(".deb") and bool(re.search(r"arm64|aarch64", name)) == arm
 
