@@ -34,6 +34,27 @@
   failure; the run keeps its mode and task for `--next`; a merge with no conflict is a wait; a fallback clears a pin.
   Round 7: a reviewer's report with no verdict and no word is asked for again in one short turn, as a clean report in
   prose is the common shape.
+- yard-node: a new named node comes up from the scripts alone (node-up, 2026-11-05: the first Azure node took a dozen hand
+  steps). `node/post-install.sh` writes the datasource as `99_zz-yard-node.cfg` (Azure's `90_dpkg.cfg` sorted after the old
+  `90-yard-node.cfg` and won), replaces this boot's ds-identify pick in `/run/cloud-init/cloud.cfg` so no reboot is needed,
+  reads cloud-init's merged config back and stops before the seed when it would not boot it, keeps the provider's ssh host
+  keys (`ssh_deletekeys: false`) and prints their fingerprints. The guest installs Codex (pinned) and puts the user's
+  `.local/bin` first in its `.bashrc`, above Ubuntu's interactive guard. `yard-node add --node NAME --like OTHER --address IP` writes this
+  host's side (the node folder, its ssh alias, its `regatta/fleet-ssh` line) and prints the post-install, sign-in and `up`
+  lines; `yard-node up --node NAME`, after the owner's one sign-in, sends `node/node-up.py` over ssh: the clones
+  fast-forwarded, the first run marked done, `wharf-runs/features` (the folder's names only, none by default: a capable
+  node meets `finish-queue` by its own readiness, and `add` never copies it) and `queue-repos`, the overlay's `bootstrap.sh --config`,
+  the node's own `lighthouse/accounts.json` (a file, its rows the signed-in logins with the walk's rules, re-written after
+  every `--config`), `--hooks` and `repos --hooks`, both timers under the label prefix, then a verdict; it copies the word
+  list and names what the registry's hosts and berths still lack. The node's own narrowing survives every `up` (the fix
+  round's D1-A, 2026-11-06): its row's `repos.deny` joins the walk's, its `tenant`, `routed` and `enabled` win, and once
+  the node holds a file a login it lacks is written only from a `--label` typed by hand: `up` sends a label it mapped from
+  an e-mail as `--mapped`, and a file that does not read writes no login; a road that writes no walk puts the node's own
+  rows back over `--config`'s link, the node's walk-level `tenants` is kept beside the overlay's, and a node's `off` in
+  `wharf-runs/queue-repo` is written back after `--config`, however `--config` ends, and the verdict wants no sweep timer
+  where the queue has no home. A login of a provider the node's fence lacks (a scope node's Codex home) is left out on the
+  Mac, never refused; `add`'s ssh alias carries every key the like alias names, each quoted. tests/node.sh N2, N10, N18, N19.
+
 - `check` never holds a PR `/finish` launched (check-ci-default's landing review, 2026-11-06): with CI the default, a plain
   check on a ready, curated, unheld PR labelled it `hold` again, which nothing took off; now its own head is only waited on,
   and a newer local tip falls back to the local line, naming `pr hold`.
