@@ -540,6 +540,9 @@ out["runcaps"] = " ".join("%s:%s" % c for c in caps if c[0])
 out["lprefix"] = first("wharf-runs/label-prefix", "org.regatta.claude")
 out["lprev"] = first("wharf-runs/label-prefix-previous")
 out["lprev"] = "" if out["lprev"] == out["lprefix"] else out["lprev"]
+out["slotshare"] = first("wharf-runs/slot-share")
+out["sessionkeys"] = "".join("<key>%s</key><string>%s</string>" % kv for kv in
+                            (common.launchd_session_keys() if common and hasattr(common, "launchd_session_keys") else {}).items())
 out["ldom"] = first("wharf-runs/launchd-domain", "gui")   # `user` on a builder host (DOM below)
 out["hostkey"] = first("wharf-runs/host")   # the row of a builder host (local_host below; the core host_name reads it too)
 out["laptop"] = common.LAPTOP if common else (os.environ.get("REGATTA_LAPTOP") or first("regatta/laptop", "laptop"))
@@ -655,6 +658,7 @@ cap_here() {   # this host's line of wharf-runs/run-cap, its first; a line that 
   done
 }
 max_runs="${DISPATCH_MAX_RUNS:-$(cap_here)}"; max_runs="${max_runs:-3}"
+[ -z "$slotshare" ] || { max_runs=$(python3 "$here/bin/dispatch-rc" shared-cap "$max_runs") || max_runs=0; }
 # The queue (header, The queue): bin/dispatch-queue, handed the facts this file holds the one home of.
 # queue_on asks once whether a home is configured; without one, every path below is as before it.
 Q="${DISPATCH_QUEUE_BIN:-$here/bin/dispatch-queue}"   # the tests stand one in: a queue verb that crashes
@@ -727,6 +731,8 @@ pcap() {
   if [ "$prio" = force ]; then
     c=$(python3 "$QG" cap --priority force "${qctx[@]}" 2>/dev/null)
     case "$c" in ''|*[!0-9]*) echo "$max_runs";; *) echo "$c";; esac
+  elif [ -n "$slotshare" ]; then
+    python3 "$here/bin/dispatch-rc" shared-cap "$max_runs" || echo 0
   else echo "$max_runs"; fi
 }
 origin_re='^([A-Za-z0-9][A-Za-z0-9._-]*|confidential:[0-9a-f]{8})$'
@@ -2753,6 +2759,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
   xml="<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\"><dict>
+  $sessionkeys
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key><array>$args</array>
   <key>EnvironmentVariables</key><dict><key>DISPATCH_LABEL</key><string>$label</string><key>DISPATCH_LOG</key><string>$log</string><key>DISPATCH_YEAR</key><string>$yr</string><key>DISPATCH_DEPTH</key><string>$depth</string><key>DISPATCH_ORIGIN</key><string>$(printf '%s' "$ocwd" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</string>${opin:+<key>DISPATCH_HOST_PIN</key><string>1</string>}${opref:+<key>DISPATCH_HOST_PREFER</key><string>1</string>}${mode:+<key>DISPATCH_MODE</key><string>$mode</string>}${arm_word:+<key>DISPATCH_ARM</key><string>$arm_word</string>}$(skipper_plist)</dict>

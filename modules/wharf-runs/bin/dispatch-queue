@@ -1945,8 +1945,13 @@ def cap_for(cap, priority):
     """The cap a start of PRIORITY meets here. Force (D2-A of docs/dispatch-queue-2026-10-25.md) may take one
     slot over it: no other priority starts at CAP or more, and force never at CAP + 1, so at most one run is
     ever above the cap, and a second force entry waits first in line (its rank). Judged by the claiming host,
-    from its own cap; dispatch's fire path asks the same (`cap`)."""
-    return cap + 1 if priority == "force" else cap
+    from its own cap; dispatch's fire path asks the same (`cap`). A builder's shared cap (S9) is applied first, so
+    force keeps its one slot over it, a cap of 0 included; a builder that refuses claims gets none."""
+    rc = rc_mod()
+    c = rc.shared_cap(cap)
+    if priority != "force":
+        return c
+    return 0 if rc.builder_refusal() else c + 1
 
 
 # ---- eligibility: what a host may claim (S5; docs/dispatch-queue-contract-2026-10-25.md "Eligibility") ----
@@ -2164,7 +2169,7 @@ def claimable(e, h, t=None, fleet=False):
     if why:
         return why
     if h == host_name():   # `only` is this host's own config: a peer's verdict on its own claim
-        why = only_refusal(e)
+        why = rc_mod().builder_refusal() or only_refusal(e)
         if why:
             return why
     if e.get("running_on") and e["running_on"].lower() != h:
@@ -2514,7 +2519,8 @@ def start_job(ctx, store, key, e, label):
     if e.get("event_at"):
         env["DISPATCH_EVENT_AT"] = str(int(e["event_at"]))   # G3's start, for the run's `started` line
     env.update({k: str(v) for k, v in (e.get("env") or {}).items()})
-    plist = {"Label": label, "ProgramArguments": args, "EnvironmentVariables": env, "RunAtLoad": True,
+    plist = {**(common.launchd_session_keys(domain()) if hasattr(common, "launchd_session_keys") else {}),
+             "Label": label, "ProgramArguments": args, "EnvironmentVariables": env, "RunAtLoad": True,
              "StandardOutPath": log, "StandardErrorPath": log}
     la = agents()
     la.mkdir(parents=True, exist_ok=True)
@@ -2555,6 +2561,7 @@ def _claim(ctx, out=None):
     held() counts the claims meanwhile)."""
     out = [] if out is None else out
     h = host_name()
+    ctx.cap = rc_mod().shared_cap(ctx.cap)
     # S10(g): a host whose home is for its own writes claims nothing, and no host claims in a DarkWake: the
     # entry it took would start as the sleep resumes, its own requeued run among them
     why_not = "this host's queue-mode is writes" if not claims_here() else "a DarkWake" if dark_wake() else None
@@ -2704,6 +2711,11 @@ def _claim(ctx, out=None):
         # is that run's next step: running_on holds it here, and the run's end frees its slot)
         rp, tp = str(repo_path(e["repo"])), topic_of(e["branch"])
         try:
+            why = rc_mod().builder_refusal()
+            if why:
+                event("claim-skipped", host=h, why=why)
+                ctx.no_room = why
+                continue
             n = busy(ctx.launchctl, rp, tp)
             if n >= cap_for(ctx.cap, e.get("priority")):
                 no_room.append(qid)
@@ -5211,6 +5223,7 @@ def job_load(ctx, plist):
     a plist left on disk unloaded was never retried, and the check read the file as the job). Never from
     inside that job (a bootout of a running job ends it): `jobs` runs from dispatch, the poll's own pass
     only ever boots the poll out, as its last act."""
+    plist = dict(plist, **(common.launchd_session_keys(domain()) if hasattr(common, "launchd_session_keys") else {}))
     label = plist["Label"]
     if os.environ.get("XPC_SERVICE_NAME") == label:
         return False   # launchd names the job a process runs in: never reload the job this pass runs in

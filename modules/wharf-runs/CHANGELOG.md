@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Owner peer counts resolve custom builder host names through the owner's local fleet-ssh binding, so `make --host` keeps the configured builder cap and leaves room for owner runs. Peer-supplied host names and caps remain ignored.
+
 - The runner berth (free CI S6, 2026-11-04): with `wharf-runs/node/runner` naming a login, `yard-node render agent` makes
   the guest a CI runner's berth (`node/runner/`): that login with no sudo, password or group and its ssh keys restricted;
   podman, uidmap, slirp4netns and nftables; its subordinate ids, linger, the user instance's cgroup controllers delegated,
@@ -13,6 +15,7 @@
 - An unreadable features file holds finishes, including the launcher's choice of pin, so a configured
   `-finish-queue` cannot disappear on a failed read. Host samples advertise grants with negations applied,
   keeping the host row valid when finishes are disabled; unreadable features are reported as unknown.
+- `builder-host check` uses enforcement's run-cap parser, so comments cannot hide an invalid live row or misreport a narrowed cap; normalized host names and live precedence agree with dispatch.
 - `check --ci` marks a checkpoint draft's body before readying it, keeping later CI checks able
   to merge a newer main without mistaking the build PR for a curated landing.
 - The Engine room's S4 (docs/engine-room-2026-11-02.md), the page's queue verbs: `dispatch-queue repin QID HOST|any
@@ -45,6 +48,14 @@
   cancel that waits in the outbox, which dispatch says and exits 0 on, as main did (keel's lookout reads non-zero as
   refused); a peer leg marked `DISPATCH_CANCEL_BY` exits 5 for an entry refused, which its sender reads as 2, apart from
   any dispatch's usage or no-repo 2; `--cancel --on HOST` keeps the local fleet judgement's refusal. Cases in `tests/test_queue.sh`.
+
+- The builder sign-in retry preserves the selected owner, so running make through another administrator's sudo cannot switch whose configuration it copies.
+
+- A feature-restricted GUI host keeps its run cap and can claim eligible builds without a builder receipt; only a user-domain restriction or an existing receipt requires builder state.
+
+- Published run caps normalize configured and requested host names as dispatch does, so a live override using an underscore still narrows the owner's publication and its builder's cap.
+
+- Slot publications re-read the queue's held reservations when no count is supplied: spent or expired claims stop holding the peer's cap even when no new queued build is eligible here.
 
 - `check --ci` records ownership of the `hold` it adds; `/finish`'s `pr ready` releases it during
   curation so automerge can finish after a CI wait times out. A pre-existing manual hold stays owned by its owner.
@@ -84,6 +95,11 @@
   `finish-queue` still grants it, and `<host>:-finish-queue` overrides either grant (finish-capable).
   The launcher's ladder pin uses these rules too: a disabled Mac hands its finish to the fleet, and a capable
   non-Mac can keep the pin without a feature line, so the launcher and claim agree.
+
+- `builder-host` after the S9 landing's last review: a builder is held by leaving its row off regatta's `hosts` or the scope's `berths`, which `make` and `check` leave alone; `make` prints the owner's `wharf-runs/run-cap` row as owed and `check` compares it with the builder's (a row that differs fails, an absent one under a narrowed builder is owed); `make`'s closing steps and `check`'s remedies carry `--owner` and a given `--host`, bar the sign-in line; a builder keychain not made yet stays `owed` in `check`, as `make` reported it.
+- The S9 landing review's fixes: `builder-host check` runs the keychain line only as root or the builder and the ssh line only as root or the owner (the caller's own command without sudo, the other owed), so a non-root check never FAILs on sudo; a probe daemon's plist is removed whether its run ended or timed out, and any one left is retired, so no probe runs again at a boot; an old sweep plist launchd never loaded is unlinked without a bootout; a builder's `wharf-runs/launchd-domain` is read bounded (no link, no FIFO), so root's check never blocks on one; a force entry keeps its one slot over the cap, on a builder over its shared cap and on any host over a cap of 0 (none for a builder that refuses claims); check fails a builder row only above the owner's published cap, a lower one reading narrowed, and a row dispatch reads as no cap (`0`, `01`) as no cap; `make --cap` outside 1 to 999 is refused (a run cap of 0 is no pause); `make --dry-run` never sudoes for the sign-in; the owner's count of a peer is never narrowed by a cap that peer published.
+
+- Harden the builder host make road and remove its S9 hold: explicit owner preflight, clone-gated daemon installation, safe sweep replacement, verified CLI signatures and keychain items, Remote Login membership and an owner-side SSH check. User jobs carry Background session keys; root probes through a one-shot LaunchDaemon. Slot publications preserve reservations and carry registry digests and caps; stale registry copies refuse claims, builder caps follow the lower owner cap, and unverified peer pids expire.
 
 - overdraw (2026-11-04, lighthouse's account): dispatch's fire-time pick, every autofinish-run pick and autofinish's
   week() pass `--overdraw`, so with no login under its week bar a run or landing starts past one (week() reads it as

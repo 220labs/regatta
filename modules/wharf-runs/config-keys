@@ -24,3 +24,6 @@ wharf-runs/load-margin
 # (absent: each host's stream is kick/<host>), both optional (README; dispatch-queue S8).
 # Nor wharf-runs/kick-ssh (absent: the ssh road reaches what wharf-runs/ssh names) or wharf-runs/run-cap (absent:
 # dispatch's default on every host), both optional (README).
+# Nor wharf-runs/host (absent: machine name), wharf-runs/only (absent: no extra claim filter),
+# wharf-runs/launchd-domain (absent: gui), or wharf-runs/slot-share (absent: no cross-user count).
+# wharf-runs/builder-source is make's optional receipt: a builder needs it, other users do not (README).

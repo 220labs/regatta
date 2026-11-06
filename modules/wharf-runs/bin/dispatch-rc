@@ -998,35 +998,173 @@ def _me():
     return os.environ.get("DISPATCH_RC_ME") or pwd.getpwuid(os.getuid()).pw_name   # the suite's stand-in name
 
 
-def publish_slots(runs=None, held=0):
+def parse_run_cap(host, rows):
+    """(raw value, cap) of the first active host row; cap is None for a missing or invalid row."""
+    host = re.sub(r"[^a-z0-9-]", "-", host.lower()).strip("-")
+    words = re.sub(r"\s*:", ": ", " ".join(re.split("[#(]", l, maxsplit=1)[0] for l in rows)).split()
+    for i, w in enumerate(words[:-1]):
+        if w.endswith(":") and re.sub(r"[^a-z0-9-]", "-", w[:-1].lower()).strip("-") == host:
+            v = words[i + 1]
+            return v, int(v) if re.fullmatch(r"[1-9][0-9]{0,2}", v) else None
+    return None, None
+
+
+def run_cap(host=None, default=3):
+    """The configured row, live layer first, with dispatch's host spelling and default."""
+    host = host or os.environ.get("DISPATCH_HOST") or common.host_name()
+    _, cap = parse_run_cap(host, common.config_lines("wharf-runs/run-cap") or [])
+    return cap if cap is not None else default
+
+
+def read_peer(d, name):
+    """Bounded data from the named user's own regular file and directory; never follow a link."""
+    import pwd
+    if not isinstance(name, str) or name in ("", ".", "..") or "/" in name:
+        raise ValueError("invalid slot-share user")
+    uid = pwd.getpwnam(name).pw_uid
+    st = os.lstat(os.path.join(d, name))
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid:
+        raise ValueError("slot-share directory owner differs")
+    return uid, slot_data(os.path.join(d, name, "runs.json"), uid)
+
+
+def slot_data(path, uid):
+    """Read one bounded regular JSON file belonging to UID, without following its final component."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    try:
+        fs = os.fstat(fd)
+        if not stat.S_ISREG(fs.st_mode) or fs.st_uid != uid or fs.st_size > PEER_BYTES:
+            raise ValueError("slot-share file owner or type differs")
+        data = json.loads(os.read(fd, PEER_BYTES + 1).decode())
+        if not isinstance(data, dict):
+            raise ValueError("slot-share is no object")
+        return data
+    finally:
+        os.close(fd)
+
+
+def fresh(data):
+    at = data.get("at")
+    return type(at) is int and 0 <= time.time() - at <= PEER_FRESH
+
+
+def bounded_lines(path):
+    """A small config file's stripped lines, read as root may read a builder's: no link followed, no FIFO opened
+    to block, no size past PEER_BYTES. None when absent; anything else unreadable raises ValueError (refuses)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise ValueError("%s does not read: %s" % (path, e.strerror or type(e).__name__))
+    try:
+        fs = os.fstat(fd)
+        if not stat.S_ISREG(fs.st_mode) or fs.st_size > PEER_BYTES:
+            raise ValueError("%s is no small regular file" % path)
+        text = os.read(fd, PEER_BYTES + 1).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError("%s is not UTF-8" % path)
+    finally:
+        os.close(fd)
+    return [l.strip() for l in text.splitlines() if l.strip()]
+
+
+def builder_state(cfg=None, share=None):
+    """The make receipt and owner's published snapshot. Missing/torn/stale builder state refuses claims."""
+    cfg = Path(cfg) if cfg is not None else common.CONFIG
+    marker = cfg / "wharf-runs/builder-source"
+    if not os.path.lexists(marker):
+        if not os.path.lexists(cfg / "wharf-runs/only"):
+            return None, None
+        domains = bounded_lines(cfg / "wharf-runs/launchd-domain")
+        if not domains or domains[0] != "user":
+            return None, None
+    source = slot_data(marker, marker.parent.stat().st_uid)
+    _, owner = read_peer(share or slot_share(), source["owner"])
+    if not fresh(owner) or type(owner.get("cap")) is not int or not 1 <= owner["cap"] <= 999:
+        raise ValueError("owner publication missing or stale")
+    return source, owner
+
+
+def builder_refusal():
+    if common is None:
+        return None
+    try:
+        source, owner = builder_state()
+        if source is None:
+            return None
+        import hashlib
+        copied = hashlib.sha256((common.CONFIG / "wharf/repos.json").read_bytes()).hexdigest()
+        if not owner.get("registry_sha256") or source["registry_sha256"] != owner["registry_sha256"] or source["copy_sha256"] != copied:
+            raise ValueError("registry differs from the owner's publication")
+    except (OSError, ValueError, KeyError, TypeError):
+        return "builder registry or owner publication differs; run builder-host make"
+    return None
+
+
+def shared_cap(cap):
+    """A builder never exceeds either its row or its owner's freshly published cap."""
+    if common is None:
+        return cap
+    try:
+        source, owner = builder_state()
+        return min(cap, run_cap(), owner["cap"]) if source is not None else cap
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0   # the claim also gives the repair command; missing data never widens a builder
+
+
+def publish_slots(runs=None, held=None):
     """This user's live runs not parked (RUNS, live()'s states, else read now) into `<share>/<me>/runs.json`: a fresh
     temp (mkstemp: O_EXCL, never a planted link) renamed into place, in a folder that is this user's and no link.
-    HELD: the claim reservations the caller counted (busy()), so a claim is seen before its run starts. Called at each
-    count, at each run's watcher start and after a headless run's record, so a run just started is seen by the other
+    HELD: the claim reservations the caller counted (busy()), so a claim is seen before its run starts; when omitted,
+    read the queue's current held() count, so a periodic publication drops spent reservations even with no new claims.
+    Called at each count, at each run's watcher start and after a headless run's record, so a run just started is seen by the other
     user's next count. Each user's start lock is its own, so two counts in the same seconds can still both take the
     last slot: the cap is against load, and a cross-user lock would let either user stall the other. Never raises; a
     share that will not take it is said once."""
     d = slot_share()
     if not d:
         return
+    lock = None
     try:
         mine = os.path.join(d, _me())
         st = os.lstat(mine)
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
             raise OSError("%s is not this user's folder" % mine)
+        import fcntl
+        lock = os.open(os.path.join(mine, ".publish.lock"), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if not stat.S_ISREG(os.fstat(lock).st_mode) or os.fstat(lock).st_uid != os.getuid():
+            raise ValueError("slot publication lock is not this user's regular file")
+        fcntl.flock(lock, fcntl.LOCK_EX)
         runs = [st for _, st in live(reap=False)] if runs is None else runs
         rows = [{"pid": x["pid"], "proc_start": x.get("proc_start") or ""}
                 for x in runs if not parked(x) and isinstance(x.get("pid"), int)]
         # every slot this user's own count holds, not only the Claude runs with a pid: the parked overflow, research
         # runs and the other CLIs' runs (vendor_slots), which the other user counts as `slots` past the pids (round 2)
+        if held is None:
+            loader = importlib.machinery.SourceFileLoader("queue_for_slots", os.path.join(HERE, "dispatch-queue"))
+            q = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+            loader.exec_module(q)
+            held = len(q.held(os.environ.get("DISPATCH_LAUNCHCTL", q.LAUNCHCTL),
+                              runs=[x for x in runs if not parked(x)]))
         slots = counted([(None, x) for x in runs]) + vendor_slots() + held
+        import hashlib
+        try:
+            digest = hashlib.sha256((common.CONFIG / "wharf/repos.json").read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        cap = int(os.environ.get("DISPATCH_MAX_RUNS") or run_cap())
         fd, tmp = tempfile.mkstemp(prefix=".runs.", dir=mine)
         with os.fdopen(fd, "w") as f:
-            json.dump({"at": int(time.time()), "runs": rows, "slots": slots}, f)
+            json.dump({"at": int(time.time()), "runs": rows, "slots": slots, "held": held,
+                       "registry_sha256": digest, "cap": cap}, f)
         os.chmod(tmp, 0o644)
         os.replace(tmp, os.path.join(mine, "runs.json"))
     except Exception as e:   # noqa: BLE001 — the count goes on without it
         say_once("dispatch-rc: wharf-runs/slot-share did not take this user's runs (%s: %s)" % (type(e).__name__, e))
+    finally:
+        if lock is not None:
+            os.close(lock)
 
 
 def _ps_uid_start(pid):
@@ -1040,25 +1178,27 @@ def _ps_uid_start(pid):
         return None, ""
 
 
+def peer_cap(name):
+    """The owner's cap for this local user: its fleet-ssh binding supports make's custom --host names."""
+    if common is None or common.config_line("wharf-runs/only"):
+        return PEER_MAX
+    host = (os.environ.get("DISPATCH_HOST") or common.host_name()) + "-" + name
+    for line in common.config_lines("regatta/fleet-ssh") or []:
+        h, colon, alias = line.partition(":")
+        if colon and h.strip() and alias.strip() == name + "@localhost":
+            host = h.strip()
+            break
+    # Only the owner's config selects the row; a peer's published host or cap cannot hide its runs.
+    return run_cap(host, default=run_cap())
+
+
 def peer_runs(d, name):
     """The runs user NAME's file in share D says are live and are: a folder and a file that are NAME's own, no link,
     a regular file (never a FIFO) under PEER_BYTES; each pid a process of NAME's uid running with the recorded start
     time, each counted once, plus the file's `slots` past the pids it lists (the peer's runs with no pid here: other
     CLIs', research, the parked overflow), PEER_MAX at most in all. Anything else counts nothing (the share is data
     other users write; a peer that lies about `slots` holds no more than it could by running PEER_MAX processes)."""
-    import pwd
-    uid = pwd.getpwnam(name).pw_uid
-    st = os.lstat(os.path.join(d, name))
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid:
-        return 0
-    fd = os.open(os.path.join(d, name, "runs.json"), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
-    try:
-        fs = os.fstat(fd)
-        if not stat.S_ISREG(fs.st_mode) or fs.st_uid != uid or fs.st_size > PEER_BYTES:
-            return 0
-        data = json.loads(os.read(fd, PEER_BYTES + 1).decode())
-    finally:
-        os.close(fd)
+    uid, data = read_peer(d, name)
     seen, n = set(), 0
     for r in (data.get("runs") if isinstance(data, dict) and isinstance(data.get("runs"), list) else [])[:PEER_MAX]:
         pid, start = (r.get("pid"), r.get("proc_start")) if isinstance(r, dict) else (None, None)
@@ -1073,7 +1213,7 @@ def peer_runs(d, name):
                 os.kill(pid, 0)
                 n += 1
             except PermissionError:
-                n += 1
+                n += int(fresh(data))
             except OSError:
                 pass
         elif puid == uid and now == " ".join(start.split()):
@@ -1081,13 +1221,14 @@ def peer_runs(d, name):
     listed = len(data.get("runs") or []) if isinstance(data, dict) and isinstance(data.get("runs"), list) else 0
     extra = data.get("slots") if isinstance(data, dict) else None
     extra = max(0, extra - listed) if isinstance(extra, int) and not isinstance(extra, bool) else 0
-    at = data.get("at") if isinstance(data, dict) else None
-    if not isinstance(at, int) or time.time() - at > PEER_FRESH:
+    if not fresh(data):
         extra = 0   # slots with no pid to verify expire: a peer whose sweep stopped holds none of them for good
-    return min(PEER_MAX, n + extra)
+    # The owner trusts its own builder row, never a cap or host name the peer supplied: a peer's published cap
+    # narrows nothing here (a builder's force run is one over it, and a cap of 0 would hide verified runs).
+    return min(PEER_MAX, peer_cap(name), n + extra)
 
 
-def peer_slots(runs=None, held=0):
+def peer_slots(runs=None, held=None):
     """The slots the other users' runs hold on this Mac (peer_runs, each other user's folder in the share), this
     user's own published first (publish_slots, from RUNS when the caller has them). No share counts 0, as does a
     peer whose file does not read, said once on stderr: the cap is against load, and a count that cannot read never
@@ -2282,6 +2423,7 @@ def tidy_soon():
     subprocess.run([lc, "bootout", label], capture_output=True)
     with open(plist, "wb") as f:
         plistlib.dump({
+            **(common.launchd_session_keys(launchd_domain()) if common and hasattr(common, "launchd_session_keys") else {}),
             "Label": TIDY_SOON,
             "ProgramArguments": ["/bin/sh", "-c", "; ".join("sleep %d; %s tidy" % (w, prog) for w in waits)],
             "EnvironmentVariables": tidier_plist()["EnvironmentVariables"],
@@ -2300,6 +2442,7 @@ def tidy_soon():
 
 def tidier_plist():
     return {
+        **(common.launchd_session_keys(launchd_domain()) if common and hasattr(common, "launchd_session_keys") else {}),
         "Label": TIDIER,
         "ProgramArguments": RC.through([primary_bin("dispatch-rc"), "tidy"]),   # tidy_soon's note
         "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:%s/.local/bin" % HOME},
@@ -2847,6 +2990,9 @@ if __name__ == "__main__":
         finally:
             sys.stdout = out
         print(n)
+        sys.exit(0)
+    if verb == "shared-cap" and len(sys.argv) == 3:
+        print(shared_cap(int(sys.argv[2])))
         sys.exit(0)
     if verb == "publish" and len(sys.argv) == 2:   # after a headless run's record: no watcher publishes it
         publish_slots()
