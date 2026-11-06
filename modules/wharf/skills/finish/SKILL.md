@@ -245,31 +245,39 @@ Every `wip(no-summary)` / `wip: changes between turns` commit: `git show` it, th
 the summary. Commits whose `Claude-Session:` trailer isn't this session's are another
 session's work sharing the branch — note them; they're reported separately.
 
-1. **Run the contract's `check:`** — it must come back all-pass; fix what doesn't. Never
-   run the `physical:` sweep here. Run it through `check <this worktree>`
-   with the Bash tool's `run_in_background` (any project's line; `--only <script>…` to re-run the
-   ones that failed): one script at a time, one log per script, under one of the Mac's
-   `CHECK_SLOTS` (2) slots per login, waited for in turn — a killed suite reads as a failed
-   one, and five checks at once got suites killed for memory (2026-10-19). Its first line names
-   the log folder; the check passed when `summary` ends `DONE <n>/<n>` and it exits 0. A script at
-   `rc=137` or `rc=143`, or a summary ending `INTERRUPTED`, was killed, not failed: re-run it with
-   `--only`. A `check:` that is not a plain command line (prose, a sweep) is run by hand as before.
-   `check` runs the line **scoped** (its header; since 2026-10-23): a module's suite only when this
-   branch changed that module or one it uses, said as `SKIP <command> — <why>` lines that DONE does
-   not count, and a script that already passed on this exact tree (the build run's check, an earlier
-   try) as `PASSED <when> <command>`, counted as passed. Both are the check passing: the pull request's CI
-   runs the line, its shares scoped by the same rules, the merge waits for it, and main's nightly run is the whole line. `--full --fresh` when the branch
-   changed what neither the scope nor the memory can see (a timer, an environment, a peer tool's
-   behaviour, a peer reached by name, not path: `--full` alone still lets the memory answer); `--full` when the summary's `check: scope —`
-   line names the wrong modules; `--fresh` after a fix that left the tree unchanged (a file outside
-   the checkout).
+1. **Check through the PR's CI on the tip that will land.** `check <this worktree>` now defaults
+   to CI where a PR workflow, required checks and gh answer outside every confidential scope.
+   An existing required green on this exact tree counts as `PASSED <when> CI`, including with
+   `--local`. For the CI road, apply the review-gate instructions below at step 11.2, after
+   curation and rebase: start the CI wait, then plan/spawn/merge the review in parallel with it.
+   The run `pr merge` and automerge wait on is that same run. No check or review of the raw tip
+   is needed just to repeat it after curation. Step 4 can proceed with these two gates pending;
+   step 11.3 cannot launch until the check passes and the review is clean. The local road
+   runs both here, with the review alongside its check.
+
+   A confidential repo, `/finish --local`, or a contract whose checks need deployed `live:` or
+   `physical:` state uses `check <this worktree> --local` here and after a changed rebase.
+   Never run the `physical:` sweep here; its owner-run verification remains separate. A `live:`
+   deployment/drift command below stays local even when the code check uses CI. Unavailable CI
+   explains its local fallback in one line. Local suites use the scoped line and pass memory
+   under `CHECK_SLOTS`; `--only <script>…` reruns named failures locally, and `--full --fresh`
+   reruns the whole line for changes outside what scope or memory can see. `SKIP` and `PASSED`
+   count as passing. A killed script (`rc=137`, `rc=143`, `INTERRUPTED`) is rerun with `--only`.
+   A prose `check:` is run by hand. The check-owned list of commands with private inputs runs
+   here beside CI without a slot, including the publish gate `helloworld check . --ref HEAD`;
+   their results count in the summary and a missing private word list fails the check.
+
+   Run a long check with the Bash tool's `run_in_background`; its first line names the log
+   folder. It passes only with exit 0 and a summary ending `DONE <n>/<n>`; `PASSED <when> CI`
+   reuses CI, while still running the commands with local inputs.
    **`--unattended`**: the launcher runs with background tasks off and a cap on each Bash call, so
    `run_in_background` is not there and a foreground check is killed. Start it in one call as
-   `mkdir -p <dir> && nohup <check's path> <this worktree> --out <dir> > <dir>.out 2>&1 &`
+   `mkdir -p <dir> && nohup <check's path> <this worktree> --ci --ci-no-merge --out <dir> > <dir>.out 2>&1 &`
    (`<dir>` under the scratchpad), then poll `<dir>/summary` in later calls, each under the cap, until
-   its last line starts `DONE`, `INTERRUPTED` or `REFUSED`; `<dir>.out` holds what it printed. Keep
+   its last line starts `DONE`, `FAILED`, `INTERRUPTED` or `REFUSED`; `<dir>.out` holds what it printed. Keep
    polling in this turn: a turn that ends to wait is a stop. Unattended, bin/check runs the check line
-   from `origin/main`, never the branch's (its first line says so; check-slots items 3–4, 2026-10-19).
+   from `origin/main` on the local road, never the branch's (its first line says so; check-slots items 3–4, 2026-10-19).
+   Substitute `--local` for `--ci --ci-no-merge` on that road.
    An `ABSENT` line is a script main added after this branch forked; step 11.1's rebase brings it, and
    it is not a failure. An `UNRUN <command>` line (exit 3) is one only this branch's line has: run each
    by its own Bash call — `nohup` and poll the same way when it runs long — and the check passed only
@@ -375,8 +383,9 @@ session's work sharing the branch — note them; they're reported separately.
         (the landing by <the launch's by>, <date>): <pick> — <file:line>: <the claim>` (the `by` in
         `autofinish.json`; e.g. `the landing by handed`) under a **Taken unattended** heading at the top of
         the step 10 report, which step 11.3 makes the PR body, and fix by it.
-     3. **Check** again as step 1's check above (`--fresh` when the fix left the tree as it was), and fix
-        what fails.
+     3. **Check** the committed fix through the PR as step 11.1–11.2 below: curate and rebase
+        before its CI run, with the next review in parallel. Use step 1's local road when CI
+        cannot answer (`--fresh` when the fix left the tree as it was), and fix what fails.
      4. **Record**: `build-review round <this worktree> --phase finish --verdicts <the verifier's file>
         --fixed <n> --left <n> --check green|red --reviewers <both agents, comma-separated> --note '<S3s
         and refuted, counted; each pick taken>'` — `--phase finish` right after the worktree, once (the
@@ -632,10 +641,11 @@ session's work sharing the branch — note them; they're reported separately.
     1. `git fetch -q origin && git rebase origin/main` (non-interactive) — `main` on one
        machine is routinely behind origin, and a stale base merges the work in the wrong
        place. If the rebase conflicts, resolve it here on the branch; never on `main`.
-       **When step 1 skipped its review** (`covers`), ask `build-review covers <this worktree> --base
+       Never merge main into a ready branch; it must remain rebaseable.
+       **When a build's review covers the change** (`covers`), ask `build-review covers <this worktree> --base
        origin/<main>` again once the rebase is done: a rebase that conflicted, or main's changes beside
-       the branch's, change the code hash. On a no, run step 1's review now (plan, both agents, `merge
-       --phase finish`) on the rebased branch and fix as step 1 says before 11.2; a code fix there is a
+       the branch's, change the code hash. On a no, run step 1's review (plan, both agents, `merge
+       --phase finish`) on the rebased branch in parallel with 11.2's CI wait, and fix as step 1 says before 11.3; a code fix there is a
        commit, and step 9's `-raw` proof is not re-run (the rebase already moved the tree).
     2. `git push --force-with-lease -u origin <branch>` — the checkpoint hook already pushed
        the raw checkpoints and opened a `WIP:` pull request; the rewrite replaces them.
@@ -643,9 +653,33 @@ session's work sharing the branch — note them; they're reported separately.
        just fetched it; skip when the branch is not on origin): if it fails, GitHub gained a
        commit after step 5 — stop, `rm` the `finishing` marker, and go back to step 5. The
        lease alone never catches it: the fetch in 11.1 moved the ref it compares against.
+       Keep the PR held throughout this push and wait. For an already-ready PR without a hold
+       (a re-landing), run `pr hold` before pushing: check_ci.py's hold protocol through the
+       token, as an unattended run may not call `gh` (its marker, `common.CI_HOLD_NOTE`, the
+       label). A hold already present without the ownership note is the owner's: `pr hold`
+       keeps it and claims nothing. A draft stays a draft until `check --ci` has labelled it.
+       If `pr hold` exits non-zero on a ready PR, stop before pushing.
+
+       After the push, `check <this worktree> --ci --ci-no-merge --out <dir>` on this curated,
+       rebased tip, using step 1's background/polling instructions. Then apply step 1's review
+       gate here (including its `covers` check), so the review and CI wait run in parallel.
+       On the local road keep a completed step 1 review unless the rebase changed its code.
+       `--ci-no-merge` fails
+       if main moved and a merge would be needed: rebase again, push, and check the new tip.
+       An exact-tree green says `PASSED <when> CI`; the explicit local-input list still runs
+       here without slots. CI or review red: fix in this run, commit, rebase and repeat this
+       step until both pass. Do not push another tip between this green and `pr ready`.
+       Step 1's local cases use `check <this worktree> --local` instead. Carry their results
+       and this final summary into the report; include the measured Mac slots held before
+       and after this landing (CI uses zero; do not invent an unobserved baseline).
     3. `pr ready --body-file <report>` (`--hold` in this `/finish`'s arguments: `pr ready --hold --body-file <report>`, then no 11.4) — renames the PR from `WIP: …`
        to the first commit's subject and puts the step-10 report in its body; opens the PR
        when the hook could not. No `gh` needed (a Mac may have none).
+       This releases only a tool-owned hold: read check_ci.py's marker and its ownership note
+       from the existing PR body, never treat `MARK` alone as ownership. `pr ready` carries
+       that ownership through the report edit and spends it once. An owner's unmarked hold,
+       or this landing's explicit `--hold`, stays. Since this tip is already green, `pr merge`
+       and automerge consume that same run; do not start another local check.
     4. **On the laptop (this host is `regatta/laptop`)** — the owner's `/finish` (typed,
        or asked for: "An agent may run it" above) and the gate are the approval: `bin/pr merge` (a rebase merge; GitHub deletes
        the branch on merge), then `carried.py <primary checkout> --pull`

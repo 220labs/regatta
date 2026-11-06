@@ -18,6 +18,10 @@
                                   started, a curated diff that touches a gate (bin/autofinish's
                                   GATES and the repo's exclusions): the sweep judged the tip
                                   before the run's own edits (refuse_sweep_gate()).
+  pr hold                         label this branch's PR `hold` as build CI's own (check_ci.py's
+                                  marker and ownership note), so `pr ready` releases it; an
+                                  owner's unmarked hold is kept and nothing claimed. /finish
+                                  step 11.2, before it pushes onto a PR already ready.
   pr strays [--local]             the same check alone, offline — /finish step 9, before the push:
                                   exit 1 with the list, else `strays: none`
   pr merge [--drops-ok]           rebase-merge it (the one method the repos allow, D9). Only
@@ -672,6 +676,11 @@ def never_ran(slug, sha, contexts, tok):
     return True
 
 
+# wharf-runs' check_ci.MARK, the same text (test_pr.sh holds the two equal): build CI's provenance
+# on a PR body, which check_ci.py reads before it merges main into a ready PR again.
+CI_MARK = "<!-- wharf-runs check --ci -->"
+
+
 def held(p):
     """The PR carries the `hold` label: it lands by the owner's tap, so its head is theirs to review, never rewritten."""
     return any(isinstance(l, dict) and l.get("name") == common.HOLD["name"] for l in p.get("labels") or [])
@@ -813,6 +822,36 @@ def main():
 
     if cmd == "status":
         print(f"#{pr['number']} {pr['title']}\n{pr['html_url']}" if pr else "none")
+        return
+    if cmd == "hold":
+        # /finish step 11.2, before it pushes a curated tip onto a PR already ready: check_ci.py's
+        # hold protocol through the token, as an unattended /finish may not run gh (dispatch denies
+        # it). Same body shape as check_ci.hold(): CI_HOLD_NOTE is the ownership `pr ready` reads
+        # and spends; CI_MARK says build CI held it. An unmarked `hold` already on is the owner's:
+        # kept, nothing claimed.
+        if len(args) != 1:
+            sys.exit("pr hold: no options")
+        if not pr:
+            sys.exit(f"pr hold: no open pull request for {branch} — nothing held")
+        body = pr.get("body") or ""
+        owned = any(note in body for note in common.HOLD_NOTES)
+        labelled = any(isinstance(l, dict) and l.get("name") == common.HOLD["name"] for l in pr.get("labels") or [])
+        if labelled and not owned:   # held() is shadowed in main(): `ready` binds a local `held`
+            print(f"pr hold: #{pr['number']} already held by its owner — left as it is")
+            return
+        new = body
+        if not owned:
+            new = new.rstrip() + "\n\n" + common.CI_HOLD_NOTE
+        if CI_MARK not in new:
+            new = new.rstrip() + "\n\n" + CI_MARK
+        if new != body and not common.edit_pr(slug, pr["number"], tok, body=new):
+            sys.exit(f"pr hold: {pr['html_url']} — its body could not be written; not held")
+        common.api("POST", f"/repos/{slug}/labels", common.HOLD, tok=tok)  # 201 made, 422 already there
+        st, _ = common.api("POST", f"/repos/{slug}/issues/{pr['number']}/labels",
+                           {"labels": [common.HOLD["name"]]}, tok=tok)
+        if st != 200:
+            sys.exit(f"pr hold: {pr['html_url']} could not be labelled `hold` (HTTP {st}) — not held")
+        print(f"pr hold: #{pr['number']} held for build CI — `pr ready` releases it")
         return
     if cmd == "ready":
         title = body = None

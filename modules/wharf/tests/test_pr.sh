@@ -46,10 +46,18 @@ pr.common.repo_slug = lambda url: "o/r"
 pull = {"number": 7, "title": "WIP: x", "body": "", "draft": True, "html_url": "u7", "base": {"repo": {"full_name": "o/r"}},
         "head": {"sha": os.environ.get("PR_HEAD", "")}}
 if os.environ.get("PR_CI_HOLD"):
-    pull.update(body=pr.common.CI_HOLD_NOTE, draft=False)
+    pull.update(body="<!-- wharf-runs check --ci -->\n\n" + pr.common.CI_HOLD_NOTE, draft=False)
+if os.environ.get("PR_OWNER_HOLD"):
+    # MARK records CI provenance, not ownership of an already-present hold.
+    pull.update(body="Owner hold.\n\n<!-- wharf-runs check --ci -->", draft=False)
+if os.environ.get("PR_CURATED"):
+    # a PR `pr ready` launched: ready, its hold spent, the curated report as its body
+    pull.update(body="Report.\n\n---\nFrom `h`, curated by `/finish`.", draft=False)
+if os.environ.get("PR_LABELED"):
+    pull["labels"] = [{"name": "hold"}]
 pr.common.find_pr = lambda slug, name, tok=None: dict(pull)
-pr.common.edit_pr = lambda slug, n, tok=None, **f: (print("EDITED") or dict(pull, **f))
-if not os.environ.get("PR_CI_HOLD"):
+pr.common.edit_pr = lambda slug, n, tok=None, **f: (print("EDITED") or ("body" in f and print("BODY", f["body"].replace("\n", "|"))) or dict(pull, **f))
+if not (os.environ.get("PR_CI_HOLD") or os.environ.get("PR_OWNER_HOLD")):
     pr.common.ready_pr = lambda p, tok=None: print("READIED") or True
 pr.common.merge_pr_waiting = lambda slug, n, tok=None, automerge=False, **kw: (print("MERGE CALLED") or (True, "ok"))
 pr.common.required_contexts = lambda slug, base, tok=None: []
@@ -130,6 +138,33 @@ has "$T/ci-ready.out" "API DELETE /repos/o/r/issues/7/labels/hold" "curation car
 PR_CI_HOLD=1 run "$T/ci-held.out" ready --hold --title t --body-file /dev/null
 has "$T/ci-held.out" "API POST /repos/o/r/issues/7/labels" "an explicit landing hold replaces CI's hold"
 lacks "$T/ci-held.out" "API DELETE" "  ready leaves the explicit hold in place"
+PR_OWNER_HOLD=1 run "$T/owner-held.out" ready --title t --body-file /dev/null
+lacks "$T/owner-held.out" "API DELETE" "an owner's hold stays even when CI's provenance marker is present"
+has "$T/owner-held.out" "EDITED" "  the final report can still replace the body"
+# pr hold: /finish 11.2's hold before it pushes onto a launched PR, through the token (no gh unattended)
+PR_CURATED=1 run "$T/hold.out" hold
+has "$T/hold.out" "BODY Report." "pr hold on a launched PR keeps its body"
+has "$T/hold.out" "<!-- wharf-runs check --ci -->" "  adds build CI's marker"
+has "$T/hold.out" "Build CI labelled this pull request" "  and the ownership note pr ready spends"
+has "$T/hold.out" "API POST /repos/o/r/issues/7/labels" "  and labels it hold"
+PR_CURATED=1 PR_LABELED=1 run "$T/hold-owner.out" hold
+has "$T/hold-owner.out" "already held by its owner" "pr hold leaves an owner's unmarked hold alone"
+lacks "$T/hold-owner.out" "EDITED" "  claims nothing in the body"
+lacks "$T/hold-owner.out" "API POST" "  and adds no label"
+PR_CI_HOLD=1 PR_LABELED=1 run "$T/hold-again.out" hold
+lacks "$T/hold-again.out" "EDITED" "pr hold on its own hold writes no second note"
+has "$T/hold-again.out" "held for build CI" "  and says it is held"
+run "$T/hold-opt.out" hold --x
+has "$T/hold-opt.out" "pr hold: no options" "pr hold takes no options"
+CR="$(cd "$(dirname "$0")/../.." && pwd)/wharf-runs/bin/check_ci.py"
+if [ -f "$CR" ]; then
+  check "$(python3 - "$B/pr" "$CR" <<'PY2'
+import re, sys
+mark = lambda f, n: re.search(n + r' = "([^"]+)"', open(f).read()).group(1)
+print(mark(sys.argv[1], "CI_MARK") == mark(sys.argv[2], "MARK"))
+PY2
+)" "True" "pr's CI_MARK is check_ci.py's MARK"
+fi
 PR_HEAD=$(g rev-parse HEAD) run "$T/good-merge.out" merge
 has "$T/good-merge.out" "MERGE CALLED" "  and pr merge merges it"
 PR_HEAD=0123456789abcdef run "$T/stale-head.out" merge
