@@ -498,7 +498,8 @@ printf '%s' "$(SN "$WP/node")" | grep -q "ghostnode" && echo "  ok   …and is n
 python3 -c "import json,sys; d=json.load(open(sys.argv[2])); d['scopes']['sec']['repos']='node'; json.dump(d, open(sys.argv[1],'w'))" "$WP/layer/repos.json" "$W/good.json"
 SR "$WP/pub"
 out=$(SN "$WP/pub")
-if printf '%s' "$out" | grep -q "a malformed confidential scope" && ! printf '%s' "$out" | grep -q -w -e sec -e node; then
+# the command it names holds this checkout's path, which may hold either word (a worktree named node-*)
+if printf '%s' "$out" | grep -q "a malformed confidential scope" && ! printf '%s' "$out" | python3 -c 'import sys; t = sys.stdin.read(); [t := t.replace(a, "") for a in sys.argv[1:]]; print(t)' "$B" "$(cd "$B" && pwd -P)" | grep -q -w -e sec -e node; then
   echo "  ok   …a confidential scope whose repos do not read: one line naming none of it"
 else echo "  FAIL sync.py: a malformed confidential scope in pub's record: $out"; fails=$((fails+1)); fi
 # a confidential flag that is not plainly true or false is fenced, never read as open
