@@ -65,6 +65,14 @@
   defaults to 120. Dispatch's shared build prompt names this road for Claude Code and Codex;
   `/finish` keeps its local check. This spends CI minutes and may open or ready a PR labelled hold.
 
+- Tests: prepare Linux candidates with portable date, sed, plist and mtime operations, an isolated
+  git identity across HOME moves, and a named stuck-hook process on each OS. `tests/check.sh`
+  accepts `--list-shards` and `--shard NAME` (off macOS still `LINUX_OK`'s suites only;
+  `WHARF_RUNS_LINUX_PROOF=1` runs a shard whole, to prove it). The check line names the suite once;
+  share.sh splits it into ten `wharf-runs-<shard>` ids. Eight passed on GitHub's ubuntu (#500);
+  seven joined the Linux list and `LINUX_OK`, and `pickup` (until its runners have `lsof`), `queue` and `macos`
+  stay in the Mac share. `share.sh whole` runs the suite once, in its lanes, not shard by shard.
+
 - The builder coin's and the finisher's rotation fences ask the core's `scope_rotates` (scope-rotation, 2026-11-04): a
   confidential scope draws unless it says `"rotation": false` (the owner: one scope opts out, the others draw); a `rotation` that is no
   bool fences. Each rotation row (`builder-rotation.jsonl`, `finisher-rotation.jsonl`) carries `scope` and `confidential`, and

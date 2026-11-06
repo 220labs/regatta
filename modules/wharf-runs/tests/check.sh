@@ -5,6 +5,9 @@
 #   bash modules/wharf-runs/tests/check.sh     (the suites in three lanes at once; timings in CHANGELOG)
 #   WHARF_RUNS_CHECK_LANES=1 bash …            (one after another, as before 2026-10-27: to bisect a
 #                                               flake, or on a Mac too loaded for three at once)
+#   bash … --list-shards                      (the partition, without running anything)
+#   bash … --shard pickup                     (one group: a share's job; off macOS still LINUX_OK's suites only)
+#   WHARF_RUNS_LINUX_PROOF=1 bash … --shard queue   (a Linux proof run: the group's every suite, unproven ones too)
 # Lanes (docs/wharf-runs-suite-time-2026-10-23.md D1-A): the suites are bound by process and git work,
 # not by sleeps, so the wall is cut by running them side by side, each in its own scratch dir (one
 # mktemp each; none writes a fixed path another reads). test_dispatch runs alone in lane 1 because it is
@@ -17,6 +20,47 @@ set -u
 D="$(cd "$(dirname "$0")" && pwd)"
 M="$(dirname "$D")"
 rc=0
+# The line names this script once (a Mac's whole line runs it in lanes); .github/ci/share.sh reads
+# --list-shards and runs each shard as an id of its own: check-linux the seven on the Linux list, the Mac
+# share pickup, queue and macos (`share.sh whole` runs this script once, in lanes). Off macOS a shard runs LINUX_OK's suites only, as the default does (the twin's
+# `check (the rest)` runs queue on ubuntu); WHARF_RUNS_LINUX_PROOF=1 runs the rest too, to prove one.
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_check_ci test_build_review test_builder_coin test_builder_host test_headroom test_harness test_agy test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_systemd test_kick_socket test_wharf test_shards"
+SHARDS="core autofinish dispatch pickup jobs landing wharf queue tools macos"
+shard_suites() {
+  case "$1" in
+    core) echo "orca-host orca-serve-agent test_headroom test_systemd test_builder_coin test_builder_host test_kick_socket test_agy test_shards" ;;
+    autofinish) echo "test_autofinish" ;;
+    dispatch) echo "test_dispatch" ;;
+    pickup) echo "test_pickup test_seed_from" ;;
+    jobs) echo "node test_hail test_clock test_berth" ;;
+    landing) echo "test_autofinish_run" ;;
+    wharf) echo "test_wharf" ;;
+    queue) echo "test_queue test_priority test_after test_rank test_finish_queue test_finish_capable" ;;
+    tools) echo "peers cold_prompt test_check test_build_review" ;;
+    macos) echo "test_harness test_rc_hosts test_check_ci" ;;
+    *) return 2 ;;
+  esac
+}
+# Fail a misspelled or duplicated entry before it can silently lose coverage in the jobs.
+partition=""
+for shard in $SHARDS; do partition="$partition $(shard_suites "$shard")"; done
+for s in $SUITES $partition; do
+  count=0
+  for entry in $partition; do [ "$entry" != "$s" ] || count=$((count + 1)); done
+  case " $SUITES " in *" $s "*) ;; *) count=0 ;; esac
+  [ "$count" = 1 ] || { echo "FAIL shard partition: $s occurs $count times"; exit 2; }
+done
+selected=""
+case "$#:${1:-}" in
+  0:) ;;
+  1:--list-shards)
+    for shard in $SHARDS; do printf '%s\t%s\n' "$shard" "$(shard_suites "$shard")"; done
+    exit 0 ;;
+  2:--shard)
+    selected="$2"
+    SUITES="$(shard_suites "$selected")" || { echo "FAIL unknown shard: $selected"; exit 2; } ;;
+  *) echo "usage: $0 [--list-shards | --shard NAME]" >&2; exit 2 ;;
+esac
 echo "== C1: every bin/ name is free on a stock PATH"
 for f in "$M"/bin/*; do
   [ -f "$f" ] || continue
@@ -36,27 +80,30 @@ fi
 # name (common.tool) and no file spells out: modules/lighthouse (account, hosts), modules/plumb (usage-report,
 # tier_check.py), modules/aurora (scope-pass), modules/atlas (knowledge-commit), modules/helloworld. Named here
 # for the macOS share's scope; test_check.sh holds the list to it.
-# Off macOS (CI's ubuntu) only the suites proven there run: orca-host's, orca-serve-agent's (a dry run), test_systemd (the
-# Linux launcher, stood in), test_autofinish (made
-# portable and run on ubuntu in the overlay's CI since 2026-10-07), test_builder_coin (written portable, trim S6), test_kick_socket (the sheep road's socket
-# press; its stub-server cases where python3 has websockets 14.0+, which .github/ci/linux-tools.sh
-# unpacks from PyPI's checked wheel) and test_agy (written portable, agy-road). The rest read launchd, plutil,
-# caffeinate or BSD date; a suite joins the Linux list once it passes there, never by skipping
-# what it checks.
-LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket test_builder_host test_agy "
-# Off macOS the rest do not run on this host. In regatta a pull request's `check` runs on a macOS runner (the
-# whole line, or with CircleCI's Linux share the rest: WHARF_RUNS_SKIP_LINUX_OK, .github/ci/share.sh), and
-# `pr merge` waits for that required check before it merges, so a /finish on the Linux node (node-lands,
-# 2026-10-31) passes on these lines and its PR does not until they ran on a Mac. Elsewhere (a twin's Linux CI)
-# nothing runs them. Said per suite, and once at the end with the list.
+# Off macOS (CI's ubuntu) only the suites proven there run: the seven Linux shards' (test_kick_socket's
+# stub-server cases where python3 has websockets 14.0+, which .github/ci/linux-tools.sh unpacks from
+# PyPI's checked wheel; test_agy, written portable, agy-road, in core). A suite joins this list only after
+# a Linux pass (WHARF_RUNS_LINUX_PROOF=1), never by skipping what it checks, and in the change that puts its
+# shard on .github/ci/linux-ids: a listed shard whose suite is off this list runs nothing there and passes
+# (test_shards holds the two together).
+# test_harness stays on macOS: its research cases exercise the real sandbox-exec seatbelt.
+# test_rc_hosts stays on macOS: it compiles and codesigns the overlay's TCC launcher.
+# test_check_ci (main's, merged after the shard split) waits in `macos` for its Linux proof; then `tools` and this list.
+# Proven on GitHub's ubuntu by #500's check-linux (2026-11-05, run 41984282738): every shard but `queue`, whose
+# finish-queue cases read the Mac's claim and memory floors (4 failed); `queue` and `macos` stay on the Macs,
+# and `pickup` too since the self-hosted Linux runners, which lack lsof (TODO.md [runner-lsof]).
+LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket test_builder_host test_shards test_dispatch node test_hail test_clock test_berth test_autofinish_run test_wharf peers cold_prompt test_check test_build_review test_agy "
+# Off macOS the rest is left to a Mac, said per suite. WHARF_RUNS_SKIP_LINUX_OK=1 runs only the rest on
+# a Mac, for a hand run: no share sets it since wharf-runs-linux, which runs shards instead.
 LEFT_TO_MAC="not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_check_ci test_build_review test_builder_coin test_builder_host test_headroom test_harness test_agy test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_systemd test_kick_socket test_wharf"
-# Lane 2 is named; lane 3 is every other suite, so a suite added to SUITES lands there by itself.
+# Lane 2 is named; lane 3 is every other suite. A suite added to SUITES also goes in one shard, or the
+# partition check above refuses every run.
 # Balanced on measured passes (the build Mac, load 8–12, 2026-10-27; seconds): test_dispatch 413 alone; lane 2
 # 669 (harness 64, pickup 335, autofinish 270); lane 3 830, test_autofinish_run 335 and test_wharf 244
 # the most of it (test_clock, 67, is the next to move). Move a suite when a lane runs long.
 LANE2="test_harness test_pickup test_autofinish"
 for s in $LANE2; do   # a name only here would run in lane 2 and silently drop out of modes 1 and 2
+  [ -z "$selected" ] || break
   case " $SUITES " in *" $s "*) ;; *) echo "  FAIL LANE2 names $s, which is not in SUITES"; exit 2;; esac
 done
 
@@ -64,8 +111,14 @@ run_suite() {   # <suite>: its header and the suite, or the line saying why it i
   local s=$1 t r
   echo "== $s"
   if [ ! -f "$D/$s.sh" ]; then echo "  --   skipped: not in this checkout"; return 0; fi
-  if [ "$(uname)" != Darwin ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: macOS only, $LEFT_TO_MAC"; return 0; fi
-  # the PR check's macOS share (.github/ci/share.sh): CircleCI's Linux job ran these already
+  if [ "$(uname)" != Darwin ]; then
+    case "$s" in
+      test_harness) echo "  --   skipped: macOS sandbox-exec research cases"; return 0 ;;
+      test_rc_hosts) echo "  --   skipped: macOS codesign and TCC launcher"; return 0 ;;
+    esac
+    if [ -z "${WHARF_RUNS_LINUX_PROOF:-}" ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ]; then echo "  --   skipped: Linux proof pending, $LEFT_TO_MAC"; return 0; fi
+  fi
+  # a hand run's complement of the Linux list (no share sets it since wharf-runs-linux)
   if [ -n "${WHARF_RUNS_SKIP_LINUX_OK:-}" ] && [ "${LINUX_OK#* $s }" != "$LINUX_OK" ]; then echo "  --   skipped: run on Linux (the macOS share)"; return 0; fi
   t=$(date +%s); bash "$D/$s.sh"; r=$?
   echo "  ($s: $(( $(date +%s) - t )) s, exit $r)"
@@ -85,6 +138,7 @@ without() {   # <words> <drop>: the words of the first not in the second, in ord
 }
 
 n="${WHARF_RUNS_CHECK_LANES:-3}"
+[ -z "$selected" ] || n=1   # one shard, one lane: a Linux job has its own VM, and `share.sh whole` runs the plain script
 case "$n" in
   1) lanes=("$SUITES") ;;
   2) lanes=("test_dispatch" "$(without "$SUITES" test_dispatch)") ;;
@@ -129,14 +183,14 @@ for i in "${!lanes[@]}"; do
   cat "$log"
   [ "$lrc" = 0 ] || rc=1
   # a case that never parsed, or a helper never defined, prints this and fails nothing (AGENTS.md Traps)
-  if [ "$(uname)" = Darwin ] && grep -q -e 'bad substitution' -e 'command not found' "$log"; then
+  if grep -q -e 'bad substitution' -e 'command not found' "$log"; then
     echo "  FAIL lane $((i + 1))'s log shows a shell error, so a case may not have run:"
     grep -n -e 'bad substitution' -e 'command not found' "$log" | sed 's/^/    /'
     rc=1
   fi
 done
 echo "== lanes: all ended in $(( $(date +%s) - t0 )) s"
-if [ "$(uname)" != Darwin ]; then
+if [ "$(uname)" != Darwin ] && [ -z "${WHARF_RUNS_LINUX_PROOF:-}" ]; then
   left=""
   for s in $SUITES; do [ -f "$D/$s.sh" ] && [ "${LINUX_OK#* $s }" = "$LINUX_OK" ] && left="$left $s"; done
   [ -z "$left" ] || echo "== macOS only, $LEFT_TO_MAC:$left"
