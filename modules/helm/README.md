@@ -95,6 +95,13 @@ Or `claude plugin install helm@regatta` for the session face.
   given a build box's run cap). `helm send` reaches a yard that is a named node's peer, and every
   confidential send's yard, by `wharf-runs/nodes/<name>/ssh` alone (through wharf-runs' orca-host),
   never `wharf-runs/ssh`.
+  Talk's peer relays and live-run reminders share hail's message peers through wharf-runs' shared message reader:
+  the cached fleet hosts ref (`dispatch-queue hosts get --cached`), with configured aliases taking
+  precedence. An added name (a kick alias, a node folder, a fleet row) that is a confidential yard or
+  node, and a sample older than 24 hours, is skipped (a configured `wharf-runs/ssh` peer is reached as before); an unavailable
+  registry drops every discovered name. Without that reader, they keep configured placement aliases.
+  Stop-hook peer reads share one ten-second budget, every peer asked at once with the whole budget
+  left, so an unreachable alias cannot starve the rest nor a slow live one be cut short. Stalls and placement keep their existing peer lists.
 - The Talk service: `helm/talk-url` (else `$SPACESHEEP_URL`; absent, the talk relay is off and says
   so) and `helm/talk-hosts`, the Macs whose sessions are told to listen (`$CLAUDE_TALK_HOSTS` wins;
   absent, none).

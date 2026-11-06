@@ -12,6 +12,10 @@
   <the landing's, else high>`, never a plain normal build; the command quotes shell arguments (landing-fixes-in-run).
 - `stalls_tick`'s `ARM_WORD` reads the builder coin's third arm, `argon-high`, and its coin 0 to 2 (the fallback's
   `opus-high:2:…` too), held to wharf-runs' `buildercoin.py` grammar by its suite (S3 of the Argon design).
+- Talk's peer relays and live-run reminders share hail's message peers (node-hail) through wharf-runs' shared reader,
+  never the harness, so nodes need no placement alias; a reader that will not load keeps the configured ssh roads. They
+  use the fleet host identity on Linux, and Stop-hook peer reads share one ten-second budget, every peer asked at once with the whole budget left.
+
 - `bin/ask`'s `issue_note(title, body, note, labels)`: one logbook issue per title while it is open, a comment each
   time after (lighthouse's overdraw, 2026-11-04).
 - The Engine room (docs/engine-room-2026-11-02.md S3): the board's sixth view, its own document. `helm board` runs
