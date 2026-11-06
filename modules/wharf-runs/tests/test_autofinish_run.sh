@@ -892,7 +892,7 @@ has "$T/out" "ended stopped at G4, not stopped by the network — no chain relau
 printf 'API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)\n' > "$T/net.txt"
 next_tip "chain: a network stop"; NTIP=$(git -C "$W" rev-parse HEAD)
 # Establish the stop before testing the chain policy. An initial never-started/refused caused
-# nine downstream failures (keel-ui-round round 2). Retry only dispatch's confirmed pre-start
+# nine downstream failures (TODO.md [dispatch-fetch-race]). Retry only dispatch's confirmed pre-start
 # refusal (5) on this tip, at most twice. A start or an unconfirmed start returns 0: wait for it
 # without starting another. Every refusal keeps its original words in the suite's output.
 net_rc=5
