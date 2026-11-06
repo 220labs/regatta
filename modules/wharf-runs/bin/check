@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# check — a checkout's AGENTS.md `check:` line, one script at a time, under one of N slots per Mac login.
+# check — the PR's CI by default; local inputs here, local suites under slots when CI cannot answer.
 #
-#   bin/check [<checkout>] [--ci [--ci-wait MIN] [--ci-merge-main]] [--out <dir>]
-#   bin/check [<checkout>] [--only <script>…] [--full] [--fresh] [--out <dir>]
+#   bin/check [<checkout>] [--ci-wait MIN] [--ci-merge-main|--ci-no-merge] [--out <dir>]
+#   bin/check [<checkout>] [--local] [--only <script>…] [--full] [--fresh] [--out <dir>]
 #   bin/check --slots    the slot count this host runs by, nothing run (`regatta limit`'s trial read)
 #
-# Scoped by default (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
+# The local road is scoped (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
 # the checkout changed something under modules/<m>/ since it forked from origin/main (main without a
 # remote), or under a module <m> uses — one its plugin.json `dependencies` names, or one its files name
 # by path (`modules/<x>` or `../<x>/`) in any file of its own but Markdown — declared ones followed through (helm
@@ -69,24 +69,29 @@
 #                no scope (what is named runs), the pass memory still answers.
 #   --full       the whole line, whatever changed; --fresh: run what is in scope, remembered or not.
 #   --out        the log folder; default $CHECK_LOGS (~/Library/Caches/check-runs)/<checkout>-<stamp>-<pid>
-#   --ci         use this claude/* branch's PR CI: its Linux matrix and scoped macOS share run in
+#   --local      run locally; an existing exact-tree CI green still counts as PASSED <when> CI.
+#                --only, --full and --fresh force local scripts, without the CI shortcut.
+#   --ci         the default: use this claude/* branch's PR CI when the repo has a PR workflow,
+#                required checks and gh answers, outside every confidential scope. Its shares run in
 #                parallel, spending CI minutes and opening a non-draft PR labelled hold (automerge
 #                stays off). Fetch and merge origin/main if needed, then push only this branch,
 #                never force. A conflict is FAILED, aborted with its files named. A PR readied by
-#                /finish is never merged with main (it would leave it unlandable): the local line
-#                answers instead, unless --ci-merge-main, the owner's yes, refused unattended.
-#                Wait for the contexts in origin/main's .github/main-protection.json (never the
-#                branch's) on this exact head; a moved head is FAILED. --ci-wait MIN bounds the wait
-#                (whole minutes, default 120); a head with no check yet is pending. Once readied,
-#                every later checkpoint push of the branch runs the PR's CI too. A signal ends the
-#                helper and says INTERRUPTED. A new PR opens as a draft, labelled, then readied.
-#                A green says UNRUN for each command of the contract's line that the CI's own line
-#                (`.github/ci/share.sh line`) never holds, the publish gate's, and exits 3: run
-#                each by its own call. Without that file nothing says what CI covers: local.
-#                Missing gh/network, refused push, no PR, a branch already landed or timeout falls
-#                back to the local line, said once; so do confidential or guarded repos (the core's
-#                fenced_scopes) or an unreadable registry, uncommitted work, and local-only
-#                --only/--full/--fresh. No local slot or pass record is used for CI.
+#                /finish uses local checks when main moved unless --ci-merge-main explicitly allows
+#                a merge (the owner's yes, refused unattended).
+#                --ci-no-merge refuses a moved main (the curated /finish tip must be rebased).
+#                A required green on this exact tree returns PASSED <when> CI before any mutation.
+#                Wait for origin/main's .github/main-protection.json contexts (else the protection API's); a moved
+#                head is FAILED. --ci-wait MIN bounds the wait (whole minutes, default 120).
+#                Missing gh/network, refused push, no PR or timeout falls back to the local line,
+#                said once; so do confidential scopes or an unreadable registry, uncommitted work,
+#                a branch already landed, guarded repos, and local-only --only/--full/--fresh.
+#                A new PR opens as a draft, labelled before it is readied; a signal ends the helper.
+#                check_ci.py's explicit LOCAL_COMMANDS list
+#                runs contract commands whose private inputs CI lacks beside the wait, without a
+#                slot, counted in DONE too; a local failure fails the check even with green CI.
+#                Commands neither CI's line (.github/ci/share.sh line) nor that list covers are
+#                UNRUN (exit 3); without a CI line to compare, check runs locally.
+#                No local slot or pass record is used for CI.
 #                Why: review/fix loops waited hours for Mac slots; PR CI runs the shares at once.
 #                CI failures end with FAILED, with failed-job lines and logs in --out; exit 0/1.
 #
@@ -123,7 +128,7 @@ slots_here() {
   echo "${v:-2}" | tr -d '[:space:]'
 }
 wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""
-ci=""; ci_wait=120; ci_wait_set=""; ci_merge=""; ci_logs=""
+ci=1; ci_wait=120; ci_wait_set=""; ci_merge=""; ci_logs=""
 # a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
 refuse() {
   echo "check: $1" >&2
@@ -142,8 +147,10 @@ while [ $# -gt 0 ]; do
     --full) full=1; mode=""; shift; continue ;;
     --fresh) fresh=1; mode=""; shift; continue ;;
     --ci) ci=1; mode=""; shift; continue ;;
+    --local) ci=""; mode=""; shift; continue ;;
     --ci-wait) [ $# -ge 2 ] || refuse "--ci-wait needs minutes"; ci_wait="$2"; ci_wait_set=1; mode=""; shift 2; continue ;;
     --ci-merge-main) ci_merge=1; mode=""; shift; continue ;;
+    --ci-no-merge) ci_merge=never; mode=""; shift; continue ;;
     -h|--help) sed -n '2,/^set -u/{ /^set -u/d; p; }' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) refuse "unknown option $1" ;;
   esac
@@ -158,9 +165,9 @@ done
 [ -d "$wt" ] || refuse "no such checkout: $wt"
 wt="$(cd "$wt" && pwd -P)"
 case "$ci_wait" in ''|*[!0-9]*) refuse "--ci-wait must be whole minutes from 0" ;; esac
-[ -n "$ci" ] || [ -z "$ci_merge$ci_wait_set" ] || refuse "--ci-wait and --ci-merge-main need --ci"
+[ -n "$ci" ] || [ -z "$ci_merge$ci_wait_set" ] || refuse "CI options cannot be used with --local"
 # merging main into a ready PR leaves it unlandable (AGENTS.md's trap): the flag is a person's yes
-[ -z "$ci_merge" ] || [ -z "${CLAUDE_UNATTENDED:-}${REGATTA_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] \
+[ "$ci_merge" != 1 ] || [ -z "${CLAUDE_UNATTENDED:-}${REGATTA_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] \
   || refuse "--ci-merge-main is the owner's yes, never an unattended run's"
 
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
@@ -217,27 +224,26 @@ if [ -n "$braw" ] && [ ${#only[@]} -eq 0 ] && [ -n "$(code_of "$braw")" ]; then
   done
 fi
 split_line "$line"
-# --ci answers from the branch's PR CI here, once the line is read (what CI never runs is said)
-if [ -n "$ci" ]; then
+# CI answers after the contract is read; --local may only reuse an existing exact-tree green.
+if [ -n "$asked_only$full$fresh" ]; then
+  [ -z "$ci" ] || echo "check: CI unavailable (local options requested); falling back to local check"
+else
   ci_line=""
   [ -f "$wt/.github/ci/share.sh" ] && ci_line="$(bash "$wt/.github/ci/share.sh" line "$wt" 2>/dev/null)"
-  if [ -n "$asked_only$full$fresh" ]; then
-    echo "check: CI unavailable (local options requested); falling back to local check"
-  elif [ -z "$ci_line" ]; then
+  if [ -z "$ci_line" ]; then
     # without the CI's own line nothing says which of the contract's commands a CI green covers
-    echo "check: CI unavailable (no .github/ci/share.sh line to compare); falling back to local check"
+    [ -z "$ci" ] || echo "check: CI unavailable (no .github/ci/share.sh line to compare); falling back to local check"
   else
-    # each contract command CI's line never holds (the publish gate reads a word list CI lacks),
-    # and each branch-only one (unrun, above): UNRUN after a CI green, exit 3
+    # The helper runs only its explicit local-input list; other uncovered commands stay UNRUN.
     ci_unrun=("${unrun[@]+"${unrun[@]}"}")
     for c in "${cmds[@]}"; do case "$ci_line" in *"$c"*) ;; *) ci_unrun+=("$c") ;; esac; done
     [ -n "$out" ] || out="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/$(basename "$wt")-$(date +%Y%m%d-%H%M%S)-$$"
     mkdir -p "$out" || refuse "cannot make $out"
     out="$(cd "$out" && pwd -P)"; : > "$out/summary"
-    echo "logs: $out"; ci_logs=1
+    if [ -n "$ci" ]; then echo "logs: $out"; ci_logs=1; fi
     # in the background under traps, so a signal to check ends the helper too and says INTERRUPTED
     CHECK_CI_UNRUN="$(printf '%s\n' "${ci_unrun[@]+"${ci_unrun[@]}"}")" \
-      python3 "$(cd "$(dirname "$0")" && pwd)/check_ci.py" "$wt" "$out" "$ci_wait" "${ci_merge:-0}" &
+      python3 "$(cd "$(dirname "$0")" && pwd)/check_ci.py" "$wt" "$out" "$ci_wait" "${ci_merge:-0}" "${ci:-reuse}" &
     cip=$!
     ci_signal() {
       kill -TERM "$cip" 2>/dev/null
