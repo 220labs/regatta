@@ -43,6 +43,8 @@
   podman's AppArmor profile where the apparmor package ships none; and an nftables fence on its own sockets that drops the
   tailnet, private networks, loopback, link-local and ULA, the metadata service among them, but for DNS to the guest's
   resolvers. The runner itself is wharf's `ci-provider --runner install` over ssh as that login. tests/node.sh N16.
+- The network-stop fixture in `test_autofinish_run.sh` retries a confirmed pre-start dispatch
+  refusal at most twice and prints each refusal, before testing the chain's retry policy.
 - Finish readiness checks only enabled Claude login dirs, including Orca's local switches. A disabled login
   without `/finish` no longer holds every landing on an otherwise capable host; the installer uses the same walk.
 - An unreadable features file holds finishes, including the launcher's choice of pin, so a configured
