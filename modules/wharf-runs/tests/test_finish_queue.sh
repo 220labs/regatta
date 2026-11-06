@@ -301,35 +301,40 @@ DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by typed --on here --dry > "$T/out" 2>&1; check "$?" "0" "--on here --dry: says what it would put"
 has "$T/out" "pinned here: --on here" "  pinned to this host"
 echo "  a ladder pin on a host that cannot claim a finish goes to the fleet (principal tier S4's handed landing, 2026-11-04)"
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=darwin \
+# Native Darwin here; test_finish_capable exercises Linux readiness with scheduler stand-ins.
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  a handed landing on a Mac: --dry exit 0"
 has "$T/out" "pinned here: a --by handed launch is judged by this host's plans" "  pinned to the Mac that judges it, as before"
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
-  "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  the same off a Mac with no feature line: --dry exit 0"
+echo "laptop:-finish-queue" > "$REGATTA_CONFIG/wharf-runs/features"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
+  "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  the same on a disabled Mac: --dry exit 0"
 has "$T/out" "not pinned here (a --by handed launch is judged by this host's plans (mode ask holds it)): this host cannot claim a finish" "  said why it is not pinned"
 has "$T/out" "any host with room claims it, this one first" "  put for any host, this one preferred"
 hasnt "$T/out" "--pin laptop" "  no --pin in the put"
 echo "laptop: finish-queue" > "$REGATTA_CONFIG/wharf-runs/features"
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by handed --dry > "$T/out" 2>&1
-has "$T/out" "pinned here: a --by handed launch" "  off a Mac with a finish-queue feature line: pinned here, as on a Mac"
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+has "$T/out" "pinned here: a --by handed launch" "  with a finish-queue feature line: pinned here"
+echo "laptop:finish-queue,-finish-queue" > "$REGATTA_CONFIG/wharf-runs/features"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by handed --on here --dry > "$T/out" 2>&1
-has "$T/out" "pinned here: --on here" "  a typed --on here stays pinned whatever the host"
+has "$T/out" "pinned here: --on here" "  a typed --on here stays pinned even on a disabled host"
 rm -f "$REGATTA_CONFIG/wharf-runs/features"
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
   "$B/autofinish-run" "$T/wt-u" --by handed --on here --dry > "$T/out" 2>&1
 has "$T/out" "pinned here: --on here" "  …and with no feature line too (the caller's word: it waits unclaimed, as before)"
-echo "  a ladder hold off a host that cannot claim a finish rides in the rights: held, never a merge"
+echo "  a ladder hold on a host that cannot claim a finish rides in the rights: held, never a merge"
+echo "laptop:-finish-queue" > "$REGATTA_CONFIG/wharf-runs/features"
 mkbranch lh > /dev/null
 git -C "$T/repo" checkout -q "$BR-lh"; printf 'a\000b' > "$T/repo/blob.bin"; git -C "$T/repo" add blob.bin
 git -C "$T/repo" commit -qm "a binary"; git -C "$T/repo" push -q origin "$BR-lh" 2>/dev/null; git -C "$T/repo" checkout -q main
 git -C "$T/repo" worktree add -q "$T/wt-lh" "$BR-lh" 2>/dev/null
-DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller AUTOFINISH_PLATFORM=linux \
-  "$B/autofinish-run" "$T/wt-lh" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  a held handed landing off a Mac: --dry exit 0"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true CLAUDE_CODE_SESSION_ID=s-caller \
+  "$B/autofinish-run" "$T/wt-lh" --by handed --dry > "$T/out" 2>&1; check "$?" "0" "  a held handed landing on a disabled Mac: --dry exit 0"
 has "$T/out" "this host cannot claim a finish (no finish-queue), so any host with room takes it, held at a ready PR" "  said as held, not pinned"
 has "$T/out" '"hold": true, "merge": false' "  the put's rights hold it and carry no merge"
 hasnt "$T/out" "--pin laptop" "  no --pin in the put"
+rm -f "$REGATTA_CONFIG/wharf-runs/features"
 
 echo "  claimed on its own host past the handover (OWN_FRESH_S), the panel that typed it holding the lock: its session is no refusal"
 python3 - "$GU/claude" <<'PY'
@@ -460,12 +465,15 @@ check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d
   "True stopped no-landing buildbox 2026-11-02T20:00:00-08:00" "the putting worktree's state ends on that tip, where it ran (a chain relaunch's prev, the sweep's same-tip stop)"
 check "$([ -f "$GK/claude/autofinish" ] && echo kept || echo spent)" "spent" "  and the /autofinish marker is spent: a yes for one run, never the next tip's"
 
-# the finish review (2026-11-02): a host off a Mac meets finish-queue only by a feature line (the node, until
-# node-lands-base), judging only itself; and two hosts' stamps compared as instants, never as strings
+# An unprepared non-Mac host is still refused (test_finish_capable covers readiness), judging only
+# itself; and two hosts' stamps are compared as instants, never as strings
 cat > "$T/builtin.py" <<'PY2'
 import importlib.machinery, sys
 sys.dont_write_bytecode = True   # no __pycache__ beside the tool (AGENTS.md: a tree scan meets CI's bytecode)
 m = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+# The readiness probe has its own suite with scheduler stand-ins; this case tests
+# the OS/peer rule without ever asking the machine's scheduler or word list.
+m.capability = lambda common: {"reason": "fixture host is not prepared"}
 r = [m.builtin_met("finish-queue", "laptop"), m.builtin_met("finish-queue", "buildbox")]
 m.sys.platform = "linux"
 r += [m.builtin_met("finish-queue", "laptop"), m.builtin_met("finish-queue", "buildbox"), m.builtin_met("other", "buildbox")]
@@ -473,7 +481,7 @@ r += [m.iso_before("2026-11-02T20:00:00-08:00", "2026-11-03T03:00:00+00:00"), m.
 print(" ".join(str(x) for x in r))
 PY2
 check "$(python3 "$T/builtin.py" "$QB" 2>&1 | tail -1)" "True True False True False False True" \
-  "finish-queue: met by code on a Mac, never by this host off one (a peer is judged on its own claim); stamps read as instants"
+  "finish-queue: met on a Mac, not on an unprepared Linux host (peers judge themselves); stamps read as instants"
 
 echo "the migration: the Mac-local landing queue moved into the fleet"
 qreset

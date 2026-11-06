@@ -404,8 +404,9 @@ check(common.required_contexts("o/r", "main") == [], "…none when the branch is
 
 print("open_pr / ready_pr")
 class Pulls:
-    def __init__(self, draft_status):
+    def __init__(self, draft_status, delete_status=200):
         self.draft_status, self.calls, self.bodies, self.edits = draft_status, [], [], []
+        self.delete_status = delete_status
     def api(self, method, path, body=None, tok=None, timeout=15):
         self.calls.append((method, path))
         if path.endswith("/pulls") and method == "POST":
@@ -417,6 +418,8 @@ class Pulls:
             return 422, {"message": "Validation Failed", "errors": [{"code": "already_exists"}]}
         if path.endswith("/labels") and method == "POST":
             return 200, [{"name": "hold"}]
+        if method == "DELETE" and path == "/repos/o/r/issues/5/labels/hold":
+            return self.delete_status, None
         if method == "PATCH":
             self.edits.append(body)
             return 200, {"number": 5, "body": body["body"]}
@@ -435,6 +438,18 @@ check(len(g.edits) == 1 and common.HOLD_NOTE not in g.edits[0]["body"] and g.edi
 n = len(g.calls)
 check(common.ready_pr(pr, tok="t") and not any(m == "DELETE" for m, _ in g.calls[n:]),
       "  a second ready (the owner labelled it `hold` since) takes nothing off")
+for status in (200, 404, 403):
+    g = Pulls(201, delete_status=status); common.api = g.api
+    pr = {"number": 5, "draft": False, "body": "body\n\n" + common.CI_HOLD_NOTE,
+          "base": {"repo": {"full_name": "o/r"}}}
+    check(common.ready_pr(pr, tok="t") and ("DELETE", "/repos/o/r/issues/5/labels/hold") in g.calls,
+          f"ready_pr releases build CI's hold on an already-ready PR (DELETE {status})")
+    check((common.CI_HOLD_NOTE in pr["body"]) == (status == 403),
+          "  the ownership note is spent on success/absent label, retained on refusal")
+    n = len(g.calls)
+    common.ready_pr(pr, tok="t")
+    check(any(m == "DELETE" for m, _ in g.calls[n:]) == (status == 403),
+          "  the next ready retries a refused release, but leaves a later manual hold alone")
 g = Pulls(201); common.api = g.api
 pr = common.open_pr("o/r", "claude/x", "main", "WIP: x", "body", tok="t")
 check(pr["draft"] and not pr.get("_held") and not any("labels" in p for _, p in g.calls), "a draft: no label")

@@ -243,7 +243,8 @@
 
   /* ── cards: one row each, the title on its own line and its facts under it ── */
   var KIND = { ask: ['flag', 'ask'], memo: ['run', 'memo'], lookout: ['run', 'comment'], pr: ['ok', 'PR'], held: ['held', 'held'], stall: ['bad', 'stall'], road: ['bad', 'refused'],
-    waiting: ['wait', 'waiting'], permission: ['wait', 'permission'], task: ['run', 'task'], human: ['park', 'a person'], done: ['ok', 'done'], intake: ['bad', 'intake'] };
+    waiting: ['wait', 'waiting'], permission: ['wait', 'permission'], task: ['run', 'task'], human: ['park', 'a person'], done: ['ok', 'done'], intake: ['bad', 'intake'],
+    'main-red': ['bad', 'main red'] };
   function card(c) {
     var k = KIND[c.kind] || ['park', c.label || c.kind || 'card'], t2 = [];
     if (c.plan) t2.push('<span>' + esc(c.plan) + '</span>');

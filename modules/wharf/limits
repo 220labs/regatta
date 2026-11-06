@@ -1,0 +1,7 @@
+# The limits `regatta limit` changes live (modules/regatta/libexec/limit; live-limits, 2026-11-01): a key, its shape
+# (`host`, a line per host; `*` where a `*:` line serves a host without one; `plain`, one value), its default here,
+# and its trial read, run from this folder on a scratch config dir that holds only the value tried: it must print the
+# value back, as the key's own reader reads it, or the value is refused. A new limit adds its line, with a case.
+# ci-runner-limits is a Linux runner's container cap, read by `ci-provider --runner install` on the Mac that installs
+# (free CI S6): a new value reaches the runner at its next install, which writes the unit.
+wharf/ci-runner-limits  plain  cpus=3,memory=12g  bin/ci-provider --runner limits

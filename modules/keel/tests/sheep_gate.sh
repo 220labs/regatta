@@ -12,6 +12,7 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 
 unset CLAUDE_REPOS_JSON CLAUDE_PROJECT_DIR REGATTA_HOME ACCOUNTS_FILE CODEX_HOME GEMINI_CLI_HOME
+unset XDG_STATE_HOME PLAN_HARNESS REGATTA_COUNCIL_ARM REGATTA_UNATTENDED CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 export HOME="$T/home" REGATTA_CONFIG="$T/config"
 P="$HOME/projects"; mkdir -p "$REGATTA_CONFIG/regatta"; printf 'vault\n' > "$REGATTA_CONFIG/regatta/guarded"; mkdir -p "$REGATTA_CONFIG/wharf" "$P/know/.claude/worktrees/x" "$P/open"
@@ -197,5 +198,97 @@ printf '{"session":{"id":"a1","cwd":"%s"}}\n' "$P/open" > "$X/state/outbox/antig
 check "$(shp 'print([k for k, _ in s.private_sessions()], s.split_key("codex:c1"), s.split_key("abc-1"))')" \
   "['codex:c1'] ('codex', 'c1') ('claude-code', 'abc-1')" \
   "  forget-private: a Codex session in a confidential repo found, forgotten by its harness"
+
+# sessionpipe 0.5.0's Codex adapter accepts these hook names, not `heartbeat` or
+# `attention.cleared`. A peer stub must validate its argv (AGENTS.md, Traps).
+export SP_LOG="$T/sp.jsonl"
+cat > "$T/sessionpipe-hook" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+allowed = {
+    "codex": {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest",
+              "Stop", "Interrupt", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "SessionEnd"},
+    "claude-code": {"PreToolUse", "PostToolUse", "PermissionRequest"},
+    "antigravity": {"PreToolUse", "PostToolUse"},
+}
+if len(sys.argv) != 3 or sys.argv[2] not in allowed.get(sys.argv[1], set()):
+    with open(os.environ["SP_LOG"], "a") as f:
+        f.write(json.dumps({"bad_argv": sys.argv[1:]}) + "\n")
+    sys.exit(2)
+raw = sys.stdin.read()
+with open(os.environ["SP_LOG"], "a") as f:
+    f.write(json.dumps({"harness": sys.argv[1], "event": sys.argv[2], "payload": json.loads(raw), "raw": raw}) + "\n")
+if sys.argv[2] == "PermissionRequest":
+    print('{"fixture":"permission answer"}')
+elif sys.argv[2] == "UserPromptSubmit":
+    print("activity output must be discarded")
+PY
+chmod +x "$T/sessionpipe-hook"
+export XDG_STATE_HOME="$T/state"
+sp_run() {   # the hook's stdout is kept too: telemetry must never answer an approval
+  : > "$SP_LOG"; [ -n "${KEEP_BEATS:-}" ] || rm -rf "$T/state/keel"   # each case starts unthrottled
+  printf '%s' "$3" | (cd "$P/open" && python3 "$H/sheep_gate.py" "$T/sessionpipe-hook" "$1" "$2") > "$T/sp.stdout"
+  python3 -c 'import json,sys; print(" ".join(x.get("event", "BAD_ARGV") for x in map(json.loads, open(sys.argv[1]))))' "$SP_LOG"
+}
+sp_payload() {
+  printf '{"session_id":"build-1","turn_id":"turn-1","cwd":"%s","model":"model-a","tool_name":"exec_command","tool_use_id":"call-1","tool_input":{"command":"%s"},"prompt":"never copy this","transcript_path":"/rollout.jsonl"}' "$1" "${2:-echo ok}"
+}
+ce=$(sp_payload "$P/open")
+check "$(sp_run codex PreToolUse "$ce")" "PreToolUse UserPromptSubmit" \
+  "codex: tool start kept, then a supported tier-0 activity signal"
+check "$(python3 -c 'import json,sys; a,b=map(json.loads,open(sys.argv[1])); print(a["raw"]==sys.argv[2], b["payload"]==dict(session_id="build-1",turn_id="turn-1",cwd=sys.argv[3],model="model-a"))' "$SP_LOG" "$ce" "$P/open")" \
+  "True True" "  original bytes intact; activity has the same session and turn, no prompt, tool text or transcript"
+check "$(wc -c < "$T/sp.stdout" | tr -d ' ')" 0 "  synthetic activity's stdout never reaches the CLI"
+check "$(sp_run codex PostToolUse "$ce")" PostToolUse \
+  "codex: tool end sends no activity (its job could land a turn.started after Stop's turn.ended)"
+check "$(PLAN_HARNESS=codex sp_run codex PreToolUse "$ce")" "PreToolUse UserPromptSubmit" \
+  "codex: a harness run's tools still refresh activity"
+sp_run codex PreToolUse "$ce" > /dev/null
+check "$(KEEP_BEATS=1 sp_run codex PreToolUse "$ce")" PreToolUse "codex: a second tool within a minute sends no second signal"
+other=$(printf '%s' "$ce" | sed 's/"build-1"/"build-2"/')
+check "$(KEEP_BEATS=1 sp_run codex PreToolUse "$other")" "PreToolUse UserPromptSubmit" "  another session has its own minute"
+for f in "$T"/state/keel/sheep-beats/*; do touch -t 202001010000 "$f"; done
+check "$(KEEP_BEATS=1 sp_run codex PreToolUse "$ce")" "PreToolUse UserPromptSubmit" "  a minute on, the signal is due again"
+chmod 500 "$T/state/keel/sheep-beats"; rm -f "$T"/state/keel/sheep-beats/* 2>/dev/null
+if [ -w "$T/state/keel/sheep-beats" ]; then echo "  skip unwritable stamp (running as root)"; else
+  check "$(KEEP_BEATS=1 sp_run codex PreToolUse "$ce")" PreToolUse "  a stamp that will not write sends nothing"; fi
+chmod 700 "$T/state/keel/sheep-beats"
+check "$(PLAN_HARNESS=codex sp_run codex PermissionRequest "$ce")" "" \
+  "codex: harness exec uses --approve-for-me, so no owner attention is sent"
+check "$(wc -c < "$T/sp.stdout" | tr -d ' ')" 0 "  suppression prints no approval decision"
+check "$(sp_run codex PermissionRequest "$ce")" PermissionRequest "codex: a hand-started session still reports owner attention"
+check "$(REGATTA_UNATTENDED=1 sp_run codex PermissionRequest "$ce")" PermissionRequest \
+  "  unattended alone does not mean auto-approved"
+check "$(PLAN_HARNESS=other sp_run codex PermissionRequest "$ce")" PermissionRequest "  another harness marker suppresses nothing"
+check "$(PLAN_HARNESS=codex sp_run claude-code PermissionRequest "$ce")" PermissionRequest \
+  "claude-code: its permission/control path stays intact, even with a Codex marker"
+check "$(cat "$T/sp.stdout")" '{"fixture":"permission answer"}' "  its answer still passes through (sessionpipe answers claude-code only)"
+check "$(sp_run claude-code PreToolUse "$ce")" PreToolUse "claude-code: no synthetic activity"
+check "$(sp_run antigravity PostToolUse "$ce")" PostToolUse "antigravity: no synthetic activity"
+for ev in Stop Interrupt SessionEnd; do
+  check "$(sp_run codex "$ev" "$ce")" "$ev" "codex: $ev stays terminal, no synthetic working signal"
+done
+minimal=$(printf '{"session_id":"build-1","cwd":"%s","tool_name":"exec_command"}' "$P/open")
+check "$(sp_run codex PreToolUse "$minimal")" PreToolUse "codex: no turn_id, no activity (it would read as a new prompt)"
+check "$(sp_run codex PreToolUse '{}')" PreToolUse "codex: missing session/tool makes no activity"
+slashtool=$(printf '{"session_id":"build-1","turn_id":"turn-1","cwd":"%s","tool_name":"mcp/some tool"}' "$P/open")
+check "$(sp_run codex PreToolUse "$slashtool")" "PreToolUse UserPromptSubmit" "codex: any tool name refreshes activity (the signal names no tool)"
+for ev in PreToolUse PostToolUse PermissionRequest; do
+  check "$(PLAN_HARNESS=codex sp_run codex "$ev" "$(sp_payload "$P/know")")" "" \
+    "codex: confidential cwd drops $ev and any synthetic event"
+done
+check "$(sp_run codex PreToolUse "$(sp_payload "$P/open" "cat $P/know/notes.md")")" "" \
+  "codex: private tool text drops the activity signal too"
+check "$(sp_run codex PreToolUse "$(sp_payload "$CR/docs")")" "" "codex: council run sends no activity"
+check "$(REGATTA_COUNCIL_ARM=1 sp_run codex PreToolUse "$ce")" "" "codex: council arm marker sends no activity"
+check "$(sp_run codex PreToolUse 'not json')" "" "codex: malformed input sends no activity"
+cp "$REGATTA_CONFIG/wharf/repos.json" "$T/sp-good.json"
+printf '{"scopes":' > "$REGATTA_CONFIG/wharf/repos.json"
+check "$(sp_run codex PreToolUse "$ce")" "" "codex: torn registry drops original and synthetic activity"
+rm "$REGATTA_CONFIG/wharf/repos.json"
+ln -s "$T/missing-registry.json" "$REGATTA_CONFIG/wharf/repos.json"
+check "$(sp_run codex PreToolUse "$ce")" "" "codex: dangling registry link drops original and synthetic activity"
+rm "$REGATTA_CONFIG/wharf/repos.json"
+cp "$T/sp-good.json" "$REGATTA_CONFIG/wharf/repos.json"
 
 [ $fails -eq 0 ] && echo "sheep_gate: all ok" || { echo "sheep_gate: $fails failing"; exit 1; }

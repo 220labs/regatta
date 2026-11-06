@@ -164,7 +164,7 @@ land alpha
 python3 "$QB" claim "${QC[@]}" > "$T/out"
 check "$(qget repo--step state)" "claimed" "the predecessor merged on origin: the next claim takes the entry"
 P=$(ls "$LA"/org.example.claude.dispatch.repo.step.q*.plist 2>/dev/null | head -1)
-check "$(plutil -extract ProgramArguments json -o - "$P" 2>/dev/null | python3 -c 'import json,sys; a=json.load(sys.stdin); i=a.index("--after"); print(a[i+1].rsplit("-",1)[-1], a[-2])')" "alpha --from-queue" \
+check "$(plistget "$P" ProgramArguments 2>/dev/null | python3 -c 'import json,sys; a=json.load(sys.stdin); i=a.index("--after"); print(a[i+1].rsplit("-",1)[-1], a[-2])')" "alpha --from-queue" \
   "  its job is handed --after <predecessor>, to merge origin/main first"
 qreset
 enq keep --after "$BR-alpha2" > /dev/null 2>&1
@@ -268,7 +268,7 @@ git -C "$T/repo" fetch -q origin
 "$B/dispatch" "$BR-roads" --repo "$T/repo" --on here > "$T/out" 2> "$T/err"; check "$?" "0" "the queue's road: a direct dispatch with a brief's After: line queues"
 check "$(qget repo--roads after | python3 -c 'import json,sys; print(" ".join(a["branch"].rsplit("-",1)[-1] for a in json.load(sys.stdin)))')" "eta theta" \
   "  the entry carries both predecessors from the brief (queue_args), each claude/* name on the line"
-"$B/dispatch" "$BR-roads" --repo "$T/repo" --on here --at "$(date -v+2d '+%Y-%m-%d') 10:00" --after "$BR-iota" --dry-run > "$T/out" 2> "$T/err"
+"$B/dispatch" "$BR-roads" --repo "$T/repo" --on here --at "$(days_from_now 2) 10:00" --after "$BR-iota" --dry-run > "$T/out" 2> "$T/err"
 has "$T/out" "<string>--after</string><string>$BR-iota</string>" "the one-shot's road: its plist carries --after"
 has "$T/out" "<string>--after</string><string>$BR-eta</string>" "  the brief's predecessors too"
 

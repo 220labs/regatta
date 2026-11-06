@@ -16,11 +16,11 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 mkdir -p "$T/projects/privy/sub" "$T/projects/other" "$T/bin" "$T/.claude-w" "$T/a b"
 cat > "$T/accounts.json" <<'EOF'
 {"accounts": [
-  {"label": "seat-w", "provider": "claude", "home": "~/.claude-w", "repos": {"deny": ["privy"]}},
+  {"label": "seat-w", "provider": "claude", "home": "~/.claude-w"},
   {"label": "seat-s", "provider": "claude", "home": "~/a b"},
   {"label": "seat-f", "provider": "claude", "home": "~/.claude-f", "enabled": false},
-  {"label": "seat-p", "provider": "claude", "home": "~/.claude", "primary": true}],
- "capabilities": {}}
+  {"label": "seat-p", "provider": "claude", "home": "~/.claude", "primary": true, "tenant": "owner"}],
+ "tenants": {"owner": {"repos": ["privy"]}}, "capabilities": {}}
 EOF
 printf '#!/bin/sh\necho "dir=[${CLAUDE_CONFIG_DIR-unset}] tok=[${CLAUDE_CODE_OAUTH_TOKEN-unset}] n=$# args=[$*]"\n' > "$T/bin/claude"
 chmod +x "$T/bin/claude"
@@ -39,10 +39,10 @@ check "$(run "$T/projects/other" p -p hi)" "dir=[unset] tok=[unset] n=2 args=[-p
 check "$(run "$T/projects/other" s)" "dir=[$T/a b] tok=[unset] n=0 args=[]" \
   "cc s: a home with a space reaches claude whole"
 out=$(run "$T/projects/privy/sub" w); rc=$?
-check "$rc $out" "1 account: privy is off seat-w (accounts.json deny list)" \
-  "cc w inside a denied repo: refused, claude never starts"
+check "$rc $(echo "$out" | grep -c "^account: privy is off seat-w: it is owner's, which runs on seat-p only .* or \`cc p\` in a Terminal$")" "1 1" \
+  "cc w inside another tenant's repo: refused, claude never starts, the tenant's way in named"
 check "$(run "$T/projects/privy/sub" p x | cut -c1-11)" "dir=[unset]" \
-  "cc p inside the same repo: the primary has no deny list"
+  "cc p inside the same repo: the tenant's own login runs"
 check "$(run "$T/projects/other" q; echo "rc=$?")" "account: no account 'seat-q' in $T/accounts.json
 rc=1" \
   "cc q: an unknown label names the registry and fails"

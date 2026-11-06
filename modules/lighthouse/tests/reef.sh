@@ -85,6 +85,17 @@ cases = {
   "cold-ceiling": (row([0.1, 0.2, 0.1], busy=4, cap=4), ON, {"run": 4, "check": 3}, None),
   "cold-swapping-before": (dict(row([0.1, 0.2, 0.1], busy=3), history=[[NOW - 1200, 0.1, 60, 5.0], [NOW - 600, 0.2, 60, 0], [NOW, 0.1, 60, 0]]), ON, {"run": 3, "check": 2}, None),
   "middle": (row([1.0, 1.1, 1.2]), ON, {"run": 3, "check": 2}, None),
+  "baseline": (row([0.8, 0.85, 0.8], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "baseline-spike": (row([0.5, 1.6, 0.5], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "rising-newest": (row([0.3, 0.4, 1.5], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "rising-four": (row([0.3, 0.3, 0.4, 1.5], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "half-high": (row([0.3, 1.45, 1.5, 0.3], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "edge-under": (row([0.89, 0.89, 0.89], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "edge-at": (row([0.9, 0.9, 0.9], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "one-high-old": (row([1.1, 0.5, 0.5], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "burst-near-max": (row([0.2, 1.45, 0.2], busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "mem-band": (row([0.2, 0.2, 0.2], avail=25.0, busy=3), ON, {"run": 3, "check": 2}, None, 2),
+  "cold-held-run": (row([0.1, 0.2, 0.1], busy=3), {"mode": "on", "run": (2, 4), "check": (1, 3)}, {"run": 1, "check": 3}, None, 3, {"run"}),
   "few": (row([3.0]), ON, {"run": 3, "check": 2}, None),
   "old-points": (dict(row([3.0, 3.0, 3.0]), history=[[NOW - 9000, 3.0, 60, 0], [NOW - 8000, 3.0, 60, 0], [NOW, 3.0, 60, 0]]), ON, {"run": 3, "check": 2}, None),
   "cooldown": (row([2.5, 2.8, 3.0]), ON, {"run": 3, "check": 2}, NOW - 300),
@@ -96,10 +107,14 @@ cases = {
   "advise-no-bounds-cold": (row([0.1, 0.1, 0.1], busy=3), {"mode": "advise"}, {"run": 3, "check": 2}, None),
   "unread-check": (row([2.5, 2.8, 3.0]), ON, {"run": 3, "check": None}, None),
   "cold-unread-check": (row([0.1, 0.2, 0.1], busy=3), ON, {"run": 3, "check": None}, None, 5),
+  "cold-held-check": (row([0.1, 0.2, 0.1], busy=3), {"mode": "on", "run": (1, 4), "check": (2, 3)}, {"run": 3, "check": 1}, None, 3, {"check"}),
+  "hot-held-run": (row([2.5, 2.8, 3.0]), ON, {"run": 6, "check": 2}, None, None, {"run"}),
 }
 for name in sys.argv[2:]:
-    r, b, cur, last, demand = (cases[name] + (None,))[:5]
-    print(show(m.decide(r, b, cur, NOW, last, demand)))
+    c = cases[name]
+    r, b, cur, last = c[:4]
+    demand, held = (c[4] if len(c) > 4 else None), (c[5] if len(c) > 5 else ())
+    print(show(m.decide(r, b, cur, NOW, last, demand, held)))
 PY
 rule() { python3 "$T/rule.py" "$RF" "$1"; }
 has "$(rule hot-check)" "hot check:2>1" "hot: a check slot given back first"
@@ -118,6 +133,17 @@ has "$(rule cold-idle)" "no need to grow" "cold with slots free: the cap holds"
 has "$(rule cold-ceiling)" "every ceiling" "cold at both ceilings: holds"
 has "$(rule cold-swapping-before)" "hold -" "swapping inside the window: no growth"
 has "$(rule middle)" "hold -" "between the bands: holds"
+has "$(rule baseline)" "cold check:2>3" "a steady baseline under 0.6× load-max (an editor's load): cold, a slot back"
+has "$(rule baseline-spike)" "hold -" "one sample past load-max in the window: holds"
+has "$(rule rising-newest)" "newest sample 1.50" "a rising load (newest at load-max): holds, saying so"
+has "$(rule rising-four)" "hold -" "a rising load over four samples: holds"
+has "$(rule half-high)" "2 samples at or over" "half the window at load-max: holds"
+has "$(rule edge-under)" "cold check:2>3" "a steady 0.89 per core (under 0.6× 1.5): cold"
+has "$(rule edge-at)" "not under 0.90" "a steady 0.90 per core: holds"
+has "$(rule one-high-old)" "cold check:2>3" "one old sample over 0.6× load-max, under 0.8×, the rest low: cold"
+has "$(rule burst-near-max)" "over 1.20 (0.8× load-max)" "a burst at 97% of load-max in the window: holds"
+has "$(rule mem-band)" "25 % free, cold needs over 30 %" "low load, memory between hot's and cold's lines: holds, naming memory"
+has "$(rule cold-held-run)" "run-cap held by hand: holds" "cold, the run cap held by hand: says so"
 has "$(rule few)" "1 sample(s)" "one sample: holds, says why"
 has "$(rule old-points)" "1 sample(s)" "samples older than the window do not count"
 has "$(rule cooldown)" "held: the last change was 5 min ago" "a change 5 min ago: held"
@@ -129,6 +155,8 @@ has "$(rule advise-no-bounds-hot)" "hot check:2>1" "advise with no bounds still 
 has "$(rule advise-no-bounds-cold)" "no bounds to grow into" "advise with no bounds never grows"
 has "$(rule unread-check)" "hot run:3>2" "check slots unread: the run cap gives"
 has "$(rule cold-unread-check)" "check-slots unread: holds" "cold, check slots unread: the run cap does not grow past them"
+has "$(rule cold-held-check)" "check-slots held by hand: holds" "cold, check slots held under their ceiling: the run cap does not grow past them"
+has "$(rule hot-held-run)" "hot check:2>1" "hot, the run cap held outside its bounds: check slots still given back"
 
 echo "-- apply"
 # the stand-in `regatta`: `limit get <key> --on <host>` and `limit set <key> <host>:<n>` only, as the real one takes them
@@ -142,6 +170,12 @@ open("$T/calls", "a").write(" ".join(a) + " LIMIT_HOST=%s\n" % os.environ.get("L
 keys = ("wharf-runs/run-cap", "wharf-runs/check-slots")
 if a[:2] == ["limit", "get"] and len(a) == 5 and a[2] in keys and a[3] == "--on":
     print("%s  %s  %s  live" % (a[2], a[4], d.get(a[2], {}).get(a[4], 3))); sys.exit()
+if a[:2] == ["limit", "set"] and len(a) == 4 and a[2] == "lighthouse/reef" and ":" in a[3]:
+    if os.environ.get("STUB_FAIL"):
+        print("regatta limit: refused", file=sys.stderr); sys.exit(2)
+    if os.environ.get("STUB_READBACK"):
+        print("regatta limit: written, read back otherwise", file=sys.stderr); sys.exit(3)
+    sys.exit()
 if a[:2] == ["limit", "set"] and len(a) == 4 and a[2] in keys and ":" in a[3]:
     h, n = a[3].split(":")
     if not n.isdigit() or os.environ.get("STUB_FAIL"):
@@ -250,6 +284,138 @@ echo "-- the bounds through the core's entries reader"
 printf '%s\n' "# reef's bounds" "host-a:" "mode=on,run=1-3,check=1-2 (set 2026-11-04)" > "$REGATTA_CONFIG/lighthouse/reef"
 check "$(python3 "$RF" bounds 2>/dev/null)" "mode=on,run=1-3,check=1-2" "a comment, one word a line and a note: read as one entry"
 
+echo "-- reef seed: a new host's line from its own cap and slots"
+rm -f "$REGATTA_CONFIG/lighthouse/reef" "$T/limits.json"; : > "$T/calls"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':4},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+check "$(python3 "$RF" seed --dry-run 2>&1)" "reef host-a: would set lighthouse/reef host-a:mode=on,run=1-4,check=1-2" "seed --dry-run says the line"
+hasnt "$(cat "$T/calls")" "limit set" "and writes nothing"
+out=$(python3 "$RF" seed 2>&1); check "$?" "0" "seed: exit 0"
+has "$(cat "$T/calls")" "limit set lighthouse/reef host-a:mode=on,run=1-4,check=1-2 LIMIT_HOST=host-a" "seed writes through regatta limit set, naming its host"
+line "host-a:mode=advise"; : > "$T/calls"
+has "$(python3 "$RF" seed 2>&1)" "its line stands" "a host with a line, advise included: left alone"
+hasnt "$(cat "$T/calls")" "limit" "and nothing read or written"
+line "*:mode=off"; : > "$T/calls"
+has "$(python3 "$RF" seed 2>&1)" "lighthouse/reef *:" "a *: line counts as the host's"
+hasnt "$(cat "$T/calls")" "limit set" "and nothing written"
+line "host-a:mode=onn"; python3 "$RF" seed >/dev/null 2>&1; check "$?" "2" "a line that does not read: refused, never overwritten"
+rm -f "$REGATTA_CONFIG/lighthouse/reef"; : > "$T/calls"
+REGATTA_UNATTENDED=1 python3 "$RF" seed >/dev/null 2>&1; check "$?" "2" "seed under an unattended caller: refused"
+hasnt "$(cat "$T/calls")" "limit" "and reads nothing"
+STUB_FAIL=1 python3 "$RF" seed >/dev/null 2>&1; check "$?" "3" "a refused write: exit 3"
+
+echo "-- a hand set outside the bounds: held, never clamped"
+rm -f "$LC/reef.jsonl"; : > "$T/calls"; line "host-a:mode=on,run=1-4,check=1-3"; mkrow 2.6 2.9 3.1
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':6},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+printf '%s\n' "{\"at\": $(( $(date +%s) - 7200 )), \"host\": \"host-a\", \"key\": \"wharf-runs/run-cap\", \"from\": 3, \"to\": 4, \"done\": true, \"tried\": true, \"mode\": \"on\"}" > "$LC/reef.jsonl"
+out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$out" "held: wharf-runs/run-cap 6 was set by hand outside its bounds 1-4" "a raise past the ceiling by hand: held"
+hasnt "$(cat "$T/calls")" "limit set" "and not moved back inside"
+has "$(python3 "$RF" plan --row "$T/row.json")" "set by hand outside its bounds" "the next turn still holds it (the hand set reef saw)"
+line "host-a:mode=on,run=1-5,check=1-3"; : > "$T/calls"
+out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$(cat "$T/calls")" "limit set wharf-runs/run-cap host-a:5" "a line changed since the hand set: the newer word, back inside"
+line "host-a:mode=on,run=1-4,check=1-3"
+rm -f "$LC/reef.jsonl"; : > "$T/calls"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':6},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$(cat "$T/calls")" "limit set wharf-runs/run-cap host-a:4" "no hand set seen (no history here): the bounds win, back inside"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':6},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+printf '%s\n' "{\"at\": $(( $(date +%s) - 7200 )), \"host\": \"host-a\", \"key\": \"wharf-runs/run-cap\", \"to\": 6, \"seen\": 6, \"tried\": true, \"range\": \"1-4\", \"mode\": \"on\"}" > "$LC/reef.jsonl"
+: > "$T/calls"; out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$(cat "$T/calls")" "limit set wharf-runs/check-slots host-a:1" "a run cap held outside its bounds: a hot host still gives a check slot back"
+has "$out" "held: wharf-runs/run-cap 6 was set by hand" "…saying which limit it holds"
+line "host-a:mode=on,run=1-4,check=1-4"; : > "$T/calls"; out=$(python3 "$RF" plan --row "$T/row.json" 2>&1)
+has "$out" "held: wharf-runs/run-cap 6" "the other limit's range changed: the hand set still held"
+line "host-a:mode=on,run=1-8,check=1-3"; : > "$T/calls"; python3 "$RF" apply --row "$T/row.json" > /dev/null 2>&1
+has "$(python3 "$RF" log)" "its range changed since the hand set" "its own range changed: the hand set spent, recorded"
+line "host-a:mode=on,run=1-4,check=1-3"; : > "$T/calls"
+python3 - "$LC/reef.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for r in rows: r["at"] -= 3600
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$(cat "$T/calls")" "limit set wharf-runs/run-cap host-a:4" "the range back as it was (A, B, A): the spent hand set never returns, back inside"
+printf '%s\n' "{\"at\": $(( $(date +%s) - 7200 )), \"host\": \"host-a\", \"key\": \"wharf-runs/run-cap\", \"to\": 6, \"seen\": 6, \"tried\": true, \"range\": \"1-4\", \"mode\": \"on\"}" > "$LC/reef.jsonl"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':6},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+line "host-a:mode=advise,run=1-8,check=1-3"; python3 "$RF" apply --row "$T/row.json" > /dev/null 2>&1
+has "$(python3 "$RF" log)" "its range changed since the hand set" "an advise line with another range between: the hand set spent too"
+
+echo "-- the ledger's trim keeps each limit's last word"
+cat > "$T/trim.py" <<'PY'
+import importlib.machinery, importlib.util, json, sys
+spec = importlib.util.spec_from_loader("reef", importlib.machinery.SourceFileLoader("reef", sys.argv[1]))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+f = m.ledger(); f.parent.mkdir(parents=True, exist_ok=True)
+rows = [{"at": 1, "host": "host-a", "key": "wharf-runs/run-cap", "to": 6, "seen": 6, "range": "1-4"}]
+rows += [{"at": 2 + i, "host": "host-a", "key": "wharf-runs/check-slots", "from": 2, "to": 2, "done": False, "mode": "advise"} for i in range(2000)]
+f.write_text("".join(json.dumps(r) + "\n" for r in rows))
+m.record({"at": 9999, "host": "host-a", "key": "wharf-runs/check-slots", "to": 2, "done": False, "mode": "advise"})
+left = m.ledger_rows()
+print(len(left), m.known("host-a", by_hand=True).get("run"))
+PY
+check "$(python3 "$T/trim.py" "$RF")" "1001 (6, '1-4')" "past 2000 rows: the last 1000 kept, and the run cap's hand set before the cut"
+rm -f "$LC/reef.jsonl"
+
+echo "-- a node's one seed (apply --seed)"
+rm -f "$LC/reef.jsonl" "$REGATTA_CONFIG/lighthouse/reef"; : > "$T/calls"; mkdir -p "$LC"; : > "$LC/reef-seed"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':4},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+hasnt "$(cat "$T/calls")" "lighthouse/reef" "a marker with no node's record beside it (a stray): no seed"
+mkdir -p "$REGATTA_CONFIG/wharf-runs/node"; : > "$REGATTA_CONFIG/wharf-runs/node/reef-seed-asked"; : > "$T/calls"
+python3 "$RF" apply --row "$T/row.json" > /dev/null 2>&1
+hasnt "$(cat "$T/calls")" "lighthouse/reef" "apply without --seed: no seed"
+python3 "$RF" apply --seed --row "$T/row.json" > "$T/out" 2>&1
+has "$(cat "$T/calls")" "limit set lighthouse/reef host-a:mode=on,run=1-4,check=1-2" "apply --seed with the marker: the line seeded first"
+check "$([ -e "$LC/reef-seed" ] && echo kept || echo gone)" "gone" "the marker spent"
+has "$(python3 "$RF" log)" "seeded" "the ledger says it seeded"
+has "$(python3 "$RF" log)" "run-cap None → 4  baseline" "…and what it found each limit at"
+line "host-a:mode=on,run=1-4,check=1-2"; mkrow 2.6 2.9 3.1
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':6},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+: > "$T/calls"; out=$(python3 "$RF" apply --row "$T/row.json" 2>&1)
+has "$out" "held: wharf-runs/run-cap 6 was set by hand" "a raise past a seeded ceiling: held, the seed's reading its baseline"
+hasnt "$(cat "$T/calls")" "run-cap host-a:4" "…never moved back down"
+rm -f "$REGATTA_CONFIG/lighthouse/reef"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':4},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+: > "$T/calls"; python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+hasnt "$(cat "$T/calls")" "lighthouse/reef" "no marker: never seeded again (a line removed stays removed)"
+: > "$LC/reef-seed"; line "host-a:mode=advise"; : > "$T/calls"
+python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+hasnt "$(cat "$T/calls")" "limit set lighthouse/reef" "a line already there: not overwritten"
+check "$([ -e "$LC/reef-seed" ] && echo kept || echo gone)" "gone" "…and the marker spent"
+rm -f "$REGATTA_CONFIG/lighthouse/reef"; : > "$LC/reef-seed"
+STUB_FAIL=1 python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+check "$([ -e "$LC/reef-seed" ] && echo kept || echo gone)" "kept" "a refused seed keeps the marker: the next sweep tries again"
+STUB_FAIL=1 python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+check "$(grep -c '"seeded": false' "$LC/reef.jsonl")" "1" "…a second refusal for the same reason logs nothing new"
+rm -f "$T/limits.json"; python3 -c "import json;json.dump({'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+cat > "$T/bin/regatta-norun" <<PY
+#!/usr/bin/env python3
+import os, subprocess, sys
+a = sys.argv[1:]
+if a[:3] == ["limit", "get", "wharf-runs/run-cap"]:
+    sys.exit(1)
+os.execv("$T/bin/regatta", ["$T/bin/regatta"] + a)
+PY
+chmod +x "$T/bin/regatta-norun"; : > "$T/calls"
+REEF_TOOL_REGATTA="$T/bin/regatta-norun" python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+has "$(cat "$T/calls")" "limit set lighthouse/reef host-a:mode=on,run=1-3,check=1-2" "an unread run cap: the sampler row's cap stands in"
+rm -f "$LC/reef-seed" "$LC/reef.jsonl"
+python3 -c "import json;json.dump({'wharf-runs/run-cap':{'host-a':4},'wharf-runs/check-slots':{'host-a':2}},open('$T/limits.json','w'))"
+: > "$LC/reef-seed"; mkrow 2.6 2.9 3.1
+python3 - "$T/row.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["at"] -= 3600; json.dump(d, open(sys.argv[1], "w"))
+PY
+: > "$T/calls"; python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+hasnt "$(cat "$T/calls")" "lighthouse/reef" "a stale row: no seed from it"
+check "$([ -e "$LC/reef-seed" ] && echo kept || echo gone)" "kept" "…and the marker kept for a fresh one"
+mkrow 2.6 2.9 3.1; : > "$T/calls"
+STUB_READBACK=1 python3 "$RF" apply --seed --row "$T/row.json" > /dev/null 2>&1
+has "$(python3 "$RF" log)" "run-cap None → 4  baseline" "a seed written but read back otherwise (exit 3): its baseline recorded"
+rm -f "$LC/reef-seed" "$LC/reef.jsonl"
+
 echo "-- the sweep's hand-off (hosts reef_soon)"
 cat > "$T/soon.py" <<'PY'
 import importlib.machinery, importlib.util, json, sys, time
@@ -271,6 +437,11 @@ line "host-a:mode=advise"
 check "$(python3 "$T/soon.py" "$C/bin/hosts" "$T/row.json")" "started 0" "this host's line: reef apply runs on the row"
 has "$(cat "$LC/reef.out")" "reef host-a: hot" "its words land in reef.out"
 check "$(python3 -c "import json;print(json.load(open('$LC/hosts-row.json'))['host'])")" "host-a" "the row it was handed is the sampler's"
+rm -f "$REGATTA_CONFIG/lighthouse/reef" "$REGATTA_CONFIG/wharf-runs/node/reef-seed-asked"; : > "$LC/reef-seed"; : > "$LC/reef.out"
+check "$(python3 "$T/soon.py" "$C/bin/hosts" "$T/row.json")" "not started" "a stray marker, no node's record: not started"
+mkdir -p "$REGATTA_CONFIG/wharf-runs/node"; : > "$REGATTA_CONFIG/wharf-runs/node/reef-seed-asked"
+check "$(python3 "$T/soon.py" "$C/bin/hosts" "$T/row.json")" "started 0" "no line but a node's seed asked for: started"
+has "$(cat "$LC/reef.out")" "reef host-a: set lighthouse/reef" "…and it seeds (apply --seed)"
 
 echo
 [ "$fails" -eq 0 ] && echo "reef: all passed" || { echo "reef: $fails failed"; exit 1; }

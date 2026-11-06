@@ -83,57 +83,20 @@ sys.exit(0 if ok else 1)
 PY
     if [ -f "$here/bin/autofinish" ]; then
       printf '%-12s %s\n' "autofinish:" "$(python3 "$here/bin/autofinish" status 2>/dev/null || echo unreadable)"
-      if "$lc" print "gui/$uid/$label" >/dev/null 2>&1; then
-        echo "schedule:    loaded ($label, every 10 min)"
-      elif [ -f "$plist" ]; then
-        echo "schedule:    plist written but not loaded ($plist)"
-      else
-        echo "schedule:    off (sh $here/install.sh --schedule)"
-      fi
     fi
-    # what a /finish here needs that a Mac has from its setup: the Linux node had neither (node-lands, 2026-10-31:
-    # its first landing read "Unknown command: /finish", and the publish gate refuses with no word list). Said,
-    # never failed: a host with no public twin to publish needs no list
-    # -B: no bytecode written into bin/ (orca-host's reader scan reads every file there)
-    python3 -B - "$here" <<'PY' || true
-import json, sys
-import importlib.machinery as m, importlib.util as u
-sp = u.spec_from_loader("orca_host", m.SourceFileLoader("orca_host", sys.argv[1] + "/bin/orca-host"))
-oh = u.module_from_spec(sp); sp.loader.exec_module(oh)
-c = oh.common
-hw = c.tool("helloworld")
-if not hw:
-    print("word list:   unknown (no helloworld module)")
-else:
-    try:
-        hs = u.spec_from_loader("helloworld", m.SourceFileLoader("helloworld", str(hw)))
-        h = u.module_from_spec(hs); hs.loader.exec_module(h)
-        wl = h.wordlist_path()
-        try:
-            h.wordlist()   # the gate's own read: a missing, empty or malformed list refuses as the gate would
-            print("word list:   %s" % wl)
-        except h.Refused as e:
-            print("word list:   %s (%s) — the publish gate refuses here, so a /finish of a repo with a public twin "
-                  "stops at its check" % ("MISSING" if not wl.is_file() else "REFUSED", e if wl.is_file() else wl))
-    except BaseException as e:  # noqa: BLE001 — a report line, never a failed check (a SystemExit from a loader too)
-        print("word list:   unreadable (%s: %s)" % (type(e).__name__, e))
-def has_finish(d):
-    # a linked skill (the overlay's REGATTA_SKILLS), or wharf installed as a plugin of that login
-    if (d / "skills" / "finish" / "SKILL.md").is_file():
-        return True
-    try:
-        rows = json.loads((d / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")).get("plugins") or {}
-    except (OSError, ValueError, AttributeError):
-        return False
-    return any(str(k).split("@")[0] == "wharf" for k in rows)
-have, lack = [], []
-for d in c.login_dirs():
-    (have if has_finish(d) else lack).append(str(d))
-print("finish:      %s" % ("; ".join(
-    (["in " + ", ".join(have)] if have else []) +
-    (["MISSING in " + ", ".join(lack) + " — a landing on that login reads 'Unknown command: /finish'"] if lack else []))
-    or "no login dir here"))
-PY
+    # One read shared with dispatch-queue: the report and the claim use the same prerequisites.
+    # Report only: a host with no public twin may still use the tools without a word list.
+    python3 -B - "$here" "$lc" "$label" "$plist" <<'PY_CHECK' || true
+import sys
+sys.path.insert(0, sys.argv[1] + "/lib")
+import core_path
+core_path.require()
+import common
+from finish_capability import capability
+report = capability(common, *sys.argv[2:5])
+for key in ("schedule", "word list", "finish"):
+    print("%-12s %s" % (key + ":", report[key]))
+PY_CHECK
     exit $rc
     ;;
   --schedule)

@@ -407,7 +407,7 @@ has "$T/out" "--       org.example.claude.host.fresh: starts claude itself, whos
 hasnt "$T/out" "BARE " "…nothing counted against the sitting"
 # a rebuild under a running host whose plist already names claude-host: the plist compares equal,
 # so only the image's age says it runs the old build (review, 2026-10-18)
-lstart() { LC_ALL=C date -r "$2" '+%a %b %d %H:%M:%S %Y' > "$T/lstart-$1"; }
+lstart() { LC_ALL=C dateat "$2" '+%a %b %d %H:%M:%S %Y' > "$T/lstart-$1"; }
 built=$(stat -f %m "$HOME/.local/bin/claude-host.source-sha256")
 # a host still loaded bare at --grant: its job is claude, started before the build — no old
 # claude-host to restart; converge moves it once (review, 2026-10-18)

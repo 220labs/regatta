@@ -168,6 +168,13 @@ PROG = "scope-pass"
 SITE = "scope.brief"   # the gate's row for the judge (check --judge)
 # The judge's question. Generic on purpose: the node's own names are the scan's (words.txt), and this
 # text is public. What it must catch is what a word list cannot hold — a detail that identifies, data.
+# Its clean list names the work's own counts, timings and decision letters (UP_ASK names counts of
+# sessions or corrections): a result brief out of a confidential run is made of those (how many sessions,
+# hits, seconds, which option), and before the line said so the judge read the work's figures and counts
+# as the client's and refused one such brief three times (confidential-reach S1, 2026-11-04). Each clean
+# item names its owner (the sessions that made the text, the scan's or fence's refusals), as a bare
+# "hits", "timings" or "settings" would also clear a client's traffic, batch window or config key (the
+# landing review, 2026-11-05: the bench's l12-l15). A client's figures stay a leak, however framed.
 JUDGE_CONTEXT = (
     "A confidential project's session is about to send this text out: it becomes a brief committed to "
     "an open repository, read by a session that must learn nothing about the confidential project. A "
@@ -178,8 +185,13 @@ JUDGE_ASK = (
     "identifies a client, a person or an organisation (a city, an address, a domain, an email, a company "
     "or account name, a contract, a unique description), their data or figures (revenue, prices, user "
     "counts, dates of their events, their system's internals), or a business fact about them? A generic "
-    "engineering task, a tool's name, a public library or standard, a file path in the open repository "
-    "and made-up example values are clean.")
+    "engineering task, counts of the agent sessions, transcripts and tool calls that made this text and "
+    "of the scan's or the fence's own refusals or hits, how long those sessions' steps took and when they "
+    "ran, a decision's letter, the names of public tools and of their public settings, a public library "
+    "or standard, a file path in the open repository and made-up example values are clean; the client's "
+    "own figures, timings, dates and settings (their revenue, prices, count of users, accounts, customers "
+    "or patients, their traffic, their schedules, their system's internals) are not, however the text "
+    "frames them.")
 JUDGE_LABELS = {
     "clean": "nothing in it identifies or describes the confidential project, its clients, people or data",
     "leak": "it carries something specific to the confidential project, its clients, people or data",

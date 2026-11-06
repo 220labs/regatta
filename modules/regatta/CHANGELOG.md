@@ -1,6 +1,15 @@
 # Changelog — regatta (the core)
 
 ## Unreleased
+
+- `ready_pr` releases build CI's owned hold as well as the draft fallback's, spending either
+  ownership note once so later manual holds remain in place.
+
+- `scope_rotates(primary, reg)` (scope-rotation, 2026-11-04): the coins' one scope rule, which both rotation fences ask — a repo
+  rotates when some scope lists it and every scope that lists it, each judged alone, has no `rotation` key or `rotation: true`;
+  `rotation: false`, a `rotation` that is no bool, no scope or a registry it cannot walk fences. `confidential` alone no
+  longer fences. `rotation_problem` names a `rotation` that does not read, and `regatta check` lists it as a finding.
+
 - `host_name()` reads `wharf-runs/host` first (a builder host's row; absent everywhere else). `launchd_domain()`: `gui/<uid>`, or `user/<uid>` where `DISPATCH_LAUNCHD_DOMAIN` (else
   `wharf-runs/launchd-domain`) says `user` — a builder user's jobs (the Argon arm's S2). fence.py's builder keychain:
   `builder_signin_put` / `builder_signin_read` (a keychain file in a builder's home holding agy's item, its random
@@ -22,6 +31,10 @@
   own node is `ok`, a node no folder here gives is a note (another Mac), another scope's node a finding. A node
   `lighthouse/hosts` lists too is still its own scope's only.
 
+- deny-drift (2026-11-03): `ORCA_ROW`'s deny list is always empty (`repos.deny`, kept read by nothing while the overlay's
+  suite still prints it), and `regatta/orca-deny` leaves `OVERLAY_KEYS`: an unnamed Orca login is still a secondary
+  seat, kept off the vault by lighthouse's tenancy (it is no tenant's). The overlay keeps writing the key empty until
+  no older core runs (an older core still requires it); `regatta check` notes it as read by nothing.
 - `hooks/fence.py`'s seatbelt narrowed by the council's landing reviews: `/dev` to Apple's pty shape (an arm opens its
   own ptys, never the owner's terminals), the OS's db folder to its timezone, the pasteboard's mach service and
   Homebrew's `var` and `etc` denied; F4's probe asks for each.

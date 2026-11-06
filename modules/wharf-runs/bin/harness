@@ -17,7 +17,7 @@ file per harness).
         A fresh attempt at a failed run's task, the same placement: Orca's `--retry-of` (the tick's
         S1 retry of an Orca step, B8). Only the orca adapter has it; a Claude Code step is
         re-dispatched from its brief by bin/stalls_tick.py instead. Exit 2: not a failed run.
-    harness run [--harness claude-code|orca|codex] (--prompt TEXT | --prompt-file FILE | --branch BRANCH)
+    harness run [--harness claude-code|orca|codex|agy] (--prompt TEXT | --prompt-file FILE | --branch BRANCH)
                 [--cwd DIR] [--repo DIR] [--name TOPIC] [--agent claude|codex] [--runner orca]
                 [--model M] [--effort E] [--account auto|LABEL [--ship KEY]] [--headless] [--on HOST]
                 [--timeout S] [--ephemeral] [--json]
@@ -30,7 +30,10 @@ file per harness).
         the login it was pinned to) a Claude worker on that login, in a terminal of ours (docs/
         orca-accounts-2026-10-16.md); codex is `codex exec --json` detached in --cwd, or Orca's codex
         worker with --runner orca; --timeout S ends a codex run past S seconds (default two hours) and
-        --ephemeral runs it `codex exec --ephemeral`. Exit 1: the start failed; 2: refused before anything started.
+        --ephemeral runs it `codex exec --ephemeral`; agy is Google's `agy` in print mode detached in --cwd (a
+        claude/* worktree), on the login `bin/account pick --provider antigravity` names for the repo, its guards in
+        agy's own hooks.json (bin/harness_adapters/agy.py's header) — the road `dispatch BRANCH --harness agy` takes
+        (agy-road, 2026-11-04). Exit 1: the start failed; 2: refused before anything started.
     harness run --harness codex --mode research --repo HOME --cwd COPY (--prompt TEXT | --prompt-file FILE)
                 [--review BASE] [--web] [--timeout S] [--deadline EPOCH] [--council RUN] [--approved QUOTE]
                 [--model M] [--effort E] [--json]
@@ -79,12 +82,16 @@ file per harness).
 Every run is refused (exit 2) unless the repo's contract says `physical: none` — bin/dispatch's rule,
 which `dispatch --start` leaves to its caller — and a Codex run (--harness codex or --agent codex)
 in a public repo (oss/, the overlay's own, those wharf-runs/public-repos names): OpenAI's docs say not to use a plan login in scripts on
-public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14). A run of
+public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14). An agy run
+(--harness agy) meets the same rule: Google's word on a scripted agy run under a consumer login is unsettled
+(the agy-machines-port branch searched, 2026-10-17: no terms text, forum replies that conflict). A run of
 any CLI but Claude Code's (Codex, an Orca worker of another agent) meets the checks a Claude run does
 (docs/codex-agy-gaps-2026-10-29.md, D2-A; vendor-fence): a confidential or guarded repo only on a login
-its tenant owns (the core's vendor_refusal, `account pick --provider <it>` naming the login), and the
-run cap (`dispatch --slots`, whose count holds Codex runs and Orca's non-Claude workers), so an
-unattended caller may start one. Only an Orca Claude worker is still attended-only: no cap counts it.
+its tenant owns (the core's vendor_refusal, `account pick --provider <it>` naming the login; agy's provider
+word there is `antigravity`), and the run cap (`dispatch --slots`, whose count holds Codex runs, agy runs and
+Orca's non-Claude workers), so an unattended caller may start one. The agy road (agy-road, 2026-11-04):
+`dispatch BRANCH --harness agy` puts an entry that needs the `agy` feature (dispatch-queue's eligibility: a builder
+host's feature line, with agy installed there), and its fired run starts `harness run --harness agy` in the branch's worktree. Only an Orca Claude worker is still attended-only: no cap counts it.
 
 --host: `here` (the default) is this Mac; PEER a Mac wharf-runs/ssh names (`<peer>:<ssh alias>`),
 read over that alias; `all` both. ssh runs from the Mac whose key names the peer (bin/pickup's PEERS,
@@ -582,6 +589,8 @@ def vendor_of(req, harness):
     and any agent Orca names later): what bin/account's rows call it, and what the vendor fence judges."""
     if harness == "codex":
         return "codex"
+    if harness == "agy":
+        return "antigravity"   # bin/account's provider word for agy's rows (agy.py's VENDOR)
     agent = req.get("agent") or ""
     if harness == "orca" or req.get("runner") == "orca":
         return agent or "claude"
@@ -603,7 +612,15 @@ def dispatch_bin():
 def run_slots():
     """(busy, cap) from `dispatch --slots`, or None when it does not read. dispatch-rc's live count holds the
     harness's Codex runs and Orca's non-Claude workers since vendor-fence (2026-10-29), so a Codex start asks
-    the same cap a dispatch does."""
+    the same cap a dispatch does. dispatch's agy road hands the count it took under its start lock instead
+    (HARNESS_SLOTS `<busy> <cap>` beside HARNESS_DISPATCHED): a `--slots` read from here would count that run's own
+    queue claim, which dispatch's count leaves out, and miss force's slot over the cap (agy-road's round 1)."""
+    if os.environ.get("HARNESS_DISPATCHED") and os.environ.get("HARNESS_SLOTS"):
+        try:
+            busy, cap = os.environ["HARNESS_SLOTS"].split()[:2]
+            return int(busy), int(cap)
+        except ValueError:
+            return None
     try:
         r = subprocess.run([dispatch_bin(), "--slots"], capture_output=True, text=True, timeout=120)
         busy, cap = r.stdout.split()[:2]
@@ -973,6 +990,11 @@ def guard(req, harness):
     if codex_in(req, harness) and public_repo(root):
         fail("Codex does not run in %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — OpenAI's docs say not "
              "to use a plan login in scripts there (contract E4)" % root, 2)
+    if harness == "agy" and req.get("runner"):
+        fail("an agy run is agy under this harness's own wrapper: no --runner (Orca's agy agent is orca-vendors S2)", 2)
+    if harness == "agy" and public_repo(root):
+        fail("agy does not run in %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — a plan login stays "
+             "out of scripts there, as Codex's (contract E4)" % root, 2)
     why = vendor_fence(root, vendor)
     if why:
         fail(why, 2)

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""account_guard: refuse a prompt in a repo the session's account denies (work-account E4).
+"""account_guard: refuse a prompt in a repo the session's account is routed off (work-account E4).
 
-A row of the login registry (the config dir's `lighthouse/accounts.json`) may carry
-`"repos": {"deny": [...]}` — a work login denies the owner's vault and CV repos (the owner's D3,
-docs/work-account-2026-10-06.md). `pickup` and `dispatch` honour it through `account pick --repo`;
+What keeps a repo off a login is tenancy (bin/account's header, Tenants): a tenant's repos run on its own
+logins only, the owner's vault and CV among them (the vault's tenant, confidential-reach S7). A row's
+`"repos": {"deny": [...]}` (the owner's D3, docs/work-account-2026-10-06.md) is read by nothing since
+deny-drift (2026-11-03), bar an entry naming a vault no tenant holds, which keeps the vault off that row. `pickup` and `dispatch` honour tenancy through `account pick --repo`;
 nothing stands in front of a session the owner starts by hand — `CLAUDE_CONFIG_DIR=<a work dir>
 claude` typed in the vault, or a window of that login's VS Code profile opened there. This hook is
 that net: on every prompt of a session on a secondary config dir it asks `bin/account allowed
-<cwd>`, and on exit 1 blocks the prompt with the way out (the default profile, or a Terminal claude
-on the default login).
+<cwd>`, and on exit 1 blocks the prompt with the way in `allowed` names (the tenant's login), else the
+default profile or a Terminal claude on the default login.
 
 A tenant's repo (bin/account's header, Tenants, 2026-10-20) is off every login but the tenant's,
 the default dir's included, so while the tenants file (else the registry) names a tenant the hook asks on the default dir
@@ -18,10 +19,10 @@ is asked about and `allowed` refuses each, naming the read that opens it. While 
 or not the vault's tenant), a start in the projects folder or the home folder is asked about too: both hold it.
 A no-op without CLAUDE_CONFIG_DIR and no tenant (the default dir denies nothing) and for a dir the registry
 has no row for — bar a tenant's repo, which such a dir is refused too, and one under Orca's data, which `allowed` answers by the row of the login it is
-signed in as, else ORCA_ROW's list (2026-10-17). Fails closed when bin/account cannot run the regatta core (a
-traceback: the core missing or its config incomplete, B2b), open on any other error, and by design for a cwd in no repo — bar one that holds a denied repo
-(the projects folder, or the home folder for a row denying the vault), refused since 2026-10-18: Claude Code reads the default config dir's CLAUDE.md
-as that folder's project memory and follows its imports there. Otherwise the list says where sessions
+signed in as, else as no tenant's (2026-10-17; ORCA_ROW's deny list until deny-drift). Fails closed when bin/account cannot run the regatta core (a
+traceback: the core missing or its config incomplete, B2b), open on any other error, and by design for a cwd in no repo — bar one that holds the vault's tenant's repo
+(the projects folder, or the home folder, for a row refused the vault), refused since 2026-10-18: Claude Code reads the default config dir's CLAUDE.md
+as that folder's project memory and follows its imports there. Otherwise tenancy says where sessions
 start; it is no data boundary (section 2 of the doc). Hence the start is what it judges ($CLAUDE_PROJECT_DIR,
 else the event's cwd): a session that later `cd`s into the projects folder is not refused (2026-10-22). Where
 the shell went is judged too, bar "it holds a denied repo": a `cd` into a denied or a tenant's repo is still refused.
@@ -195,8 +196,9 @@ def maybe_tenants(cwd, entries):
 
 def own_way(why):
     """True when `allowed`'s line names its own way out, which the guard passes on as it is: a tenant's
-    (off_line: the tenant's login) or a closed tenancy's (bin/account's closed_text: the read that opens it)."""
-    return "'s, which runs on " in why or "tenancy does not read" in why
+    (off_line: the tenant's login), a closed tenancy's (bin/account's closed_text: the read that opens it) or an
+    unheld vault's (off_line: a login without the stale list, or the tenant to write)."""
+    return "'s, which runs on " in why or "tenancy does not read" in why or "no tenant holds the vault" in why
 
 
 def main():
@@ -220,7 +222,8 @@ def main():
     # home folder) is about what loads at the start and binds the start only (the branch's reviews).
     if here != cwd and (not default_dir or maybe_tenants(here, entries)):
         t = subprocess.run([sys.executable, str(ACCOUNT), "allowed", here], capture_output=True, text=True, timeout=20)
-        if t.returncode == 1 and " is off " in t.stdout and " holds " not in t.stdout:
+        # ": it holds " is holds_line's own shape; off_line's unheld vault says "no tenant holds" and still binds
+        if t.returncode == 1 and " is off " in t.stdout and ": it holds " not in t.stdout:
             why = t.stdout.strip()
             # a tenant's line (off_line) names its own login's way in, from either source (review 2026-10-23)
             print(json.dumps({"decision": "block", "reason": why if own_way(why) else
@@ -236,7 +239,7 @@ def main():
         print(f"account_guard: bin/account could not run ({lines[-1]}) — tenancy unchecked on the default dir", file=sys.stderr)
         return
     # A traceback is bin/account failing to run at all — the regatta core missing, or refusing to
-    # load because the config dir lacks the private values its deny list comes from (B2b). That is
+    # load because the config dir lacks the private values it reads (B2b). That is
     # no answer, so a deny hook blocks: fail closed, in one line that says how to repair it (the
     # overlay branch's review, 2026-10-18). A malformed registry exits 1 with its own one-line
     # message and no traceback, and stays silent below (review 2026-10-06).

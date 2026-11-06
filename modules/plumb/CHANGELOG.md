@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- trim collects a confidential scope that rotates (scope-rotation, 2026-11-04; `trimlib.collect_fence`): each row is
+  redacted to an allowlist (arm, pass, cost, wall and their kin) under an id no one outside the repo can guess (a digest of
+  its merge commit or session), and counts in the Scorecard's arm tallies and the verdict alone — never the Size table, the
+  goals, the floor list by id or intake; its bench rows, and rotation rows that do not say their scope, are left out. Its
+  ledger holds fenced rows alone: a named row from before the scope turned confidential is redacted in place, and an open
+  collect drops a named row's fenced twin (a scope open again). `--night` refuses every confidential repo, and aurora's
+  night never runs one (TODO.md [trim-night-fenced]). A scope with `rotation: false` is refused as before.
+
 - `asks` (evolve S11, S1's follow-ups): `asks merge`, the theme ledger's merge pass over the model slugs, one
   `evolve.theme` call a month (`run` makes it when due and the ledger holds twenty slugs; a group of more than thirty
   is held; `theme-merges.json` keeps old → kept and `numbers`, `ship` and new runs follow it; its cost is its row in `theme-merges.jsonl`,

@@ -84,6 +84,10 @@ check "$(HEADROOM_HOST=host-a "$W/bin/headroom" limits 2>/dev/null)" "avail=20,r
 printf '1.5\nlog\n' > "$C/wharf-runs/load-max"
 "$L" limit set --why t load-max host-a:2 > /dev/null 2>&1
 check "$("$W/bin/berth" --load-key wharf-runs/load-max)" 2 "berth's load key: the plain layer replaces 1.5 log"
+check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "opus-high=1,sonnet-high=2,argon-high=2" "the builder coin's odds: no value reads the default, 1:2:2"
+printf 'opus-high=1,\nsonnet-high=2,\nargon-high=2\n' > "$C/wharf-runs/builder-odds"   # the overlay's one word per line
+"$L" limit set --why t builder-odds 'host-a:argon-high=0, opus-high=2,sonnet-high=1' > /dev/null 2>&1
+check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "opus-high=2,sonnet-high=1,argon-high=0" "  set over the config's lines: the draw reads the layer's alone, in the arms' order"
 check "$("$L" limit set --why t week-max 'acct-x:95' 2>&1 | head -1)" "regatta limit: lighthouse/week-max is a login's: name the hosts it is set on (--on H[,H…] or --all)" \
   "a login's limit names its hosts"
 "$L" limit set --why t week-max 'acct-x:95' '*:88' --on host-a > /dev/null 2>&1
@@ -93,7 +97,9 @@ check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-other 2>/dev/null)
 echo "limit: a value the reader refuses"
 before=$(cd "$C/live" && find . -type f -exec cat {} + | sort | tr '\n' ' ')
 for bad in "run-cap host-a:0" "run-cap host-a:abc" "run-cap host-a:1000" "check-slots host-a:0" "check-slots host-a:x" \
-           "headroom host-a:avail=x" "headroom host-a:free=10" "load-max host-a:fast" "check-slots host-a:00"; do
+           "headroom host-a:avail=x" "headroom host-a:free=10" "load-max host-a:fast" "check-slots host-a:00" \
+           "builder-odds host-a:2:1:2" "builder-odds host-a:3/5" "builder-odds host-a:opus-high=x" "builder-odds host-a:haiku=1" \
+           "builder-odds host-a:opus-high=1,opus-high=2"; do
   out=$("$L" limit set --why t $bad 2>&1); rc=$?
   check "$rc" 2 "refused: $bad"
   case "$out" in *"refused"*"nothing written"*) ;; *) echo "  FAIL   says so: $out"; fails=$((fails+1));; esac

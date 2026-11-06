@@ -20,9 +20,12 @@
 #                           pull request: check.yml) runs only those the change reaches, check_scope.py's
 #                           verdicts over what the PR's merge commit adds to its base, a `SKIP <id>` line
 #                           for the rest; a change that cannot be read runs them all (free-ci S3)
-#   share.sh rest [--scoped]   the same, under its own name where the rest runs on Linux (the twin)
+#   share.sh whole [--scoped]  every command, Linux-list suites included, past a failure; --scoped
+#                           is the Macs' PR road while CI_LINUX_ELSEWHERE is not true
+#   share.sh rest [--scoped]   the same as macos, where the rest runs on Linux (the twin)
 #   share.sh macos-scope    the verdicts `macos --scoped` runs by, said, nothing run (it reads GitHub's
-#                           merge ref: HEAD^1 is the base, HEAD the PR's merge commit)
+#                           merge ref: HEAD^1 is the base, HEAD the PR's merge commit; on a local
+#                           merge it reads only that merge's first-parent delta, not a branch's fork)
 #   share.sh verdicts DIR   the fan-in: a `pass` file in DIR for every id on the Linux list
 #   share.sh scope [BASE]   `RUN <why>` when HEAD's change since its fork from BASE (origin/main)
 #                           reaches a Linux suite, else `NONE <why>`: the PR trigger's question
@@ -157,7 +160,7 @@ macos_scope() {
     # its base: HEAD^1..HEAD, a shallow checkout of refs/pull/N/merge holding both (check.yml's
     # fetch-depth 2). Never refuses: whatever cannot be read (HEAD no merge, git or check_scope.py failing,
     # a verdict count that does not match) says why and runs every command, more checking, never fewer.
-    # A change under .github/workflows/ or .github/ci/ (this script beside it), or to check_scope.py, runs the whole line as
+    # A change under .github/ (this script included), or to check_scope.py, runs the whole line as
     # well: check_scope.py counts .github/ as reaching no suite, and those files are the CI that runs the line.
     local pairs reason="" changed verdicts parents wf
     pairs="$(cat)"
@@ -170,7 +173,7 @@ macos_scope() {
     fi
     if [ -z "$reason" ]; then
         # a scope never judges its own change: a PR that edits the rules would be cut by the rules it edits
-        wf="$(printf '%s\n' "$changed" | grep -m1 -E '^(\.github/(workflows|ci)/|modules/wharf-runs/bin/check_scope\.py$)')" \
+        wf="$(printf '%s\n' "$changed" | grep -m1 -E '^(\.github/|modules/wharf-runs/bin/check_scope\.py$)')" \
             && reason="$wf changed: the CI or the scope that runs the line"
     fi
     if [ -z "$reason" ]; then
@@ -224,9 +227,10 @@ case "${1:-}" in
     macos-scope)
         # the verdicts `macos --scoped` runs by, said, nothing run: a SCOPE line, then `<id> RUN|SKIP <why>`
         verify || exit 2
+        echo "scope input: HEAD^1 ($(git -C "$repo" rev-parse --short HEAD^1 2>/dev/null || echo unreadable))..HEAD ($(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unreadable)); a local merge reads its first-parent delta, not the branch's fork" >&2
         ids | macos_scope
         ;;
-    macos|rest)
+    macos|rest|whole)
         # --scoped (check.yml's pull_request step): the suites the change reaches, a `SKIP <id>` for the rest
         scoped=""
         case "${2:-}" in --scoped) scoped=1 ;; "") ;; *) echo "usage: $0 $1 [--scoped]" >&2; exit 2 ;; esac
@@ -240,7 +244,7 @@ case "${1:-}" in
         fi
         summary=(); failed=0
         while IFS=$'\t' read -r id cmd; do
-            if on_linux "$id" "$lx"; then
+            if [ "$1" != whole ] && on_linux "$id" "$lx"; then
                 # wharf-runs runs its Linux-proven scripts there and the rest here
                 [ "$id" = wharf-runs ] || { summary+=("LINUX  $id"); continue; }
                 cmd="WHARF_RUNS_SKIP_LINUX_OK=1 $cmd"
@@ -255,7 +259,8 @@ case "${1:-}" in
             else failed=$((failed + 1)); summary+=("FAIL $(( $(date +%s) - t0 ))s  $id"); fi
         done <<< "$all"
         echo
-        if [ "$1" = rest ]; then echo "=== the rest of the line: $failed failed (the LINUX lines run in jobs of their own)"
+        if [ "$1" = whole ]; then echo "=== the whole line: $failed failed"
+        elif [ "$1" = rest ]; then echo "=== the rest of the line: $failed failed (the LINUX lines run in jobs of their own)"
         else echo "=== the macOS share: $failed failed (a LINUX line is check-linux's, which scopes its own)"; fi
         printf '%s\n' "${summary[@]}"
         [ "$failed" -eq 0 ]
@@ -266,9 +271,9 @@ case "${1:-}" in
         # what HEAD changed since its fork from BASE. A command that is no module's suite (`plugin`, a
         # `line-<n>`) is left out, not filtered by its verdict's wording: a change it would see (a
         # plugin.json, the marketplace) reaches a module or the whole line anyway. A change under
-        # .github/workflows/ or .github/ci/ runs: the Linux commands are read from check.yml's line, and check_scope.py
-        # counts the rest of .github/ as reaching no suite (.github/ci/ as the whole line, the two check
-        # workflows as wharf's, whose suite reads them). Since every module declares the core, which is on the
+        # .github/ runs, as the macOS share's scope does: the Linux commands are read from check.yml's line, and
+        # check_scope.py counts most of .github/ as reaching no suite (.github/ci/ as the whole line, the two
+        # check workflows as wharf's, whose suite reads them). Since every module declares the core, which is on the
         # Linux list, any change under modules/ reads RUN: NONE is a PR of docs and records only.
         # Prints `RUN <said>` or `NONE <said>`; exit 2 when it cannot tell (the caller runs).
         base="${2:-origin/main}"
@@ -281,7 +286,7 @@ case "${1:-}" in
         mb="$(git -C "$repo" merge-base "$base" HEAD 2>/dev/null)" || { echo "share.sh: no fork point from $base" >&2; exit 2; }
         # quotePath off: a non-ASCII name comes quoted otherwise, and misses its docs/ prefix
         changed="$(git -C "$repo" -c core.quotePath=false diff --no-renames --name-only "$mb" HEAD)" || exit 2
-        wf="$(printf '%s\n' "$changed" | grep -m1 -E '^\.github/(workflows|ci)/')" && { echo "RUN $wf changed: the CI that runs the line"; exit 0; }
+        wf="$(printf '%s\n' "$changed" | grep -m1 -E '^\.github/')" && { echo "RUN $wf changed: the CI that runs the line"; exit 0; }
         # any module or manifest change runs, said outright: today every module declaring the core gives the
         # same verdict, but a module that declared nothing would leave `plugin` (left out above) unrun
         mc="$(printf '%s\n' "$changed" | grep -m1 -E '^(modules|\.claude-plugin)/')" && { echo "RUN $mc changed"; exit 0; }
@@ -295,7 +300,7 @@ case "${1:-}" in
         # With BASE, only the ids HEAD's change since its fork from BASE reaches, by check_scope.py's
         # rules (the Macs' check scope): Actions' matrix is built per run, so a PR spends minutes on the
         # suites it reaches, not all of them (the landing review, 2026-11-02). `plugin` and a `line-<n>`
-        # are no module's suite and always run; a change under .github/workflows/ or .github/ci/, or to
+        # are no module's suite and always run; a change under .github/, or to
         # check_scope.py, runs the whole list, as the macOS share's scope does; a list that comes out empty runs
         # the whole list, never an empty matrix.
         verify || exit 2
@@ -303,7 +308,7 @@ case "${1:-}" in
         if [ -n "${2:-}" ]; then
             mb="$(git -C "$repo" merge-base "$2" HEAD 2>/dev/null)" || { echo "share.sh: no fork point from $2" >&2; exit 2; }
             changed="$(git -C "$repo" -c core.quotePath=false diff --no-renames --name-only "$mb" HEAD)" || exit 2
-            if ! printf '%s\n' "$changed" | grep -q -E '^(\.github/(workflows|ci)/|modules/wharf-runs/bin/check_scope\.py$)'; then
+            if ! printf '%s\n' "$changed" | grep -q -E '^(\.github/|modules/wharf-runs/bin/check_scope\.py$)'; then
                 pairs="$(ids | while IFS=$'\t' read -r id cmd; do on_linux "$id" "$lx" && printf '%s\t%s\n' "$id" "$cmd"; done)"
                 verdicts="$(CHECK_CMDS="$(printf '%s\n' "$pairs" | cut -f2-)" \
                             python3 "$repo/modules/wharf-runs/bin/check_scope.py" "$repo" "$2" "$changed")" || exit 2
@@ -330,5 +335,5 @@ print(" ".join(i for i, v in zip(ids, vs) if v == "RUN"))')" || exit 2
         done
         exit $bad
         ;;
-    *) sed -n '2,39p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,42p' "$0" >&2; exit 2 ;;
 esac

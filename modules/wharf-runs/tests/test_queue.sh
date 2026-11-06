@@ -396,6 +396,15 @@ check "$(sed -n '/^queue_jobs() {/,/^}/p' "$B/dispatch" | grep -c 'python3 "$Q" 
 check "$(grep -c '\[ "$dry" = 1 \] || queue_jobs' "$B/dispatch") $(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'queue_jobs')" "1 1" \
   "  …as each run starts, beside the tidier's refresh, and at each enqueue here"
 check "$(sed -n '/^queue_jobs() {/,/^}/p' "$B/dispatch" | grep -c 'qkeys')" "1" "  and starts no python where no key and no job is"
+# node-reef: the jobs alone, for a new node's clone unit (its sweep, and reef with it, before its first dispatch)
+rm -f "$SW"; : > "$T/calls"
+"$B/dispatch" --queue-jobs > "$T/out" 2>&1; check "$?" "0" "dispatch --queue-jobs: exit 0"
+check "$([ -f "$SW" ] && echo yes)" "yes" "  the queue-sweep job installed, no run started"
+has "$T/calls" "bootstrap gui/$(id -u) $SW" "  and loaded"
+echo off > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+"$B/dispatch" --queue-jobs > "$T/out" 2>&1
+check "$(ls "$LA" | grep -c queue-)" "0" "  a home set off: --queue-jobs removes the jobs, as each start does"
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 echo "a label move (wharf-runs/label-prefix-previous): the previous prefix's sweep and poll go once the new sweep loads"
 OSW="$LA/org.old.jobs.queue-sweep.plist"; OPO="$LA/org.old.jobs.queue-poll.plist"
 python3 "$QB" jobs "${QC[@]}" > /dev/null
@@ -611,7 +620,7 @@ for v in "--claim" "--poll" "--event-at 1" "--kick fleet:x" "--claim --full lapt
   WEEKLY_RUN=t "$B/dispatch" claude/laptop/2026-10-27-wk --repo "$T/repo" --at reset --if-room $v > /dev/null 2> "$T/err"
   check "$?:$(grep -c 'under WEEKLY_RUN=t only' "$T/err")" "2:1" "WEEKLY_RUN refuses the one shape with $v"
 done
-for r in 'dispatch --claim' 'dispatch --poll' 'dispatch-queue poll' 'dispatch-queue jobs' 'dispatch-queue unreserve' 'dispatch --kick' 'dispatch-queue kick' 'dispatch-rc kick-listen'; do
+for r in 'dispatch --claim' 'dispatch --poll' 'dispatch-queue poll' 'dispatch-queue jobs' 'dispatch --queue-jobs' 'dispatch-queue unreserve' 'dispatch --kick' 'dispatch-queue kick' 'dispatch-rc kick-listen'; do
   check "$(grep '^denied=(' "$B/dispatch" | grep -cF "\"Bash(*$r*)\"")" "1" "  a run's deny list names $r"
 done
 
@@ -1169,7 +1178,8 @@ rm -f "$FEAT"
 
 echo "S5: dispatch — --needs, the berth pick retired, no home"
 check "$(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'needs:+--needs')" "1" "queue_dispatch passes --needs to the enqueue"
-check "$(grep -c 'needs:+--needs' "$B/dispatch")" "3" "  as do the fire-time enqueues (a one-shot's, a refusal's)"
+check "$(grep -c 'needs:+--needs "$needs"} ${arm_need:+--arm-need' "$B/dispatch")" "3" "  as do the fire-time enqueues (a one-shot's, a refusal's), each with the builder coin's --arm-need"
+check "$(grep -c 'needs:+--needs' "$B/dispatch")" "4" "  and the builder coin's draw, its fresh check judging the run's own needs"
 check "$(grep -c '<string>--needs</string>' "$B/dispatch")" "1" "  and a one-shot's plist carries it to its fire time"
 BRN=claude/laptop/2026-10-29-dn
 "$B/dispatch" $BRN --repo "$T/repo" --needs 'Feat Z' --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "dispatch refuses a malformed need"
@@ -1687,6 +1697,328 @@ printf '#!/bin/sh\necho /opt/stand-in/launcher\n' > "$T/rch2"; chmod +x "$T/rch2
 check "$(qpy rch-retry "$T/rch2")" "True /opt/stand-in/launcher" "  pass 2: an ask that timed out is not cached; the next start asks again and gets its launcher"
 printf '*.json filter=up\n' > "$T/attrs"
 check "$(GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.attributesFile GIT_CONFIG_VALUE_0="$T/attrs" GIT_CONFIG_KEY_1=filter.up.clean GIT_CONFIG_VALUE_1='tr a-z A-Z' qpy git-count "$T/queue.git" | cut -d' ' -f3)" "True" "item 7.5: an entry written with a host's clean filter set reads back as written (--no-filters)"
+echo "Engine room S4 (docs/engine-room-2026-11-02.md): repin, cancel by its id, features, dispatch-rc settle --stale"
+qreset
+printf 'laptop:feat-a\nbuildbox:feat-b\n' > "$REGATTA_CONFIG/wharf-runs/features"
+Q4=(python3 "$QB" enqueue --repo "$T/repo" "${QC[@]}")
+RP() { python3 "$QB" repin "$@" "${QC[@]}"; }
+"${Q4[@]}" --branch claude/laptop/2026-11-02-r4a > /dev/null 2>&1
+RP fleet:repo--r4a laptop > "$T/out" 2>&1; check "$?" "0" "repin: a queued fleet entry pinned to a host"
+check "$(qget repo--r4a host pin_kind prefer)" "laptop typed " "  a typed pin, as --pin writes it (only that host claims it)"
+has "$T/out" "pinned the queue entry fleet:repo--r4a to laptop" "  and says so"
+claim_as buildbox
+check "$(qget repo--r4a state claimed_by)" "queued None" "  another host never claims it"
+RP fleet:repo--r4a laptop > "$T/out" 2>&1; check "$?" "0" "repin to the host it is pinned to: exit 0"
+has "$T/out" "pinned to laptop already" "  nothing written, said"
+printf 'buildbox:writes\n' > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+RP fleet:repo--r4a buildbox > "$T/out" 2>&1; check "$?:$(qget repo--r4a host)" "2:laptop" "repin to a host whose queue-mode is writes: refused (it claims nothing)"
+has "$T/out" "its queue-mode is writes" "  saying why"
+printf 'writes\n' > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+RP fleet:repo--r4a buildbox --dry-run > "$T/out" 2>&1; check "$?:$(qget repo--r4a host)" "0:laptop" "repin under a bare writes line: no verdict on the target (the line is this host's own mode)"
+has "$T/out" "would have pinned" "  the dry run says it would pin"
+DISPATCH_HOST=buildbox RP fleet:repo--r4a buildbox --dry-run > "$T/out" 2>&1; check "$?:$(qget repo--r4a host)" "2:laptop" "repin to this host under its own bare writes line: refused (its claim reads the bare line)"
+has "$T/out" "its queue-mode is writes" "  saying why"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-mode"
+printf 'agy\n' > "$REGATTA_CONFIG/wharf-runs/only"
+DISPATCH_HOST=buildbox RP fleet:repo--r4a buildbox --dry-run > "$T/out" 2>&1; check "$?:$(qget repo--r4a host)" "2:laptop" "repin to this host whose wharf-runs/only the entry fails: refused (its claim would never take it)"
+has "$T/out" "takes only entries that need" "  saying why"
+DISPATCH_HOST=laptop RP fleet:repo--r4a buildbox --dry-run > "$T/out" 2>&1; check "$?" "0" "  run elsewhere, another host's only file is not this host's to read: no verdict"
+rm -f "$REGATTA_CONFIG/wharf-runs/only"
+RP fleet:repo--r4a any --dry-run > "$T/out" 2>&1; check "$?:$(qget repo--r4a host)" "0:laptop" "repin --dry-run: nothing written"
+has "$T/out" "would have unpinned" "  says what it would do"
+RP fleet:repo--r4a any > /dev/null 2>&1; check "$?" "0" "repin any: unpinned"
+check "$(qget repo--r4a host pin_kind prefer)" "  " "  no pin, no kind, no preference"
+claim_as buildbox
+check "$(qget repo--r4a state claimed_by)" "claimed buildbox" "  any eligible host claims it then"
+RP fleet:repo--r4a laptop > "$T/out" 2>&1; check "$?" "2" "a claimed entry is no entry to repin: refused"
+has "$T/out" "a pin moves a queued entry only" "  saying why"
+qreset
+"${Q4[@]}" --branch claude/laptop/2026-11-02-r4b --prefer buildbox > /dev/null 2>&1
+for v in CLAUDE_UNATTENDED REGATTA_UNATTENDED AUTOFINISH_CALLER_UNATTENDED; do
+  env "$v=1" python3 "$QB" repin fleet:repo--r4b laptop "${QC[@]}" > "$T/out" 2>&1
+  check "$?:$(qget repo--r4b host)" "2:" "repin refuses an unattended caller ($v): a pin moved is the owner's word"
+done
+has "$T/out" "an unattended caller is refused it" "  saying why"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words (a skippered run that ends on it is not held at Stop)"
+RP fleet:repo--r4b nowhere > "$T/out" 2>&1; check "$?:$(qget repo--r4b host)" "2:" "a host the config never lets take it: refused"
+has "$T/out" "nowhere may not take it" "  naming the host"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-r4n --needs feat-b > /dev/null 2>&1
+RP fleet:repo--r4n laptop > "$T/out" 2>&1; check "$?" "2" "a host whose feature line lacks the entry's need: refused"
+has "$T/out" "laptop lacks feat-b" "  saying which need"
+RP fleet:repo--r4b 'Bad Host!' > /dev/null 2>&1; check "$?" "2" "a HOST that is no host name: refused"
+RP fleet:repo--nothing laptop > "$T/out" 2>&1; check "$?" "3" "an id with no entry: exit 3"
+RP local=_land:repo--r4b laptop > "$T/out" 2>&1; check "$?" "2" "the old landing store (local=_land, drained since finish-as-task): refused, a fleet entry only"
+RP local=vault:repo--r4b laptop > /dev/null 2>&1; check "$?" "2" "a scope's queue: refused"
+cat > "$T/s4put.py" <<'PY'
+import importlib.machinery, json, sys
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+def val(v):
+    try:
+        return json.loads(v)
+    except ValueError:
+        return v
+url, repo, b = sys.argv[2], str(q.Path(sys.argv[3]).resolve()), sys.argv[4]
+extra = {k: val(v) for k, v in (a.split("=", 1) for a in sys.argv[5:])}
+k = q.key_of(repo, b)
+e = {"id": "s4-" + k, "key": k, "repo": q.repo_word(repo), "branch": b, "topic": q.topic_of(b), "priority": "normal", "needs": [],
+     "host": "", "state": "queued", "queued_at": q.now(), "put_at": q.now(), "by": "", "from": "laptop", "attempts": 0,
+     "session": "", "args": [], "env": {}, "mode": ""}
+if extra.get("kind") == "finish":
+    # a finish as autofinish-run's put writes it (finish_bad reads): its tip, its rights, the need every finish has
+    e.update(tip="f" * 40, finish={"by": "sweep", "rule": "C", "merge": False, "hold": False, "from": "laptop"}, needs=[q.FINISH_NEED])
+where = extra.pop("store", "")
+e.update(extra)
+# store=NAME: a node-local queue (a scope's, queue-local/NAME), the local stores dispatch's peer leg judges
+store = q.Local(where) if where else q.Fleet(url)
+print(store.do([{"op": "put", "key": k, "entry": e}], "a test entry"))
+PY
+s4put() { python3 "$T/s4put.py" "$QB" "$T/queue.git" "$T/repo" "claude/laptop/2026-11-02-$1" "${@:2}" > /dev/null; }
+s4put r4m host=laptop pin_kind=login 'args=["--account", "acct-x"]' "refused_by={\"laptop\": $(date +%s)}"
+RP fleet:repo--r4m laptop > "$T/out" 2>&1; check "$?:$(qget repo--r4m pin_kind refused_by)" "0:login laptop" "pinned to the host its login pins it to already: nothing written (its kind and its login's hour's skip kept)"
+has "$T/out" "pinned to laptop already (its login's pin)" "  said"
+s4put r4z host=node9 pin_kind=typed
+RP fleet:repo--r4z node9 > "$T/out" 2>&1; check "$?" "0" "pinned already to a host no config here names: the no-op, never a refusal"
+s4put r4i host=laptop pin_kind=typed inelig_buildbox=1000 inelig_laptop=1000
+RP fleet:repo--r4i buildbox > /dev/null 2>&1; check "$?:$(qget repo--r4i host inelig_buildbox inelig_laptop)" "0:buildbox None None" "a sweep's stamps under the old pin (inelig_<host>) go with it"
+s4put r4v host=laptop pin_kind=login 'args=["--account", "auto", "--account", "acct-x"]'
+RP fleet:repo--r4v any > /dev/null 2>&1; check "$?:$(qget repo--r4v host)" "2:laptop" "the login a run names is its last --account, as dispatch reads it: still the login's pin"
+s4put r4h host=laptop "pinned_why=uncommitted work in its worktree here"
+RP fleet:repo--r4h any > "$T/out" 2>&1; check "$?:$(qget repo--r4h host)" "2:laptop" "a held pin (pinned_why, no kind): refused, the pin kept"
+has "$T/out" "a held pin" "  saying it is held, and lifts at its run's end"
+s4put r4o host=laptop
+RP fleet:repo--r4o buildbox > "$T/out" 2>&1; check "$?:$(qget repo--r4o host)" "2:laptop" "a pin of no known kind (before S12): refused"
+s4put r4l host=laptop pin_kind=login 'args=["--account", "acct-x"]'
+RP fleet:repo--r4l any > "$T/out" 2>&1; check "$?:$(qget repo--r4l host pin_kind)" "2:laptop login" "a login's pin is never unpinned: its named login is that host's"
+has "$T/out" "it runs with the login acct-x, set up on laptop" "  saying which login, and where"
+RP fleet:repo--r4l buildbox > /dev/null 2>&1; check "$?:$(qget repo--r4l host)" "2:laptop" "  nor moved to another host"
+s4put r4t host=laptop pin_kind=typed 'args=["--account", "acct-x"]'
+RP fleet:repo--r4t buildbox > /dev/null 2>&1; check "$?:$(qget repo--r4t host)" "2:laptop" "  a typed pin whose run names a login: the same"
+s4put r4u host=laptop pin_kind=login 'args=["--account", "auto"]'
+RP fleet:repo--r4u any > /dev/null 2>&1; check "$?:$(qget repo--r4u host pin_kind)" "0: " "  --account auto names no login: unpinned"
+s4put r4r "refused_by={\"laptop\": $(date +%s), \"buildbox\": $(date +%s)}"
+RP fleet:repo--r4r laptop > /dev/null 2>&1; check "$?:$(qget repo--r4r host refused_by)" "0:laptop buildbox" "pinned to a host that refused it within the hour: its skip goes, another host's stays"
+DISPATCH_HOST=laptop python3 "$QB" list --all "${QC[@]}" 2>&1 | grep '^r4r ' > "$T/out"
+check "$(grep -c 'refused here' "$T/out"):$(grep -c 'rank' "$T/out")" "0:1" "  so the one host it may run on may claim it now (no hour's skip in its listing)"
+echo "  repin a finish (finish-as-task): every pin of a finish is held; an unpinned one moves as a build"
+s4put r4k kind=finish host=laptop pin_kind=typed
+RP fleet:repo--r4k buildbox > "$T/out" 2>&1; check "$?:$(qget repo--r4k host pin_kind)" "2:laptop typed" "a finish pinned by its put (--on here, the landing ladder: a typed pin_kind): refused, the pin kept"
+has "$T/out" "a finish pinned to laptop — only that host can judge or run it" "  saying why"
+RP fleet:repo--r4k any > /dev/null 2>&1; check "$?:$(qget repo--r4k host)" "2:laptop" "  nor unpinned"
+check "$(grep -c 'the next step waits for a run to end' "$T/out")" "0" "  never in the cap's waiting words: no wait frees it"
+s4put r4d kind=finish host=laptop pin_kind=typed "pinned_why=moved from this host's landing queue (finish-as-task)"
+RP fleet:repo--r4d any > "$T/out" 2>&1; check "$?:$(qget repo--r4d host)" "2:laptop" "a finish drain_land moved here (a typed kind and a why): refused"
+has "$T/out" "moved from this host's landing queue" "  naming its why"
+s4put r4e kind=finish host=laptop "pinned_why=commits origin lacks in its worktree here (abc1234)"
+RP fleet:repo--r4e buildbox > /dev/null 2>&1; check "$?:$(qget repo--r4e host)" "2:laptop" "a finish held_here pinned (no kind): refused"
+s4put r4p kind=finish prefer=buildbox
+RP fleet:repo--r4p buildbox > "$T/out" 2>&1; check "$?:$(qget repo--r4p host prefer)" "2: buildbox" "an unpinned finish is never pinned from here: refused (a pin of it would read held, and a Linux berth never claims one)"
+has "$T/out" "a finish is never pinned from here" "  saying why"
+RP fleet:repo--r4p laptop > /dev/null 2>&1; check "$?:$(qget repo--r4p host)" "2:" "  nor to this host"
+RP fleet:repo--r4p any > "$T/out" 2>&1; check "$?:$(qget repo--r4p host pin_kind prefer kind)" "0:   finish" "  any: its preference dropped, any eligible host claims it"
+s4put r4x kind=finish state=ended ran_on=buildbox outcome=launched
+RP fleet:repo--r4x laptop > "$T/out" 2>&1; check "$?:$(qget repo--r4x state host)" "2:ended " "a finish's tombstone: no entry to repin"
+has "$T/out" "it is ended — a pin moves a queued entry only" "  saying why"
+s4put r4f host=buildbox pin_kind=typed running_on=buildbox
+RP fleet:repo--r4f laptop > "$T/out" 2>&1; check "$?:$(qget repo--r4f host)" "2:buildbox" "an entry held for a run of its branch live on a host: refused"
+has "$T/out" "its end frees it" "  saying what frees it"
+
+echo "  cancel QID: one entry by its id, the owner's word"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4a > /dev/null 2>&1
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel fleet:repo--c4a "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4a state)" "2:queued" "cancel by id refuses an unattended caller; the entry stays"
+has "$T/out" "the next step waits for a run to end" "  saying why, in the cap's waiting words"
+python3 "$QB" cancel fleet:repo--c4a "${QC[@]}" > "$T/out" 2>&1; check "$?:$(qget repo--c4a state)" "0:" "cancel by id: the queued fleet entry gone"
+has "$T/out" "cancelled the queue entry fleet:repo--c4a" "  and says so"
+python3 "$QB" cancel fleet:repo--c4a "${QC[@]}" > "$T/out" 2>&1; check "$?" "3" "cancel of an id with no entry: exit 3, as repin's"
+s4put c4r state=running running_on=buildbox session=s-c4r
+python3 "$QB" cancel fleet:repo--c4r "${QC[@]}" > "$T/out" 2>&1; check "$?:$(qget repo--c4r state)" "3:running" "cancel by id of an entry running on another host: exit 3, nothing cancelled"
+has "$T/out" "a run is ended, not unqueued" "  saying what ends it"
+python3 "$QB" cancel local=vault:repo--c4a "${QC[@]}" > /dev/null 2>&1; check "$?" "2" "cancel by id in a scope's queue: refused (its branch, on its host)"
+python3 "$QB" cancel fleet:repo--c4a --repo "$T/repo" --branch claude/laptop/2026-11-02-c4a "${QC[@]}" > /dev/null 2>&1; check "$?" "2" "an id and a branch at once: refused"
+python3 "$QB" cancel "${QC[@]}" > /dev/null 2>&1; check "$?" "2" "neither: refused"
+python3 "$QB" cancel local=_land:repo--c4a "${QC[@]}" > "$T/out" 2>&1; check "$?" "2" "cancel by id in the old landing store (drained since finish-as-task): refused, the fleet's only"
+echo "  cancel QID on a finish (finish-as-task): its tombstone left"
+s4put c4l kind=finish
+python3 "$QB" cancel fleet:repo--c4l "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4l state outcome ran_on)" "0:ended cancelled None" "a queued finish cancelled by id: its tombstone, outcome cancelled (no sweep queues that tip again)"
+has "$T/out" "cancelled the queue entry fleet:repo--c4l" "  said"
+python3 "$QB" cancel fleet:repo--c4l "${QC[@]}" > "$T/out" 2>&1; check "$?:$(qget repo--c4l state)" "3:ended" "a finish's tombstone cancelled again: nothing to cancel (3), the tombstone kept"
+has "$T/out" "is a finish that ended (cancelled): nothing to cancel" "  said"
+s4put c4s kind=finish state=claimed running_on=laptop claimed_by=laptop job=org.example.claude.dispatch.repo.c4s.q1 claimed_at=$(date +%s)
+: > "$T/running.org.example.claude.dispatch.repo.c4s.q1"; rm -f "$T/calls"
+python3 "$QB" cancel fleet:repo--c4s "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4s state):$(grep -c bootout "$T/calls")" "3:claimed:0" "a finish claimed here whose job runs is starting its run: never cancelled by id, its job left"
+has "$T/out" "is starting its run — dispatch --end finish-c4s once it runs" "  naming the finish's topic for --end"
+rm -f "$T/running.org.example.claude.dispatch.repo.c4s.q1"
+python3 "$QB" cancel fleet:repo--c4s "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4s state outcome ran_on):$(grep -c bootout "$T/calls")" "0:ended cancelled laptop:1" "  its job gone and no run behind it: cancelled, its tombstone naming the host, the job booted out"
+s4put c4q kind=finish state=running running_on=laptop session=s-c4q job=org.example.claude.dispatch.repo.c4q.q1
+: > "$T/running.org.example.claude.dispatch.repo.c4q.q1"
+python3 "$QB" cancel fleet:repo--c4q "${QC[@]}" > "$T/out" 2>&1; check "$?:$(qget repo--c4q state)" "3:running" "a finish running here: a run is ended, not unqueued"
+has "$T/out" "dispatch --end finish-c4q" "  the --end hint names the finish's run"
+rm -f "$T/running.org.example.claude.dispatch.repo.c4q.q1"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4b --by s-other > /dev/null 2>&1
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4b "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4b state)" "2:queued" "the branch road refuses an unattended caller another session's queued entry"
+s4put c4w state=waiting running_on=laptop by=s-other job=org.example.claude.dispatch.repo.c4w.q1
+rm -f "$T/calls"
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4w "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4w state):$(grep -c bootout "$T/calls" 2>/dev/null || echo 0)" "2:waiting:0" "  and another session's entry waiting here, its job never booted out"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words"
+# the caller's own run: a record whose pid is this suite's shell (an ancestor of the call) with its start time
+RECS4="$HL/Logs/claude-weekly/run-seed-runs"; mkdir -p "$RECS4"
+printf '{"session": "s-mine", "pid": %s, "proc_start": "%s", "started": %s, "topic": "c4b", "repo": "%s"}' "$$" \
+  "$(TZ=UTC LC_ALL=C ps -o lstart= -p $$ | tr -s ' ' | sed 's/^ //; s/ $//')" "$(date +%s)" "$T/repo" > "$RECS4/mine.json"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4b --by s-mine --replace > /dev/null 2>&1
+check "$(qget repo--c4b by)" "s-mine" "  (the entry now its own run's step)"
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4b "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4b state)" "0:" "  its own run's step (by its record, found by ancestry): cancelled"
+s4put c4y state=running running_on=laptop session=s-mine by=s-parent job=org.example.claude.dispatch.repo.c4y.q1
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4y "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4y state)" "0:running" "  its own running entry (its session, though another put it): no refusal, the --end hint, as on main"
+has "$T/out" "a run is ended, not unqueued: dispatch --end c4y" "    said"
+rm -f "$RECS4/mine.json"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4d > /dev/null 2>&1
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4d "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4d state)" "0:" "  an attended caller: the branch road as before"
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4x > /dev/null 2>&1
+mv "$T/queue.git" "$T/queue.git.away"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4x "${QC[@]}" > "$T/out" 2>&1; rc=$?
+mv "$T/queue.git.away" "$T/queue.git"
+check "$rc" "4" "the branch road's cancel with the home unreachable: in the outbox, exit 4 (no receipt reads it as done)"
+has "$T/out" "in the outbox: the home is unreachable" "  said"
+rm_own "$HL/Caches/run-seed/queue/outbox"
+# D4 (answered A): --no-fleet, the pre-review form's peer leg (never landed; the leg now carries DISPATCH_CANCEL_BY,
+# read as --for-session, below); dispatch's --on leg judges the fleet here first with --fleet-only
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4n --by s-other > /dev/null 2>&1
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4n --no-fleet "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4n state)" "1:queued" "D4: --no-fleet (the peer leg of an unattended --cancel) judges no fleet entry: kept"
+check "$(grep -c 'waits for a run to end' "$T/out")" "0" "  nor refused: the sender's side judged it"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4n --no-fleet "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4n state)" "1:queued" "  an attended caller's --no-fleet too: it only narrows"
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4n --fleet-only "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4n state)" "2:queued" "  --fleet-only (the --on leg's judgement here): another session's fleet entry still refused"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4n --no-fleet --fleet-only "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4n state)" "2:queued" "  both flags: refused"
+python3 "$QB" cancel fleet:repo--c4n --no-fleet "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4n state)" "2:queued" "  a QID with either: refused (the page's road is never narrowed)"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4n --fleet-only "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4n state)" "0:" "  an attended --fleet-only cancels the fleet entry"
+VAULTQ="$HL/Caches/run-seed/queue-local/vault"
+s4put c4o store=vault
+check "$(ls "$VAULTQ" | grep -c c4o)" "1" "  (an entry in a scope's node-local queue here)"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4o --fleet-only "${QC[@]}" > /dev/null 2>&1
+check "$?:$(ls "$VAULTQ" | grep -c c4o)" "1:1" "  --fleet-only leaves this host's local stores to the far side's leg"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4o --no-fleet "${QC[@]}" > /dev/null 2>&1
+check "$?:$(ls "$VAULTQ" | grep -c c4o)" "0:0" "  --no-fleet still judges this host's local stores"
+# the finish review: the peer leg judges as the caller (--for-session SID, carried as DISPATCH_CANCEL_BY), every store
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4f --by s-other > /dev/null 2>&1
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4f --for-session - "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4f state)" "2:queued" "--for-session -: an attended process judges as an unattended caller with no run: another session's entry refused"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words"
+s4put c4g store=vault by=s-other
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4g --for-session s-mine "${QC[@]}" > /dev/null 2>&1
+check "$?:$(ls "$VAULTQ" | grep -c c4g)" "2:1" "  …and this host's local stores alike: another session's entry there kept"
+s4put c4e kind=finish by=s-other
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4e --for-session s-mine "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4e state)" "2:queued" "  another session's finish: refused, no tombstone"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4e --for-session s-other "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4e state outcome)" "0:ended cancelled" "  the session's own finish: cancelled, its tombstone left"
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4e "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4e state)" "0:ended" "  its tombstone on the branch road, even for an unattended caller: said, nothing refused or cancelled"
+has "$T/out" "is a finish that ended (cancelled)" "  said"
+s4put c4h state=waiting running_on=laptop by=s-mine job=org.example.claude.dispatch.repo.c4h.q1
+rm -f "$T/calls"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4h --for-session s-mine "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4h state):$(grep -c bootout "$T/calls" 2>/dev/null)" "0::1" "  the caller's own step waiting here: cancelled, its job booted out (a run's own step, from any host)"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4f --for-session s-other "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4f state)" "0:" "  the session's own queued entry: cancelled"
+python3 "$QB" cancel fleet:repo--c4f --for-session s-x "${QC[@]}" > /dev/null 2>&1
+check "$?" "2" "  a QID with --for-session: refused"
+# the re-landing's finish review: an unattended caller is judged by its own record, never by a session it names
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4u --by s-other > /dev/null 2>&1
+CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4u --for-session s-other "${QC[@]}" > "$T/out" 2>&1
+check "$?:$(qget repo--c4u state)" "2:queued" "an unattended caller's --for-session naming another session: refused, the entry kept"
+has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words"
+python3 "$QB" cancel fleet:repo--c4u "${QC[@]}" > /dev/null 2>&1
+s4put c4m store=vault
+"${Q4[@]}" --branch claude/laptop/2026-11-02-c4m --by s-other > /dev/null 2>&1
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4m --for-session s-other "${QC[@]}" > /dev/null 2>&1
+check "$?:$(qget repo--c4m state):$(ls "$VAULTQ" | grep -c c4m)" "2::1" "  one entry cancelled and one refused: exit 2, never read as done"
+python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4m "${QC[@]}" > /dev/null 2>&1; check "$?:$(ls "$VAULTQ" | grep -c c4m)" "0:0" "  (the scope's entry then cancelled by its branch, attended)"
+python3 "$QB" cancel 'local=vault:../x' "${QC[@]}" > "$T/out" 2>&1; check "$?" "2" "cancel by an id whose key names a path out of a store: refused (no local store by id)"
+check "$(python3 "$QB" caller-session "${QC[@]}")" "-" "caller-session: no run record of the caller here: -"
+
+echo "  features: what hosts sample puts in the row"
+check "$(python3 "$QB" features --host laptop "${QC[@]}")" '{"features": ["feat-a"], "host": "laptop", "line": true}' "a host's feature names, as the claim reads them"
+check "$(python3 "$QB" features --host elsewhere "${QC[@]}")" '{"features": [], "host": "elsewhere", "line": false}' "a host no line names: none, and said"
+check "$(DISPATCH_HOST=buildbox python3 "$QB" features)" '{"features": ["feat-b"], "host": "buildbox", "line": true}' "with no --host, this host's"
+rm -f "$REGATTA_CONFIG/wharf-runs/features"
+qreset
+
+echo "  dispatch-rc settle --stale: the peer records no run is behind"
+PR="$HL/Logs/claude-weekly/run-seed-runs/peer"; mkdir -p "$PR"
+hago() { python3 -c 'import datetime, sys; print((datetime.datetime.now().astimezone() - datetime.timedelta(hours=float(sys.argv[1]))).isoformat())' "$1"; }
+prec() {   # name hours-ago session [worktree] [extra json]
+  python3 -c 'import json, sys; d = {"host": "buildbox", "topic": sys.argv[2], "session": sys.argv[4], "started": sys.argv[3], "ended": None, "outcome": None, "pr": None, "gate": None}
+if sys.argv[5]: d["worktree"] = sys.argv[5]
+d.update(json.loads(sys.argv[6] or "{}"))
+json.dump(d, open(sys.argv[1], "w"))' "$PR/$1.json" "$1" "$(hago "$2")" "$3" "${4:-}" "${5:-}"
+}
+lstate() {   # worktree session ended(json) [outcome] [pr]: a landing state in the worktree's git dir, as autofinish-run keeps it
+  mkdir -p "$1/.git/claude"
+  python3 -c 'import json, sys; json.dump({"session": sys.argv[2], "ended": json.loads(sys.argv[3]), "outcome": sys.argv[4] or None, "pr": int(sys.argv[5]) if sys.argv[5] else None, "gate": None}, open(sys.argv[1], "w"))' \
+    "$1/.git/claude/autofinish.json" "$2" "$3" "${4:-}" "${5:-}"
+}
+prec old 50 s-old
+prec gated 50 s-gated "" '{"gate": "held"}'
+prec young 2 s-young
+prec answered 50 s-ans "" "{\"answered\": \"$(hago 1)\"}"
+lstate "$T/wt-live" s-live null; prec live 50 s-live "$T/wt-live"
+lstate "$T/wt-done" s-done '"2026-11-01T10:00:00"' launched 42; prec done 50 s-done "$T/wt-done"
+mkdir -p "$T/wt-wait/.git/claude"; printf '{"session": "s-wait", "pid": %s}' "$$" > "$T/wt-wait/.git/claude/autofinish-waiter.json"; prec wait 50 s-wait "$T/wt-wait"
+lstate "$T/wt-other" s-newer null; prec other 50 s-other "$T/wt-other"
+printf 'gitdir: %s\n' "$T/wt-done/.git" > "$T/wt-file.git"; mkdir -p "$T/wt-file"; mv "$T/wt-file.git" "$T/wt-file/.git"
+prec gitfile 50 s-done "$T/wt-file"
+prec ended 60 s-ended "" '{"ended": "2026-11-01T09:00:00", "outcome": "launched"}'
+mkdir -p "$T/wt-torn/.git/claude"; printf '{' > "$T/wt-torn/.git/claude/autofinish.json"; prec torn 50 s-torn "$T/wt-torn"
+mkdir -p "$T/wt-ptr"; : > "$T/wt-ptr/.git"; prec ptr 50 s-ptr "$T/wt-ptr"
+cp "$PR/ended.json" "$T/ended.before"
+RC=(python3 "$B/dispatch-rc")
+"${RC[@]}" settle --stale --dry-run > "$T/out" 2>&1; check "$?" "0" "settle --dry-run"
+check "$(grep -c 'would end' "$T/out"):$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["ended"])' "$PR/old.json")" "6:None" "  lists what it would end, writes nothing"
+"${RC[@]}" settle --stale --older-than 5 > "$T/out" 2>&1; check "$?" "2" "an age under the peer's wait (9 h): refused"
+"${RC[@]}" settle --stale --older-than nan > "$T/out" 2>&1; check "$?" "2" "an age that is no number (nan) is no age past the floor: refused"
+"${RC[@]}" settle --stale --older-than x > /dev/null 2>&1; check "$?" "1" "an age that does not read: the usage"
+CLAUDE_UNATTENDED=1 "${RC[@]}" settle --stale > "$T/out" 2>&1; check "$?" "0" "settle ends no work: any caller may (the Engine room's one kind)"
+pend() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(bool(d.get("ended")), d.get("outcome"), d.get("pr"))' "$PR/$1.json"; }
+check "$(pend old)" "True settled None" "a record days old, no state or waiter here: ended, settled"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["gate"])' "$PR/gated.json")" "held" "  its own gate kept: an end never blanks what it held"
+check "$(pend other)" "True settled None" "  one whose worktree's state is another session's: this run's state is gone, settled"
+check "$(pend done)" "True launched 42" "a record whose landing state here ended: its end copied (outcome, PR)"
+check "$(pend gitfile)" "True launched 42" "  a worktree whose .git is a file naming its git dir: read through it"
+check "$(pend young)" "False None None" "a record younger than the age: kept (the peer may run it)"
+check "$(pend answered)" "False None None" "a record the peer answered within the age: kept"
+check "$(pend live)" "True settled None" "a landing state here with no end of that session: ended, settled (finish-as-task: no sweep asks the peer, and no run here ends a state the peer road left)"
+check "$(pend wait)" "False None None" "its waiter here alive: kept"
+check "$(cmp -s "$PR/ended.json" "$T/ended.before" && echo same)" "same" "a record that has its end is never rewritten"
+check "$(pend torn)" "False None None" "a landing state that is there but does not read: unknown, kept"
+check "$(pend ptr)" "False None None" "a worktree's .git pointer that is there but empty: unknown, kept"
+has "$T/out" "6 stale peer record(s) ended, 5 kept" "the count said"
+has "$T/out" "kept     finish-torn on buildbox — this host's landing state of it is there but does not read" "  each kept one with why"
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["settled"][:6])' "$PR/old.json")" "stale:" "  the end says it was settled as stale"
+"${RC[@]}" settle --stale > "$T/out" 2>&1
+has "$T/out" "0 stale peer record(s) ended" "a second settle finds none"
+prec ro 50 s-ro; chmod a-w "$PR"
+"${RC[@]}" settle --stale > "$T/out" 2>&1; rc=$?; chmod u+w "$PR"
+if [ "$(id -u)" = 0 ]; then echo "  --   skipped: root writes a read-only folder"; else
+check "$rc:$(pend ro)" "3:False None None" "a record that will not write: exit 3, never read as done"; has "$T/out" "1 not written" "  said"; fi
+"${RC[@]}" settle > /dev/null 2>&1; check "$?" "1" "settle without --stale: the usage, nothing done"
+"${RC[@]}" status > "$T/out" 2>&1
+has "$T/out" "finish-old" "status lists a settled record…"
+check "$(grep -A0 'finish-old' "$T/out" | grep -c 'no end here yet')" "0" "  …as ended, no longer sent with no end"
+rm_own "$PR" "$T"/wt-* "$HL/Caches/run-seed/queue-local/vault"
+
 unset DISPATCH_SSH DISPATCH_ORCA DISPATCH_SHEEP_PRESS DISPATCH_KICK_SYNC
 qreset; rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

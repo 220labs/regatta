@@ -7,7 +7,8 @@
                      as JSON, or with --put handed to `dispatch-queue hosts put`, which writes it to
                      refs/regatta/hosts only when it changed (--refresh, the sweep's: whatever it says).
                      dispatch-queue starts it detached from the sweep and at each claim (its sample_soon); with
-                     --refresh it then starts `reef apply` where `lighthouse/reef` has a line (bin/reef). Never a
+                     --refresh it then starts `reef apply` where `lighthouse/reef` has a line, or a node asked for
+                     its one seed (bin/reef). Never a
                      session's job, bar --no-history (reef plan's): it reads the history and adds no point, as
                      `hosts read` samples
     hosts [read] [--json]
@@ -29,7 +30,9 @@ by the core's scope_resolver over every confidential scope (target() by its chec
 its path), and a run in any of them, or split between them, is a count in `fence.confined`, never a row. The
 reader keeps the fleet store (a finish is a fleet entry like a build since finish-as-task), drops every
 `local=*` store and any `confined` entry, and passes an entry's names and numbers only (no args, env, note or
-caller). A row carries numbers and registry names: a repo is its registry key (a path outside the projects
+cwd): its pin's kind, a held pin's why in fixed words (HELD_WORDS, never the reason's text) and the waiting session's
+first 8 (`by`) since S4 of docs/engine-room-2026-11-02.md, which also put the check slots and the feature names in the
+row. A row carries numbers and registry names: a repo is its registry key (a path outside the projects
 folder is its last part), every text is cut of anything that reads as a path, and dispatch-queue refuses a
 row holding one. Exit 0; 2 for a usage error or no core; 6 when --put could not write. Python 3.9, stdlib only.
 """
@@ -55,7 +58,16 @@ HISTORY_STEP = 9 * 60   # s between kept samples: a claim samples every 30 s at 
 NEAR = 0.3              # a rule within 30 % of its limit is `near`
 KEEP_STORES = ("fleet",)   # the reader's store: a scope's local queue never leaves its host (a finish is a fleet entry since finish-as-task)
 ENTRY_KEYS = ("key", "topic", "state", "priority", "kind", "host", "prefer", "prefer_off", "running_on", "queued_at",
-              "put_at", "claimed_at", "claimed_by", "attempts", "needs", "last_refusal", "refused_by")
+              "put_at", "claimed_at", "claimed_by", "attempts", "needs", "last_refusal", "refused_by",
+              "pin_kind", "pinned_why", "by")   # S4: the pin's kind, a held pin's why (in fixed words) and the session
+# A held pin's why (dispatch-queue's held_here) in fixed words: the reason names a commit, and a later one could name a
+# path or a branch, so the page gets the kind of reason, never its text (S4; the first match wins)
+HELD_WORDS = (("answers wait", "answers wait in its worktree there"),
+              ("uncommitted", "uncommitted work in its worktree there"),
+              ("origin did not answer", "origin did not answer, so its commits there are unproved"),
+              ("commits origin lacks", "commits origin lacks in its worktree there"))
+HELD_OTHER = "its worktree there holds what the step needs"
+SID_WORD = re.compile(r"[A-Za-z0-9-]{1,8}")
 LOGIN_KEYS = ("label", "eligible", "enabled", "primary", "provider", "parked", "why", "sampled", "overage")
 LIMIT_KEYS = ("plan", "five_hour", "five_hour_resets", "seven_day", "seven_day_resets", "fable_week", "fable_week_resets",
               "locked", "extra_usage")
@@ -269,8 +281,17 @@ def load_max():
 
 
 def peer_records():
-    """{stale, oldest_days}: this host's records of runs sent to a peer with no end here (run-seed-runs/peer/*.json),
-    read from the files, never dispatch-rc status."""
+    """{stale, oldest_days}: this host's records of runs sent to a peer with no end here (run-seed-runs/peer/*.json)
+    that `dispatch-rc settle --stale` would end — dispatch-rc's peer_records() judges them, so the page's count is
+    what one Settle clears (S4) — read from the files, never dispatch-rc status. Without dispatch-rc, every record
+    with no end, as S2 counted them."""
+    m = rc_mod()
+    if m is not None and hasattr(m, "peer_records"):
+        try:
+            starts = [m.iso_ts(rec.get("started")) or now() for _, rec, why in m.peer_records(now=now()) if why is None]
+            return {"stale": len(starts), "oldest_days": int((now() - min(starts)) // 86400) if starts else 0}
+        except Exception as x:   # noqa: BLE001 — one odd record costs the count, never the row (the build review)
+            return {"stale": None, "oldest_days": None, "note": scrub("the peer records did not read: %s" % type(x).__name__)}
     stale, oldest = 0, None
     for p in sorted((records_dir() / "peer").glob("*.json")):
         try:
@@ -284,6 +305,69 @@ def peer_records():
         stale += 1
         oldest = started if oldest is None else min(oldest, started)
     return {"stale": stale, "oldest_days": int((now() - oldest) // 86400) if oldest else 0}
+
+
+def check_cap(h):
+    """The check slots' cap on host H as wharf-runs' check reads it (slots_here): CHECK_SLOTS, else the line of
+    CHECK_HOST (check's own name for this host) or H in `wharf-runs/check-slots`, else `*`'s, else 2; None for a value
+    that is no whole number from 1 (ASCII digits only: str.isdigit takes a superscript int() refuses; a leading 0
+    refused, as check's own `0*` is: a row must never show room no check can use)."""
+    v = os.environ.get("CHECK_SLOTS") or ""
+    if not v:
+        lines = [l.strip() for l in common.config_lines("wharf-runs/check-slots") or []]
+        # CHECK_HOST as given: check's slots_here matches it verbatim (the fix round's review: a mixed-case one read a
+        # cap check never uses); only the host's own name is lower-cased, as the row names it
+        for key in (os.environ.get("CHECK_HOST") or h.lower(), "*"):
+            v = next((l.split(":", 1)[1].strip() for l in lines if l.split(":", 1)[0].strip() == key and ":" in l), "")
+            if v:
+                break
+    v = "".join(v.split())
+    return int(v) if re.fullmatch(r"[1-9][0-9]{0,5}", v) else (2 if not v else None)
+
+
+def checks(h):
+    """{busy, cap, waiting}: wharf-runs' check slots on this login (CHECK_SLOT_DIR, else check's own folder in this
+    login's caches), counted as lighthouse's `ops` read_check counts them (the same exclusions) — a slot-<i> whose pid runs, a ticket in
+    queue/ named for a running pid (never check's `.t.<pid>` file, a ticket being written, nor a pid of 0 or less,
+    which kill reads as a process group); no folder is no check yet (zeros). None when the folder does not read:
+    unknown, never idle (S4)."""
+    d = Path(os.environ.get("CHECK_SLOT_DIR") or Path.home() / "Library" / "Caches" / "check-slots")
+
+    def alive(pid):
+        try:
+            if int(pid) <= 0:
+                return False
+            os.kill(int(pid), 0)
+        except (ValueError, ProcessLookupError, OverflowError):
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+    cap = check_cap(h)
+    try:
+        if not d.is_dir():
+            return {"busy": 0, "cap": cap, "waiting": 0}
+        busy = 0
+        for s in d.glob("slot-*"):
+            try:
+                busy += alive((s / "pid").read_text().strip())
+            except OSError:
+                pass
+        q = d / "queue"
+        waiting = sum(1 for t in (q.iterdir() if q.is_dir() else []) if not t.name.startswith(".") and alive(t.name.rsplit(".", 1)[-1]))
+    except OSError:
+        return None
+    return {"busy": busy, "cap": cap, "waiting": waiting}
+
+
+def host_features(h, env):
+    """H's feature names from `dispatch-queue features` (the claim's own reading of `wharf-runs/features`), [] where
+    no line names it (it meets no need), None when the verb did not answer."""
+    d = run_json("dispatch-queue", "features", "--host", h, env=env)
+    f = d.get("features") if isinstance(d, dict) else None
+    return sorted(str(n) for n in f) if isinstance(f, list) else None
 
 
 def near(mem, lim, load_pc, lmax, slots):
@@ -369,7 +453,8 @@ def sample(h=None, cap=None, logins=None, keep_history=True):
            "headroom": {"room": hr.get("room"), "reason": scrub(hr.get("reason") or "no reading"),
                         "near": near(mem, lim, load.get("per_core_5m"), lmax, slots)},
            "slots": slots, "fence": dict({"confined": confined, "unreadable": torn}, **({"runs_unread": True} if unread else {})),
-           "runs": None if torn or unread else run_rows(m, kept, logins), "records": peer_records()}
+           "runs": None if torn or unread else run_rows(m, kept, logins), "records": peer_records(),
+           "checks": checks(h), "features": host_features(h, env)}
     r = role(h)
     if r:
         row["role"] = r
@@ -421,11 +506,13 @@ def cmd_sample(a):
 
 def reef_soon(row):
     """Hand the sweep's row to `reef apply`, detached (lighthouse's reef: this host's run cap and check slots follow
-    its load). Only where `lighthouse/reef` has a line (this host's or `*:`): no line is no opt-in, and `reef plan`
-    by hand still says what it would do. Never waits, never raises: the sample is the page's first."""
+    its load). Only where `lighthouse/reef` has a line (this host's or `*:`), or a node's clone unit asked for its
+    one seed (reef's seed_pending): no line is no opt-in, and `reef plan` by hand still says what it would do. Never waits, never raises: the sample is the page's first."""
     try:
         lines, err = common.config_read("lighthouse/reef")
-        if err or not any(w in ((row.get("host") or "").lower(), "*") for w, _ in common.config_entries(lines)):
+        # a new node's one seed (reef's SEED_PENDING), honoured only beside its writer's own record (reef's seed_pending)
+        pending = history_file().with_name("reef-seed").exists() and (Path(common.CONFIG) / "wharf-runs" / "node" / "reef-seed-asked").exists()
+        if err or not (pending or any(w in ((row.get("host") or "").lower(), "*") for w, _ in common.config_entries(lines))):
             return None
         tool = Path(__file__).resolve().parent / "reef"
         f = history_file().with_name("hosts-row.json")
@@ -441,7 +528,8 @@ def reef_soon(row):
         with open(out, "a") as fh:
             fh.write("== %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
             fh.flush()
-            return subprocess.Popen([sys.executable, str(tool), "apply", "--row", str(f)], stdout=fh, stderr=subprocess.STDOUT,
+            return subprocess.Popen([sys.executable, str(tool), "apply", "--row", str(f)] + (["--seed"] if pending else []),
+                                    stdout=fh, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True, env=dict(os.environ, REEF_HOST=row.get("host") or ""))
     except Exception:   # noqa: BLE001 — the sampler's put is done; reef's turn is never its failure
         return None
@@ -449,10 +537,16 @@ def reef_soon(row):
 
 # ---- the reader ----------------------------------------------------------------------------------------
 
+def held_word(why):
+    """A held pin's PINNED_WHY as the page says it: one of HELD_WORDS, never the reason's own text."""
+    low = str(why).lower()
+    return next((w for k, w in HELD_WORDS if k in low), HELD_OTHER)
+
+
 def queue_view(d):
     """The fleet's queue as the page shows it: the fleet store only, no `confined` entry, an entry's names and
-    numbers only (never its args, env, note, caller or paths). Every kept entry's repo is judged as a run's is, so
-    the store alone is no fence; a registry that does not read drops every entry."""
+    numbers only (never its args, env, note, cwd or paths; the waiting session's first 8). Every kept entry's repo is
+    judged as a run's is, so the store alone is no fence; a registry that does not read drops every entry."""
     out, dropped = [], 0
     reg, torn = common.read_registry()
     target = None if torn else common.scope_resolver(reg).target
@@ -474,6 +568,20 @@ def queue_view(d):
         for k in ("last_refusal",):
             if k in v:
                 v[k] = scrub(v[k], 160)
+        if "pinned_why" in v:
+            v["pinned_why"] = held_word(v["pinned_why"]) if v["pinned_why"] else None
+        if "pin_kind" in v and v["pin_kind"] not in ("typed", "login", ""):
+            v["pin_kind"] = None   # a kind the page does not know: read as unknown, never as a typed pin
+        # whether its run names a login (--account LABEL): repin never moves such a pin, so the page offers no Unpin —
+        # a flag, never the label
+        args = e.get("args") if isinstance(e.get("args"), list) else []
+        # the last --account, as dispatch keeps it (repin reads it so too)
+        acct = ([str(args[i + 1]) for i, f in enumerate(args[:-1]) if f == "--account"] or [""])[-1]
+        v["pin_login"] = acct not in ("", "auto", "bound")
+        if "by" in v:
+            # the waiter's session, its first 8 as a run's row gives it; anything else is no id
+            b = str(v["by"] or "")[:8]
+            v["by"] = b if SID_WORD.fullmatch(b) else None
         after = e.get("after") if isinstance(e.get("after"), list) else []
         v["after"] = [common.branch_topic(x.get("branch")) or "?" for x in after if isinstance(x, dict) and x.get("branch")]
         out.append(v)

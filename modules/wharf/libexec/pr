@@ -850,12 +850,14 @@ def main():
             body = git("log", "--reverse", "--format=%s%n%n%b", rng)
         # never the hold mark: a curated body carrying it would let a later `pr ready` take off a
         # `hold` the owner set (common.ready_pr's one-shot mark)
-        body = body.replace(common.HOLD_NOTE, "").rstrip()
+        for note in common.HOLD_NOTES:
+            body = body.replace(note, "")
+        body = body.rstrip()
         body += f"\n\n---\nFrom `{common.host_name()}`, curated by `/finish`."
         if pr:
-            # open_pr's `hold` on a PR it could not open as a draft is in the body this replaces;
-            # carry the mark across, so ready_pr still takes that label off (common.HOLD_NOTE)
-            held = common.HOLD_NOTE in (pr.get("body") or "")
+            # Curation replaces the body: carry ownership of open_pr's or build CI's hold
+            # to ready_pr, which releases it even if the PR was already ready for CI.
+            held = any(note in (pr.get("body") or "") for note in common.HOLD_NOTES)
             pr = common.edit_pr(slug, pr["number"], tok, title=title, body=body)
             if pr and held:
                 pr["_held"] = True
@@ -865,14 +867,17 @@ def main():
             sys.exit("pr: GitHub refused — is the branch pushed, and does it differ from main?")
         if hold:
             # labelled while still a draft, so automerge never sees it ready and unheld; and no
-            # `_held` mark, so ready_pr leaves this label on (it takes off only open_pr's own)
+            # `_held` mark, so ready_pr leaves this label on (it takes off only tool-owned holds)
             common.api("POST", f"/repos/{slug}/labels", common.HOLD, tok=tok)  # 201 made, 422 already there
             st, _ = common.api("POST", f"/repos/{slug}/issues/{pr['number']}/labels",
                                {"labels": [common.HOLD["name"]]}, tok=tok)
             if st != 200:
                 sys.exit(f"pr: {pr['html_url']} could not be labelled `hold` (HTTP {st}) — left a draft")
-            if common.HOLD_NOTE in (pr.get("body") or ""):  # open_pr's note says ready takes it off: not this time
-                edited = common.edit_pr(slug, pr["number"], tok, body=pr["body"].replace(f"\n\n{common.HOLD_NOTE}", "").replace(common.HOLD_NOTE, ""))
+            if any(note in (pr.get("body") or "") for note in common.HOLD_NOTES):
+                clean = pr["body"]
+                for note in common.HOLD_NOTES:
+                    clean = clean.replace(f"\n\n{note}", "").replace(note, "")
+                edited = common.edit_pr(slug, pr["number"], tok, body=clean)
                 if not edited:  # ready_pr would read the note and take the label off: stop held
                     sys.exit(f"pr: {pr['html_url']} is labelled `hold`, but its body could not be cleaned — left as it is")
                 pr = edited

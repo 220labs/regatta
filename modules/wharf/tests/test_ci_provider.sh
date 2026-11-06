@@ -2581,7 +2581,7 @@ case "$1" in
     echo "         0       1000          1"
     case "$3" in */uid_map) [ -e "$D/nosubuids" ] || echo "         1     100000      65536" ;;
                  *) [ -e "$D/nosubgids" ] || echo "         1     100000      65536" ;; esac ;;
-  build) ctx="${@: -1}"; tag=$4
+  build) ctx="${@: -1}"; tag=; prev=; for a in "$@"; do [ "$prev" = -t ] && tag=$a; prev=$a; done
     # the reference grammar podman's containers/image applies: lower case, separators between letters and digits
     printf '%s' "${tag#localhost/}" | grep -Eqx '[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*' || { echo "fake podman: invalid reference format: $tag" >&2; exit 125; }
     for f in Containerfile entry.sh runner.tar.gz; do [ -f "$ctx/$f" ] || { echo "fake podman: no $f in the context" >&2; exit 1; }; done
@@ -2589,14 +2589,20 @@ case "$1" in
   image) case "$2" in exists) [ -d "$D/img/$(key "$3")" ] ;; prune) echo "pruned $*" >> "$D/prune" ;; *) exit 125 ;; esac ;;
   rmi) rm -rf "$D/img/$(key "$2")" ;;
   volume) case "$2" in create) mkdir -p "$D/vol/${@: -1}" ;; rm) [ -d "$D/vol/$3" ] && rm -rf "$D/vol/$3" ;;
-            inspect) [ -d "$D/vol/${@: -1}" ] && echo "$D/vol/${@: -1}" ;; esac ;;
+            inspect) [ -d "$D/vol/${@: -1}" ] && echo "$D/vol/${@: -1}" ;; exists) [ -d "$D/vol/$3" ] ;; esac ;;
   run) shift; vol= ent=
-    while [ $# -gt 0 ]; do case "$1" in --rm|-i) shift ;; -v) vol=$2; shift 2 ;; --entrypoint) ent=$2; shift 2 ;; *) break ;; esac; done
+    while [ $# -gt 0 ]; do case "$1" in --rm|-i) shift ;; -v) vol=$2; shift 2 ;; --entrypoint) ent=$2; shift 2 ;;
+      --cap-drop=*|--cap-add=*|--security-opt=*|--network=*|--cpus=*|--memory=*|--memory-swap=*) echo "$1" >> "$D/runopts"; shift ;; *) break ;; esac; done
     img="$D/img/$(key "$1")"; shift
     [ -d "$img" ] || { echo "fake podman: no image" >&2; exit 125; }
+    # --runner check's cases (free CI S6): their argv kept, their output and exit what the case wrote
+    if [ "$ent" = python3 ]; then [ "$1" = -c ] && { printf '%s' "$2" > "$D/checkpy"; shift 2; }; printf '%s\n' "$@" > "$D/checkargs"; cat "$D/checkout" 2>/dev/null; exit "$(cat "$D/checkrc" 2>/dev/null || echo 0)"; fi
     V="$D/vol/${vol%%:*}"; mkdir -p "$V"
     [ "${vol#*:}" = /state:ro ] || [ "${vol#*:}" = /state:U ] || { echo "fake podman: a mount other than the state volume: $vol" >&2; exit 125; }
-    if [ "$ent" = cat ]; then cat "$V/${1#/state/}"; exit; fi
+    if [ "$ent" = cat ]; then
+      [ -e "$D/copy.fail" ] && { echo "fake podman: registration copy failed" >&2; exit 23; }
+      cat "$V/${1#/state/}"; exit
+    fi
     R="$D/ctr"; rm -rf "$R"; mkdir -p "$R"; tar xzf "$img/runner.tar.gz" -C "$R"
     sed -e "s#/runner/actions-runner#$R#g" -e "s#/state#$V#g" "$img/entry.sh" > "$D/entry.run"
     sum() { find "$V" -type f -exec cksum {} + 2>/dev/null | sort; }
@@ -2619,7 +2625,9 @@ case "$1" in
   start) echo "start $2" >> "$D/systemctl"
     rc=0; podman run --rm -v "$(sed -n 's/^Volume=//p' "$u")" "$(sed -n 's/^Image=//p' "$u")" $(sed -n 's/^Exec=//p' "$u") < /dev/null || rc=$?
     echo "exit $rc" >> "$D/systemctl"; [ "$rc" = 0 ] && touch "$D/active"; true ;;
-  stop) echo "stop $2" >> "$D/systemctl"; rm -f "$D/active" ;;
+  # each unit named its own line; only the runner's own unit is the one "active" stands for (the rebuild's are not)
+  stop) shift; for n in "$@"; do echo "stop $n" >> "$D/systemctl"; case $n in *-rebuild.*) ;; *) rm -f "$D/active" ;; esac; done ;;
+  enable|disable) echo "$*" >> "$D/systemctl" ;;
   --no-pager) echo "systemctl status $3"; [ -e "$D/active" ] || exit 3 ;;
 esac
 EOF
@@ -2629,6 +2637,26 @@ cat > "$T/ssh/rbin/loginctl" <<'EOF'
 EOF
 # newuidmap, newgidmap and slirp4netns stand-ins, so the probe finds them on any machine the suite runs on
 for c in newuidmap newgidmap slirp4netns; do printf '#!/bin/sh\nexit 0\n' > "$T/ssh/rbin/$c"; done
+# the host's cores ($FAKE_NPROC, 4 unless a case sets it), and its addresses and listeners for --runner check:
+# an eth0 and a tailscale0 address, loopback, a wildcard sshd on both families, a listener on the Tailscale
+# address alone, and resolved's stub on loopback, in iproute2's one-line forms
+printf '#!/bin/sh\necho "${FAKE_NPROC:-4}"\n' > "$T/ssh/rbin/nproc"
+cat > "$T/ssh/rbin/ip" <<'EOF'
+#!/bin/sh
+[ "$1 $2 $3" = "-o addr show" ] || exit 1
+printf '%s\n' '1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever' \
+  '1: lo    inet6 ::1/128 scope host noprefixroute \       valid_lft forever preferred_lft forever' \
+  '2: eth0    inet 192.0.2.12/24 metric 100 brd 192.0.2.255 scope global dynamic eth0\       valid_lft 86000sec' \
+  '2: eth0    inet6 fe80::17ff:fe00:1/64 scope link \       valid_lft forever preferred_lft forever' \
+  '3: tailscale0    inet 198.51.100.7/32 scope global tailscale0\       valid_lft forever preferred_lft forever'
+EOF
+cat > "$T/ssh/rbin/ss" <<'EOF'
+#!/bin/sh
+[ "$1" = -Hltn ] || exit 1
+printf '%s\n' 'LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*' 'LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*' \
+  'LISTEN 0      511    198.51.100.7:7400      0.0.0.0:*' 'LISTEN 0      4096            [::]:22           [::]:*'
+EOF
+chmod +x "$T/ssh/rbin/nproc" "$T/ssh/rbin/ip" "$T/ssh/rbin/ss"
 chmod +x "$T/ssh/rbin/sudo" "$T/ssh/rbin/podman" "$T/ssh/rbin/systemctl" "$T/ssh/rbin/loginctl" "$T/ssh/rbin/newuidmap" "$T/ssh/rbin/newgidmap" "$T/ssh/rbin/slirp4netns"
 fakelinux() { # fakelinux <dir>: the Linux build's config.sh and run.sh, as the image holds them
   mkdir -p "$1/bin"
@@ -2638,6 +2666,7 @@ fakelinux() { # fakelinux <dir>: the Linux build's config.sh and run.sh, as the 
 echo "config.sh $*" >> "$FAKE_SSH/config"
 if [ "$1" = remove ]; then rm -f .runner .credentials; fi
 if [ "$1" = --unattended ]; then
+  [ -e "$FAKE_SSH/configure.fail" ] && { echo "fake config: registration failed" >&2; exit 23; }
   while [ $# -gt 0 ]; do [ "$1" = --url ] && url=$2; [ "$1" = --name ] && nm=$2; shift; done
   printf '{"agentName": "%s", "gitHubUrl": "%s"}\n' "$nm" "$url" > .runner; echo cred > .credentials; printf 'LANG=%s\n' "${LANG:-}" > .env
 fi
@@ -2677,7 +2706,7 @@ grep -q "whether it lacks what a rootless container needs (podman, a user namesp
 grep -qF "x86_64 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz (227660598 bytes, SHA-256 af4b794c1bc4)" "$T/out"; check "$?" "0" "…the pinned linux-x64 build, its size and digest"
 grep -qF "aarch64 https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-arm64-2.338.0.tar.gz (140012091 bytes, SHA-256 628b4a725848)" "$T/out"; check "$?" "0" "…and linux-arm64's for an aarch64 host"
 grep -q "osx-" "$T/out"; check "$?" "1" "…no macOS build in a Linux plan"
-grep -qF "build the image localhost/ci-runner-lnx1 from it over docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 (no sudo in it)" "$T/out"; check "$?" "0" "…the image over the pinned base"
+grep -qF "build the image localhost/ci-runner-lnx1 from it over docker.io/library/ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c (no sudo in it)" "$T/out"; check "$?" "0" "…the image over the pinned base"
 grep -q "config.sh --name lnx1 --labels linux-share in a container of it, the token on its stdin" "$T/out"; check "$?" "0" "…registered with its capabilities, never the host's name, the token on stdin"
 grep -q "a rootless container a job (the listener's --once), no host mount, socket or credential, in the login's app.slice at CPUWeight=20 beside the sessions' 100, Nice=10" "$T/out"; check "$?" "0" "…the service: a rootless container a job, below the host's sessions"
 grep -q -E 'sudo -n|svc\.sh' "$T/out"; check "$?" "1" "…and no sudo or svc.sh in it"
@@ -2714,7 +2743,7 @@ check "$(grep -c -- "--unattended --replace --disableupdate --url https://github
 b=$(grep -n '^podman build' "$T/ssh/podman" | head -1 | cut -d: -f1); c=$(grep -n ' configure ' "$T/ssh/podman" | head -1 | cut -d: -f1)
 check "$([ -n "$b" ] && [ -n "$c" ] && [ "$b" -lt "$c" ] && echo before || echo "b=$b c=$c")" "before" "…the image built before anything is registered"
 grep -q 'websockets-15.0.1-py3-none-any.whl' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…the image carries websockets, which linux-tools.sh's hosted road installs with sudo"
-grep -qF "FROM docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852" "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…over the pinned base"
+grep -qF "FROM docker.io/library/ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c" "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…over the pinned base"
 check "$(cmp -s "$T/ssh/img/localhost_ci-runner-lnx1/runner.tar.gz" "$DIST/fake-linux.tar.gz" && echo same || echo differs)" "same" "…from the tarball verified on the host"
 grep -q '^USER runner$' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"; check "$?" "0" "…its jobs as an unprivileged user"
 grep -v '^#' "$T/ssh/img/localhost_ci-runner-lnx1/Containerfile" | grep -qw sudo; check "$?" "1" "…with no sudo in the image"
@@ -2742,6 +2771,7 @@ check "$(grep -c 'token' "$T/gh/calls")" "0" "…no token minted"
 check "$(grep -c '^podman build' "$T/ssh/podman")" "2" "…the image rebuilt, so a reinstall takes a changed one"
 check "$(grep -c ' configure ' "$T/ssh/podman")" "1" "…never registered twice"
 check "$(grep -c 'start ci-runner-lnx1.service' "$T/ssh/systemctl")" "1" "…the active unit not started again (its next job takes the new image)"
+check "$(grep -cxE 'stop ci-runner-lnx1-rebuild\.(timer|service)' "$T/ssh/systemctl")" "4" "…each of the two installs stopped a weekly rebuild under way before its image is built (its tarball would race the install's)"
 : > "$T/gh/calls"; FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name other1 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "remove under a name the host's runner does not have: refused"
 grep -q "node-ci holds another runner (.*ci-runner-lnx1.container), not other1: nothing removed" "$T/out"; check "$?" "0" "…naming the runner it holds"
 check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "kept" "…the real runner's .runner kept"
@@ -2802,7 +2832,7 @@ grep -q "the image localhost/ci-runner-lnx1 is gone: --runner install rebuilds i
 check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo kept || echo gone)" "kept" "…the registration kept"
 lx install > "$T/out" 2>&1; check "$?" "0" "…install rebuilds the image, the registration kept"
 check "$(grep -c ' configure ' "$T/ssh/podman")" "1" "…still registered once"
-check "$(grep -c '^stop' "$T/ssh/systemctl")" "0" "…the refused remove left the unit running"
+check "$(grep -c '^stop ci-runner-lnx1.service$' "$T/ssh/systemctl")" "0" "…the refused remove left the unit running"
 check "$(test -e "$UNITS/ci-runner-lnx1.container" && echo kept || echo gone)" "kept" "…and its unit file"
 mv "$T/ssh/vol/ci-runner-lnx1-state" "$T/ssh/vol.keep"; : > "$T/gh/calls"
 FAKE_SYSTEM=Linux "$CP" "$R" --runner status $LX > "$T/out" 2>&1
@@ -2848,7 +2878,175 @@ check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nothing minted"
 rm -rf "$RH/actions-runners/other"; mkdir -p "$UNITS"; : > "$UNITS/ci-runner-lnx9.container"; : > "$T/gh/calls"
 FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "another runner's unit on the Linux host: refused"
 grep -q "node-ci holds a runner already (.*ci-runner-lnx9.container)" "$T/out"; check "$?" "0" "…naming it"
+# a dedicated runner host may hold more (wharf/linux-runner-slots, 2026-11-05): the probe passes the count, and
+# the probe's `room` lets install past the other-runner check; podman marked missing stops each case right after that check, so no state moves
+SLOTS="$REGATTA_CONFIG/wharf/linux-runner-slots"; echo 'node-ci:2' > "$SLOTS"; cp "$CAPS" "$T/caps.keep"
+echo '{"lnx1": ["linux-share"], "lnx1-2": ["linux-share"], "lnx1-3": ["linux-share"]}' > "$CAPS"
+"$CP" "$R" --runner install --dry-run $LX --instance 2 > "$T/out" 2>&1; check "$?" "0" "a second instance where linux-runner-slots says 2 (lnx1-2, listed): planned"
+"$CP" "$R" --runner install --dry-run $LX --instance 3 > "$T/out" 2>&1; check "$?" "2" "…a third: refused"
+grep -q "node-ci:<N>" "$T/out"; check "$?" "0" "…naming the key that would allow it"
+touch "$T/ssh/nopodman"; : > "$T/ssh/argv"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "one other runner's unit under 2 slots: past the other-runner check"
+grep -q "holds a runner already" "$T/out"; check "$?" "1" "…never refused for it"
+grep -q "lacks what a rootless runner container needs" "$T/out"; check "$?" "0" "…stopped at the next check, the case's missing podman"
+grep -q "^CI_RUNNER_SLOTS=2 bash -c " "$T/ssh/argv"; check "$?" "0" "…the count handed to the host's script"
+: > "$UNITS/ci-runner-lnx8.container"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "two others under 2 slots: refused"
+grep -q "node-ci holds a runner already (.*): 2 runners a host its wharf/linux-runner-slots names" "$T/out"; check "$?" "0" "…naming the count"
+rm -f "$UNITS/ci-runner-lnx8.container"; mkdir -p "$RH/actions-runners/other/repo"; echo '{"agentName": "lnx7"}' > "$RH/actions-runners/other/repo/.runner"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "one unit and another runner's registration under 2 slots: two names, refused"
+grep -q "node-ci holds a runner already (.*): 2 runners a host its wharf/linux-runner-slots names" "$T/out"; check "$?" "0" "…each a slot (a lone registration still reserves one)"
+echo '{"agentName": "lnx9"}' > "$RH/actions-runners/other/repo/.runner"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "a unit and the registration of the same name under 2 slots: one runner, past the other-runner check"
+grep -q "holds a runner already" "$T/out"; check "$?" "1" "…never refused for it"
+grep -q "lacks what a rootless runner container needs" "$T/out"; check "$?" "0" "…stopped at the case's missing podman"
+mv "$UNITS/ci-runner-lnx9.container" "$T/lnx9.keep"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "another repo's registration alone under 2 slots: past the other-runner check"
+grep -q "holds a runner already" "$T/out"; check "$?" "1" "…never refused for it"
+rm -rf "$RH/actions-runners/other"; mv "$T/lnx9.keep" "$UNITS/ci-runner-lnx9.container"; rm -f "$T/ssh/nopodman"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name other1 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "remove under 2 slots, a name the host does not hold: refused"
+grep -q "node-ci holds another runner (.*ci-runner-lnx9.container), not other1: nothing removed" "$T/out"; check "$?" "0" "…as with one slot: the slots let only install past"
+check "$(test -e "$UNITS/ci-runner-lnx9.container" && echo kept || echo gone)" "kept" "…the unit it holds kept"
+# the repo's directory registered under another name: never room for a second name, which would orphan the first
+D="$RH/actions-runners/acme/demo"; mkdir -p "$D"; rm -f "$T/demo.keep"; [ ! -e "$D/.runner" ] || mv "$D/.runner" "$T/demo.keep"
+echo '{"agentName": "lnx1-3", "gitHubUrl": "https://github.com/acme/demo"}' > "$D/.runner"; : > "$UNITS/ci-runner-lnx1-3.container"
+cksum "$D/.runner" "$UNITS/ci-runner-lnx1-3.container" > "$T/own.before"; : > "$T/gh/calls"; : > "$T/ssh/systemctl"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "under 2 slots, the repo's directory registered as lnx1-3: an install as lnx1 refused"
+grep -q "node-ci: this repo's runner there is lnx1-3, not lnx1: --runner remove --name lnx1-3 first" "$T/out"; check "$?" "0" "…naming the runner to remove first"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nothing minted"
+cat > "$T/own.py" <<'PY2'
+import hashlib, importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("cp", sys.argv[1])
+spec = importlib.util.spec_from_loader("cp", loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+target = m.Target("node-ci", ("self-hosted", "Linux", "linux-share"), "lnx1", 1)
+target.slots = 2
+tgz = sys.argv[2]
+asset = ("https://example.invalid/fake-linux.tar.gz", os.path.getsize(tgz), hashlib.sha256(open(tgz, "rb").read()).hexdigest())
+sys.exit(m.ssh_runner("install", "acme/demo", target, token=os.environ["FAKE_TOKEN"], asset=asset,
+                     files=m.linux_files("acme/demo", target.name, m.DEFAULT_LIMITS)))
+PY2
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 python3 "$T/own.py" "$CP" "$DIST/fake-linux.tar.gz" > "$T/out" 2>&1; check "$?" "7" "…and the host's install itself refuses it, without relying on the probe"
+grep -q "is runner lnx1-3's: --runner remove --name lnx1-3 first" "$T/out"; check "$?" "0" "…saying whose the directory is"
+check "$(cksum "$D/.runner" "$UNITS/ci-runner-lnx1-3.container")" "$(cat "$T/own.before")" "…the directory's registration and the first runner's unit unchanged"
+check "$(test -s "$T/ssh/systemctl" && echo changed || echo untouched)" "untouched" "…no service stopped or reloaded"
+rm -f "$D/.runner" "$UNITS/ci-runner-lnx1-3.container"; [ ! -e "$T/demo.keep" ] || mv "$T/demo.keep" "$D/.runner"
+# a name another repo's runner holds is never room, slots or not: its unit, image and volume are the name's
+echo 'node-ci:3' > "$SLOTS"; echo '{"lnx1": ["linux-share"], "lnx9-2": ["linux-share"]}' > "$CAPS"
+mv "$UNITS/ci-runner-lnx9.container" "$T/lnx9.keep"; : > "$UNITS/ci-runner-lnx9-2.container"; touch "$T/ssh/nopodman"
+mkdir -p "$RH/actions-runners/other/repo"; echo '{"agentName": "lnx9-2"}' > "$RH/actions-runners/other/repo/.runner"; : > "$T/gh/calls"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install --host node-ci --name lnx9 --labels self-hosted,Linux --instance 2 > "$T/out" 2>&1; check "$?" "2" "under 3 slots, a name another repo's runner holds: refused"
+grep -q "node-ci holds runner name lnx9-2 for another registration: nothing minted" "$T/out"; check "$?" "0" "…naming it"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nothing minted"
+# A directory of this repo's under a different name must not claim the sibling's volume as configured.
+OWN="$RH/actions-runners/acme/demo-2"; VOL="$T/ssh/vol/ci-runner-lnx9-2-state"; IMG="$T/ssh/img/localhost_ci-runner-lnx9-2"
+mkdir -p "$OWN" "$VOL" "$IMG"
+echo '{"agentName": "lnx1-2", "gitHubUrl": "https://github.com/acme/demo"}' > "$OWN/.runner"
+echo '{"agentName": "lnx9-2", "gitHubUrl": "https://github.com/other/repo"}' > "$VOL/.runner"
+echo 'original unit' > "$UNITS/ci-runner-lnx9-2.container"; echo 'original image' > "$IMG/kept"
+rm -f "$T/ssh/nopodman"; before=$(cksum "$OWN/.runner" "$VOL/.runner" "$UNITS/ci-runner-lnx9-2.container" "$IMG/kept")
+: > "$T/gh/calls"; : > "$T/ssh/systemctl"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install --host node-ci --name lnx9 --labels self-hosted,Linux --instance 2 > "$T/out" 2>&1; check "$?" "2" "a configured repo installing under a sibling's name: refused"
+grep -q "holds runner name lnx9-2 for another registration: nothing minted" "$T/out"; check "$?" "0" "…even though both the repo directory and the named volume hold registrations"
+check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…before any token"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner remove --host node-ci --name lnx9 --labels self-hosted,Linux --instance 2 > "$T/out" 2>&1; check "$?" "2" "a configured repo removing a sibling's name: refused"
+grep -q "holds runner name lnx9-2 for another registration: nothing removed" "$T/out"; check "$?" "0" "…the same ownership check protects remove"
+check "$(grep -c 'remove-token' "$T/gh/calls")" "0" "…before a remove token"
+# Recheck on the host, too: a name can be claimed after the caller's probe, before its install.
+cat > "$T/nameheld.py" <<'PY'
+import hashlib, importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("cp", sys.argv[1])
+spec = importlib.util.spec_from_loader("cp", loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+name, instance, slug = ("lnx1", 1, "other/repo") if len(sys.argv) > 4 else ("lnx9", 2, "acme/demo")
+target = m.Target("node-ci", ("self-hosted", "Linux", "linux-share"), name, instance)
+target.slots = 3
+tgz = sys.argv[2]
+asset = ("https://example.invalid/fake-linux.tar.gz", os.path.getsize(tgz), hashlib.sha256(open(tgz, "rb").read()).hexdigest())
+sys.exit(m.ssh_runner(sys.argv[3], slug, target, token=os.environ["FAKE_TOKEN"], asset=asset,
+                     files=m.linux_files(slug, target.name, m.DEFAULT_LIMITS)))
+PY
+for verb in install remove; do
+  FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 python3 "$T/nameheld.py" "$CP" "$DIST/fake-linux.tar.gz" "$verb" > "$T/out" 2>&1; check "$?" "7" "the host $verb itself refuses the held name, without relying on the probe"
+done
+check "$(cksum "$OWN/.runner" "$VOL/.runner" "$UNITS/ci-runner-lnx9-2.container" "$IMG/kept")" "$before" "…both registrations, the unit and the image unchanged"
+check "$(test -s "$T/ssh/systemctl" && echo changed || echo untouched)" "untouched" "…no service stopped or reloaded"
+# A lone unit or volume has no `other` line: the name's refusal must stand alone.
+rm -rf "$RH/actions-runners/other" "$VOL" "$IMG"; rm -f "$UNITS/ci-runner-lnx9-2.container"
+for held in unit volume; do
+  if [ "$held" = unit ]; then : > "$UNITS/ci-runner-lnx9-2.container"; else mkdir -p "$VOL"; fi
+  : > "$T/gh/calls"
+  FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install --host node-ci --name lnx9 --labels self-hosted,Linux --instance 2 > "$T/out" 2>&1; check "$?" "2" "a held name's $held alone, with no other runner directory: refused"
+  grep -q "holds runner name lnx9-2 for another registration: nothing minted" "$T/out"; check "$?" "0" "…the name guard stands without an other-runner line"
+  check "$(grep -c 'registration-token' "$T/gh/calls")" "0" "…nothing minted"
+  rm -rf "$VOL"; rm -f "$UNITS/ci-runner-lnx9-2.container"
+done
+rm -rf "$OWN"
+rm -rf "$RH/actions-runners/other" "$UNITS/ci-runner-lnx9-2.container" "$T/ssh/nopodman"; mv "$T/lnx9.keep" "$UNITS/ci-runner-lnx9.container"
+echo '{"lnx1": ["linux-share"], "lnx1-2": ["linux-share"], "lnx1-3": ["linux-share"]}' > "$CAPS"
+rm -f "$SLOTS"
+"$CP" "$R" --runner remove --dry-run $LX --instance 2 > "$T/out" 2>&1; check "$?" "0" "remove of instance 2 once the slots line is gone: planned, never refused"
+"$CP" "$R" --runner install --dry-run $LX --instance 2 > "$T/out" 2>&1; check "$?" "2" "…while its install is refused"
+: > "$T/ssh/argv"
+FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > /dev/null 2>&1
+grep -q "^CI_RUNNER_SLOTS=" "$T/ssh/argv"; check "$?" "1" "no slots line: the probe's command as before"; mv "$T/caps.keep" "$CAPS"
 rm -f "$UNITS/ci-runner-lnx9.container"
+# A failed first registration owns its partial state. Test retry and remove both before configure succeeds
+# and after it writes the volume's registration but copying .runner to the host fails.
+PENDING="$RH/actions-runners/acme/demo/.runner-pending"; VOL="$T/ssh/vol/ci-runner-lnx1-state"
+OTHER="$T/lx-other"; newrepo "$OTHER"; git -C "$OTHER" remote set-url origin https://github.com/other/repo.git
+cp "$CAPS" "$T/caps.partial.keep"; echo '{"lnx1": ["linux-share"], "lnx2": ["linux-share"]}' > "$CAPS"
+echo "{\"total_count\":1,\"runners\":[$LXRUN]}" > "$T/gh/runners.json"
+for failure in configure copy; do
+  for recovery in install remove; do
+    touch "$T/ssh/$failure.fail"; : > "$T/gh/calls"; : > "$T/ssh/podman"
+    lx install > "$T/out" 2>&1; check "$?" "2" "$failure fails on a first install before $recovery: reported"
+    grep -q "fake .*failed" "$T/out"; check "$?" "0" "…reached the injected failure"
+    check "$(cat "$PENDING" 2>/dev/null)" "$(printf 'acme/demo\nlnx1')" "…the repo and runner name reserved before registration"
+    check "$(test -d "$VOL" && echo exists || echo absent)" "exists" "…the partial volume exists"
+    check "$(test -f "$RH/actions-runners/acme/demo/.runner" && echo exists || echo absent)" "absent" "…no .runner copied to the host"
+    check "$(test -f "$UNITS/ci-runner-lnx1.container" && echo exists || echo absent)" "absent" "…no unit installed"
+    # The reservation protects the name even with slots available, from a different repo or name alike.
+    echo 'node-ci:2' > "$SLOTS"; : > "$T/gh/calls"; : > "$T/ssh/systemctl"
+    before=$(cksum "$PENDING")
+    for verb in install remove; do
+      FAKE_SYSTEM=Linux "$CP" "$OTHER" --runner "$verb" $LX > "$T/out" 2>&1; check "$?" "2" "…another repo cannot $verb the pending name"
+      grep -q 'holds runner name lnx1 for another registration' "$T/out"; check "$?" "0" "…refused by ownership"
+      FAKE_SYSTEM=Linux "$CP" "$R" --runner "$verb" --host node-ci --name lnx2 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "…the owning repo cannot $verb under a different name"
+      grep -q 'holds runner name lnx2 for another registration' "$T/out"; check "$?" "0" "…the reservation checks the runner name as well as the repo"
+      FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 python3 "$T/nameheld.py" "$CP" "$DIST/fake-linux.tar.gz" "$verb" pending > "$T/out" 2>&1; check "$?" "7" "…the host $verb itself refuses another repo's pending name"
+    done
+    check "$(grep -c -E 'registration-token|remove-token' "$T/gh/calls")" "0" "…neither refusal mints a token"
+    check "$(cksum "$PENDING")" "$before" "…the reservation unchanged"
+    check "$(test -s "$T/ssh/systemctl" && echo changed || echo untouched)" "untouched" "…no service changed by the refusals"
+    # A partial install also occupies the default host's one slot.
+    rm -f "$SLOTS"; FAKE_SYSTEM=Linux "$CP" "$OTHER" --runner install --host node-ci --name lnx2 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "…a pending registration occupies the default host's one slot"
+    grep -q 'holds a runner already' "$T/out"; check "$?" "0" "…another name is refused by capacity"
+    echo 'node-ci:2' > "$SLOTS"; : > "$UNITS/ci-runner-lnx9.container"
+    mkdir -p "$RH/actions-runners/sibling/repo"
+    echo '{"agentName": "lnx9", "gitHubUrl": "https://github.com/sibling/repo"}' > "$RH/actions-runners/sibling/repo/.runner"
+    FAKE_SYSTEM=Linux "$CP" "$OTHER" --runner install --host node-ci --name lnx2 --labels self-hosted,Linux > "$T/out" 2>&1; check "$?" "2" "…a pending registration and sibling fill two slots"
+    grep -q 'holds a runner already' "$T/out"; check "$?" "0" "…the pending directory counted toward the slots limit"
+    # A sibling cannot prevent the owner recovering its reserved slot, including remove (which reads no slots key).
+    rm -f "$T/ssh/$failure.fail"; : > "$T/gh/calls"; : > "$T/ssh/podman"
+    lx "$recovery" > "$T/out" 2>&1; check "$?" "0" "…the owner can $recovery after $failure fails, beside a sibling"
+    check "$(test -f "$PENDING" && echo kept || echo gone)" "gone" "…the pending reservation cleared"
+    mint=0; [ "$failure:$recovery" = configure:install ] && mint=1
+    check "$(grep -c 'registration-token' "$T/gh/calls")" "$mint" "…registration token only for an unfinished configure"
+    mint=0; [ "$failure:$recovery" = copy:remove ] && mint=1
+    check "$(grep -c 'remove-token' "$T/gh/calls")" "$mint" "…remove token only when the volume holds a registration"
+    if [ "$recovery" = install ]; then
+      check "$(test -f "$RH/actions-runners/acme/demo/.runner" && test -f "$UNITS/ci-runner-lnx1.container" && echo configured || echo absent)" "configured" "…the retry finishes installing"
+      mint=0; [ "$failure" = configure ] && mint=1
+      check "$(grep -c ' configure ' "$T/ssh/podman")" "$mint" "…a registration already in the volume is kept"
+      lx remove > "$T/out" 2>&1; check "$?" "0" "…the recovered runner removes normally"
+    fi
+    check "$(test -d "$VOL" && echo kept || echo gone)" "gone" "…the partial volume cleaned up"
+    check "$(test -d "$T/ssh/img/localhost_ci-runner-lnx1" && echo kept || echo gone)" "gone" "…its image cleaned up"
+    check "$(test -f "$UNITS/ci-runner-lnx9.container" && echo kept || echo gone)" "kept" "…the sibling's unit kept"
+    rm -f "$UNITS/ci-runner-lnx9.container" "$SLOTS"
+    rm -rf "$RH/actions-runners/sibling"
+  done
+done
+mv "$T/caps.partial.keep" "$CAPS"
 for lack in nopodman nouserns nosubuids nosubgids nolinger nousersd; do
   touch "$T/ssh/$lack"; : > "$T/gh/calls"
   FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "a Linux host that lacks one thing ($lack): refused"
@@ -2889,6 +3087,148 @@ grep -qF "the uidmap package (newuidmap and newgidmap" "$T/out"; check "$?" "0" 
 grep -qF "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)" "$T/out"; check "$?" "0" "…the network helper's"
 grep -qF "a subordinate uid and gid range for the login (its lines in /etc/subuid and /etc/subgid)" "$T/out"; check "$?" "0" "…the ranges'"
 grep -qx "a Mac: nothing" "$T/out"; check "$?" "0" "…and a Mac's probe never refused for them"
+echo "a Linux runner's berth parts: ubuntu 26.04, the live cap, the weekly rebuild, --runner check (free CI S6)"
+rm -rf "$RH/actions-runners/acme" "$UNITS" "$RH/.config/systemd" "$T/ssh/img" "$T/ssh/vol"
+rm -f "$T/ssh/active" "$T/ssh/runopts" "$T/ssh/checkargs" "$T/ssh/checkpy" "$T/ssh/checkout" "$T/ssh/checkrc" "$T/ssh/nopodman" \
+  "$T/ssh/nosubuids" "$T/ssh/nosubgids" "$T/ssh/nolinger" "$T/ssh/nouserns" "$T/ssh/nousersd" "$T/ssh/listener" \
+  "$REGATTA_CONFIG/wharf/ci-runner-limits"
+echo '{"lnx1": ["linux-share"]}' > "$CAPS"
+echo "{\"total_count\":1,\"runners\":[$LXRUN]}" > "$T/gh/runners.json"
+U2="$RH/.config/systemd/user"; RD="$RH/actions-runners/acme/demo"; CF="$T/ssh/img/localhost_ci-runner-lnx1/Containerfile"
+: > "$T/ssh/systemctl"
+"$CP" "$R" --runner install --dry-run $LX > "$T/out" 2>&1; check "$?" "0" "the plan, with the berth's parts"
+grep -qF "capped at --cpus 3 --memory 12g (wharf/ci-runner-limits, at most the host's cores)" "$T/out"; check "$?" "0" "…the container capped at the live limit's default, 3 cores and 12 GB"
+grep -qF "its weekly rebuild, the user timer ci-runner-lnx1-rebuild.timer" "$T/out"; check "$?" "0" "…and rebuilt weekly"
+lx install > "$T/out" 2>&1; check "$?" "0" "a fresh install with the berth's parts"
+grep -qxF 'PodmanArgs=--cpus=3 --memory=12g --memory-swap=12g' "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…the unit caps its container: 3 cores, 12 GB, no swap past it"
+grep -qF 'FROM docker.io/library/ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c' "$CF"; check "$?" "0" "…the image over ubuntu:26.04's digest, hosted ubuntu-latest's release"
+grep -q 'apt-get upgrade -y' "$CF"; check "$?" "0" "…its packages upgraded at every build"
+grep -q 'tzdata procps' "$CF"; check "$?" "0" "…procps among them"
+grep -q 'useradd -m -u 1001 -d /runner' "$CF"; check "$?" "0" "…the runner at uid 1001, so an earlier install's volume stays its own"
+grep -q 'userdel -r ubuntu' "$CF"; check "$?" "0" "…the base's own login gone, so a job sees no /home"
+grep -qxF 'OnCalendar=weekly' "$U2/ci-runner-lnx1-rebuild.timer"; check "$?" "0" "…a weekly user timer"
+grep -qxF 'Persistent=true' "$U2/ci-runner-lnx1-rebuild.timer"; check "$?" "0" "…that catches up a week the host was off"
+grep -qF "ExecStart=/bin/sh $RD/rebuild.sh ci-runner-lnx1 $DIST/fake-linux.tar.gz $(wc -c < "$DIST/fake-linux.tar.gz" | tr -d ' ') " "$U2/ci-runner-lnx1-rebuild.service"; check "$?" "0" "…its service: rebuild.sh with the pin"
+grep -qxF 'CPUWeight=20' "$U2/ci-runner-lnx1-rebuild.service"; check "$?" "0" "…at the runner's weight"
+grep -qF 'enable --now ci-runner-lnx1-rebuild.timer' "$T/ssh/systemctl"; check "$?" "0" "…enabled"
+check "$(test -x "$RD/rebuild.sh" && echo yes || echo no)" "yes" "…rebuild.sh beside the image's context"
+read -r rbsh rbscript rbargs < <(sed -n 's/^ExecStart=//p' "$U2/ci-runner-lnx1-rebuild.service")
+rb() { env HOME="$RH" PATH="$T/ssh/rbin:$PATH" sh "$rbscript" $rbargs; }
+: > "$T/ssh/podman"; rm -f "$T/ssh/prune"; rb > "$T/out" 2>&1; check "$?" "0" "the weekly rebuild, run as its timer runs it"
+grep -q '^podman build -q --no-cache -t localhost/ci-runner-lnx1 image$' "$T/ssh/podman"; check "$?" "0" "…the same context, no cache"
+grep -q -- '--filter label=ci-provider.runner' "$T/ssh/prune" 2>/dev/null; check "$?" "0" "…the runner's old images pruned"
+check "$(test -e "$RD/image/runner.tar.gz" && echo kept || echo gone)" "gone" "…the tarball's copy gone from the context after"
+cp "$DIST/fake-linux.tar.gz" "$T/tgz.keep"; printf x >> "$DIST/fake-linux.tar.gz"
+: > "$T/ssh/podman"; rb > "$T/out" 2>&1; check "$?" "1" "a kept tarball that is not the pinned one: no rebuild"
+grep -q "is not the pinned build: --runner install fetches it again" "$T/out"; check "$?" "0" "…saying what to do"
+check "$(grep -c '^podman build' "$T/ssh/podman")" "0" "…and nothing built"
+cp "$T/tgz.keep" "$DIST/fake-linux.tar.gz"
+
+echo 'cpus=2,memory=8g' > "$REGATTA_CONFIG/wharf/ci-runner-limits"
+check "$("$CP" --runner limits 2>&1)" "cpus=2,memory=8g" "--runner limits: the live limit's value, as install reads it"
+check "$(cd "$(dirname "$CP")/.." && bin/ci-provider --runner limits 2>&1)" "cpus=2,memory=8g" "…the limits file's trial read, from the module's folder"
+lx install > "$T/out" 2>&1; check "$?" "0" "a reinstall with a new cap"
+grep -qxF 'PodmanArgs=--cpus=2 --memory=8g --memory-swap=8g' "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…the unit rewritten with it"
+for bad in 'cpus=3 memory=12g' 'cpus=0,memory=12g' 'cpus=3,memory=100m' 'cpus=3,memory=12G' 'memory=12g,cpus=3'; do
+  printf '%s\n' "$bad" > "$REGATTA_CONFIG/wharf/ci-runner-limits"
+  "$CP" --runner limits > "$T/out" 2>&1; check "$?" "2" "a cap it cannot read ($bad): refused, never the default"
+done
+grep -q "want one line \`cpus=<cores>,memory=<n>g\`" "$T/out"; check "$?" "0" "…saying the shape"
+: > "$T/ssh/argv"; : > "$T/gh/calls"
+"$CP" "$R" --runner install $LX > "$T/out" 2>&1; check "$?" "2" "install with that cap: refused"
+check "$(wc -c < "$T/ssh/argv" | tr -d ' '):$(wc -c < "$T/gh/calls" | tr -d ' ')" "0:0" "…before any ssh or GitHub call"
+rm -f "$REGATTA_CONFIG/wharf/ci-runner-limits"
+mkdir -p "$REGATTA_CONFIG/live/wharf"
+printf '%s\n' 'cpus=2,memory=8g' > "$REGATTA_CONFIG/live/wharf/ci-runner-limits"
+check "$("$CP" --runner limits 2>&1)" "cpus=2,memory=8g" "--runner limits: the live layer's value (what regatta limit set writes)"
+printf '%s\n' 'cpus=3,memory=12G' > "$REGATTA_CONFIG/live/wharf/ci-runner-limits"
+"$CP" --runner limits > "$T/out" 2>&1; check "$?" "2" "a live-layer cap it cannot read: refused"
+grep -qF "$REGATTA_CONFIG/live/wharf/ci-runner-limits is" "$T/out"; check "$?" "0" "…naming the live layer's file, where the value came from"
+rm -rf "$REGATTA_CONFIG/live/wharf"
+check "$("$CP" --runner limits 2>&1)" "cpus=3,memory=12g" "no live value: the default"
+"$CP" --runner limits --host node-ci --name lnx1 > "$T/out" 2>&1; check "$?" "2" "--runner limits with a runner named: refused (it reads the key alone)"
+FAKE_NPROC=2 lx install > "$T/out" 2>&1; check "$?" "0" "a 2-core host"
+grep -qF "the cap's 3 cores are more than the host's 2: 2" "$T/out"; check "$?" "0" "…the cap fitted to it, said"
+grep -qxF 'PodmanArgs=--cpus=2 --memory=12g --memory-swap=12g' "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…and written"
+lx install > /dev/null 2>&1
+
+printf 'ok   cpu.max reads 3 cores\nall cases passed\n' > "$T/ssh/checkout"; echo 0 > "$T/ssh/checkrc"; : > "$T/ssh/runopts"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "0" "--runner check: the cases, in a container of the runner's image"
+grep -q 'all cases passed' "$T/out"; check "$?" "0" "…their lines printed"
+grep -q 'cpu.max reads %s cores' "$T/ssh/checkpy"; check "$?" "0" "…the cases' python handed to the container"
+check "$(tr '\n' ' ' < "$T/ssh/checkargs")" "3 12g 169.254.169.254:80 192.0.2.12:22 198.51.100.7:22 198.51.100.7:7400 -- github.com:443 " \
+  "…the unit's cap, then every listener on each of the host's addresses (wildcard ones on each, loopback and link-local skipped) and the metadata service, then github.com"
+check "$(tr '\n' ' ' < "$T/ssh/runopts")" "--cap-drop=ALL --security-opt=no-new-privileges --cpus=3 --memory=12g --memory-swap=12g " "…with the unit's own options"
+grep -q 'ci-runner-lnx1-state:/state:ro' "$T/ssh/podman"; check "$?" "0" "…and its state volume, read-only"
+# the options are the unit's, never the check's own: a unit that lost one is checked without it, and a key the check
+# cannot replay refuses it
+cp "$UNITS/ci-runner-lnx1.container" "$T/unit.keep"
+sed -e '/^NoNewPrivileges=/d' -e 's/^DropCapability=ALL$/AddCapability=NET_RAW/' "$T/unit.keep" > "$UNITS/ci-runner-lnx1.container"; : > "$T/ssh/runopts"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "0" "a unit without NoNewPrivileges, adding a capability"
+check "$(tr '\n' ' ' < "$T/ssh/runopts")" "--cap-add=NET_RAW --cpus=3 --memory=12g --memory-swap=12g " "…checked with its own options, not the check's"
+awk '{ print } /^NoNewPrivileges=/ { print "Mount=type=bind,source=/home,destination=/devel" }' "$T/unit.keep" > "$UNITS/ci-runner-lnx1.container"; : > "$T/ssh/checkargs"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "a unit with a key the check cannot replay: refused"
+grep -q "sets Mount, which --runner check cannot replay" "$T/out"; check "$?" "0" "…naming it"
+check "$(wc -c < "$T/ssh/checkargs" | tr -d ' ')" "0" "…and no container run"
+cp "$T/unit.keep" "$UNITS/ci-runner-lnx1.container"
+echo 8 > "$T/ssh/checkrc"; printf 'FAIL none of the host'"'"'s 4 listeners and addresses, nor the metadata service, reached: 198.51.100.7:7400\n' > "$T/ssh/checkout"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "a failed case: exit 2"
+grep -q "a case failed above: a job on node-ci sees or reaches what it must not" "$T/out"; check "$?" "0" "…saying so, after the case's line"
+echo 1 > "$T/ssh/checkrc"; printf 'Traceback (most recent call last):\n' > "$T/ssh/checkout"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "the cases crashed (exit 1): refused"
+check "$(grep -c 'a case failed above' "$T/out"):$(grep -c 'could not tell' "$T/out")" "0:1" "…as could not tell, never as a failed case"
+"$CP" "$R" --runner check --dry-run $LX > "$T/out" 2>&1; check "$?" "0" "--runner check --dry-run"
+grep -q "nothing written, nothing minted" "$T/out"; check "$?" "0" "…says what it would read"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "2" "--runner check with a Mac's labels: refused"
+mv "$T/ssh/rbin/ss" "$T/ssh/rbin/ss.off"; printf '#!/bin/sh\nexit 0\n' > "$T/ssh/rbin/ss"; chmod +x "$T/ssh/rbin/ss"; : > "$T/ssh/checkargs"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "--runner check on a host whose ss lists no listener: refused, never a vacuous pass"
+grep -q "read no address or no listener" "$T/out"; check "$?" "0" "…saying so"
+check "$(wc -c < "$T/ssh/checkargs" | tr -d ' ')" "0" "…and no container run"
+mv "$T/ssh/rbin/ss.off" "$T/ssh/rbin/ss"
+rm -f "$T/ssh/checkout" "$T/ssh/checkrc"
+: > "$T/ssh/systemctl"
+lx remove > "$T/out" 2>&1; check "$?" "0" "remove with the berth's parts"
+grep -qF 'disable --now ci-runner-lnx1-rebuild.timer' "$T/ssh/systemctl"; check "$?" "0" "…the rebuild timer disabled"
+grep -qxF 'stop ci-runner-lnx1-rebuild.service' "$T/ssh/systemctl"; check "$?" "0" "…and a rebuild under way stopped"
+check "$(ls "$U2" 2>/dev/null | grep -c rebuild):$(test -e "$RD/rebuild.sh" && echo kept || echo gone)" "0:gone" "…its units and rebuild.sh gone"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "--runner check with no unit installed: refused"
+grep -q "no unit .*ci-runner-lnx1.container: --runner install first" "$T/out"; check "$?" "0" "…saying so"
+
+# the cases themselves, on this machine: what is readable everywhere (a stand-in cgroup, a listener here)
+mkdir -p "$T/cg"; echo "300000 100000" > "$T/cg/cpu.max"; echo $((12 << 30)) > "$T/cg/memory.max"
+python3 - "$CP" "$T/cg" > "$T/out" 2>&1 <<'PY'; check "$?" "0" "the cases' python, run here"
+import importlib.machinery, importlib.util, os, socket, subprocess, sys
+l = importlib.machinery.SourceFileLoader("cp", sys.argv[1]); s = importlib.util.spec_from_loader("cp", l)
+m = importlib.util.module_from_spec(s); l.exec_module(m)
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(); port = srv.getsockname()[1]
+shut = socket.socket(); shut.bind(("127.0.0.1", 0)); gone = shut.getsockname()[1]; shut.close()
+env = dict(os.environ, RUNNER_CHECK_CGROUP=sys.argv[2])
+# a capability stand-in: a non-root process's status with the bounding set a unit without DropCapability leaves
+st = os.path.join(sys.argv[2], "status")
+z = "0000000000000000"
+open(st, "w").write("NoNewPrivs:\t1\nCapInh:\t%s\nCapPrm:\t%s\nCapEff:\t%s\nCapBnd:\t00000000a80425fb\nCapAmb:\t%s\n" % (z, z, z, z))
+r = subprocess.run([sys.executable, "-c", m.RUNNER_CHECK_PY, "3", "12g", "--"], env=dict(env, RUNNER_CHECK_STATUS=st),
+                   capture_output=True, text=True, timeout=120)
+print(r.stdout)
+open(st, "w").write("NoNewPrivs:\t1\nCapInh:\t%s\nCapPrm:\t%s\nCapEff:\t%s\nCapBnd:\t%s\nCapAmb:\t%s\n" % (z, z, z, z, z))
+r = subprocess.run([sys.executable, "-c", m.RUNNER_CHECK_PY, "3", "12g", "--"], env=dict(env, RUNNER_CHECK_STATUS=st),
+                   capture_output=True, text=True, timeout=120)
+print(r.stdout)
+r = subprocess.run([sys.executable, "-c", m.RUNNER_CHECK_PY, "3", "12g", "127.0.0.1:%d" % port, "127.0.0.1:%d" % gone,
+                    "--", "127.0.0.1:%d" % port], env=env, capture_output=True, text=True, timeout=120)
+print("rc", r.returncode); print(r.stdout.replace(str(port), "PORT"))
+open(os.path.join(sys.argv[2], "cpu.max"), "w").write("max 100000\n")
+r = subprocess.run([sys.executable, "-c", m.RUNNER_CHECK_PY, "3", "12g", "--"], env=env, capture_output=True, text=True, timeout=120)
+print(r.stdout)
+PY
+grep -qx 'rc 8' "$T/out"; check "$?" "0" "…a reached target fails it, with the cases' own code"
+grep -qx 'ok   cpu.max reads 3 cores' "$T/out"; check "$?" "0" "…cpu.max read as cores"
+grep -qx 'ok   memory.max reads 12g' "$T/out"; check "$?" "0" "…memory.max as the cap"
+grep -qx "FAIL none of the host's 2 listeners and addresses, nor the metadata service, reached: 127.0.0.1:PORT" "$T/out"; check "$?" "0" "…the reached one named, the closed one not"
+grep -qx 'ok   127.0.0.1:PORT reached (the positive case: the network works)' "$T/out"; check "$?" "0" "…the positive case"
+grep -qx 'FAIL cpu.max reads 3 cores: max 100000' "$T/out"; check "$?" "0" "…an uncapped cgroup fails"
+grep -qx 'FAIL no capability: CapBnd 00000000a80425fb' "$T/out"; check "$?" "0" "…a bounding set left whole fails it, though CapEff is 0"
+grep -qx 'ok   no capability' "$T/out"; check "$?" "0" "…every set empty passes it"
 rm -f "$T/ssh/nopodman" "$T/ssh/nosubuids" "$T/ssh/nolinger" "$CAPS"; rm -rf "$RH/actions-runners/acme" "$T/lxtar" "$UNITS" "$T/ssh/img" "$T/ssh/vol"
 echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 FAKE_SYSTEM=Darwin FAKE_ARCH=arm64 python3 - "$CP" > "$T/out" 2>&1 <<'PY'; check "$?" "0" "the pinned builds by system and architecture"
@@ -2932,7 +3272,7 @@ fi
 echo "linux-tools.sh on a persistent runner: no sudo, the job's own HOME, Node and the CLI kept (linux-runner)"
 LTS="$M/../../.github/ci/linux-tools.sh"
 if [ ! -f "$LTS" ]; then
-  echo "  skip no .github/ci/linux-tools.sh in this checkout"
+  echo "  skip no .github/ci/linux-tools.sh here"
 elif [ "$(uname -s)" != Linux ] || ! command -v xz > /dev/null || ! /usr/bin/python3 -c 'import yaml' 2> /dev/null; then
   echo "  skip linux-tools.sh runs on Linux, with xz and the system python3's PyYAML"
 else
@@ -3003,7 +3343,7 @@ EOF
     grep -q "this runner lacks ruby: add it to the image (ci-provider's RUNNER_CONTAINERFILE) and run --runner install again" "$LT/out3"; check "$?" "0" "…naming it, and the image it belongs in"
     check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…and never runs sudo or apt-get"
   fi
-  unset PYTHONPATH LT_LOG   # the stand-in websockets stays with these cases, never the pick's below
+  unset PYTHONPATH LT_LOG   # the stand-in websockets and the log are this block's: no later case inherits them
 fi
 
 echo "the pick: the Linux share on a self-hosted Linux lane (linux-runner, 2026-11-04)"

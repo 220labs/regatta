@@ -2,6 +2,109 @@
 
 ## Unreleased
 
+- The runner berth (free CI S6, 2026-11-04): with `wharf-runs/node/runner` naming a login, `yard-node render agent` makes
+  the guest a CI runner's berth (`node/runner/`): that login with no sudo, password or group and its ssh keys restricted;
+  podman, uidmap, slirp4netns and nftables; its subordinate ids, linger, the user instance's cgroup controllers delegated,
+  podman's AppArmor profile where the apparmor package ships none; and an nftables fence on its own sockets that drops the
+  tailnet, private networks, loopback, link-local and ULA, the metadata service among them, but for DNS to the guest's
+  resolvers. The runner itself is wharf's `ci-provider --runner install` over ssh as that login. tests/node.sh N16.
+- Finish readiness checks only enabled Claude login dirs, including Orca's local switches. A disabled login
+  without `/finish` no longer holds every landing on an otherwise capable host; the installer uses the same walk.
+- An unreadable features file holds finishes, including the launcher's choice of pin, so a configured
+  `-finish-queue` cannot disappear on a failed read. Host samples advertise grants with negations applied,
+  keeping the host row valid when finishes are disabled; unreadable features are reported as unknown.
+- `check --ci` marks a checkpoint draft's body before readying it, keeping later CI checks able
+  to merge a newer main without mistaking the build PR for a curated landing.
+- The Engine room's S4 (docs/engine-room-2026-11-02.md), the page's queue verbs: `dispatch-queue repin QID HOST|any
+  [--dry-run]` pins a queued fleet entry to a host (a typed pin, as `--pin` writes) or unpins it, refused to an
+  unattended caller, for a scope's store, an entry not queued (a finish's tombstone included) or held for a live run
+  of its branch, a held pin (`pinned_why`, no kind) or one of no known kind, a pinned finish of any kind (autofinish-run
+  pins one only where that host must judge or run it), a pin of a finish (`any` alone drops a finish's
+  preference: a pin of it would read held, and eligibility meets `finish-queue` for any peer, a Linux berth's own claim
+  never), and a host the config does not name for it or that `eligibility` refuses; `dispatch-queue cancel QID` cancels a fleet entry by its id (a finish through `end_op`, leaving
+  its tombstone; a finish claimed here whose job is starting its run refused, exit 3), refused to an
+  unattended caller in the cap's waiting words, exit 3 when nothing was cancelled, 4 when its write waits in the outbox;
+  repin never moves a pin whose run names a login, clears the target's hour's skip and the sweeps' `inelig_` stamps, and kicks the hosts
+  that may take it; the branch road refuses an unattended caller another session's entry it would remove here (its own
+  run's step, by its record found by ancestry, stays its own; an unattended caller's peer leg over ssh, the dispatch host's or
+  `--on HOST`'s, carries `DISPATCH_CANCEL_BY=<its run's session, or ->` and judges every store there as that caller
+  (`cancel --for-session SID`; `dispatch-queue caller-session` names it), its own step claimed or waiting there booted
+  out, with `--fleet-only` first on `--on HOST`: the design's D4, answered A, widened at its landing review); the branch
+  road exits 2 when any entry was refused; repin refuses a host whose queue-mode is `writes`; cancel by id refuses a
+  key that names a path; `dispatch-queue features
+  [--host H]` prints a host's feature names for its row. `dispatch-rc settle --stale [--older-than H] [--dry-run]` ends
+  this host's records of /finish runs sent to a peer that show "sent, no end here yet" past 24 h (never under 9) with
+  no waiter alive here and no answer from the peer within the age (the old peer road's leftovers: main makes none, and
+  no sweep ends them, so a landing state with no end keeps none), copying the landing state's end where it
+  has one, and keeping a record whose peer answered or whose landing state moved since it was judged, and the gate it held;
+  `peer_records()` is the one judgement, which lighthouse's `hosts` counts. `hosts put`'s row check takes the
+  row's new `checks` ({busy, cap, waiting}) and `features`, refusing a malformed one; `checks` is a gauge, outside
+  `row_sig`. A caller unattended here is judged by its own run record: an inherited `DISPATCH_CANCEL_BY` or a
+  `--for-session` naming another session refuses that session's entries (its own: the step it put, or the run it is),
+  and `dispatch <branch> --cancel` exits 2 for an entry refused; `dispatch-queue cancel`'s branch road answers 4 for a
+  cancel that waits in the outbox, which dispatch says and exits 0 on, as main did (keel's lookout reads non-zero as
+  refused); a peer leg marked `DISPATCH_CANCEL_BY` exits 5 for an entry refused, which its sender reads as 2, apart from
+  any dispatch's usage or no-repo 2; `--cancel --on HOST` keeps the local fleet judgement's refusal. Cases in `tests/test_queue.sh`.
+
+- `check --ci` records ownership of the `hold` it adds; `/finish`'s `pr ready` releases it during
+  curation so automerge can finish after a CI wait times out. A pre-existing manual hold stays owned by its owner.
+- `check --ci` returns red immediately for a failed required context, even when another is pending
+  or missing, so a timeout cannot replace a known CI failure with a passing local fallback.
+
+- `check <worktree> --ci` uses the branch's held, non-draft PR CI for build loops: the Linux
+  matrix and scoped macOS share run in parallel, with required contexts read from origin/main's
+  protection file and a verdict tied to the pushed head. Main is merged only for builds (with main
+  moved, a ready landing answers locally; `--ci-merge-main` is the owner's yes, refused unattended),
+  conflicts abort and report their files, failed jobs print their failing log lines, a signal ends
+  the helper with INTERRUPTED, and unavailable CI, a branch already landed, or a confidential or
+  guarded repo (the core's `fenced_scopes`) falls back locally. A green lists each contract command
+  CI's own line (`.github/ci/share.sh line`) never runs as `UNRUN`, exit 3 (a repo without that file
+  checks locally); a head with no check yet is pending; a new PR opens as a draft, labelled before it
+  is readied. build-review counts a clean merge of main as no new code (`branch_moved`), so
+  `--ci`'s merge owes no extra review round. `--ci-wait MIN`
+  defaults to 120. Dispatch's shared build prompt names this road for Claude Code and Codex;
+  `/finish` keeps its local check. This spends CI minutes and may open or ready a PR labelled hold.
+
+- The builder coin's and the finisher's rotation fences ask the core's `scope_rotates` (scope-rotation, 2026-11-04): a
+  confidential scope draws unless it says `"rotation": false` (the owner: one scope opts out, the others draw); a `rotation` that is no
+  bool fences. Each rotation row (`builder-rotation.jsonl`, `finisher-rotation.jsonl`) carries `scope` and `confidential`, and
+  `autofinish-run rotation` counts a rotating confidential scope's rows.
+
+- A capable non-Mac host now meets `finish-queue` without a feature line: the loaded autofinish schedule,
+  publish gate's word list and `/finish` in every login dir are checked by the same function as `install.sh --check`,
+  once per queue pass. Claims and queue rows name missing prerequisites. Darwin keeps its grant; an explicit
+  `finish-queue` still grants it, and `<host>:-finish-queue` overrides either grant (finish-capable).
+  The launcher's ladder pin uses these rules too: a disabled Mac hands its finish to the fleet, and a capable
+  non-Mac can keep the pin without a feature line, so the launcher and claim agree.
+
+- overdraw (2026-11-04, lighthouse's account): dispatch's fire-time pick, every autofinish-run pick and autofinish's
+  week() pass `--overdraw`, so with no login under its week bar a run or landing starts past one (week() reads it as
+  tight); a build asks only at `--priority` high or force, a finish at any of its ranks (normal up; the owner, 2026-11-05). The pick only decides; dispatch logs it with `account overdraw-log` once the session began, its own pick's
+  object or the one autofinish-run hands its `dispatch --start` (ACCOUNT_OVERDRAW_PICK, never passed to a session),
+  and says so in an `== overdraw:` line.
+- pickup: past `run()`'s refused-exec answer (126/127, the `run()` entry below), three of pickup's four `ps` calls go
+  through `ps()`, None when ps cannot run (`own_outputs` keeps its own guard) (sandboxed-seed; docs/sandboxed-seed-2026-11-04.md): `running()` reads a live pid whose start it cannot read
+  (ps refused, timed out, or blank with exit 0) as running, and a blank with exit 1 (no such process) as gone (as an entry with no `procStart`: the session
+  lock it gates stays held), and the VS Code walks read as no window and the PATH's `code`. The seed path's own fences
+  read no `ps`; the tests' `ps_refused.py` refuses every `ps` with EPERM and shows each still refusing, the seed laying.
+- The builder coin's third arm, Gemini 4 Argon (S3 of docs/argon-builder-arm-2026-11-03.md): `buildercoin.py`'s `ARMS`
+  gain an `agent` column (`claude`, Argon's `antigravity`) and `argon-high`; the word's one grammar is its
+  `WORD_GRAMMAR` (`buildercoin.py grammar`), the coin 0 to 2, and dispatch's two tests and dispatch-queue's
+  `ARM_WORD` (with helm's) are held to it by a case each. The odds are the fleet limit `wharf-runs/builder-odds`
+  (named weights, default `opus-high=1,sonnet-high=2,argon-high=2`, the owner's D2; its trial read is
+  `buildercoin.py odds`), read at the draw and again at fire, where a weight of 0 runs today's builder; the row
+  writes them as `o:s:a`, and `odds_of` reads that and #459's `3/5`. An Argon draw asks `dispatch-queue fresh` for
+  a builder host (a `wharf-runs/features` line naming `agy`, eligible for the repo, its row on the hosts ref
+  `VENDOR_FRESH` young) and adds `--needs agy`; with none it draws Opus under Argon's coin (`opus-high:2:…`), and
+  the record and row say `fallback`, with the row's new `agent` and `drawn`. While dispatch has no road for agy
+  (`ROADS`, until `run_vendor`, S4) Argon weighs 0 at the draw, so `1:2:2` draws as `1:2` and the row's odds say
+  so, never Opus in Argon's place; a note after `#` or `(` in the limit is no text. The fire path falls back the same way, and every host's sweep draws a
+  queued Argon entry no host claimed within `REDRAW_AGE` again as that Opus word, `agy` dropped from its needs.
+  A requeued Argon run needs `agy` again (`entry_of_record`).
+- node-reef (2026-11-04): a named node joins the fleet by itself once its config names a queue home: the clone
+  unit runs `dispatch --queue-jobs` (new: the queue's jobs alone, denied a dispatched run as `dispatch-queue jobs` is) and
+  asks once for lighthouse's reef seed, which the first sweep takes (`reef apply --seed`); a `yard-join.path` unit
+  reruns it when `wharf-runs/queue-repo` or an overlay's marker is written.
 - A builder host (the Argon arm's S2, docs/argon-builder-arm-2026-11-03.md, "The builder host"): `bin/builder-host`
   `make VENDOR` (as root, one ssh line; `--dry-run`), `check` (read only) and `probe` (the real user's verdicts:
   G3's reads of the owner's home, `launchctl bootstrap user/<uid>`, the keychain roads; `--with-model` for agy's
@@ -53,7 +156,8 @@
 - pickup: `run()` returns a failed CompletedProcess (126, 127 for a missing program) on an OSError, never a raise, and
   `ssh_bytes` the same; `git()` still raises, as `out()` reads stdout alone. A sandboxed session may not exec `ps`, and
   the PermissionError crashed `pickup seed`, so `helm send --text` from every confidential scope's session. `running()`
-  trusts `kill(0)` when ps cannot be executed; a ps that runs but sees nothing still reads dead.
+  trusts `kill(0)` when ps cannot be executed; a ps that runs and prints nothing reads as running unless it exits 1
+  (sandboxed-seed, above).
 
 - kicklib: the sheep kick road presses over spacesheep's stream socket (kick-socket; TODO.md [sheep-kick], the owner's
   "yes, websockets", 2026-11-02), as the page runtime does: the full key's web session, the socket of the space
@@ -93,10 +197,68 @@
 
 - The builder coin draws 3 in 5 Sonnet 5.5 `high` (was 1 in 5), and plain-Opus briefs join it: a `Tier:` line naming Opus alone, no tier word and no effort but `high` (blueprintlib's `brief_rotates`). Plain Opus is the rules' default line and nothing more (`PLAIN_OPUS_RE`: a reason, another model or effort keeps a brief off). The rotation row's `brief_class` says `specced` or `plain` and its `odds` the draw's; `buildercoin.py rotates` reads a brief's class. The owner, 2026-11-03: more Sonnet rows sooner, fewer credits.
 
+- agy-road (2026-11-04, the owner: "let it run agy builds"): `dispatch BRANCH --harness agy` builds a seeded branch with
+  Google's agy CLI. The entry needs `agy`, which only a builder host meets: its `wharf-runs/features` line names `agy` (the owner's rows
+  never do: D1 of docs/argon-builder-arm-2026-11-03.md, an agy build never runs as the owner's user nor a node's own),
+  and that host judges its own agy (`.local/bin/agy` in the home folder, else PATH: the new adapter's `exe()`, with the
+  guards entry and `--sandbox`; dispatch-queue's `eligibility`, and `dispatch-queue agy-host` at the fire, a one-shot's
+  included). An agy installed with no such line meets nothing, so only such a host claims it, and
+  `--harness agy` rides on the entry as a flag (FLAGS; a host on older code skips it). The fired run skips Claude's
+  login pick, trust and tier, keeps the spawn gate, the cap and memory under the start lock, and starts `harness run
+  --harness agy` in the worktree with a prompt naming the brief by path; it waits for agy's end, records it beside a
+  Claude run (mode `agy`, `harness_run`), leaves the edits uncommitted for the owner's session and hands no landing.
+  Refused with `--start`, `--probe`, `--headless`, `--yolo`, `--account LABEL`, modes yolo and dnd, a principal tier.
+  A fired job those refuse fails its entry with a card and removes its plist; a `--next` agy step inherits no login. The tenant's fence
+  is for good only for a confidential scope: a guarded repo's goes back to the queue, as another host's agy login may own it.
+- agy-road's finish review (2026-11-05): the `agy` need follows the owner's D1 on main — a builder host's feature
+  line, never an agy installed for the council; `dispatch-queue agy-host` judges this host (exit 3: no builder, the
+  fire's "refused for good"; 4: its agy not ready); an inherited dnd or yolo is dropped before the entry is put; a
+  blank `ps` start reads as agy still running in the adapter and in dispatch's poll; the wrapper's start is recorded
+  beside its pid; the init watchdog never kills after init was seen; agy's guards group must match every tool;
+  `vendor_slots` counts each adapter on its own; a refused fired job boots out of `$DOM`, as main's other roads do.
+- `bin/harness_adapters/agy.py`, ported from the stranded agy-machines-port branch's `antigravity.py`: agy in print
+  mode under a detached wrapper (stream-json both ways, the prompt as one stdin event, `--sandbox` on every run), in a
+  `.claude/worktrees/` worktree on a claude/* branch, on `account pick --provider antigravity`'s login (an e-mail the
+  pick names is checked against agy's log before the prompt goes in), refused without vendor-hooks' guards entry in
+  agy's hooks.json, a prompt over 160 KB, or an agy whose --help lacks --sandbox; `wharf-runs/agy-mode` picks
+  `accept-edits` (the default) or `auto`. harness's guard gives it the vendor fence (provider `antigravity`), the
+  public-repo rule, the spawn gate and the caps; dispatch-rc counts its live runs, less one dispatch started (its
+  record's `dispatched`). Left behind on the branch: the overlay's permission project (agy's hooks carry the guards
+  now), the e-mail binding of account rows, the host registry work in rc-hosts, repos and sheep.
+- `tests/test_agy.sh`, portable (on the Linux list): a stand-in agy that checks the arguments the real CLI takes.
+- The agy road's landing review (2026-11-05): `dispatch --requeue` (and the lid's) leaves an agy build, whose edits a
+  cut would commit and push as a wip; the adapter holds its live pick to the fence's `owns` on a fenced repo; a
+  dispatched agy run leaves harness's count only while dispatch's record is open; agy gets the chain's env and the mode
+  that ran, never the plist's `DISPATCH_MODE`; the peer road sends an agy build's mode only when typed; a principal
+  tier and the entry's own arguments are refused before queueing, a claimed entry failed with a card, not requeued.
+- The agy road's build review (2026-11-05): the adapter refuses a guards entry whose vendor_hook.py is gone (vendor-hooks'
+  launcher would allow every tool call), and so does the queue's agy need; its fence refusal says "in confidential
+  scope", as the core's does, so a confidential scope's live-pick refusal is for good; a torn mode read puts no
+  `DISPATCH_MODE` on agy's env; harness's stderr goes to the run log and its file is removed. Round 2: past
+  `DISPATCH_MAX_H` the run is ended only once agy no longer runs (a pid that outlives its stop by
+  `DISPATCH_AGY_GRACE`, 60 s, is killed), never beside a live agy a second writer could join; dispatch-rc counts a live
+  agy record whose start ps could not read, as a headless one. Round 3: `--harness agy` refuses `--if-room` (it judges
+  the Claude week); at the cap's grace check a start ps could not read for a live agy is read again (four polls), never
+  taken for its end, and a pid whose start differs has ended.
+
 - `wharf apply --yard` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
   `wharf-runs/ssh` row, the key the node fence forbids (2026-11-03).
 - `yard-node`'s named-node payload writes `wharf-runs/node/scope`, the scope the node serves (empty on a shared
   node): the core's `nodes_here` reads it to tell the node as its scope's own yard (scopes-node-yard).
+
+- deny-drift (2026-11-03): the orca adapter's refusal of a named login in a repo routed off it passes `account`'s own
+  reason (tenancy or a scope) rather than naming a deny list; comments in dispatch, pickup, autofinish and
+  autofinish-run say the same, and the suites' fixtures route by tenancy.
+
+- `dispatch` (at `--next` and on the fire path) and `pickup` (`seed`, `brief`) refuse a step the brief names that
+  waits on an answer picking no listed option, by keel's `held` (exit 3), or one keel could not judge (exit 4: its
+  doc another repo's, absent, not parsing, or without the step); any other exit, a crash's 1, passes with a note. The
+  fire path's FAILED line says "refused for good", as no retry releases it — the owner's new Answer or a fresh
+  architect's design pass does (rabbit-holes S3, D3-A). `--next` says no "for good":
+  the run ends on a WAITING line naming the doc and the item (D4-B, until S5's `ask relay`). keel is found at its
+  own module's `bin/`, and `pickup brief --unroute` is never held. A seed out of a confidential scope is not judged
+  here (pickup's `if scope:` road reads no brief through keel): the fire path judges it as it fires. On exit 4
+  `--next` refuses with the cap's waiting words and pickup with the fix named.
 
 - free-ci S3 (the owner's D1 answer, E with A, 2026-11-04): the Macs' PR `check` job is scoped. check.yml's macOS-share
   step runs `.github/ci/share.sh macos --scoped`: `check_scope.py`'s verdicts over what the pull request's merge commit
@@ -109,6 +271,22 @@
   GitHub marks DIRTY on a list file alone is restacked and pushed, anything else gets its finding on the PR; one
   `restack <repo> #<n> <branch>: …` line each, printed and logged (dirty-pr-rebase, 2026-11-04).
 
+- build-review (landing-fixes-in-run): the loop's last review reads the tip it hands over — each round keeps
+  `reviewed`, the head its review read; a round after one that confirmed nothing is still granted when the code
+  moved past that head, and a clean end is refused while it has (docs, TODO.md and a CHANGELOG never count).
+  `--phase finish` keeps the landing's own loop in `build-review-finish.json`, never the build's record, and a
+  `--phase` given twice is refused (the landing's allow rule names it once). `picks <file> <worktree>` reads a
+  verifier's report as fix, take or stop per real finding (HELD kept equal to keel's DND_HOLDS by the suite).
+  `covers` vouches past a change since the reviewed head that touches only tests/ (a landing's check fix), never
+  a suite runner (`tests/check.sh`). autofinish-run keeps the landing's `priority` in its state, puts a review
+  stop's (G1r) fix round on the PR comment as `dispatch <branch> --repo <primary> --priority <the landing's, else
+  high>` with quoted shell arguments, and allows the finish's `build-review round|end <worktree> --phase finish`,
+  `picks` and `cap`. The landing review's fixes: a pick is taken only when it names a listed option by its letter
+  with no hedge after it, and two Reversible marks that disagree stop; four more option shapes and `either … or`
+  read as a choice; a clean end reads the last recorded round's head, refuses an uncommitted change, counts prose
+  in a repo with `in_place`, and an UNVERIFIABLE S1 from any finish round; the landing's own session never writes
+  the build's record; `covers` vouches past a suite alone (never a sourced fixture, a helper or a fixtures/ file),
+  and nothing when `autofinish_exclude` does not read; `compare` reports a landing's first finish pass.
 - finish-as-task (the owner's D3 of node-lands: "The finish should be handled like any other task"): a `/finish` is
   one fleet entry of kind `finish` under its branch's own key, carrying its tip and its rights (by, rule, merge, hold,
   from, a ship's digest; `finish_bad()` reads each, never a prompt or an allow list). `autofinish-run` puts it through

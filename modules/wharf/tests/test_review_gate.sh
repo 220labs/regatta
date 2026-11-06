@@ -169,7 +169,7 @@ has "$T/plan6.txt" "principal: the week is tight, and the top tier holds — nev
 # S6: the hold routes through `account pick --repo`, on pick's own room: both reviews run on Opus (principal-s6-close)
 route() { python3 "$B/review-gate" plan --repo "$T/r50" --principal --json | python3 -c "import json,sys; r=json.load(sys.stdin)['principal']['route']; print(r and (r['account'], r['here'], r['waits'], r['reread']))"; }
 check "$(route)" "None" "  no account answer (no registry): no route, the plain advice"
-check "$(cat "$T/acct-args")" "pick --repo $T/r50 --json" "  …asked with the repo, never --room fable"
+check "$(cat "$T/acct-args")" "pick --repo $T/r50 --json --overdraw" "  …asked with the repo and --overdraw (a landing may be on an overdrawn login), never --room fable"
 echo 0 > "$T/acct-rc"; printf '{"account": "acct-spare", "env": {"CLAUDE_CONFIG_DIR": "%s/spare"}, "reason": "week 10%% < 70%% (week ceiling), 5h 10%% ≤ 50%%", "skipped": []}' "$T" > "$T/acct-json"
 check "$(route)" "('acct-spare', False, False, False)" "  a login with room that is not this session's: routed there"
 python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1
@@ -575,6 +575,34 @@ rm -rf "$T/g7-logs"
 (unset REVIEW_GATE_LOG; g7 merge --reviewer "$T/rev.txt" --code-review "$T/cr.txt" --repo "$T/rse" --no-model --no-shadow > "$T/g7-merge.txt" 2>&1)
 check "$(wc -l < "$T/g7-logs/review-gate.jsonl" 2>/dev/null | tr -d ' ')" "1" "merge with no usage-report: the log line in the core's log dir"
 has "$T/g7-merge.txt" "usage data folder not read (usage-report not installed)" "  said once"
+
+echo "the finish skill's unattended loop: what it tells a landing to run, its allow rules let it run (landing-fixes-in-run)"
+SK="$M/skills/finish/SKILL.md"; AFR="$M/../wharf-runs/bin/autofinish-run"
+if [ -f "$AFR" ]; then
+  python3 - "$SK" "$AFR" > "$T/fl.txt" <<'PY2'
+import fnmatch, re, sys
+from importlib.machinery import SourceFileLoader
+text = re.sub(r"\s*\n\s*", " ", open(sys.argv[1]).read())   # a span the skill wraps reads as one line
+rules = [t.split("/", 2)[2] for t in SourceFileLoader("afr", sys.argv[2]).load_module().FINISH_TOOLS if "build-review" in t]
+spans = sorted(set(m.group(1) for m in re.finditer(r"`(build-review [^`]+)`", text)))
+for sp in spans:   # a rule is `Bash(<root>/modules/<module>/bin/<tool>*)`; the span is what follows `bin/`
+    ok = any(fnmatch.fnmatchcase(sp, r + "*") for r in rules)
+    print(("allowed " if ok else "DENIED ") + sp)
+PY2
+  check "$(grep -c '^DENIED ' "$T/fl.txt")" "0" "every build-review command the skill names is one the landing's FINISH_TOOLS allow (AGENTS.md Traps: a path a prompt hands a session)"
+  grep '^DENIED ' "$T/fl.txt" | sed 's/^/         | /'
+  check "$(grep -E '^allowed build-review (round|end) <this worktree> --phase finish' "$T/fl.txt" | cut -d' ' -f3 | sort -u | tr '\n' ' ')" "end round " "  its round and end by the finish phase, right after the worktree, as the rule names them"
+  check "$(grep -c '^allowed build-review picks ' "$T/fl.txt")" "1" "  and the picks it takes or stops on"
+else
+  echo "  --   skipped: no wharf-runs beside wharf (its allow rules live there)"
+fi
+fl() { tr '\n' ' ' < "$SK" | tr -s ' '; }
+case "$(fl)" in *'`Taken unattended (the landing by <the launch'"'"'s by>, <date>): <pick>'*) echo "  ok   a pick taken is named in the report as Taken unattended (the landing by …), the PR body";;
+  *) echo "  FAIL the skill no longer names the taken pick's line"; fails=$((fails+1));; esac
+case "$(fl)" in *'<dispatch'"'"'s path> <branch> --repo <the primary checkout> --priority <it>'*) echo "  ok   a review stop's Do this now is the fix round's dispatch at the landing's priority";;
+  *) echo "  FAIL the skill no longer names the fix round's dispatch line"; fails=$((fails+1));; esac
+case "$(fl)" in *'never a plain `normal` dispatch'*) echo "  ok     never a plain normal one";;
+  *) echo "  FAIL the skill no longer says never a plain normal dispatch"; fails=$((fails+1));; esac
 
 echo
 [ $fails = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

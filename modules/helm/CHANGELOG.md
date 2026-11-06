@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- stalls: a review stop's card (gate G1r) names its fix round, `<dispatch's path> <branch> --repo <repo> --priority
+  <the landing's, else high>`, never a plain normal build; the command quotes shell arguments (landing-fixes-in-run).
+- `stalls_tick`'s `ARM_WORD` reads the builder coin's third arm, `argon-high`, and its coin 0 to 2 (the fallback's
+  `opus-high:2:…` too), held to wharf-runs' `buildercoin.py` grammar by its suite (S3 of the Argon design).
+- `bin/ask`'s `issue_note(title, body, note, labels)`: one logbook issue per title while it is open, a comment each
+  time after (lighthouse's overdraw, 2026-11-04).
 - The Engine room (docs/engine-room-2026-11-02.md S3): the board's sixth view, its own document. `helm board` runs
   lighthouse's `hosts --json`, `ops status --json` and `ops intake --json` (each ops verb once, shared with the board's
   ops line and Intake cards) and reads `ci-budgets.json` and `ci-budget-alarms.json`, keeps each through the page's
@@ -20,6 +26,20 @@
   proof in node (84 cases), the document's allowlist, states and sig, and under headless Chrome the view at 1440, 720
   and a true 390 in both themes and both roads (248 reads); `HELM_BOARD_ANY_OS=1` runs the Chrome frames off a Mac,
   here and in `test_board.sh`.
+- Main's nightly whole-line check has a reader in the laptop's `ask poll`: one board card and one logbook
+  `bug` issue, no mention, naming failed or unfinished suites and linking the run; a green night closes it.
+  The nightly workflow runs each suite in its own step past an earlier failure, but never after a failed setup
+  step, a cancel or the job's cut, and only where a runner variable is set (the twin runs its line once).
+  API outages preserve the finding and stop the pass at the first unanswered call; an issue write is tried,
+  then retried once per run, and the card stays. A deleted, transferred or hand-closed issue is filed again or
+  reopened; a lookup that finds nothing honours a changed `helm/logbook-repo`; a run with no jobs, a job
+  skipped by its `if:`, a repository the poll left and a torn cache each read as what they are (the finish
+  review's fix round, 2026-11-05). `main-red` cards group under Unstick on the board.
+  Reads that keep failing card after a day, so a reader that cannot read never looks green; a git failure
+  (exit 128) and a schedule at any indent or in flow form no longer read as a repository that left; a reply
+  of the wrong shape spends its write; the guard is read once per pass (the second finish review, 2026-11-05).
+- stalls: an agy build (`dispatch --harness agy`, agy-road) is an S1 card, raised, never retried as a Claude build;
+  one that ended reads "ended N ago, its edits wait", one gone with no end "gone" (2026-11-04).
 - `helm yard-on` refuses a node's peer (`<name>-agent`) it has no alias for by naming it a node's, never a
   `wharf-runs/ssh` row: it reaches no node yet, and `scopes set` writes a node yard meanwhile (2026-11-03).
 - The board's shell (helm-board-ux S3), to the helm council's round-6 prototype: `bin/board.html`, `board.css` and

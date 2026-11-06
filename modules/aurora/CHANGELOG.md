@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `scope-pass check --judge`: the brief judge's clean list names counts of the agent sessions, transcripts
+  and tool calls that made the text and of the scan's or fence's own refusals or hits, how long those
+  sessions' steps took and when they ran, a decision's letter and the names of public tools and their public
+  settings; a client's own figures, timings, dates and settings (revenue, prices, its count of users, accounts,
+  customers or patients, its traffic, schedules and internals) stay a leak, however the text frames them. A
+  result brief made of such counts was refused three times before. The brief-review bench gains c11 and c12,
+  which the old prompt refused, l11, a client's user count hidden among them, and l12-l15, a client's figure
+  under the work's own nouns (an export's accounts, sessions and hits, a batch window, a setting's name): 0 of
+  15 leaks missed, 0 of 12 clean refused (Sonnet, 2026-11-05; the six boundary rows twice).
+- The night's trim step refuses a confidential scope's repo before trim (the TRIM_PY verb `confidential`), with the same
+  nameless REFUSED line, now that trim collects a rotating one nameless (scope-rotation, 2026-11-04): the night's log names the
+  repo and its folder, and embark-memo quotes it into a pushed memo (TODO.md [trim-night-fenced]).
+
 - `week-digest` merges a session's archive and live copies by event uuid, the newest file's copy of a prompt kept
   (evolve S11; the first file seen per session id used to win, so a resumed session's later prompts, the
   corrections among them, were lost when the archive's copy was older); a line with no uuid is keyed by its time and

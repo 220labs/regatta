@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """build-review — the record of a build's own review loop, which dispatch's build prompt asks each run to keep.
 
-    build-review round <worktree> (--verdicts FILE | --found 0) --fixed N [--left N] [--check green|red] [--reviewers a,b] [--note TEXT]
-    build-review end   <worktree> --outcome clean|cap|held [--why TEXT]
-    build-review show  <worktree>
+    build-review round <worktree> (--verdicts FILE | --found 0) --fixed N [--left N] [--check green|red] [--reviewers a,b] [--note TEXT] [--phase build|finish]
+    build-review end   <worktree> --outcome clean|cap|held [--why TEXT] [--phase build|finish]
+    build-review show  <worktree> [--phase build|finish]
     build-review gate  <worktree> --session ID
     build-review compare [--json]
     build-review covers <worktree> [--base REF]
+    build-review picks <verdict file> <worktree>
     build-review cap
 
 Why (build-review, the owner, 2026-10-30): a build ended when its brief was done, and `/finish --unattended`
@@ -21,7 +22,8 @@ that second review reads (docs/task-shape-2026-10-29.md, phase 2).
 Where: `<git dir>/claude/build-review.json`, per worktree, beside autofinish.json (the git dir read back
 from git, never built). One object: branch, session ($CLAUDE_CODE_SESSION_ID),
 repo (the main checkout), project (its folder name, review-gate.jsonl's `project`), worktree (review-gate's
-`repo`), rounds [{round, tip, at, reviewers, raised, found, open_s1, fixed, left, check, note}], and once `end` ran:
+`repo`), rounds [{round, tip, at, reviewed, reviewers, raised, found, open_s1, fixed, left, check, note}], `phase` finish
+on a landing's own loop (below), and once `end` ran:
 ended, outcome, why, tip. `found` counts the real S1, S2 and WRONG findings, S3s and those judged not real go
 in `note`. A round's `tip` is HEAD when it is recorded: the round's fixes included.
 
@@ -36,6 +38,30 @@ a prose-only round). And a round past the first is granted only when the round b
 or its check was red: a round that confirmed nothing, with the check green or not recorded, is the loop's end
 (exit 4, asked before the cap's exit 3). A held loop reopened by the answer, or a round that left items, is granted. The
 builder still writes the file it hands over; this stops a loop that grades itself, not one that lies.
+
+The last review reads the tip it hands over (landing-fixes-in-run, the owner, 2026-11-04: a loop "clean in 2 rounds"
+whose last review read e99f2821 while the tip carried round 2's comment change and the landing's two test fixes, so
+`covers` said no and the finish's whole review ran on a gated path). This is the loop's own rule, not left to
+`covers`: each round keeps `reviewed`, the head of the newest review-gate line of its phase for this project and
+branch when it is recorded (the commit that round's review read); a round after one that confirmed nothing with the
+check green is still granted when the code moved past that head (a fix commit after the review, an S3 fixed in
+passing), and a clean end is refused (exit 2) while the code at HEAD differs from what the last recorded round's
+review read (never a review logged after that round, whose findings no round verified), or while the worktree holds an
+uncommitted change. "The code" is every path but PROSE_RE's (docs/, TODO.md, a CHANGELOG): a step's done stamp or a
+CHANGELOG line after the last review needs no round; in a repo with `in_place` (the vault) a finish counts prose too.
+A finish round with no head is no clean end (its review was not read), and the landing's own session never writes the
+build's record (autofinish.json names it). A head git cannot read counts as moved. A round on a branch with no review-gate line of
+its phase (a prose-only loop) has no `reviewed`, and grants and ends as before; the lookup has no lower bound, as
+`covers`' does. At the cap no round is left to review a move: the build ends clean anyway (`covers` then sends /finish
+to review it, as before this rule), a finish's loop only on a tests-only move (`covers`' own rule), else cap.
+
+`--phase finish` (the same step): the landing's own loop, which /finish --unattended runs when its review finds real
+items (the finish skill, step 1: review, verify, fix, check, round, at most the same cap, the same verifier's file),
+so a landing fixes what it can in its run and lands, rather than stopping for a fix round queued as a new build. Its
+record is `<git dir>/claude/build-review-finish.json`, beside the build's, which it never replaces: `covers` and `gate`
+read the build's alone, and a finish loop's line in the log (`phase` finish) is never a build's for `covers`' fallback
+or `compare`'s rows (it counts as the row's `finish_rounds`, `finish_found` and `finish_fixed`). Its `reviewed` heads
+are read from `phase` finish review-gate lines. One loop per session holds per phase.
 
 `round` refuses a round past the cap with exit 3 and the cap's words, and `end` then takes
 `--outcome cap`. A record already ended, or kept by another session (a run that died before `end`), is
@@ -76,21 +102,35 @@ kept by another session than the one asking (a finish never vouches for itself);
 `phase` build line for this project and branch by the loop's end, and the newest one's `head`, the commit the loop's last
 review read, carries the same code change against --base (default origin/main) as HEAD: a hash of `git diff
 <merge-base> <commit>`, whitespace kept, blob ids and hunk line numbers dropped, PROSE_RE's paths (docs/, TODO.md,
-a CHANGELOG) left out on both sides; and `review-gate plan` names no principal build. So a check fix committed after
-the last review, a fix the finish made, a main merged in again, or a rebase that conflicted all change it, and the
-review runs; /finish asks again after its step 11.1 rebase. Never in a repo whose .claude/workflow.json has
+a CHANGELOG) left out on both sides — or, when only a `tests/` file outside the suite runners moved since that head,
+the same hash with TESTS_RE's paths left out too (a landing's check fix; TESTS_RE's comment says why); and
+`review-gate plan` names no principal build. So a code fix committed after
+the last review, a fix the finish made outside tests/, a main merged in again, or a rebase that conflicted all change
+it, and the review runs; /finish asks again after its step 11.1 rebase. Never in a repo whose .claude/workflow.json has
 `in_place` (the vault), read at --base and in the main checkout, never the branch's copy. Exit 1 says why not.
+
+`picks` is the finish loop's read of a verifier's report (/finish step 1, unattended; landing-fixes-in-run): one line
+per real finding (a `verdict:` block as `round --verdicts` counts it) — `fix <head>` for a fix that is no choice (no
+`➤ Recommended:` line, no options named, no Reversible mark in its block), `take <head> — <pick>` for a choice the run
+takes itself, `stop <head> — <why>` for one it may not, or a choice with options and no pick named. A pick is taken
+when it is marked `Reversible: yes` standing alone (on its Recommended line, else the first line-start mark after it,
+keel's rule; two marks that disagree stop), it names one of the block's listed options by its letter (`A`, `(a)`,
+`Option 1`) with no hedge after it (`if`, `unless`, `once`, `but` …), it is no conditional pick, the block bar its head and its evidence holds none of keel's held classes (options the evidence lists are read too; HELD, kept equal to keel's DND_HOLDS by the suite: money, a deletion, a public
+publish, a third party's answer) and the main checkout's contract says `physical: none` (keel's `dnd_held`, the rule
+`yolo --dnd` takes picks by); `Reversible: no`, unmarked, a conditional pick, a held class or a physical repo is a
+stop. Exit 0 when nothing stops, 5 when a line says stop, 2 when the file has no verdict block.
 
 `cap` prints the round cap: `wharf-runs/build-review-rounds` in the config dir, a whole number from 1 to 20, else
 DEFAULT_ROUNDS, read at each call so a changed key holds from the next round (docs/finish-second-review-2026-11-02.md's D2-B; the owner,
 2026-11-01: a limit changes without a build). It is the trial read `regatta limit` is to run once live-limits lands.
 
-Exit: 0 written or shown; 1 `gate` refuses; 2 a usage error, no session id, a worktree that is no git
+Exit: 0 written or shown; 1 `gate` refuses; 5 `picks` holds a stop; 2 a usage error, no session id, a worktree that is no git
 checkout, an `end` already made, or an end whose log line could not be written (the record stays open, so
 the end can be made again), a count above 0 without a verdict file, or a verdict file with no block; 3 the
 round cap; 4 a round not granted (the one before confirmed nothing with the check green).
 """
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -106,7 +146,26 @@ ROUNDS_KEY = "wharf-runs/build-review-rounds"
 # CHANGELOG). Never review-gate's DOC_RE, which calls every .md and .txt prose: a skill, an agent, the publish gate's
 # allowlist and exemptions are behaviour (the landing review, 2026-11-02)
 PROSE_RE = re.compile(r"(^docs/|^TODO\.md$|(^|/)CHANGELOG\.md$)")
+# what `covers` may also leave out when it alone moved since the last review: a module's tests/, bar the suite runners
+# (landing-fixes-in-run, the brief's third item: claim-after-failed-start's landing fixed two lighthouse cases for its
+# check, cf94fb3d and a1e95421, and the finish's whole review then ran on a gated path for them). Yes, because a file
+# under tests/ ships no behaviour to a live tool: no hook, shim or tool loads one (classes.sh's class 1 walks bin, hooks,
+# lib and libexec), and every pull request's CI runs the whole check line on it before `pr merge`. It does run on the
+# Macs, in every session's check, so only a suite itself is vouched past (`vouchable`): never a shared fixture another
+# suite sources (a config fixture keeps the suites off the live config and HOME), a lint or stub a runner calls (the
+# core's home_rm.py), a fixtures/ file, or anything when the exclude list does not read (the landing review). The cost: a weakened
+# assertion, or a suite silenced from inside (an early `exit 0`), lands unreviewed; CI runs it but trusts its exit, so
+# the next build's review of that suite is what reads it. Never `tests/check.sh`
+# (or a `check.sh` anywhere under tests/): the runner decides which suites run, so a change there can silence a
+# whole suite, as no single case can; nor a tests/ path on the base's `autofinish_exclude` (classes.sh, the list's own
+# gate, which the check line runs: the round-1 verifier's finding), read at the base as `in_place` is. Never in the
+# build's own loop either (its final-tip rule above): a build fixes
+# its tests in the session that reviews them, and one more round there is cheap.
+TESTS_RE = re.compile(r"(^|/)tests/")
+RUNNER_RE = re.compile(r"(^|/)tests/(.*/)?check\.sh$")
 RECORD = "build-review.json"
+FINISH_RECORD = "build-review-finish.json"   # --phase finish: the landing's own loop, beside the build's
+PHASES = ("build", "finish")
 OUTCOMES = ("clean", "cap", "held")
 HERE = Path(__file__).resolve().parent
 
@@ -116,15 +175,16 @@ def git(wt, *args):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def where(wt):
-    """(record path, branch, main checkout) for the worktree, or exit 2."""
+def where(wt, phase="build"):
+    """(record path, branch, main checkout) for the worktree and phase, or exit 2."""
     gd = git(wt, "rev-parse", "--absolute-git-dir")
     if not gd:
         print("build-review: %s is no git checkout" % wt, file=sys.stderr)
         sys.exit(2)
     common_dir = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir") or gd
     repo = os.path.dirname(common_dir) if common_dir.endswith("/.git") else common_dir
-    return Path(gd) / "claude" / RECORD, git(wt, "rev-parse", "--abbrev-ref", "HEAD") or "", repo
+    return (Path(gd) / "claude" / (FINISH_RECORD if phase == "finish" else RECORD),
+            git(wt, "rev-parse", "--abbrev-ref", "HEAD") or "", repo)
 
 
 def load(path):
@@ -186,8 +246,104 @@ def rounds_cap():
     return DEFAULT_ROUNDS
 
 
-def code_patch(wt, base, tip):
-    """A hash of the branch's code change at tip against base (PROSE_RE's paths left out); "" for none, None when
+def gated_paths(wt, base, repo=None):
+    """The `.claude/workflow.json` `autofinish_exclude` entries (a file, or a folder ending /) at base and in the main
+    checkout (sync.py writes it there untracked for some repos), as in_place reads both; () when neither has the file.
+    None when it does not read — a base git cannot resolve, a file that is there and does not parse, a list that is
+    no list — so a caller vouches past nothing (a narrowing setting fails closed: AGENTS.md Traps; the landing review)."""
+    if git(wt, "rev-parse", "--verify", "-q", "%s^{commit}" % base) is None:
+        return None
+    texts = []
+    if git(wt, "cat-file", "-e", "%s:.claude/workflow.json" % base) is not None:
+        t = git(wt, "show", "%s:.claude/workflow.json" % base)
+        if t is None:
+            return None
+        texts.append(t)
+    if repo:
+        try:
+            texts.append((Path(repo) / ".claude" / "workflow.json").read_text())
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None
+    out = []
+    for t in texts:
+        try:
+            wf = json.loads(t)
+        except ValueError:
+            return None
+        ex = wf.get("autofinish_exclude") if isinstance(wf, dict) else None
+        if ex is None:
+            continue
+        if not isinstance(ex, list):
+            return None
+        out += [e for e in ex if isinstance(e, str) and e]
+    return tuple(out)
+
+
+def base_ref(wt, repo):
+    """The repo's main as a ref here: `origin/<main>` when fetched, else `<main>` (workflow.json's `main`, else main)."""
+    m = "main"
+    try:
+        wf = json.loads((Path(repo) / ".claude" / "workflow.json").read_text())
+        if isinstance(wf, dict) and isinstance(wf.get("main"), str) and wf["main"]:
+            m = wf["main"]
+    except (OSError, ValueError):
+        pass
+    return "origin/" + m if git(wt, "rev-parse", "--verify", "-q", "origin/%s^{commit}" % m) else m
+
+
+SUITE_RE = re.compile(r"(^|/)tests/[^/]+\.(?:sh|py|m?js)$")
+
+
+@functools.lru_cache(maxsize=None)
+def vouchable(wt, name, gated, tip="HEAD"):
+    """True when covers may vouch past a change to this tests/ path (TESTS_RE's comment): a suite itself, directly in a
+    tests/ folder, that exists at tip and that folder's runner runs (named, or matched by its glob) — never a runner, a
+    gated path, a fixture folder's file, a helper (a lint such as home_rm.py, a stub, a sitecustomize, a script run by
+    hand), a deleted suite (a runner's glob drops it silently), nor a file another tests/ file sources or imports (a
+    shared config fixture keeps every suite off the live config and HOME: the landing review). Anything git cannot
+    read is not vouchable."""
+    if gated is None or not TESTS_RE.search(name) or RUNNER_RE.search(name) or is_gated(name, gated):
+        return False
+    if not SUITE_RE.search(name) or git(wt, "cat-file", "-e", "%s:%s" % (tip, name)) is None:
+        return False
+    base = os.path.basename(name)
+    stem = base.rsplit(".", 1)[0]
+    if base.endswith(".py") and not stem.startswith("test_"):
+        return False
+    runner = git(wt, "show", "%s:%s" % (tip, os.path.join(os.path.dirname(name), "check.sh")))
+    ext = base.rsplit(".", 1)[1]
+    if runner is None or not (re.search(r"(?<![\w.-])%s\b" % re.escape(base), runner)
+                              or re.search(r"\*\.%s\b" % re.escape(ext), runner)):
+        return False
+    r = subprocess.run(["git", "-C", str(wt), "grep", "-z", "-l", "-F", "-e", stem, tip, "--", ":(glob)**/tests/**"],
+                       capture_output=True)
+    if r.returncode not in (0, 1):
+        return False
+    sourced = re.compile(r"^\s*(?:\.|source)\s+[^#\n;&|]*?%s\b" % re.escape(base))
+    imported = re.compile(r"^\s*(?:from\s+%s\s+import\b|import\s+%s\b)|%s\.py['\"]?\s*\)?\s*\.load_module" % (
+        (re.escape(stem),) * 3))
+    for hit in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        other = hit.split(":", 1)[1] if ":" in hit else hit
+        if not other or other == name:
+            continue
+        text = git(wt, "show", "%s:%s" % (tip, other))
+        if text is None:
+            return False
+        rx = imported if other.endswith(".py") else sourced
+        if any(rx.search(line) for line in text.splitlines() if not line.lstrip().startswith("#")):
+            return False
+    return True
+
+
+def is_gated(name, gated):
+    return any(name == e or (e.endswith("/") and name.startswith(e)) for e in gated)
+
+
+def code_patch(wt, base, tip, tests=True, gated=()):
+    """A hash of the branch's code change at tip against base (PROSE_RE's paths left out, and TESTS_RE's bar the
+    runners when tests is False); "" for none, None when
     git cannot tell. The diff text itself, never `git patch-id --stable`, which ignores whitespace and so passed a
     Python re-indent or a space inside a string as the same change (the landing review, 2026-11-02): only the
     `index` lines (blob ids) and the hunk headers' line numbers are dropped, so a clean rebase onto a moved main
@@ -198,7 +354,9 @@ def code_patch(wt, base, tip):
     r = subprocess.run(["git", "-C", str(wt), "diff", "-z", "--name-only", "--no-renames", mb, tip], capture_output=True)
     if r.returncode:
         return None
-    code = [n for n in r.stdout.decode("utf-8", "surrogateescape").split("\0") if n and not PROSE_RE.search(n)]
+    # which tests/ paths are left out is judged at HEAD for both tips, so the head's hash and the tip's compare alike
+    code = [n for n in r.stdout.decode("utf-8", "surrogateescape").split("\0") if n and not PROSE_RE.search(n)
+            and (tests or not vouchable(wt, n, gated))]
     if not code:
         return ""
     diff = subprocess.run(["git", "--literal-pathspecs", "-C", str(wt), "diff", "--no-color", "--no-ext-diff",
@@ -236,8 +394,8 @@ def in_place(wt, repo, base):
     return False
 
 
-def build_reviewed_head(project, branch, until):
-    """The head of the newest build-phase review-gate line for project and branch logged by `until` (epoch, the
+def build_reviewed_head(project, branch, until, phase="build"):
+    """The head of the newest review-gate line of this phase for project and branch logged by `until` (epoch, the
     loop's end), or None: the commit the loop's last review actually read. No lower bound: a round's review is logged
     before its `round` call, the first one before the record exists, and an older review whose head carries the
     same code reviewed that code too."""
@@ -245,10 +403,70 @@ def build_reviewed_head(project, branch, until):
     best = None
     for g in jsonl(gate):
         t = epoch(g.get("ts"))
-        if (g.get("phase") == "build" and g.get("project") == project and g.get("branch") == branch and g.get("head")
+        if (g.get("phase") == phase and g.get("project") == project and g.get("branch") == branch and g.get("head")
                 and t is not None and t <= until and (best is None or t >= best[0])):
             best = (t, g["head"])
     return best[1] if best else None
+
+
+def tests_only_move(wt, head, repo, tip="HEAD"):
+    """True when every path outside PROSE_RE that differs between head and tip is a tests/ file `covers` may vouch past
+    (vouchable: a suite, no runner, no fixture, none on autofinish_exclude, read at the repo's main as base_ref names
+    it, and nothing when that list does not read)."""
+    if not head:
+        return False
+    r = subprocess.run(["git", "-C", str(wt), "diff", "-z", "--name-only", "--no-renames", head, tip], capture_output=True)
+    if r.returncode:
+        return False
+    gated = gated_paths(wt, base_ref(wt, repo), repo)
+    if gated is None:
+        return False
+    names = [n for n in r.stdout.decode("utf-8", "surrogateescape").split("\0") if n and not PROSE_RE.search(n)]
+    return all(vouchable(wt, n, gated) for n in names)
+
+
+def dirty_paths(wt, prose=False):
+    """The worktree's uncommitted paths (staged, unstaged, untracked) outside PROSE_RE (every one when prose), or None
+    when git cannot tell: a fix left uncommitted is code no review read (the landing review)."""
+    r = subprocess.run(["git", "-C", str(wt), "status", "--porcelain", "-z", "--untracked-files=all"], capture_output=True)
+    if r.returncode:
+        return None
+    out, parts = [], r.stdout.decode("utf-8", "surrogateescape").split("\0")
+    i = 0
+    while i < len(parts):
+        e = parts[i]
+        i += 1
+        if len(e) < 4:
+            continue
+        if e[0] in "RC" or e[1] in "RC":   # a rename's source follows as its own NUL field
+            i += 1
+        if prose or not PROSE_RE.search(e[3:]):
+            out.append(e[3:])
+    return out
+
+
+def code_moved(wt, head, tip="HEAD", prose=False):
+    """True when a path outside PROSE_RE (any path, when prose: the vault, where prose is what the gate reviews)
+    differs between head (what a review read) and tip; False when none does; None when git cannot tell (a head this
+    checkout lacks). The header's final-tip rule."""
+    if not head or git(wt, "cat-file", "-e", head + "^{commit}") is None:
+        return None
+    r = subprocess.run(["git", "-C", str(wt), "diff", "-z", "--name-only", "--no-renames", head, tip], capture_output=True)
+    if r.returncode:
+        return None
+    return any(n and (prose or not PROSE_RE.search(n)) for n in r.stdout.decode("utf-8", "surrogateescape").split("\0"))
+
+
+def branch_moved(wt, head, base, prose=False):
+    """code_moved, bar a clean merge of base: `check --ci` merges a moved main into a build branch, and the branch's own
+    change against base (code_patch, covers' test) is then what the review read, so no new round is owed for it. A merge
+    resolved by hand changes that change, and still counts. The vault (prose) keeps code_moved's whole reading."""
+    m = code_moved(wt, head, prose=prose)
+    if m is True and not prose and base:
+        then, now = code_patch(wt, base, head), code_patch(wt, base, "HEAD")
+        if then is not None and then == now:
+            return False
+    return m
 
 
 def covers(wt, base):
@@ -264,7 +482,7 @@ def covers(wt, base):
         d = None
     if not d:
         ended = [x for x in jsonl(log_path()) if x.get("project") == project and x.get("branch") == branch
-                 and x.get("ended")]
+                 and x.get("ended") and x.get("phase", "build") == "build"]   # a finish loop's line vouches for nothing
         d, src = (max(ended, key=lambda x: x["ended"]), "the log's newest line") if ended else (None, "")
     if not d:
         return False, "no build-review record for %s" % branch
@@ -278,9 +496,11 @@ def covers(wt, base):
     rounds = d.get("rounds") or []
     if not rounds:
         return False, "%s ended clean with no round" % src
-    if rounds[-1].get("open_s1"):
-        # an S1 its verifier could neither confirm nor refute is no finding the loop fixes, and no code a review cleared
-        return False, "%s's last round left %d S1 its verifier called UNVERIFIABLE" % (src, rounds[-1]["open_s1"])
+    open_s1 = sum(r.get("open_s1") or 0 for r in rounds)
+    if open_s1:
+        # an S1 its verifier could neither confirm nor refute is no finding the loop fixes, and no code a review cleared;
+        # a later round's review never re-verifies it, so any round's counts (the landing review)
+        return False, "%s's rounds left %d S1 its verifier called UNVERIFIABLE" % (src, open_s1)
     head = build_reviewed_head(project, branch, (d.get("ended") or 0) + 60)
     if not head:
         return False, "no build-phase review-gate line with a head for %s: nothing shows which code a review read" % branch
@@ -289,8 +509,17 @@ def covers(wt, base):
     then, now = code_patch(wt, base, head), code_patch(wt, base, "HEAD")
     if then is None or now is None:
         return False, "git could not diff against %s" % base
+    tests_only = False
     if then != now:
-        return False, "the code changed since the build's last review read it at %s" % head[:9]
+        # a landing's check fix: only tests/ moved since the review (TESTS_RE's comment says why that is no new code)
+        gated = gated_paths(wt, base, repo)
+        if gated is None:
+            return False, "the code changed since the build's last review read it at %s, and the base's autofinish_exclude does not read" % head[:9]
+        t_then = code_patch(wt, base, head, tests=False, gated=gated)
+        t_now = code_patch(wt, base, "HEAD", tests=False, gated=gated)
+        if t_then is None or t_now is None or t_then != t_now:
+            return False, "the code changed since the build's last review read it at %s" % head[:9]
+        tests_only = True
     try:
         plan = json.loads(subprocess.run([str(review_gate()), "plan", "--json", "--base", base],
                                          cwd=str(wt), capture_output=True, text=True).stdout)
@@ -298,8 +527,8 @@ def covers(wt, base):
         return False, "review-gate plan did not read, so whether the build is principal is unknown"
     if not isinstance(plan, dict) or plan.get("principal"):
         return False, "a principal build: its top-tier review runs at any size"
-    return True, "the build's loop ended clean after %d round(s), its last review read %s, and the code against %s is the same" % (
-        len(rounds), head[:9], base)
+    return True, "the build's loop ended clean after %d round(s), its last review read %s, and the code against %s is the same%s" % (
+        len(rounds), head[:9], base, " bar tests/ (a check fix since)" if tests_only else "")
 
 
 def review_gate():
@@ -373,10 +602,14 @@ def compare(folder):
     import glob  # noqa: PLC0415
     builds, last = {}, {}
     for d in jsonl(folder / "build-review.jsonl"):   # a held loop reopened logs again: keep its last line
-        if d.get("project") and d.get("branch") and d.get("ended"):
+        if d.get("project") and d.get("branch") and d.get("ended"):   # the phase in the key: a finish loop is its own
             # a line with no start (none before build-review kept one) is its own loop
-            last[(d["project"], d["branch"], d.get("session"), d.get("started") or ("ended", d["ended"]))] = d
+            last[(d["project"], d["branch"], d.get("session"), d.get("started") or ("ended", d["ended"]),
+                  d.get("phase", "build"))] = d
+    fins = [d for d in last.values() if d.get("phase") == "finish"]
     for d in last.values():
+        if d.get("phase") == "finish":   # the landing's own loop: counted on its build's row below, never a row
+            continue
         k = (d.get("project"), d.get("branch"))
         b = builds.setdefault(k, {"project": k[0], "branch": k[1], "rounds": 0, "found": 0, "fixed": 0, "outcomes": [],
                                   "ended": 0})
@@ -387,7 +620,13 @@ def compare(folder):
         b["ended"] = max(b["ended"], d["ended"])
     gate = Path(os.environ["REVIEW_GATE_LOG"]) if os.environ.get("REVIEW_GATE_LOG") else folder / "review-gate.jsonl"
     for b in builds.values():
-        b.update(finish=[], spend={"build": 0.0, "finish": 0.0})
+        b.update(finish=[], spend={"build": 0.0, "finish": 0.0}, finish_rounds=0, finish_found=0, finish_fixed=0)
+    for d in fins:
+        b = builds.get((d.get("project"), d.get("branch")))
+        if b:
+            b["finish_rounds"] += len(d.get("rounds") or [])
+            b["finish_found"] += sum(r.get("found") or 0 for r in d.get("rounds") or [])
+            b["finish_fixed"] += sum(r.get("fixed") or 0 for r in d.get("rounds") or [])
     for g in jsonl(gate):
         b = builds.get((g.get("project"), g.get("branch")))
         t = epoch(g.get("ts"))
@@ -421,7 +660,9 @@ def compare(folder):
 
 VERDICT_RE = re.compile(r"(?i)^\W*verdict\W*:\W*([A-Z][A-Z-]*)")   # review-gate's: a block is anchored on it
 EVIDENCE_RE = re.compile(r"(?i)^\W*evidence\W*:\W*(.*)")
-FIELD_RE = re.compile(r"(?i)^\W*(verdict|evidence|fix|why|severity|claim)\W*:")   # a field label ends the one before
+# a field label ends the one before; `➤ Recommended:` and `Reversible:` too, which the finish's verifier writes after
+# `fix:`, or a report with no blank line between blocks reads the next block's head as this one's line
+FIELD_RE = re.compile(r"(?i)^\W*(verdict|evidence|fix|why|severity|claim|recommended|reversible)\W*:")
 # the severity tag in the head, after its dash (`file:line — [S3] claim`), never a tag the claim merely mentions
 HEAD_SEV_RE = re.compile(r"(?:—|--|\s-)\s*\[\s*(S[123?])\s*\]")
 # an evidence line that only says there is none: a theory, never a real finding (the reviewer's own words)
@@ -438,6 +679,162 @@ def _head(lines, i):
             and not FIELD_RE.match(lines[j - 1]) and not FIELD_RE.match(lines[j]):
         j -= 1
     return j
+
+
+# keel's DND_HOLDS, verbatim (the suite compares them): the classes no unattended pick is taken in
+HELD = (
+    ("money in an option", re.compile(r"[$€£]\s?\d|\blist-only\b|\b(?:usd|eur|gbp)\b|\bsubscription\b|\binvoice\b", re.I)),
+    ("a deletion", re.compile(r"\bdelet(?:e|es|ed|ing|ion)\b|\bdrop (?:the |a )?(?:table|database|repo)|\bwipe\b|\bpurge\b|\bforce-push", re.I)),
+    ("a public publish", re.compile(r"\bpublish(?:es|ed|ing)?\b|\bmake (?:it |them )?public\b|\bgo(?:es)? public\b|\bopen[- ]source\b|\bpublic (?:twin|repo|release)\b", re.I)),
+    ("a third party's answer", re.compile(r"\bthird[- ]part(?:y|ies)\b|\bvendor'?s? (?:answer|reply|approval)\b|\boutside (?:party|maintainer)\b|\btheir (?:answer|approval|reply|sign-off)\b", re.I)),
+)
+RECOMMENDED_RE = re.compile(r"(?i)^\W*(?:➤\s*)?[*_]*recommended[*_]*\s*:[*_`\s]*(.*)")   # bold or plain, at a line's start
+REC_INLINE_RE = re.compile(r"(?i)➤\s*[*_]*recommended[*_]*\s*:[*_`\s]*(.*)")   # or after the options on the fix line, by its glyph
+NO_PICK_RE = re.compile(r"(?i)^(?:none|n/?a|nothing|no pick|tbd|\?+)(?:\W|$)")   # a Recommended line that names no pick
+# keel's REVERSIBLE_RE, a mark at a line's start only (never one the fix, the claim or the evidence quotes), and the
+# same mark inside the Recommended line itself (`➤ Recommended: A — … Reversible: yes`). A `yes` must stand alone
+# (`yes, as long as …` is a hedge: unmarked, keel's reversible_mark); a `no` may carry its reason
+REVERSIBLE_RE = re.compile(r"^\s*(?:[-*]\s+)?[*_]*Reversible[*_]*\s*:[*_]*\s*[*_]*(yes|no)\b(.*)$", re.I)
+REVERSIBLE_IN_RE = re.compile(r"[*_]*\bReversible[*_]*\s*:[*_]*\s*[*_]*(yes|no)\b(.*)$", re.I)
+# a fix that names options: a choice, whether or not a pick is named. `A) …; B) …` (what the skill asks the verifier
+# for), `(a) …`, `Option A`, `A. …`, and keel's own line shape `- A — …`; never `1) …; 2) …`, which reads as a fix's
+# steps (round 2's verifier: every other shape read as no choice). The landing review added `Option 1`, a bare `a) …`
+# and `A: …`; `either … or` on a block's own lines is a choice too (EITHER_RE)
+OPTION_RES = (re.compile(r"(?:^|[\s;:(,])\(?([A-H])\)\s"), re.compile(r"\(([a-h])\)\s"), re.compile(r"\bOption\s+([A-H1-9])\b"),
+              re.compile(r"(?:^|[\s;:,])([A-H])\.\s"), re.compile(r"^\s*(?:[-*]\s+)?\*{0,2}([A-H])\*{0,2}\s*[—–-]\s"),
+              re.compile(r"(?:^|[;:]\s*)([a-h])\)\s"), re.compile(r"(?:^|[\s;:,(])([A-H]):\s"))
+# `either … or` as a sentence's choice (`fix: either …`, `Either …`), never a condition inside a fix's prose
+EITHER_RE = re.compile(r"(?:^\W*fix\W*:\s*(?i:either)|(?:^|[.;:]\s+)Either)\b.*\bor\b")
+MODEL_COST_RE = re.compile(r"\$[\d.,]+[kKmM]?\s*\(\s*\$[\d.,]+[kKmM]?\s+effective\s*\)")   # keel's: a model cost is no money
+# a pick that waits on something nobody settled: "if …", "unless …", "none until …", "A if …, else B"
+CONDITIONAL_PICK_RE = re.compile(r"(?i)^(?:if|unless|when|none\s+until|depends)\b|\b(?:if|unless)\b.*\b(?:else|otherwise)\b")
+# a pick is taken only when it names one listed option by its letter (keel's rule: a pick resolves to an option), what
+# follows the letter carrying no hedge: `A if …`, `A unless …`, `A, once …`, `A — but B if …` all wait on something
+# (the landing review: free text was taken whole, `(none)` and `the owner's call` included)
+PICK_LETTER_RE = re.compile(r"^\**(?:Option\s+([A-H1-9])|\(([A-Ha-h])\)|([A-H]|[a-h](?=\))|[1-9])\)?)\**(?=$|[\s.,;:—–-])(.*)$",
+                            re.S)
+# a hedge is a word that opens the clause after the letter (`A if …`, `A, once …`, `A — but …`), never one deep in
+# the reason (`A — nothing else waits`, `a lock, which holds when two runs race`: the fix review's corpus probe)
+HEDGE_RE = re.compile(r"(?i)^[\s,—–-]*(?:\S+\s+){0,1}(?<!even )(?:if|unless|once|until|when|whenever|but|provided|assuming|depends|otherwise|else)\b")
+# keel's contract_physical: a line that starts `- physical:`, its value on that line alone (never the next line's)
+PHYSICAL_LINE_RE = re.compile(r"^- physical:[ \t]*(.*?)[ \t]*$", re.M)
+
+
+def _blocks(text):
+    """Each verdict block of a verifier's report: (head index, word, severity, start, end), lines read as
+    `verdicts` reads them — a block from its head to the next block's head."""
+    lines = text.splitlines()
+    at = [i for i, line in enumerate(lines) if VERDICT_RE.match(line)]
+    heads = [_head(lines, i) for i in at]
+    out = []
+    for n, i in enumerate(at):
+        h = heads[n]
+        sev = HEAD_SEV_RE.search(lines[h]) if h >= 0 else None
+        end = heads[n + 1] if n + 1 < len(at) and heads[n + 1] > i else (at[n + 1] if n + 1 < len(at) else len(lines))
+        out.append((h, VERDICT_RE.match(lines[i]).group(1).upper(), sev.group(1).upper() if sev else "", h + 1 if h >= 0 else 0, end))
+    return lines, out
+
+
+FIX_RE = re.compile(r"(?i)^\W*fix\W*:\W*(.*)")
+
+
+def _field(lines, start, end, rx=EVIDENCE_RE):
+    """(first, past) line indexes of the block's field rx, its wrapped lines included; None for none."""
+    for k in range(start, end):
+        if not rx.match(lines[k]):
+            continue
+        m = k + 1
+        while m < end and lines[m].strip() and not FIELD_RE.match(lines[m]) and not lines[m].strip().startswith("```"):
+            m += 1
+        return k, m
+    return None
+
+
+def _evidence(lines, start, end, rx=EVIDENCE_RE):
+    """The block's evidence (or another field, rx), wrapped lines joined; "" for none."""
+    f = _field(lines, start, end, rx)
+    if not f:
+        return ""
+    body = [rx.match(lines[f[0]]).group(1).strip()] + [lines[m].strip() for m in range(f[0] + 1, f[1])]
+    return " ".join(x for x in body if x)
+
+
+def reversible_mark(m):
+    """'yes', 'no' or None (unmarked, a hedged yes) from a REVERSIBLE_RE or REVERSIBLE_IN_RE match: keel's rule."""
+    if not m:
+        return None
+    word, rest = m.group(1).lower(), m.group(2).strip().strip("*_.").strip()
+    return None if word == "yes" and rest else word
+
+
+def contract_physical(repo):
+    """The `physical:` line of the main checkout's contract (AGENTS.md, else CLAUDE.md), or None."""
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        try:
+            m = PHYSICAL_LINE_RE.search((Path(repo) / name).read_text(errors="replace"))
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return None
+
+
+def picks(text, repo):
+    """[(kind, head, detail)] for each real finding in a verifier's report: fix, take or stop (the header's `picks`)."""
+    lines, blocks = _blocks(text)
+    physical = contract_physical(repo)
+    out = []
+    for h, word, sev, start, end in blocks:
+        ev = _evidence(lines, start, end)
+        if word != "WRONG" or sev == "S3" or not ev or NO_EVIDENCE_RE.match(ev):
+            continue
+        head = lines[h].strip() if h >= 0 else "(no head)"
+        ev_span = _field(lines, start, end) or (end, end)
+        # the block bar its head and its evidence: the claim and the evidence may well name a deletion the defect
+        # makes, while the options, wherever they sit (a blank line may part them from `fix:`), are what a pick does
+        own = [k for k in range(start, end) if not ev_span[0] <= k < ev_span[1]]
+        at = next((k for k in own if RECOMMENDED_RE.match(lines[k])), None)
+        if at is None:
+            at = next((k for k in own if REC_INLINE_RE.search(lines[k])), None)
+        # the Recommended line's own text after its label is the pick, never an option it lists (`A: quote it`)
+        cut = {at: (RECOMMENDED_RE.match(lines[at]) or REC_INLINE_RE.search(lines[at])).start(1)} if at is not None else {}
+        options = {m.group(1).upper() for k in own for rx in OPTION_RES for m in rx.finditer(lines[k][:cut.get(k, None)])}
+        if at is None:
+            marked = any(REVERSIBLE_RE.match(lines[k]) for k in own)
+            either = any(EITHER_RE.search(lines[k]) for k in own)
+            out.append(("stop", head, "a choice with no ➤ Recommended: pick") if len(options) > 1 or marked or either
+                       else ("fix", head, ""))
+            continue
+        rec = (RECOMMENDED_RE.match(lines[at]) or REC_INLINE_RE.search(lines[at])).group(1).strip()
+        inline = REVERSIBLE_IN_RE.search(rec)
+        pick = (rec[:inline.start()] if inline else rec).strip(" .;,—-*_`")
+        pick = "" if NO_PICK_RE.match(pick) else pick
+        # the mark on the Recommended line, else the first line-start mark after it: never one before it (an option's)
+        marks = ([inline] if inline else []) + [m for k in own if k > at for m in [REVERSIBLE_RE.match(lines[k])] if m]
+        mark = marks[0] if marks else None
+        rev = reversible_mark(mark)
+        # two marks that disagree (an inline yes, then a `Reversible: no` line): no pick is taken on either
+        contradicts = len({reversible_mark(m) for m in marks}) > 1
+        lm = PICK_LETTER_RE.match(pick) if pick else None
+        letter = next((g for g in lm.groups()[:3] if g), "").upper() if lm else ""
+        hedged = bool(lm) and bool(HEDGE_RE.search(re.split(r"[;.]", lm.group(4), maxsplit=1)[0]))
+        # options written in the evidence are what the pick does too, so the held classes read them there
+        ev_lines = [lines[k] for k in range(*ev_span) if k < end]
+        ev_opts = {m.group(1).upper() for x in ev_lines for rx in OPTION_RES for m in rx.finditer(x)}
+        options |= ev_opts if len(ev_opts) > 1 else set()
+        does = MODEL_COST_RE.sub(" ", "\n".join([lines[k] for k in own] + (ev_lines if len(ev_opts) > 1 else [])))
+        held = next(("%s (%s)" % (why, m.group(0)) for why, rx in HELD for m in [rx.search(does)] if m), None)
+        why = ("no pick named after ➤ Recommended:" if not pick else
+               "Reversible: no" if rev == "no" else
+               "contradictory Reversible: marks" if contradicts else
+               "not marked Reversible: yes|no (a hedged yes is none)" if rev is None else
+               "a conditional pick (%s)" % pick[:60] if CONDITIONAL_PICK_RE.search(pick) or hedged else
+               "the pick names no listed option (%s)" % pick[:60] if not letter or letter not in options else
+               held if held else
+               "the repo's contract has no `physical:` line (read as physical)" if physical is None else
+               "the repo acts on the real world (physical: %s)" % physical[:60] if not physical.startswith("none") else None)
+        out.append(("stop", head, why) if why else ("take", head, pick))
+    return out, len(blocks)
 
 
 def verdicts(text):
@@ -478,6 +875,19 @@ def verdicts(text):
     return raised, confirmed, open_s1
 
 
+class Once(argparse.Action):
+    """--phase given once: a landing's allow rule names `round <worktree> --phase finish` (autofinish-run's
+    FINISH_TOOLS), and argparse keeps the last of a repeated flag, so `--phase finish --phase build` (or an
+    abbreviation, `--ph build`) would pass the rule and write the build's record (AGENTS.md Traps: a gate that
+    judges a command line refuses a gated flag given twice)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, "_phase_given", False):
+            parser.error("--phase given twice: once only")
+        namespace._phase_given = True
+        setattr(namespace, self.dest, values)
+
+
 def count(v):
     if v < 0:
         raise argparse.ArgumentTypeError("a count is 0 or more")
@@ -496,12 +906,15 @@ def main(argv):
     r.add_argument("--check", choices=("green", "red"))
     r.add_argument("--reviewers", default="")
     r.add_argument("--note", default="")
+    r.add_argument("--phase", choices=PHASES, default="build", action=Once)
     e = sub.add_parser("end")
     e.add_argument("worktree")
     e.add_argument("--outcome", choices=OUTCOMES, required=True)
     e.add_argument("--why", default="")
+    e.add_argument("--phase", choices=PHASES, default="build", action=Once)
     s = sub.add_parser("show")
     s.add_argument("worktree")
+    s.add_argument("--phase", choices=PHASES, default="build")
     g = sub.add_parser("gate")
     g.add_argument("worktree")
     g.add_argument("--session", required=True)
@@ -511,7 +924,27 @@ def main(argv):
     v.add_argument("worktree")
     v.add_argument("--base", default="origin/main")
     sub.add_parser("cap")
+    k = sub.add_parser("picks")
+    k.add_argument("file")
+    k.add_argument("worktree")
     a = ap.parse_args(argv)
+    if a.verb == "picks":
+        try:
+            text = Path(a.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            print("build-review: the verdict file does not read (%s)" % err, file=sys.stderr)
+            return 2
+        _, _, repo = where(a.worktree)
+        rows, n = picks(text, repo)
+        if not n:
+            print("build-review: no `verdict:` line in %s: the verifier's report, verbatim, one block per item" % a.file,
+                  file=sys.stderr)
+            return 2
+        for kind, head, detail in rows:
+            print("%s %s%s" % (kind, head, " — " + detail if detail else ""))
+        if not rows:
+            print("none: no real finding")
+        return 5 if any(r[0] == "stop" for r in rows) else 0
     if a.verb == "cap":
         print(rounds_cap())
         return 0
@@ -536,9 +969,11 @@ def main(argv):
                 ("%s:%s" % (b["project"], b["branch"].rsplit("/", 1)[-1]))[:46], ",".join(b["outcomes"])[:14], b["rounds"],
                 "%d/%d" % (b["found"], b["fixed"]), fin[:26], b["spend"]["build"], b["spend"]["finish"]))
         fin = [b for b in rows if b["finish"]]
-        last = [b["finish"][-1] for b in fin]
+        # the first pass, never the last: a landing that loops logs a pass per round, and its last is the clean one after
+        # its fixes, which would hide what the landing review found on a build-reviewed branch (the landing review)
+        last = [b["finish"][0] for b in fin]
         skip = sum(1 for f in last if f.get("skipped"))
-        print("%d build(s), %d with a finish review%s: its last pass raised S1 %d, S2 %d, WRONG %d (raw, unjudged); "
+        print("%d build(s), %d with a finish review%s: its first pass raised S1 %d, S2 %d, WRONG %d (raw, unjudged); "
               "review spend $%.2f in the builds, $%.2f in the finishes (list)" % (
                   len(rows), len(fin), " (%d skipped)" % skip if skip else "", sum(f["S1"] for f in last), sum(f["S2"] for f in last), sum(f["wrong"] for f in last),
                   sum(b["spend"]["build"] for b in rows), sum(b["spend"]["finish"] for b in fin)))
@@ -569,7 +1004,8 @@ def main(argv):
                 print("build-review: no `verdict:` line in %s: the verifier's report, verbatim, one block per item"
                       % a.verdicts, file=sys.stderr)
                 return 2
-    path, branch, repo = where(a.worktree)
+    phase = getattr(a, "phase", "build")
+    path, branch, repo = where(a.worktree, phase)
     d = load(path)
     if a.verb == "gate":
         if not d or not a.session or d.get("session") != a.session or d.get("branch") != branch:
@@ -587,8 +1023,20 @@ def main(argv):
     if a.verb != "show" and not session:
         print("build-review: no CLAUDE_CODE_SESSION_ID: run it from the build's own session", file=sys.stderr)
         return 2
+    if a.verb in ("round", "end") and phase == "build":
+        # the landing's allow rule names `--phase finish` by the command's text, which a quoted value or a `#` can hold
+        # while argparse reads the default: the finish's own session never writes the build's record (the landing
+        # review: a forged clean build record, which a later landing's covers would trust)
+        af = load(Path(git(a.worktree, "rev-parse", "--absolute-git-dir") or ".") / "claude" / "autofinish.json")
+        if af and af.get("session") == session and not af.get("ended"):
+            print("build-review: this session is the landing's run (autofinish.json): its loop is --phase finish, never "
+                  "the build's record", file=sys.stderr)
+            return 2
+    pf = " --phase finish" if phase == "finish" else ""
     fresh = {"branch": branch, "session": session, "repo": repo, "project": os.path.basename(repo),
              "worktree": git(a.worktree, "rev-parse", "--show-toplevel") or "", "started": int(time.time()), "rounds": []}
+    if phase == "finish":   # the build's lines carry no key: a reader takes a line without one as the build's
+        fresh["phase"] = "finish"
     # this run's record, or a fresh one: an ended record, another branch's, or another session's (a run that
     # died before `end`) never lends its rounds to the cap or a second log line (the build-review review)
     same = bool(d) and d.get("branch") == branch and d.get("session", "") == session
@@ -628,19 +1076,38 @@ def main(argv):
         # A held loop reopened by the answer's session (or a round that left items) is the D-item road: its next round
         # reviews the answer's code, whatever the round before found (the verified-rounds landing review). Asked
         # before the cap, so a clean loop at the cap is told to end clean, not cap.
-        if prev and not reopened and not prev.get("left") and not prev.get("found") and prev.get("check") != "red":
+        # the final-tip rule (the header): a round that confirmed nothing still grants one more when the code moved past
+        # what its review read (a fix commit after the review), so the loop's last review reads the tip it hands over
+        prose = phase == "finish" and in_place(a.worktree, repo, base_ref(a.worktree, repo))
+        # a finish round with no logged head: no review read anything this end could vouch for, so one more round is
+        # granted, as `end` refuses its clean end (the fix review: the two disagreed and the loop could not move)
+        moved = bool(prev) and (branch_moved(a.worktree, prev["reviewed"], base_ref(a.worktree, repo), prose=prose) is not False if prev.get("reviewed")
+                                else phase == "finish")
+        if prev and not reopened and not moved and not prev.get("left") and not prev.get("found") and prev.get("check") != "red":
             print("build-review: round %d confirmed no real finding and its check was %s: no further round is "
-                  "granted; end the record (build-review end %s --outcome clean%s)" % (
-                      prev.get("round", n - 1), prev.get("check") or "not recorded", a.worktree,
+                  "granted; end the record (build-review end %s%s --outcome clean%s)" % (
+                      prev.get("round", n - 1), prev.get("check") or "not recorded", a.worktree, pf,
                       "" if prev.get("check") == "green" else ", after a round with --check green"),
                   file=sys.stderr)
             return 4
+        if n > cap and moved and prev and not reopened and not prev.get("left") and not prev.get("found") \
+                and prev.get("check") == "green":
+            ok = phase == "build" or (not prose and tests_only_move(a.worktree, prev.get("reviewed"), repo))
+            print("build-review: %d rounds already, the cap, and no round is left to review the move since %s: end the "
+                  "record %s" % (cap, (prev.get("reviewed") or "")[:9],
+                                 "clean (build-review end %s --outcome clean): /finish reviews the move" % a.worktree
+                                 if phase == "build" else
+                                 "clean (--phase finish --outcome clean): a tests-only move" if ok else
+                                 "cap (--phase finish --outcome cap): no later review reads it"), file=sys.stderr)
+            return 3
         if n > cap:
             print("build-review: %d rounds already, the cap: fix nothing more in this run; end the record "
-                  "(build-review end %s --outcome cap) and end naming what is left" % (cap, a.worktree),
+                  "(build-review end %s%s --outcome cap) and end naming what is left" % (cap, a.worktree, pf),
                   file=sys.stderr)
             return 3
+        reviewed = build_reviewed_head(d["project"], branch, time.time() + 60, phase)
         d["rounds"].append({"round": n, "tip": git(a.worktree, "rev-parse", "HEAD") or "", "at": int(time.time()),
+                            "reviewed": reviewed,
                             "reviewers": [x.strip() for x in a.reviewers.split(",") if x.strip()], "raised": raised, "found": a.found,
                             "open_s1": open_s1,
                             "fixed": a.fixed, "left": max(a.found - a.fixed, 0) if a.left is None else a.left, "check": a.check, "note": a.note})
@@ -648,9 +1115,15 @@ def main(argv):
         # clean only when the round found nothing: a round whose findings were all fixed needs one more
         # review of the fixes (the brief: "until a pass finds nothing to fix and the check is green")
         clean = a.found == 0 and a.check == "green"
+        stale = (branch_moved(a.worktree, reviewed, base_ref(a.worktree, repo), prose=prose) is not False) if reviewed else phase == "finish"
         print("build-review: round %d of %d recorded%s" % (n, cap,
-              " — nothing found and the check green: end it (--outcome clean)" if clean
-              else "" if n < cap else " — the cap: end it (--outcome cap) and name what is left"))
+              (" — nothing found, but the code moved since its review read %s: one more round reviews the tip"
+               % ((reviewed or "")[:9] or "no logged head")) if clean and stale and n < cap
+              else " — nothing found and the check green: end it (--outcome clean)" if clean and (not stale or phase == "build")
+              else "" if n < cap else
+              " — nothing found, but the code moved since its review read %s, at the cap: end it clean only on a "
+              "tests-only move, else cap" % ((reviewed or "")[:9] or "no logged head") if clean
+              else " — the cap: end it (--outcome cap) and name what is left"))
         return 0
     # end
     last = d["rounds"][-1] if d.get("rounds") else None
@@ -659,6 +1132,46 @@ def main(argv):
               "round first, or end cap or held" % ("no round yet" if not last else "found %s, check %s" % (last.get("found"), last.get("check"))),
               file=sys.stderr)
         return 2
+    open_s1 = sum(r.get("open_s1") or 0 for r in d.get("rounds") or [])
+    if a.outcome == "clean" and phase == "finish" and open_s1:
+        # an S1 nobody could confirm or refute, in any round (a later round's review never re-verifies it): the build's
+        # covers sends it to /finish's review, and a finish has no later review, so it holds the landing (round 2's
+        # verifier; the landing review: an earlier round's was forgotten)
+        print("build-review: not clean: the loop's rounds left %d S1 its verifier called UNVERIFIABLE, and no later review "
+              "reads it: end held (--phase finish --outcome held --why '<the S1>'), naming it in the fix round's brief"
+              % open_s1, file=sys.stderr)
+        return 2
+    if a.outcome == "clean":
+        prose = phase == "finish" and in_place(a.worktree, repo, base_ref(a.worktree, repo))
+        dirt = dirty_paths(a.worktree, prose)
+        if dirt is None or dirt:
+            print("build-review: not clean: %s: commit it, then one more round reviews it" % (
+                "git cannot read the worktree's status" if dirt is None else
+                "the worktree holds uncommitted changes no review read (%s)" % ", ".join(dirt[:3])), file=sys.stderr)
+            return 2
+    if a.outcome == "clean":
+        # the final-tip rule (the header): clean means the last recorded round's review read the code this end hands
+        # over — never a review logged after it, whose findings no round verified (the landing review). A build round
+        # with no head keeps main's reading (no log, no rule); a finish loop always follows a review, so none there
+        # means the log was not read, and it is no clean end
+        head = last.get("reviewed")
+        moved = branch_moved(a.worktree, head, base_ref(a.worktree, repo), prose=prose) if head else (None if phase == "finish" else False)
+        at_cap = len(d.get("rounds") or []) >= rounds_cap()
+        if head and moved is not False and at_cap and (phase == "build" or (not prose and tests_only_move(a.worktree, head, repo))):
+            # no round is left to review the move (the round-1 verifier's finding): the build ends clean as on main, and
+            # `covers` then sees the moved code and sends /finish to review it; a finish's own loop has no later review,
+            # so only a tests-only move (a check fix, covers' own rule) passes there
+            print("build-review: the code moved since the newest %s review read %s, at the cap: ended clean%s" % (
+                phase, head[:9], ", and /finish reviews the move (covers says no)" if phase == "build"
+                else " on a tests-only move (a check fix)"), file=sys.stderr)
+            moved = False
+        if moved is not False:
+            print("build-review: not clean: the last round's %s review read %s, and the code at HEAD %s: %s" % (
+                      phase, (head or "")[:9] or "no logged head", "differs from it" if moved else "cannot be compared with it",
+                      "end cap: no round is left under the cap to review it" if at_cap else
+                      "run one more round (it is granted) so the last review reads the tip, or end cap or held"),
+                  file=sys.stderr)
+            return 2
     d.update(ended=int(time.time()), outcome=a.outcome, why=a.why,
              tip=git(a.worktree, "rev-parse", "HEAD") or "")
     # the log first, and no save without it: a record saved ended and never logged could not be ended again

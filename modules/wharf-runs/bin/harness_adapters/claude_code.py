@@ -177,7 +177,12 @@ def _live_runs(ctx=None):
     mod = _rc(ctx)
     if mod is None:
         return {}
-    return {st.get("session"): (p, st) for p, st in mod.live(reap=False) if st.get("session")}
+    # dispatch's agy road records its run here too (mode agy): agy's, the agy adapter's to list, never a Claude session
+    return {st.get("session"): (p, st) for p, st in mod.live(reap=False) if st.get("session") and not _agy(st)}
+
+
+def _agy(st):
+    return st.get("mode") == "agy" or st.get("harness") == "agy"
 
 
 def _same_process(ctx, pid, start):
@@ -500,7 +505,7 @@ def candidates(ctx, ref):
     out, done = [], set()
     for path, st in _all_runs(ctx):
         sid = st.get("session")
-        if not _matches(ref, sid, st.get("title"), st.get("topic")):
+        if _agy(st) or not _matches(ref, sid, st.get("title"), st.get("topic")):
             continue
         if sid in reg or sid in live:
             if sid not in done:

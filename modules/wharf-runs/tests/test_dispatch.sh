@@ -24,6 +24,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # the fixture before the lookup below: what the cases expect is read from the same config dir the
 # tools read, so a Mac's own overlay (its marker) is never the expectation (suites-host, 2026-10-20)
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
+require_process_probe test_dispatch || exit $?
 # peers, found as dispatch finds them (the core's tool()): keel (M4), helm's stalls_tick.py (the
 # overlay's until B12), wharf's /finish (module_path); the overlay's checkout (overlay_root), else ""
 eval "$(python3 - "$B/../lib" <<'CORE'
@@ -45,8 +46,8 @@ fails=0
 export DISPATCH_ASK="$T/peer/bin/ask" DISPATCH_HELM="$T/peer/bin/helm"
 # scheduled times relative to today, inside the year launchd's yearless calendar can hold: a fixed
 # date went past and failed 5 cases (2026-10-04); one a year ahead is now refused
-FUT=$(date -v+30d +%Y-%m-%d); FY=${FUT%%-*}; FM=$((10#$(date -v+30d +%m))); FD=$((10#$(date -v+30d +%d)))
-E2=$(date -v+60d +%Y-%m-%d); EM=$((10#$(date -v+60d +%m))); ED=$((10#$(date -v+60d +%d)))
+FUT=$(days_from_now 30); FY=${FUT%%-*}; FM=$((10#${FUT:5:2})); FD=$((10#${FUT:8:2}))
+E2=$(days_from_now 60); EM=$((10#${E2:5:2})); ED=$((10#${E2:8:2}))
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
 hasnt() { if [ ! -f "$1" ]; then echo "  FAIL $3: no file $1 to read"; fails=$((fails+1)); elif grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
@@ -114,8 +115,7 @@ export DISPATCH_DEFAULT_ON=
 # the runs below run here, as launchd would fire them (it sets DISPATCH_LABEL); without a label a run
 # goes through launchd a minute out ("a direct run" below)
 export DISPATCH_LABEL=org.example.claude.dispatch.repo.test-direct
-# an epoch as a date, BSD's -r or GNU's -d @ (AGENTS.md trap: bare `date -r` prints nothing on Linux)
-dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
+# dateat comes from config_fixture.sh (BSD's -r or GNU's -d @).
 pst() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" | xargs; }   # what dispatch records as proc_start
 # what a peer is told to run: its own core, the checkout its config dir's `home` names, read there
 RBIN='"$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/home" 2>/dev/null)/modules/wharf-runs/bin/dispatch"'
@@ -139,10 +139,10 @@ env -u DISPATCH_LABEL DISPATCH_DEPTH=5 "$B/dispatch" $BR --repo "$T/repo" --at "
 has "$T/out" "a person starts the next" "  saying who starts it"
 env -u DISPATCH_LABEL RUN_SEED_DEPTH=5 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>&1; check "$?" "2" "  RUN_SEED_DEPTH (a session started before the rename) counts too"
 has "$T/calls" "bootstrap gui/" "job loaded"
-if command -v plutil >/dev/null; then plutil -lint "$P" >/dev/null 2>&1 && echo "  ok   plist lints" || { echo "  FAIL plist lint"; fails=$((fails+1)); }; fi
+python3 -c 'import plistlib,sys; plistlib.load(open(sys.argv[1], "rb"))' "$P" && echo "  ok   plist lints" || { echo "  FAIL plist lint"; fails=$((fails+1)); }
 
 echo "epoch time"
-EP=$(date -j -f '%Y-%m-%d %H:%M' "$E2 07:09" +%s)
+EP=$(python3 -c 'import datetime,sys; print(int(datetime.datetime.strptime(sys.argv[1], "%Y-%m-%d %H:%M").timestamp()))' "$E2 07:09")
 # a stand-in for bin/account: STUB_ACCT says what pick answers, STUB_LIMITS what limits LABEL says;
 # STUB_NOISE is a line printed to stderr first, ahead of any JSON (a future warning)
 cat > "$T/acct" <<EOF
@@ -151,6 +151,10 @@ echo "account \$*" >> "$T/acct.calls"
 [ -n "\${STUB_NOISE:-}" ] && echo "\$STUB_NOISE" >&2
 case "\$1" in
   which) [ -n "\${STUB_WHICH:-}" ] && echo "\$STUB_WHICH"; exit 0;;
+  # as the real verb: an object naming its account on stdin, else exit 1 (account's cmd_overdraw_log)
+  overdraw-log) in=\$(cat); echo "overdraw-log stdin \$in" >> "$T/acct.calls"
+        case "\$in" in *'"account":"'?*) echo "overdraw on acct-c: logbook issue #7 opened"; exit 0;; esac
+        echo "account overdraw-log: stdin holds no overdraw" >&2; exit 1;;
   pick) case "\$*" in *"--room fable"*)   # the principal tier's S6: STUB_ROOM answers a Fable pick
           case "\${STUB_ROOM:-room}" in
             room) echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 10% < 90%; Fable'"'"'s week 37%", "skipped": [["acct-p", "no Fable on its plan (pro): --room fable"]]}';;
@@ -162,8 +166,11 @@ case "\$1" in
           esac; exit 0;; esac
         case "\${STUB_ACCT:-none}" in
           f) echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 10% < 90%", "skipped": []}';;
-          acct-a) echo '{"account": "acct-a", "primary": true, "env": {}, "reason": "week 20% < 95%", "skipped": [["acct-c", "repo is on its deny list"]]}';;
+          acct-a) echo '{"account": "acct-a", "primary": true, "env": {}, "reason": "week 20% < 95%", "skipped": [["acct-c", "repo is own'"'"'s: it runs on acct-a only (tenants)"]]}';;
           short) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"], ["acct-a", "week 99% ≥ 95%"]]}'; exit 3;;
+          # an overdraw (account's header, "Overdraw"): only a pick that asked for one gets it, as the real one
+          over) case "\$*" in *"--overdraw --job "?*) ;; *) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"]]}'; exit 3;; esac
+                echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 95% < 100% (overdraw: no login was under its bar), 5h 10% ≤ 50%; past its own bar: week 95% ≥ 90% (week ceiling)", "skipped": [["acct-a", "week 99% ≥ 70% (week ceiling)"]], "overdraw": {"account": "acct-c", "bar": "week 95% ≥ 90% (week ceiling)", "week": 95, "resets": null, "job": "x"}}';;
           never) echo '{"account": null, "skipped": [["acct-c", "extra usage on: work here may bill past the plan"], ["acct-a", "same login as acct-c (a@b)"]]}'; exit 3;;
           none) echo "account: no registry" >&2; exit 4;;
           junk) echo "account: probe timed out" >&2; echo "not json"; exit 1;;
@@ -178,7 +185,7 @@ case "\$1" in
         esac
         case "\${STUB_LIMITS:-ok}" in
           ok) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
-          denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is on its deny list\", \"denied\": \"repo\"}]";;
+          denied) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"repo is own's: it runs on acct-a only (tenants)\", \"denied\": \"repo\"}]";;
           overage) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"extra usage on\", \"overage\": true}]";;
           short) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"week 95% over its 90% ceiling\"}]";;
           same) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": false, \"why\": \"same login as acct-a (a@b), so its limits are acct-a\", \"same_as\": \"acct-a\"}]";;
@@ -264,6 +271,31 @@ has "$D" "$BR" "a scheduled run is recorded for pickup (claude/dispatched/<topic
 rm -f $(plo); : > "$T/ssh.calls"
 dflt --cancel >/dev/null 2>&1; check "$? $(n_here)" "0 0" "--cancel clears here…"
 has "$T/ssh.calls" "--cancel" "  …and asks the dispatch host too"
+hasnt "$T/ssh.calls" "DISPATCH_CANCEL_" "  an attended caller's leg is unmarked: the far side judges the fleet as before"
+rm -f $(plo); : > "$T/ssh.calls"
+CLAUDE_UNATTENDED=dispatch dflt --cancel >/dev/null 2>&1; check "$?" "0" "D4: an unattended --cancel…"
+has "$T/ssh.calls" "DISPATCH_CANCEL_BY=- $RBIN" "  …marks the dispatch host's leg with the caller's run (none here: -): judged there as this caller (no unattended marker crosses ssh)"
+rm -f $(plo); : > "$T/ssh.calls"
+AUTOFINISH_CALLER_UNATTENDED=1 dflt --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "DISPATCH_CANCEL_BY=- $RBIN" "  so does a caller autofinish-run marked"
+rm -f $(plo); : > "$T/ssh.calls"
+DISPATCH_CANCEL_BY=s-run dflt --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "DISPATCH_CANCEL_BY=s-run $RBIN" "  a marked leg passes the caller's run on to its own hop"
+rm -f $(plo); : > "$T/ssh.calls"
+CLAUDE_UNATTENDED=dispatch DISPATCH_CANCEL_BY=s-run dflt --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "DISPATCH_CANCEL_BY=- $RBIN" "  an unattended caller's inherited marker is ignored: its own record names its run (the re-landing's finish review)"
+rm -f $(plo); : > "$T/ssh.calls"
+DISPATCH_CANCEL_NO_FLEET=1 dflt --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "DISPATCH_CANCEL_NO_FLEET=1 $RBIN" "  an older sender's marker is passed on as it came"
+echo "  the dispatch host's leg's exit (engine-room-s4's fix round): a marked leg's refusal is 5, apart from any dispatch's 2"
+rm -f $(plo); STUB_PROBE_RC=5 dflt --cancel > "$T/out" 2>&1; check "$?" "2" "  the leg's 5 (an entry refused there): this side exits 2"
+has "$T/out" "refused an entry of this branch there" "    said"
+rm -f $(plo); STUB_PROBE_RC=2 dflt --cancel > "$T/out" 2>&1; check "$?" "0" "  the leg's 2 (that dispatch's usage, or no such repo there): no refusal"
+has "$T/out" "could not look (no such repo there?)" "    said as before"
+rm -f $(plo); STUB_PROBE_RC=4 dflt --cancel > "$T/out" 2>&1; check "$?" "0" "  the leg's 4 (its queue torn, or its cancel in the outbox): said, exit 0 as on main (keel's lookout reads non-zero as refused)"
+has "$T/out" "not done yet" "    said"
+rm -f $(plo); DISPATCH_CANCEL_BY=s-run STUB_PROBE_RC=5 dflt --cancel > /dev/null 2>&1; check "$?" "5" "  a marked leg passes its hop's refusal on as 5"
+rm -f $(plo); : > "$T/ssh.calls"
 rm -f $(plo)
 : > "$T/ssh.calls"
 env -u DISPATCH_LABEL DISPATCH_DEFAULT_ON=auto DISPATCH_HOST=buildbox "$B/dispatch" $BR --repo "$HOME/projects/other" --cancel >/dev/null 2>&1
@@ -288,6 +320,16 @@ has "$T/err" "scheduling on Studio2" "  named as the key spells it"
 has "$T/err" "unknown host nowhere — wharf-runs/ssh names buildbox, Studio2; or here" "  naming the hosts it holds"
 check "$(wc -l < "$T/ssh.calls" | tr -d ' ')" "0" "  and nothing goes over ssh"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on nowhere --cancel >/dev/null 2>&1; check "$?" "2" "  --cancel --on an unknown host: refused too"
+: > "$T/ssh.calls"
+"$B/dispatch" $BR --repo "$HOME/projects/other" --on studio2 --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "ssh studio2-ssh $RBIN" "--cancel --on HOST, attended: that host's leg unmarked"
+: > "$T/ssh.calls"
+CLAUDE_UNATTENDED=dispatch "$B/dispatch" $BR --repo "$HOME/projects/other" --on studio2 --cancel >/dev/null 2>&1
+has "$T/ssh.calls" "ssh studio2-ssh DISPATCH_CANCEL_BY=- $RBIN" "D4: an unattended --cancel --on HOST marks that host's leg too (the fleet judged here first)"
+STUB_SSH_RC=5 "$B/dispatch" $BR --repo "$HOME/projects/other" --on studio2 --cancel > /dev/null 2>&1; check "$?" "2" "--cancel --on HOST: that leg's refusal (5) is exit 2 here"
+STUB_SSH_RC=2 "$B/dispatch" $BR --repo "$HOME/projects/other" --on studio2 --cancel > /dev/null 2>&1; check "$?" "2" "  its own 2 (usage, no such repo) stays 2, as the exec passed it"
+STUB_SSH_RC=255 "$B/dispatch" $BR --repo "$HOME/projects/other" --on studio2 --cancel > /dev/null 2>&1; check "$?" "255" "  any other exit passes through, as the exec did"
+: > "$T/ssh.calls"
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on HERE --at "$FUT 04:10" >/dev/null 2>&1; check "$? $(wc -l < "$T/ssh.calls" | tr -d ' ')" "0 0" "--on HERE is here, case-blind"
 rm -f $(plo)
 mv "$KEYS/dispatch-host" "$KEYS/dispatch-host.off"; : > "$T/ssh.calls"
@@ -353,7 +395,7 @@ check "$(python3 -c 'import importlib.machinery, sys; print(repr(importlib.machi
 rm -f "$KEYS/label-prefix-previous"
 
 "$B/dispatch" $BR --repo "$T/repo" --at "2020-01-01 00:00" 2>/dev/null; check "$?" "2" "a past time is refused"
-"$B/dispatch" $BR --repo "$T/repo" --at "$(date -v+400d +%Y-%m-%d) 04:10" 2>/dev/null; check "$?" "2" "a time a year or more ahead is refused"
+"$B/dispatch" $BR --repo "$T/repo" --at "$(days_from_now 400) 04:10" 2>/dev/null; check "$?" "2" "a time a year or more ahead is refused"
 
 "$B/dispatch" $BR --repo "$HOME/projects/other" --on buildbox --at "@$EP" >/dev/null 2>&1
 has "$T/ssh.calls" '--repo $HOME/projects/other' "--repo travels as a path under ~/projects"
@@ -383,7 +425,7 @@ has "$T/claude.calls" "--model opus --effort high" "tier passed"
 has "$T/claude.calls" "claude -p You are an unattended session" "--headless is claude -p"
 has "$T/claude.calls" "build only" "note in the prompt"
 has "$T/claude.calls" "in the foreground: never run_in_background, Monitor or a background agent" "checks in the foreground: a -p session ends with its turn (2026-10-04)"
-has "$T/claude.calls" "do not push, except through \`dispatch --next --repo $T/repo\`" "the prompt allows the one push dispatch --next makes, naming its repo"
+has "$T/claude.calls" "--ci\` or \`dispatch --next --repo $T/repo\`" "the prompt allows CI's branch push and dispatch --next, naming its repo"
 has "$T/claude.calls" "$T/repo/.claude/worktrees/demo" "ran inside the branch's worktree"
 has "$T/claude.calls" "--permission-mode auto" "auto mode: a would-prompt call is denied headless (docs/record/run-seed-permissions-2026-10-04.md)"
 has "$T/claude.calls" "Bash(*bin/pr merge*)" "bin/pr deny by its launch verb, in the matcher's wildcard form"
@@ -617,6 +659,8 @@ has "$T/claude.calls" "bin/helm report --task demo" "  and the ship's reports (t
 has "$T/claude.calls" "bin/keel step <doc> <S> done --branch" "  and a brief's Steps: are marked done by the run (entry S7, the done prompt)"
 has "$T/claude.calls" "AskUserQuestion" "AskUserQuestion is on the denied list (R2's belt)"
 # build-review (the owner, 2026-10-30): the build reviews, fixes and checks itself before it ends
+has "$T/claude.calls" "bin/check $T/repo/.claude/worktrees/demo --ci --out <dir>" "  the shared build prompt checks through its own held PR CI"
+has "$T/claude.calls" "(d) run the check through \`$B/check $T/repo/.claude/worktrees/demo --ci --out <dir>\`" "  the review loop checks through CI before recording green or red"
 has "$T/claude.calls" "review your own build until it is clean" "build-review: the prompt holds the review loop by default"
 has "$T/claude.calls" "bin/review-gate plan" "  the reviewers /finish step 1 runs, through wharf's review-gate"
 has "$T/claude.calls" "refs/remotes/origin/main\`, then \`git -C $T/repo/.claude/worktrees/demo merge --no-edit --no-ff origin/main" "  (a) main merged in first"
@@ -687,6 +731,8 @@ grep -q "ask apply" "$T/claude.calls"; check "$?" "1" "G22, no helm: the prompt 
 grep -q "helm report" "$T/claude.calls"; check "$?" "1" "  nor a helm report"
 has "$T/claude.calls" "end on the WAITING line naming it" "  a decision it cannot make ends it on WAITING"
 has "$T/claude.calls" "step <doc> <S> done --branch" "  the Steps: line stays"
+has "$T/claude.calls" "bin/check $T/repo/.claude/worktrees/demo --ci --out <dir>" "  the shared build prompt checks through its own held PR CI"
+has "$T/claude.calls" "(d) run the check through \`$B/check $T/repo/.claude/worktrees/demo --ci --out <dir>\`" "  the review loop checks through CI before recording green or red"
 has "$T/claude.calls" "review your own build until it is clean" "  and so does the review loop (no helm needed)"
 
 echo "build-review: a brief's Review: finish only line opts its run out of the loop"
@@ -1117,8 +1163,8 @@ for e, store in (({"repo": sys.argv[2], "branch": "claude/laptop/2026-10-02-gone
 PYQ
 check "$(CLAUDE_REPOS_JSON="$T/origin-repos.json" python3 "$T/s6gone.py" "$B/dispatch-queue" "$T/repo" "$NM" | tr '\n' ' ')" "True True True True " \
   "seventh review: a host-local entry whose branch is gone here (a spawn's with --origin, a node's): dropped for good, never handed back hourly"
-check "$(grep -c -- '-u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD' "$B/dispatch"):$(grep -c -- '-u DISPATCH_HOST_PIN' "$B/dispatch"):$(grep -c "^  echo 'unset .*DISPATCH_SPAWN_HELD" "$B/dispatch")" "4:4:1" \
-  "seventh review: every launch drops DISPATCH_SPAWN_HELD, so a re-armed run's count never reaches the dispatches it makes"
+check "$(grep -c -- '-u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD' "$B/dispatch"):$(grep -c -- '-u DISPATCH_HOST_PIN' "$B/dispatch"):$(grep -c "^  echo 'unset .*DISPATCH_SPAWN_HELD" "$B/dispatch")" "5:5:1" \
+  "seventh review: every launch drops DISPATCH_SPAWN_HELD, so a re-armed run's count never reaches the dispatches it makes (the agy road's harness call the fifth)"
 # item 11: dispatch's after_merge merges origin/main into the step's branch, a local commit: what it brings is on
 # origin already, so a caller inside the node is not refused for it (-m listed every path main changed)
 git -C "$T/repo" branch -q claude/laptop/2026-10-02-mbase main; git -C "$T/repo" worktree add -q "$(dirname "$WTS")/mbase" claude/laptop/2026-10-02-mbase
@@ -1157,16 +1203,24 @@ has "$T/calls" "bootstrap gui/" "  as a launchd job"
 check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  and starts no claude in this shell"
 check "$([ -f "$LATER" ] && echo kept || echo gone)" "kept" "  a pending /later job is left alone…"
 has "$T/out" "left $(basename "$LATER" .plist) scheduled: a direct run replaces no /later job" "  …and named"
-D=$(( $(date +%s) + 90 )); M0=$(date -r $((T0 + 90)) +%Y%m%d%H%M); M1=$(date -r $D +%Y%m%d%H%M); M2=$(date -r $((D + 60)) +%Y%m%d%H%M)
+D=$(( $(date +%s) + 90 )); M0=$(dateat $((T0 + 90)) +%Y%m%d%H%M); M1=$(dateat "$D" +%Y%m%d%H%M); M2=$(dateat $((D + 60)) +%Y%m%d%H%M)
 ls "$HOME"/Library/LaunchAgents/ | grep -qE "demo\.($M0|$M1|$M2)\.plist"; check "$?" "0" "  the fire minute is 90 s out or the one after"
 "$B/dispatch" $BR --repo "$T/repo" --cancel >/dev/null
 
 echo "the visible run: interactive claude with Remote Control in screen, a window, an end"
+# A named process for the stuck-hook tree: Darwin uses argv[0]; Linux uses the executable's
+# basename. Never link/copy a coreutils binary on Linux (the uutils multicall trap).
+if [ "$(uname)" = Darwin ]; then
+  ln -s /bin/sleep "$T/stuck-hook"
+else
+  # a TERM ends its sleep too: the case's kill and pkill reach only this script
+  printf '#!/bin/sh\ntrap '"'"'kill $! 2>/dev/null; exit 143'"'"' TERM\nsleep "$1" & wait\n' > "$T/stuck-hook"; chmod +x "$T/stuck-hook"
+fi
 # claude: -p answers and exits; interactive writes its session record as STUB_RUN says, then waits
 cat > "$T/claude" <<EOF
 #!/bin/bash
 env >> "$T/env.calls"; echo "claude \$*" >> "$T/claude.calls"; pwd >> "$T/claude.calls"
-case " \$* " in *" -p "*) [ -n "\${STUB_HANG:-}" ] && { trap 'echo "TERM -p" >> "$T/claude.calls"; exit 143' TERM; while :; do sleep 0.2; done; }; echo ok; exit 0;; esac
+case " \$* " in *" -p "*) [ -n "\${STUB_HANG:-}" ] && { trap 'echo "TERM -p" >> "$T/claude.calls"; exit 143' TERM; while [ -d "$T" ] && [ \$SECONDS -lt 900 ]; do sleep 0.2; done; }; echo ok; exit 0;; esac
 sid=; prev=; for a in "\$@"; do [ "\$prev" = --session-id ] && sid=\$a; prev=\$a; done
 rec="\$HOME/.claude/sessions/\$\$.json"; mkdir -p "\$HOME/.claude/sessions" "\$HOME/.claude/projects/x"
 old=\$(( (\$(date +%s) - 700) * 1000 ))
@@ -1186,8 +1240,14 @@ case "\${STUB_RUN:-work}" in
         [ "\$STUB_RUN" = limited ] && echo '{"type":"assistant","message":{"content":[{"type":"text","text":"You'"'"'ve hit your weekly limit · resets Nov 8, 11am (UTC)"}]}}' >> "\$t"
         "$T/ckbin/bin/check" "\$PWD" --out "$T/ck-out" & echo \$! > "$T/ck.pid";;
   # busy with no prompt in the transcript: stuck in its UserPromptSubmit hooks (the build Mac, 2026-10-15)
-  hooked) printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
-          ( exec -a "$T/stuck-hook" sleep 30 ) &;;
+  hooked) "$T/stuck-hook" 30 & hook=\$!; ready=
+          # Do not report the busy registry until its named hook has started.
+          for _ in \$(seq 50); do   # 5 s: a loaded Mac's fork and exec
+            if ps -o comm= -p "\$hook" | grep -q stuck-hook; then ready=1; break; fi
+            sleep 0.1
+          done
+          [ -n "\$ready" ] || { kill "\$hook"; exit 1; }
+          printf '{"sessionId":"%s","status":"busy","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec";;
   # done, but holding background shells, so Claude Code says "shell" (S13): the Session-tab waiter
   # alone (listen), or the waiter and a shell still at work (shelled)
   listen|shelled)
@@ -1202,7 +1262,7 @@ case "\${STUB_RUN:-work}" in
            printf '{"sessionId":"%s","status":"idle","statusUpdatedAt":%s}' "\$sid" \$old > "\$rec"
            echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}' > "\$HOME/.claude/projects/x/\$sid.jsonl";;
 esac
-while :; do sleep 0.2; done
+while [ -d "$T" ] && [ \$SECONDS -lt 900 ]; do sleep 0.2; done   # ends with its suite's \$T, or at 15 min: an endless loop outlived every killed suite run (99 on one Mac, 2026-11-05)
 EOF
 cat > "$T/screen" <<EOF
 #!/bin/bash
@@ -1211,7 +1271,7 @@ echo "screen \$*" >> "$T/order"
 case "\$1" in
   -U) [ "\$2" = -dmS ] || exit 1; name=\$3; shift 3; [ -n "\${STUB_NOSTART:-}" ] && exit 0; "\$@" >/dev/null 2>&1 & exit 0;;
   -ls) cat "$T/screen.ls" 2>/dev/null; exit 1;;
-  -wipe) [ -f "$T/screen.ls" ] && sed -i '' '/Dead/d' "$T/screen.ls"; exit 0;;
+  -wipe) [ -f "$T/screen.ls" ] && sed -i.bak '/Dead/d' "$T/screen.ls" && rm -f "$T/screen.ls.bak"; exit 0;;
   -S) case "\$*" in *hardcopy*) for a; do f=\$a; done
                     # blind: a plain hardcopy writes an empty file, only -h returns the screen (the build Mac, 2026-10-26);
                     # gone: the first call reads the window, every later one finds no such screen and writes nothing
@@ -1986,6 +2046,21 @@ has "$T/out" "is the brief this run started from" "  saying why"
 own sess-A
 FIRE=" " CLAUDE_UNATTENDED=run-seed RUN_SEED_BRIEF=$(git -C "$W" rev-parse HEAD:docs/handoff/2026-10-04-step.md) nx > "$T/out" 2>&1
 check "$?" "2" "  RUN_SEED_BRIEF (a run started before the rename) is the same guard"
+# rabbit-holes S3 (D3-A): a next step whose `after:` names an answer that picks no listed option waits for the
+# owner's new Answer or a Design-pass commit, never a run: --next refuses it, naming the step and the item
+mkdir -p "$W/docs"
+printf '%s\n' '# Roads (design, 2026-11-03)' '' '- **D1 — which road**' '  - A — one road' '  - B — another road' '' \
+  '  Reversible: yes' '' '  ➤ Recommended: A' '' '  ➤ Answer:' '  none of these, a third road' '' '## Action plan' '' \
+  '- **S1 — build it** — the work · session `worker` · after: D1 · status: not started' > "$W/docs/roads.md"
+git -C "$W" add docs/roads.md; git -C "$W" commit -qm "the owner's answer to D1"
+printf '# step 3 brief\nSteps: S1 of docs/roads.md\n' > "$W/docs/handoff/2026-10-04-step.md"; git -C "$W" commit -qam "step 3 waits on D1"
+own sess-A
+FIRE=" " nx > "$T/out" 2>&1; check "$?" "2" "--next into a step held on a no-pick answer: refused (rabbit-holes S3)"
+has "$T/out" "next step is held —" "  saying so"
+hasnt "$T/out" "refused for good" "  never for good: a new answer releases it (round 3)"
+has "$T/out" "docs/roads.md S1 waits on D1" "  naming the step and the item"
+has "$T/out" "end with the WAITING line naming that doc and item" "  and what the run does instead (D4-B, until S5)"
+echo "# step 2 brief" > "$W/docs/handoff/2026-10-04-step.md"; git -C "$W" commit -qam "step 2 back to plain"
 # confidential-reach S6's landing review: the spawned run's own --next, its next brief written the same day
 # over the reviewed path (the S6 block's sameday seed), is judged by the seed's brief and goes on
 SDB=claude/laptop/2026-10-02-sameday; WSD="$(dirname "$WTS")/sameday"; OSD="$(git -C "$WSD" rev-parse --absolute-git-dir)/claude/owner.json"
@@ -2122,7 +2197,7 @@ AR() { DISPATCH_ACCOUNT="$T/acct" DISPATCH_HOST=buildbox "$B/dispatch" $BR --rep
 STUB_ACCT=f DISPATCH_LOG="$HOME/acct1.log" AR
 has "$HOME/acct1.log" "== account acct-c ($HOME/.acct-c): week 10% < 90%" "auto: the pick is logged with its reason"
 grep -q "^CLAUDE_CONFIG_DIR=$HOME/.acct-c$" "$T/env.calls"; check "$?" "0" "  and the run's claude gets its config dir"
-has "$T/acct.calls" "account pick --repo $T/repo --json" "  the pick names the repo (its deny list)"
+has "$T/acct.calls" "account pick --repo $T/repo --json" "  the pick names the repo (its tenancy)"
 : > "$T/env.calls"
 STUB_ACCT=acct-a CLAUDE_CONFIG_DIR="$HOME/.claude-pro" DISPATCH_LOG="$HOME/acct2.log" AR
 has "$HOME/acct2.log" "== account acct-a: week 20% < 95%" "a repo acct-c denies: the pick says acct-a"
@@ -2131,6 +2206,30 @@ grep -q "^CLAUDE_CONFIG_DIR=" "$T/env.calls"; check "$?" "1" "  and the run is o
 STUB_ACCT=short DISPATCH_LOG="$HOME/acct3.log" AR
 has "$HOME/acct3.log" "FAILED: no account may run this now — acct-c: week 95% ≥ 90%; acct-a: week 99% ≥ 95%; not running" "exit 3: FAILED, each row's reason"
 check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  and no claude started"
+: > "$T/env.calls"; : > "$T/acct.calls"
+OL="$T/acct-over.log"
+STUB_ACCT=over DISPATCH_LOG="$T/acct-over0.log" AR
+check "$(grep -c -e '--overdraw' "$T/acct.calls")" "0" "a normal build never asks for an overdraw (the owner, 2026-11-05: high or higher)"
+has "$T/acct-over0.log" "FAILED: no account may run this now — acct-c: week 95% ≥ 90%; not running" "  and with no login under its bar it does not run"
+: > "$T/acct.calls"
+STUB_ACCT=over DISPATCH_LOG="$T/acct-overl.log" AR --priority low
+check "$(grep -c -e '--overdraw' "$T/acct.calls")" "0" "  nor a low one"
+: > "$T/env.calls"; : > "$T/acct.calls"
+STUB_ACCT=over DISPATCH_LOG="$OL" AR --priority high
+has "$T/acct.calls" "account pick --repo $T/repo --json --overdraw --job $BR" "a high build asks for an overdraw, naming the job (the owner, 2026-11-04)"
+has "$OL" "week 95% < 100% (overdraw: no login was under its bar)" "  no login under its bar: the run starts on the one past it…"
+has "$OL" "; an overdraw, logged once the session starts" "  …saying it is logged at the start, not at the pick"
+has "$T/acct.calls" 'overdraw-log stdin {"account":"acct-c",' "  the pick's overdraw object handed to account overdraw-log…"
+check "$(grep '^== started\|^== overdraw' "$OL" | cut -c1-11 | tr '\n' ' ')" "== started: == overdraw " "  …after the session began"
+has "$OL" "== overdraw: overdraw on acct-c: logbook issue #7 opened" "  its line saying what the logbook got"
+grep -q "^CLAUDE_CONFIG_DIR=.*/.acct-c$" "$T/env.calls"; check "$?" "0" "  and the run's claude gets that login's dir"
+grep -q "^ACCOUNT_OVERDRAW_PICK=" "$T/env.calls"; check "$?" "1" "  and never the overdraw object: the session's own dispatches pick for themselves"
+: > "$T/acct.calls"
+STUB_ACCT=f DISPATCH_LOG="$T/acct-over2.log" AR
+check "$(grep -c 'overdraw-log' "$T/acct.calls")" "0" "a pick with room: nothing logged"
+: > "$T/acct.calls"
+ACCOUNT_OVERDRAW_PICK='{"account":"acct-c","week":95}' DISPATCH_LOG="$T/acct-over3.log" DISPATCH_ACCOUNT="$T/acct" DISPATCH_HOST=buildbox "$B/dispatch" $BR --repo "$T/repo" --headless --account acct-c > /dev/null 2>&1
+has "$T/acct.calls" 'overdraw-log stdin {"account":"acct-c","week":95}' "a launcher's overdraw (ACCOUNT_OVERDRAW_PICK) is logged at the start too"
 : > "$T/env.calls"
 STUB_ACCT=none CLAUDE_CONFIG_DIR="$HOME/.claude-pro" DISPATCH_LOG="$HOME/acct4.log" AR
 has "$HOME/acct4.log" "== account: no account registry here — the login this run was started with" "exit 4 (no registry): as before"
@@ -2139,13 +2238,13 @@ grep -q "^CLAUDE_CONFIG_DIR=$HOME/.claude-pro$" "$T/env.calls"; check "$?" "0" "
 DISPATCH_LOG="$HOME/acct5.log" AR --account acct-c
 has "$HOME/acct5.log" "== account acct-c ($HOME/.acct-c): as asked" "--account LABEL: that row"
 grep -q "^CLAUDE_CONFIG_DIR=$HOME/.acct-c$" "$T/env.calls"; check "$?" "0" "  its config dir"
-has "$T/acct.calls" "account limits acct-c --repo $T/repo --json" "  read with the repo, so its deny list counts"
+has "$T/acct.calls" "account limits acct-c --repo $T/repo --json" "  read with the repo, so its tenancy counts"
 : > "$T/claude.calls"
 STUB_LIMITS=denied DISPATCH_LOG="$HOME/acct6.log" AR --account acct-c
-has "$HOME/acct6.log" "FAILED: --account acct-c: repo is on its deny list — run it on the default login (no --account); not running" "a named account in a denied repo: refused"
+has "$HOME/acct6.log" "FAILED: --account acct-c: repo is own's: it runs on acct-a only (tenants) — run it on a login named there, or with no --account (pick walks to one); not running" "a named account in another tenant's repo: refused"
 check "$(wc -l < "$T/claude.calls" | tr -d ' ')" "0" "  nothing started"
 STUB_LIMITS=denied DISPATCH_LOG="$HOME/acct7.log" AR --account acct-c --force
-has "$HOME/acct7.log" "FAILED: --account acct-c: repo is on its deny list" "  --force never crosses a deny list (the guard would block every prompt)"
+has "$HOME/acct7.log" "FAILED: --account acct-c: repo is own's: it runs on acct-a only (tenants)" "  --force never crosses tenancy (the guard would block every prompt)"
 STUB_LIMITS=overage CLAUDE_UNATTENDED=dispatch DISPATCH_LOG="$HOME/acct8.log" AR --account acct-c --force
 has "$HOME/acct8.log" "FAILED: --account acct-c: extra usage on — --force past paid overage is a yes only a person gives, refused to an unattended caller; not running" \
   "  --force past paid overage, unattended: refused (costs S8, the finish review)"
@@ -4369,8 +4468,12 @@ check "$(qget repo--m10 state refused_by)" "queued laptop" "  once the home answ
 qreset
 
 echo "  items 11, 12, 13, 14, 16, 17, 18: order, bounds, names, the peer, the reason"
-check "$(sed -n '/^  echo "== exit \$rc at \$(date)"$/,/^} >> "\$log" 2>&1$/p' "$B/dispatch" | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
+# the fire block's own tail: the range opens at run_headless's end, and the agy road (agy_road, between them) ends
+# with its own `== exit` line, so only what follows the range's last one is the fire block's
+check "$(sed -n '/^  echo "== exit \$rc at \$(date)"$/,/^} >> "\$log" 2>&1$/p' "$B/dispatch" | awk '/^  echo "== exit /{b=""} {b=b $0 "\n"} END{ORS=""; print b}' | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
   'queue_ended yolo_launch"$rc" queue_claim ' "item 11: a run's end writes its word, then hands its landing on, then claims"
+check "$(sed -n '/^agy_road() {$/,/^}$/p' "$B/dispatch" | awk '/^  echo "== exit /{b=""} {b=b $0 "\n"} END{ORS=""; print b}' | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
+  'queue_ended queue_claim ' "  the agy road's end writes its word, then claims, and hands no landing on"
 grep -q '\[ "\$arc" = 0 \] && launched=1' "$B/dispatch"; check "$?" "0" "  and a landing started leaves the slot to it (queue_claim skips)"
 sed -n '/^  if \[ "\$start" = 1 \]; then$/,/^  fi$/p' "$B/dispatch" | grep -q queue_claim
 check "$?" "0" "item 17: a --start's end claims too: a slot it held had no end that claimed"
@@ -4537,8 +4640,8 @@ qreset
 python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
 QP4=$(qplists "$HA" | head -1); QL4=$(qenv "$QP4" DISPATCH_LOG); : > "$QL4"   # the day's log of $BR: earlier runs' FAILED lines
 (export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=denied; qfire "$QP4")
-check "$(qtree)" "" "  a login whose deny list holds the repo still fails it: a requeue would fail the same way"
-has "$QL4" "FAILED: --account acct-x: repo is on its deny list" "  …FAILED, as before"
+check "$(qtree)" "" "  a login the repo is routed off still fails it: a requeue would fail the same way"
+has "$QL4" "FAILED: --account acct-x: repo is own's: it runs on acct-a only (tenants)" "  …FAILED, as before"
 qreset
 
 echo "S3's second landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a case per fix"

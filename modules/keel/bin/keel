@@ -38,6 +38,8 @@
     keel stand --arm | --disarm                   # whether bin/ask poll runs the sweep (off until the owner arms it)
     keel step <doc> S3 <word> [--date D] [--branch B] [--note N] [--stamp]   # a step's status (entry D6)
     keel landing [<dir>] [--base REF]             # exit 1 while a brief of this branch names an open step (S7)
+    keel held (--brief FILE|- | <doc> [S<n>…]) [--repo DIR] [--ref REF]   # exit 3 while a step it names waits on an
+                                                  #   answer that picks no listed option (rabbit-holes D3-A); 4: a step it could not judge
     keel embark [--root DIR] [--hours N] [--json] # /embark's list: the open items the sweep cannot take, older than N h (72), by block reason
     keel light <doc> --check [--record]           # may the open D-items go as a chat questionnaire (light C1-C4)
     keel light <doc> --plan                       # the AskUserQuestion calls, as JSON, to make exactly as printed
@@ -895,13 +897,658 @@ BOLD_REPLY_RE = re.compile(r"^\s*>\s*\*\*[A-Z][^*]{0,40}\*\*")
 
 
 def reopened(it, lines):
-    """The last bold-led `>` reply under the item is `> **Reopened.**`."""
-    k, last = it["end"], None
-    while k < len(lines) and not item_match(lines[k]) and not STOP_RE.match(lines[k].strip()):
-        if REPLY_RE.match(lines[k]) and BOLD_REPLY_RE.match(lines[k]):
+    """The last bold-led `>` reply under the item is `> **Reopened.**` — or the item holds intake's no-pick reopen
+    (NOPICK_RE) with no intake line after it that takes a new answer in: a `> **Picked.**` under a box that picks (the
+    owner's new Answer, taken in by `keel pull` or a Save) or a `> **Design pass.**`. That reopen binds by intake, not
+    by its place, so a builder's `> **Revised.**` or `> **Applied.**` under it releases nothing (rabbit-holes D3-A),
+    and neither does a builder's own edit of the box (the second fix round's review loop, item 15: the box read as a
+    pick cleared the text, and once /finish curated the branch, the git hold too). Every bold reply, `Picked.` and
+    `Design pass.` included, is the last reply for a session's plain `Reopened.` (item 9: as on main)."""
+    # the class is read only at a `Picked.` line (the second fix round, item 19): every parse, board and lookout
+    # pass calls this per item, and most items have none
+    last, nopick, pk = None, False, ()
+    mask = fence_mask(lines) if any(FENCE_LINE_RE.match(x) for x in lines) else set()
+    for k in range(it["end"], _region_end(it, lines, mask)):
+        if k not in mask and REPLY_RE.match(lines[k]) and BOLD_REPLY_RE.match(lines[k]):
+            if NOPICK_RE.match(lines[k]):
+                nopick = True
+            elif PICKED_RE.match(lines[k]):
+                # a `Picked.` under a box that picks nothing, or one someone other than the owner took, is no
+                # take-in (round 4: any session can write one)
+                pk = item_pick(it) if pk == () else pk
+                if pk not in ("none", None) and not taken_answer(it.get("answer") or ""):
+                    nopick = False
+            elif DESIGN_PASS_LINE_RE.match(lines[k]):
+                nopick = False
             last = lines[k]
+    return nopick or bool(last and REOPENED_RE.match(last))
+
+
+# ----------------------------------------------------------------------------- the pick class
+# rabbit-holes S3 (docs/rabbit-holes-2026-11-02.md, D3-A, the owner on 2026-11-03): which listed option an
+# answer picks. node-lands' D3 answer picked none ("I don't like any of these options …"), its builder
+# replied `Revised.` and rebuilt in the same run, and five review rounds followed; 5 of 216 answered items
+# with options picked none (the doc's out/answers-handcheck.md). The classes, from its answers script:
+#   letter       the answer names a listed option in a shape that picks it: a chat tap (`Taken in chat (…): B — …`,
+#                a pick by construction), its letter first (`B`, `A — …`, `Option C`, `(B)`), the opening words
+#                of one ("another road, please"), a choice verb before a letter ("go with B", "I'd take C"), or a
+#                pick relayed from chat (the relaying session read it with the owner in the conversation; its
+#                letter may be unread: None)
+#   recommended  it takes the ➤ Recommended pick with no letter: "as recommended", "go with the recommendation",
+#                a delegation ("your call"), or a bare go-ahead ("yes", "land everything …")
+#   none         everything else: a rejected premise, a fourth option, "neither", a question, a doubt
+# None for an item with no answer or no listed options. The hand-check's false positives (chat quotes, the
+# proxy "land everything") read as picks and its 5 true no-picks as none: keel's suite holds each.
+# A false `none` costs the owner one word in the Answer box; a false pick, a rabbit hole. So since the landing
+# review's second fix round (2026-11-05) the class errs to no pick (AGENTS.md's trap "A free-text matcher that
+# grants a permission leaks one way per review round"): five rounds of a pick by default with a growing list of
+# refusals each found new leaks ("I hate A", "Is B really needed?", "don't run it on the node"). A pick is a
+# shape on the lists below; a refusal list is kept only where a pick shape has matched and its next words may
+# take it back ("B is too complex", "B, no").
+PICK_TAKEN_RE = re.compile(r"^\s*(?:Taken (?:unattended|in chat) \([^)]*\)|Relayed from [^:\n]{0,80}):\s*")
+# a chat tap as light_write writes it: the listed letter, then the chip's label (its own text)
+PICK_TAP_RE = re.compile(r"^([A-Z])\s+—\s")
+# light_write's `Other — <text typed>`, stripped before the rules ("Other — as recommended", "Other — b")
+PICK_OTHER_RE = re.compile(r"^Other\s*[—–:-]\s*", re.I)
+PICK_LETTER_RE = re.compile(r"^\W*(?:(?i:option)\s+)?[*_]{0,2}([A-Z])[*_]{0,2}(?:\b|[—–\-.,:)]|$)")
+# a lone lowercase letter is a pick too ("b", "a, with the tweak"); "a cron job" stays the article (round 3), and
+# "e.g." and "i.e." are no letter (the second fix round)
+PICK_LOWER_RE = re.compile(r"^\W*(?:(?i:option)\s+)?([a-z])(?!\.\s*[a-z]\.)(?=\W*$|\s*[,.:;)]|\s+[—–-]\s)")
+PICK_ABBREV_RE = re.compile(r"^\.\s*[a-zA-Z]\.")   # "E.g. a cron job" with five options listed
+# words before a leading letter that refuse nothing (the second fix round, item 3: "No preference — B", "No, B")
+PICK_LEADIN_RE = re.compile(r"^\W*(?:(?:no\s+(?:strong\s+)?(?:preference|opinion|feelings?)|no\s+objections?|no|hmm+|"
+                            r"well|ok(?:ay)?|yes|yep|yeah|sure|fine|right|so|then)\s*[—–:,;.-]\s*)+", re.I)
+# what may follow a leading letter for it to pick: nothing, a separator ("A — …", "B, with a note", "(B)", "B + open
+# locally", "A (it's …)", a reply run into the box: "C **Applied.**"), or words said of a pick ("A it is", "A is fine",
+# "A over B", "A rather than B", "B to start", "C if Orca is installed, B otherwise"). Anything else ("B sucks", "C
+# sounds expensive", "B? Why not A?") is none (the second fix round, item 1; the real answers' sweep, docs/rabbit-holes-2026-11-02.md S3)
+PICK_LEAD_OK_RE = re.compile(
+    r"^[*_]{0,2}(?:\s*$|\s*[)\]]?\s*(?:[—–.,:;!)&/(\[]|(?:--|[-+])(?=\s|$))|\s+\*\*|\s+(?:it\s+is|it['’]s|"
+    r"is\s+(?:fine|good|ok|okay|right|enough|it)|"
+    # this build's review loop: "B is better than A", "B is the one we want", "B is best for now" pick too — whole shapes,
+    # each then the end or a separator (round 2: "B is the one we want to avoid", "B is best for nobody")
+    r"(?:is\s+(?:best|better|the\s+(?:one|pick|winner|way)|my\s+(?:pick|choice))|is\s+better\s+than\s+(?:(?i:option)\s+)?"
+    r"(?-i:[A-Z])|is\s+the\s+one\s+(?:we|i)\s+want|is\s+best\s+(?:for\s+now|overall|by\s+far|so\s+far|of\s+(?:the|these|"
+    r"them|all)))(?=\s*(?:[.,;!—–:]|$))|"
+    # round 2: the owner's real "A Approved", "D let's try …", "B seems to be the simplest, …"
+    r"approved?|let['’]?s\s+(?:go(?:\s+with\s+it)?(?=\s*(?:[.,;!—–:]|$))|do\s+(?:it|this|that)\b|"
+    r"try\s+(?!(?:something|another|a\s+different|again|other|anything)\b)\w+)|seems?\s+(?:to\s+be\s+)?(?:the\s+)?(?:simplest|best|right|easiest)|"
+    r"sounds?\s+(?:good|fine|right|great|ok|okay)|"
+    r"works(?:\s+for\s+me)?|looks?\s+(?:good|right|fine)|seems?\s+(?:fine|right|good|best)|please|for\s+now|over|"
+    r"rather\s+than|instead\s+of|not|vs\.?|versus|and|plus|with|but|because|then|now|definitely|of\s+course|"
+    r"all\s+the\s+way|wins|again|to\s+(?:start|begin)|if|when|unless|once|until)(?![\w-]))", re.I)
+# a choice verb before a letter, at the answer's start or a clause's ("go with B, but later", "I don't like A, go with
+# B", "B is out; go with A"); only fillers between the clause start and the verb, so "don't go with B" picks nothing
+PICK_CHOICE_RE = re.compile(
+    r"(?:^|[.;!:,—–]\s*)\W*(?:(?:i|we)(?:['’]d|['’]ll|\s+would|\s+will)?\s+|let['’]?s\s+|just\s+|then\s+|so\s+|"
+    r"ok(?:ay)?\s+|yes\s+|sure\s+|fine\s+|rather\s+)*(?:go(?:ing)?\s+(?:with|for)|pick(?:ed)?|take|choose|chose|"
+    r"prefer|vote(?:\s+for)?|do|use)\s+(?:(?i:option)\s+)?((?-i:[A-Z]))(?![\w'’-])", re.I)
+# the recommendation, bare or followed by a clause of its own ("Recommended, with a test too", "the recommended
+# one"), never by a verb about it ("the recommendation misses the point": a refusal)
+# a fallback before a choice verb: the letter is the owner's second choice, after an option of their own
+PICK_FALLBACK_RE = re.compile(r"\b(?:if\s+(?:that|this|it)\s+(?:fails|doesn['’]?t\s+work|won['’]?t\s+work)|failing\s+(?:that|this)|"
+                              r"if\s+(?:you\s+)?must|if\s+(?:we|you)\s+(?:have|need)\s+to|otherwise|as\s+a\s+fallback|"
+                              r"if\s+all\s+else\s+fails|at\s+worst|worst\s+case|if\s+not|else)\b", re.I)
+PICK_REC_RE = re.compile(r"^\W*(?:(?:=|as|per)\s*(?:the\s+)?recommend(?:ed|ation)\b|(?:the\s+)?recommend(?:ed|ation)"
+                         r"(?:\s+(?:one|option|pick))?(?:\W*$|\s*[,;:.!—–-]|(?=\s+(?:with|plus|and|but|please|then)\b)))", re.I)   # round 2: a lookahead
+# …and taken by a verb (the second fix round, item 4): "Go with the recommendation", "Yes, as recommended",
+# "Agree with the recommendation", "Follow your recommendation", "go with recommended"
+PICK_REC_TAKE_RE = re.compile(r"^\W*(?:(?:yes|yep|ok(?:ay)?|sure|fine|agreed?)\W+)?(?:(?:i|we)(?:['’]d|['’]ll)?\s+)?"
+                              r"(?:(?:go|agree|follow|take|stick|went|going)\s+(?:with\s+)?(?:the\s+|your\s+)?"
+                              r"recommend(?:ed|ation)(?:\s+(?:one|option|pick))?|(?:as|per)\s+(?:the\s+|your\s+)?"
+                              r"recommend(?:ed|ation))\b", re.I)
+# a delegation is the recommendation (the second fix round, item 6, Reversible: yes): "your call", "you have the
+# authority to decide" — the whole answer, bar go-ahead words (round 1 of its review loop: "Your call — but a cron job
+# would be simpler" and "Use the rented VM I have. I trust you with the details." delegate a detail of the owner's own
+# option), or a session's record of one (`Delegated in chat, <date>: "…"`, principal-council-isolation's D3)
+PICK_DELEGATED_RE = re.compile(r"^Delegated in chat\b[^:\n]{0,60}:", re.I)
+PICK_DELEGATE_RE = re.compile(r"\b(?:your\s+(?:call|choice|decision)|you\s+(?:decide|choose)|(?:use|trust)\s+your\s+"
+                              r"(?:judge?ment|call)|up\s+to\s+you|you\s+have\s+(?:the\s+)?authority\s+to\s+decide|"
+                              r"i\s+trust\s+you|whatever\s+you\s+(?:think|prefer|recommend))\b", re.I)
+# a relay's shape: a name, then ", in the … chat" (`Sam, in the managing session's chat, <date>: "…"`); the owner's
+# own "as I said in the chat" is no relay
+# round 4: the name and its comma; round 5: and the date every relay carries ("As I said, in the chat: …" is the owner's own)
+PICK_CHAT_RE = re.compile(r"^(?!\W*(?:as|per|like|in)\b)(?![^,\n]*\b(?:i|we)\s+(?:said|wrote|discussed)\b)[\w'’ .-]{1,40},\s*in (?:the |a |an )?[\w'’ -]{0,60}?\bchat\b[^\n:]{0,40}\d{4}-\d\d-\d\d[^\n:]{0,80}:", re.I)
+# the words right after a picked letter that take it back ("C is too complex", "B misses the point", "A is wrong",
+# "B, no", "(B) is too complex"), never a comparison that refuses the next letter ("A rather than B", "A, not B"):
+# rounds 4 and 5, past a joined list of letters and a quantifier ("A and B are both wrong", "A, B or C — all too
+# complex"); "not a …" is a refusal (the letter after "not" is a capital: the lookahead is case-sensitive)
+_PICK_LETTER_LIST = r"(?:\s*(?:,|/|&|\?|\b(?:and|or|nor)\b)\s*(?:(?i:option)\s+)?(?-i:[A-Z])\b\??)*"
+PICK_POST_REFUSE_RE = re.compile(r"^[)\].*_]*" + _PICK_LETTER_LIST + r"(?:\s*[—–:?,;!-])?\s*(?:(?:is|are|seems|looks|sounds|feels)\s+)?"
+                                 r"(?:both\s+|all\s+)?(?:the\s+|a\s+)?(?:(?:way\s+|far\s+)?too\s+[a-z]+|"
+                                 r"more complex|wrong|out\b|bad\b|not\b(?!\s+(?:sure|yet)\b)(?!\s+(?:(?i:option)\s+)?(?-i:[A-Z])\b)|"
+                                 r"no good|no\b|nope|nah|neither|none|non-starter|miss(?:es)?\b|would(?:n['’]?t)? break|breaks\b|"
+                                 r"won['’]?t work|doesn['’]?t work|don['’]?t work|isn['’]?t|aren['’]?t|overkill|over-?engineered)", re.I)
+# a letter in a list the answer goes on to say "both" or "all" of is no single pick ("A and B both add a road")
+PICK_MULTI_RE = re.compile(r"^(?:\s*(?:,|/|&|\b(?:and|or)\b)\s*(?:(?i:option)\s+)?(?-i:[A-Z])\b)+\s*(?:(?:are|is)\s+)?(?:both|all)\b")
+PICK_ALL_REFUSED_RE = re.compile(r"\b(?:none of (?:these|them|the options)|neither of|not (?:any|one) of (?:these|them))\b"
+                                 r"|^\W*(?:none|neither)\b", re.I)
+PICK_ITEM_PREFIX_RE = re.compile(r"^\W*D\d+\s*[:.—–-]\s*")
+# words that refuse a go-ahead or a recommendation: "Recommendation: none of these work", "yes, but rather …"
+_PICK_REFUSALS = (r"none|neither|nor|not(?!\s+yet\b)|don['’]?t|do not|never|avoid|skip|"
+                  r"(?:drop|scrap|kill|ditch) (?:it|them|this|that|both|all)|"
+                  r"instead|rather|misses|too complex|more complex|wrong|disagree")
+PICK_STRONG_REFUSE_RE = re.compile(r"\b(?:%s)\b" % _PICK_REFUSALS, re.I)
+PICK_REFUSE_RE = re.compile(r"\b(?:%s|but|except)\b|\bno(?:[,.;:!]|\s*$)" % _PICK_REFUSALS, re.I)
+PICK_GO_RE = re.compile(r"^\W*(?:\+1\b|(?:i\s+)?(?:yes|yep|yeah|ok|okay|sure|agreed?|approved?|lgtm|go(?:\s+ahead)?|do\s+it|"
+                        r"proceed|ship\s+it|sounds\s+good|fine|land|finish|merge)\b)", re.I)
+# a go-ahead is the recommendation only when the rest of it is words about going ahead: "Go with the rented VM I
+# already have", "Sure — a cron job on the node" name the owner's own option (round 3). The hand-check's proxy
+# "land everything, you're a manager, please finish this build for me" stays a go-ahead.
+PICK_GO_WORDS = frozenset(
+    "i yes yep yeah ok okay sure agree agreed approve approved lgtm go ahead do it proceed ship sounds good great fine "
+    "land finish merge launch everything all of the this that build branch work now please thanks thank you for me "
+    "you're you are a manager let's lets just so then today too is it's".split())
+
+
+# words that withdraw or doubt a pick (round 1 of the second fix round's review loop): in the first clause after it, a
+# question or a doubt ("A — would that scale?", "B — maybe", "A, not yet", "go with B — or not", "B, but honestly it is
+# wrong") or a refusal alone ("B; no", "A! No.", "A — never", "A — I'd rather not"); a retraction anywhere near the
+# start ("Go with B. Actually, scrap that, none."). Only the first clause: a long answer's later side question ("A is
+# fine for now … Have you considered GH actions?") is no doubt of its pick, and a parenthesis is an aside
+PICK_DOUBT_RE = re.compile(r"\?|\b(?:maybe|perhaps|not\s+sure|unsure|hmm+|hold\s+on|wait|let['’]?s\s+talk|talk\s+(?:first|about)|"
+                           r"discuss|think\s+about|not\s+yet|or\s+not|if\s+(?:it|that|this)\s+were|"
+                           # this build's review loop, round 1: "against" only as a stance ("I'm against it"), never
+                           # "run against main"; a verdict on the pick is PICK_VERDICT_RE's, at a clause's start
+                           r"(?:i['’]?m|i\s+am|we['’]?re|we\s+are)\s+against|against\s+(?:it|this|that)\b|"
+                           r"(?:it|that|this)(?:\s+is|['’]s)\s+(?:wrong|bad|a\s+mistake)|hate|terrible|awful|"
+                           r"not\s+convinced|don['’]?t\s+know|dunno|tbd|tbc|scratch\s+(?:it|that)|"
+                           r"if\s+(?:it|that|this)\s+(?:weren['’]?t|wasn['’]?t)|design\s+pass|disagree|dislike)\b", re.I)
+PICK_RETRACT_RE = re.compile(r"\b(?:actually[,\s]+(?:no|not|none|scrap|forget|let['’]?s\s+not)|scrap\s+that|never\s?mind|"
+                             r"on\s+second\s+thought|forget\s+(?:that|it)|take\s+(?:it|that)\s+back|let\s+me\s+think|"
+                             r"actually[,\s]+(?:use|go\s+with|take|pick|do)\s+(?:option\s+)?(?-i:[A-Z])\b)", re.I)
+# a verdict clause on the pick right after it, or in an aside ("B, rejected", "B (veto)", "B — please don't"); in a later
+# sentence it is about something else ("Rejected: B, as it repeats the loop": round 2 of this build's loop)
+PICK_CLAUSE_VERDICT_RE = re.compile(r"^\W*(?:please\s+)?(?:do\s+not|don['’]?t|rejected|vetoed|veto|declined|denied|broken|"
+                                    r"against)\W*$", re.I)
+PICK_CLAUSE_REFUSE_RE = re.compile(r"^\W*(?:so\s+)?(?:(?:hell|god|oh|please|ugh)\s+)?(?:not\s+really|no+|nope|nah|never|not|none|wrong|no\s+way|absolutely\s+not|obviously\s+not|"
+
+                                   r"(?:i['’]?d\s+)?rather\s+not)\W*$", re.I)
+# a leading letter joined to another listed letter ("A and B", "A/B", "B+C+add video", "A; B", "A. Also C.", "A (and C)",
+# "B but with A's cron") is a combination, no listed option; the joining words in any case ("A With C"), the letter a
+# capital (this build's review loop, round 1)
+# one separator character per step (#504's review round: `--?` inside the star split a dash run exponentially)
+PICK_COMBO_RE = re.compile(r"^[*_)\]]{0,3}\s*(?:(?:[,;/&+(.—–-]\s*)*(?i:(?:and|or|nor|plus|with|also|then|but)\s+)+|"
+                           r"(?:[,;/&+(]\s*)+)(?:(?i:option)\s+)?([A-Z])(?![\w-])")
+PICK_JOIN_RE = re.compile(r"^\s*(?:\+|&|\band\b|\bplus\b)", re.I)   # an option's words joined to more: "rent a VM and a cron job"
+# after a capital "A" or "I", the words that make it the article or the pronoun, never a listed letter ("but I'd add a
+# test", "and I will review it", "A quick note": this build's review loop, round 1) — bar the words said of a letter
+# ("but A too", "and A is fine")
+PICK_WORD_NEXT_RE = re.compile(r"['’](?!s\b)|\s+(?!(?:too|also|instead|as|is|was|would|could|works|wins|then|now|only|"
+                               r"alone|here|please|first|later|anyway|it|or|and|plus|with)\b)[a-z]")
+
+
+def _is_ref(s, i, letters, joined=True):
+    """The capital at `s[i]` names a listed letter: in `letters`, not the pronoun "I" (PICK_WORD_NEXT_RE), and not the
+    article "A" — which it is only unjoined (`joined` False), at the start of `s` or of a sentence in it ("… decide. A
+    quick note"); after a joining word it is the letter ("B, but A seems safer", "B and A together": round 2)."""
+    x = s[i:i + 1]
+    if not (x and x in letters) or (x == "I" and PICK_WORD_NEXT_RE.match(s[i + 1:])):
+        return False
+    return not (x == "A" and not joined and re.search(r"(?:^|[.!?:]\s)[\W]*$", s[:i]) and PICK_WORD_NEXT_RE.match(s[i + 1:]))
+
+
+def _refs(s, letters, skip=None, joined=True):
+    """The listed letters `s` names as options, in order: a standalone capital in `letters` (bar `skip`) that _is_ref
+    reads as a letter."""
+    out = []
+    for m in re.finditer(r"(?<![\w'’-])([A-Z])(?![\w-])", s):
+        x = m.group(1)
+        if x != skip and _is_ref(s, m.start(1), letters, joined):
+            out.append(x)
+    return out
+
+
+def _combo(rest, letters):
+    """`rest`, the words after a picked letter, join it to another listed letter (PICK_COMBO_RE): a combination,
+    no listed option ("A and B", "use B+C", "A with B"; the review loop's round 2: every road, not the lead alone)."""
+    c = PICK_COMBO_RE.match(rest)
+    return bool(c) and _is_ref(rest, c.start(1), letters)
+
+
+# a "but", "though", "however" or "if" clause after a pick that takes it back: the pick's own failure ("B, but it
+# won't work on the node", "B, though it's a bad idea", "B! But it breaks the node") or another listed letter ("A, but
+# honestly C"). A clause that sets a condition on the pick stays a pick ("B, but don't touch the docs", "B, but not on
+# Fridays", "B, if it doesn't slow the check", the owner's "B, but I don't understand why Opus needs so much time":
+# round 3's bare not, no and don't refused all four; this build's review loop, round 1)
+PICK_BUT_RE = re.compile(r"(?:(?:^|[;,.!?—–:]\s*|\s)\s*(?:but|though|although|however|except)|(?:^|[;,.!?—–:]\s*)\s*if)\b",
+                         re.I)   # round 3: "B is fine but I don't want it", no comma
+# round 2 of this build's loop (its S1): the narrowing above read every unlisted refusal as a pick ("B, but I don't
+# want it", "B, but it doesn't scale", "B, though I'm not sold"). Inverted, as the trap asks: a but-clause holding a
+# refusal word refuses, unless it opens with a condition on the pick (PICK_CONDITION_RE)
+PICK_BUT_REFUSE_RE = re.compile(r"\b(?:won['’]?t|wouldn['’]?t|doesn['’]?t|isn['’]?t|aren['’]?t|didn['’]?t|don['’]?t|can['’]?t|cannot|"
+                                r"shouldn['’]?t|not|no|never|none|neither|nor|nope|rather|instead|against|wrong|bad|"
+                                r"changed\s+my\s+mind|not\s+sold|disagree|dislike|hate|reject\w*|drop|scrap|skip\s+(?:it|this|that)|"
+                                r"break|breaks|broken|fails?|"
+                                # round 3 of this build's loop
+                                r"too\s+\w+|overkill|prefer\w*|different|expensive|risky|bother|rethink|"
+                                r"vetoe?d?|denied|declined|gone|"
+                                # #504's review round 3
+                                r"misses|more\s+complex|(?:kill|ditch)\s+(?:it|them|this|that))\b", re.I)
+# a condition on the pick, whatever words follow: "but don't touch the docs", "but not on Fridays", "but no new
+# dependencies", "but only if …", "but I want the session to open …", the owner's "but I don't understand why …"
+PICK_CONDITION_RE = re.compile(r"^\W*(?:please\s+|just\s+|also\s+)?(?:(?:don['’]?t|do\s+not|never)\s+(?!(?:want|like|think|"
+                               r"agree|need|care|know|see|go|do|use|pick|take|build|bother|proceed|implement|ship|start|merge|land|"
+                               r"continue|bother)\b)[a-z]+|not\s+(?:on|in|for|before|after|until|during|yet\s+on|from|through|via)\b|no\s+(?:new|more|extra|other)\b|only\s+(?:if|when|after|once)\b|"
+                               r"(?:i|we)(?:\s+(?:want|need|would\s+like)|['’]d\s+like)\s+(?!(?:option\s+)?(?-i:[A-Z])\b|nothing|none|it\s+gone|"
+                               r"(?:a|an|some)\s+(?:different|other|new)|something\s+else|another)|"
+                               r"(?:i|we)\s+(?:don['’]?t|do\s+not)\s+(?:understand|see|get)\s+why|make\s+sure|keep\s+|"
+                               # a clarification of what the pick leaves alone: "but it does not skip the review"
+                               r"(?:it|this|that)\s+(?:does|do|will|would|should)(?:\s+not|n['’]t)\s+(?:skip|drop|change|affect|"
+                               r"touch|remove|replace|block|need|require|mean)\b)", re.I)
+PICK_SELF_REFUSE_RE = re.compile(r"\b(?:won['’]?t|wouldn['’]?t|doesn['’]?t|can['’]?t|cannot|will\s+not|does\s+not)\s+work\b|"
+                                 r"\b(?:a\s+)?bad\s+idea\b|\ba\s+mistake\b|\brather\s+(?:\w+\s+)?(?:not|didn['’]?t|wouldn['’]?t)\b|"
+                                 r"\bbroken\b|\bbreaks\b|\bnot\s+really\b|\bplease\s+(?:do\s+)?(?:not|don['’]?t)\b|"
+                                 r"\b(?:would|will|might)\s+break\b|\bno\s+good\b|\bdead\s+end\b|"
+                                 r"\b(?:is|it['’]s|that['’]s|looks|seems)\s+(?:wrong|bad)\b", re.I)
+# a verdict on the pick at a clause's start ("B — reconsider", "B — talk to me first", "B — give me other options", "B —
+# dead end"); deeper in a clause it is a reason ("A, but … in case we need to reconsider": this build's review loop)
+PICK_VERDICT_RE = re.compile(r"^\W*(?:please\s+)?(?:reconsider|rethink|talk\s+to\s+me|(?:give|show|send)\s+me\s+(?:other|more|new|"
+                             r"different)|(?:a\s+)?dead\s+end|reject(?:ed)?|vetoe?d?|declined?|denied)\b", re.I)
+# a clause that refuses the pick on its own, in a short answer's later sentence too ("B. That won't work.", "B. I don't
+# think so.", "B. Let's not.", "B. Can't do it.", "B. It's a bad idea."); "B, since A won't work" names no pick
+PICK_SELF_CLAUSE_RE = re.compile(
+    r"^\W*(?:(?:(?:that|this|it|which)(?:['’]s|\s+is|\s+was|\s+would\s+be|\s+will\s+be)?\s+)?(?:(?:won['’]?t|wouldn['’]?t|"
+    r"doesn['’]?t|can['’]?t|cannot|will\s+not)\s+(?:work|do|fly|scale)|(?:a\s+)?bad\s+idea|a\s+mistake|wrong|broken|"
+    r"no\s+good|a\s+dead\s+end|not\s+(?:it|right|good|great|an\s+option))|(?:that|this|it)\s+(?:would|will|might)\s+break|"
+    r"(?:i|we)\s+(?:don['’]?t|do\s+not)\s+think\s+so|let['’]?s\s+not|can['’]?t\s+do\s+(?:it|that|this))\b", re.I)
+# a clause naming another letter as joined to the pick, or instead of it ("B. Or C.", "I'd take B, but C too")
+PICK_OR_RE = re.compile(r"^\s*(?:or|but|and|plus)\s+(?:(?i:option)\s+)?(?=(?-i:[A-Z])\b)", re.I)
+PICK_ACTUALLY_RE = re.compile(r"\bactually[,\s]+(?:(?i:option)\s+)?(?=(?-i:[A-Z])\b)", re.I)   # "B. Actually C."
+# another listed letter chosen after the pick ("A works, but I'd prefer B", "A is fine, B is better")
+PICK_OTHER_LETTER_RE = re.compile(r"\b(?:prefer|go\s+with|pick|take|choose|use|rather)\s+(?:(?i:option)\s+)?((?-i:[A-Z]))\b"
+                                  r"|\b((?-i:[A-Z]))\s+(?:is|'s|would\s+be)\s+(?:better|best|preferable)\b", re.I)
+# the recommendation joined to a letter ("Recommended and C", "Recommended and also C", "Recommended, but with C's cron")
+PICK_REC_JOIN_RE = re.compile(r"recommend\w*(?:\s+(?:one|option|pick))?\W*(?:(?:and|but|plus|also|with|then)\W+)+"
+                              r"(?:(?i:option)\s+)?(?=[A-Z](?![\w-]))", re.I)
+PICK_LATER_DOUBT_RE = re.compile(r"^\W*(?:maybe|perhaps|not\s+sure|unsure|hold\s+on|wait|let['’]?s\s+(?:talk|discuss)|not\s+yet|"
+                                 r"(?:i|we)\s+(?:don['’]?t|do\s+not)\s+know|dunno|tbd|tbc|(?:i|we)\s+disagree|(?:i|we)\s+hate|"
+                                 r"scratch\s+(?:it|that)|on\s+second\s+thought)\b", re.I)
+# a switch to another letter, in any sentence ("B. I want A", "B... I mean A", "B. Switch to A", "B looks good but C looks
+# better"; round 2)
+PICK_SWITCH_RE = re.compile(r"\b(?:mean|meant|want|switch(?:ing)?\s+to|change\s+(?:it\s+)?to|make\s+it|go\s+for)\s+"
+                            r"(?:(?i:option)\s+)?((?-i:[A-Z]))(?![\w'’-])"
+                            r"|\b((?-i:[A-Z]))\s+(?:looks?|seems?|sounds?|is|would\s+be)\s+(?:better|best|preferable|nicer)\b", re.I)
+PICK_LATER_DOUBT_RE_BARE = re.compile(PICK_LATER_DOUBT_RE.pattern + r"(?:\s+(?:it|that|this|yet|now|so|first))?\W*", re.I)
+# a later sentence's clause that withdraws with words after it (round 3): a doubt bar "wait for …", "not yet …", "talk
+# to me if …" (reports), and a past verdict ("Rejected by the team")
+PICK_LATER_CLAUSE_RE = re.compile(r"^\W*(?:maybe(?:\s+not)?|perhaps|not\s+sure|unsure|hold\s+on|wait(?![ \t]+(?:for|until|till|on)\b)|"
+                                  r"let['’]?s\s+(?:talk|discuss)|(?:i|we)\s+(?:don['’]?t|do\s+not)\s+know|dunno|tbd|tbc|"
+                                  r"(?:i|we)\s+disagree|(?:i|we)\s+hate|scratch\s+(?:it|that)|on\s+second\s+thought|"
+                                  r"rejected|vetoed|declined|denied|just\s+kidding)\b", re.I)
+# the owner's own road named beside a pick ("C — I'd go with something else", "B. Something else entirely.", "first try a
+# fourth way", "B with a totally different design", "B — something like it but not it", "B. Just kidding."; round 3)
+PICK_ELSE_RE = re.compile(r"\b(?:something\s+else|anything\s+else|just\s+kidding|j/?k|a\s+fourth|another\s+(?:way|road|option|"
+                          r"approach|design)|(?:a\s+)?(?:totally\s+|completely\s+|entirely\s+)?different\s+(?:design|approach|"
+                          r"option|road|way|plan|idea)|if\s+all\s+else\s+fails|something\s+like\s+it)\b", re.I)
+PICK_SHORT = 200   # a short answer's every sentence is read for a withdrawal; a long one's first only
+
+
+def _or_letter(c, letters, letter):
+    """The clause opens with or/but/and/plus and another listed letter (PICK_OR_RE, _refs)."""
+    m = PICK_OR_RE.match(c)
+    return bool(m) and _is_ref(c, m.end(), letters)
+
+
+def _cut_echo(rest, own):
+    """`rest` past the picked option's own words when it opens with them (all of them, or at least three): a take that
+    writes "C — neither: a design pass first" for C's own text is judged on what follows it, never on the option's
+    words (this build's review loop, round 1: "design pass", "wait" and "against" inside 24 of 1326 real options)."""
+    ow = [w.lower() for w in _pick_words(plain(own or "").replace(RECOMMENDED_TAG.strip(), ""))]
+    toks = list(re.finditer(r"[A-Za-z0-9'’]+", rest))
+    k = 0
+    while k < len(toks) and k < len(ow) and toks[k].group().lower() == ow[k]:
         k += 1
-    return bool(last and REOPENED_RE.match(last))
+    if not (k and (k == len(ow) or k >= 3)):
+        return rest
+    # past the matched word's own closing punctuation too (round 3: "`<topic>`" left ">", which no lead shape reads)
+    return re.sub(r"^[\"'”’>*_`\])]+", "", rest[toks[k - 1].end():])
+
+
+def _withdrawn(a, rest, own="", letters=(), letter=None):
+    """The pick withdrawn or doubted: a retraction in the answer's first 200 characters outside parentheses
+    (PICK_RETRACT_RE, or "actually" before another listed letter), an aside that refuses or doubts, a question or a
+    doubt in the first clause of `rest`, the words after the pick (PICK_DOUBT_RE), another letter offered instead or
+    beside it, a but-clause that takes it back (PICK_BUT_RE), or a clause that refuses alone (PICK_CLAUSE_REFUSE_RE,
+    PICK_SELF_CLAUSE_RE) — in a short answer's every sentence, a long one's first — unless that clause is the start of
+    the picked option's own text `own`, echoed as a take writes it ("B — no" where B reads "no"). `letters` are the
+    item's listed letters: an "A" or "I" that is the article or the pronoun names none (_refs)."""
+    head = re.sub(r"\([^()]*\)", " ", a[:200])
+    if PICK_RETRACT_RE.search(head):
+        return True
+    if any(_is_ref(head, m.end(), letters) and head[m.end()] != letter for m in PICK_ACTUALLY_RE.finditer(head)):
+        return True
+    rest = _cut_echo(rest, own)
+    # an aside that refuses or doubts, "B (no)", "B (not really)", "B (I disagree)", "B (rejected)": round 3 of the
+    # review loop, and this build's round 1
+    # an aside of a few words only: a long parenthesis is an attribution or a reason ("(Reversible: yes; <the owner>,
+    # …: "… don't wait for me")", a real skipper take)
+    if any(PICK_CLAUSE_REFUSE_RE.match(x) or PICK_CLAUSE_VERDICT_RE.match(x) or (len(x) <= 40 and (PICK_DOUBT_RE.search(x.replace("?", ""))
+           or PICK_SELF_CLAUSE_RE.match(x) or PICK_VERDICT_RE.match(x))) for x in re.findall(r"\(([^()]*)\)", rest)):
+        return True
+    ow = [w.lower() for w in _pick_words(plain(own))]
+    body = re.sub(r"\([^()]*\)", " ", rest.replace(RECOMMENDED_TAG.strip(), ""))
+    split = lambda t: [c for c in re.split(r"[;,.!?—–:]", t) if c.strip()]   # noqa: E731
+    clauses = split(body)
+    echo = lambda c: (lambda cw: bool(cw) and ow[:len(cw)] == cw)([w.lower() for w in _pick_words(c)])  # noqa: E731
+    first_q = [c for c in re.split(r"[;,.!—–:]", body) if c.strip()]
+    if first_q and (PICK_DOUBT_RE.search(first_q[0]) or _or_letter(first_q[0], letters, letter)) and not echo(first_q[0]):
+        return True
+    sentences = re.split(r"(?<=[.!?])\s", body.strip())
+    for k, s in enumerate(sentences if len(body) <= PICK_SHORT else sentences[:1]):
+        # round 3: a doubt bar its question marks ("A please, though I'm unsure"), another letter joined or offered
+        # ("B. Or C.", "I'd take B, but C too"); this build's round 1: every sentence of a short answer ("B. That won't
+        # work."), a but-clause read to its sentence's end ("B, However, it won't work"), in any case ("B, But …")
+        for b in PICK_BUT_RE.finditer(s):
+            tail = s[b.end():]
+            seg = re.split(r"[;,.!?—–:]", tail)[0]
+            if PICK_SELF_REFUSE_RE.search(tail) or PICK_CLAUSE_REFUSE_RE.match(seg) or PICK_CLAUSE_VERDICT_RE.match(seg) \
+                    or PICK_VERDICT_RE.match(seg):
+                return True
+            if b.group(0).strip(" ;,.!?—–:").lower().startswith("if"):   # "B, if it doesn't slow the check": a condition
+                continue
+            # another letter after "but" ("A, but honestly C"; never after "if": "C if Orca is installed, B otherwise"), or
+            # any refusal the clause holds, bar a condition it opens with (round 2's S1)
+            if _refs(" ".join(re.split(r"\s+", tail.strip())[:3]), letters, letter) \
+                    or (PICK_BUT_REFUSE_RE.search(tail) and not PICK_CONDITION_RE.match(tail)):
+                return True
+        for c in split(s):
+            if echo(c):
+                continue
+            if _or_letter(c, letters, letter):
+                return True
+            if k == 0 and (PICK_DOUBT_RE.search(c.replace("?", "")) or PICK_SELF_CLAUSE_RE.match(c) or PICK_VERDICT_RE.match(c)):
+                return True
+        # a later sentence withdraws only bare ("B. Not sure.", "B. That won't work.", "B. Rejected."): "Wait for CI first.",
+        # "Reconsider B after S5." and "S3b and S8 wait for the rebase fix" say something else (a real skipper take; round 2)
+        # — or when it opens with another listed letter, or switches to one ("B. A please", "B. Sorry, I meant A")
+        if k > 0 and not _refs(s, letters, letter, joined=False):
+            # round 3 (its S1): "B. That won't work for us.", "B. I don't think so, sorry.", "B. Rejected by the team.",
+            # "B. Looks fine. Not sure about it though." — never "Wait for CI first." or "Talk to me if the landing stops."
+            if any(PICK_SELF_CLAUSE_RE.match(c) or PICK_LATER_CLAUSE_RE.match(c) for c in split(s)):
+                return True
+        if PICK_ELSE_RE.search(re.sub(r"\([^()]*\)", " ", s)):
+            return True
+        if k > 0:
+            bare = s.strip().rstrip(".!?… ")
+            if any(r.fullmatch(bare) or r.fullmatch(bare + ".") for r in (PICK_LATER_DOUBT_RE_BARE, PICK_SELF_CLAUSE_RE,
+                                                                          PICK_VERDICT_RE, PICK_CLAUSE_REFUSE_RE,
+                                                                          PICK_CLAUSE_VERDICT_RE)):
+                return True
+            lead = re.match(r"^\W*([A-Z])(?![\w'’-])", s)
+            # …as a pick ("B. A please", "B. C it is"), never a statement about it ("B rested on that module not existing")
+            if lead and lead.group(1) != letter and _is_ref(s, lead.start(1), letters, joined=False) \
+                    and PICK_LEAD_OK_RE.match(s[lead.end(1):]) and not re.match(r"\s+(?:and|or|plus|with|but|because|if|when|"
+                                                                               r"unless|once|until|then|now|over|not)\b", s[lead.end(1):], re.I):
+                return True
+        if any(x and x in letters and x != letter for m2 in PICK_SWITCH_RE.finditer(s) for x in m2.groups()):
+            return True
+    first = split(sentences[0]) if sentences else []
+    return any(PICK_CLAUSE_REFUSE_RE.match(c) and not echo(c) for c in clauses) \
+        or any(PICK_CLAUSE_VERDICT_RE.match(c) and not echo(c) for c in first)
+
+
+def _pick_words(s):
+    return re.findall(r"[A-Za-z0-9'’]+", s)
+
+
+def _post_refuses(post, letter, options):
+    """The words right after a letter take it back (PICK_POST_REFUSE_RE, or a list said "both" of: PICK_MULTI_RE) —
+    unless they are the option's own text echoed, as a take writes it: the post's words up to its first `.,;:(`
+    (the chip's ` (Recommended)` off) are the start of the option's own words ("B — no" where B reads "no", "A — no
+    extra round" where A reads "no extra round take"; round 5, and the second fix round's S1)."""
+    if not (PICK_POST_REFUSE_RE.match(post) or PICK_MULTI_RE.match(post)):
+        return False
+    own = [w.lower() for w in _pick_words(plain(next((t for l, t in options if l == letter), "")))]
+    p = post.replace(RECOMMENDED_TAG.strip(), "")
+    p = re.sub(r"^[\s)\].*_]*[—–:,-]?\s*", "", p)
+    said = [w.lower() for w in _pick_words(re.split(r"[.,;:(]", p, maxsplit=1)[0])]
+    return not (said and own[:len(said)] == said)
+
+
+def _lead_pick(b, letters, options):
+    """The letter `b` leads with when that picks it (PICK_LETTER_RE, or a lone lowercase PICK_LOWER_RE), followed by
+    nothing, a separator or words said of a pick (PICK_LEAD_OK_RE), not joined to another listed letter
+    (PICK_COMBO_RE), not withdrawn (_withdrawn) and not taken back (_post_refuses); else None."""
+    m = PICK_LETTER_RE.match(b)
+    lower = False
+    if not (m and m.group(1) in letters):
+        m, lower = PICK_LOWER_RE.match(b), True
+        if not (m and m.group(1).upper() in letters):
+            return None
+    letter, rest = m.group(1).upper(), b[m.end(1):]
+    if PICK_ABBREV_RE.match(rest) or not PICK_LEAD_OK_RE.match(rest):
+        return None
+    if lower:   # "a, b and c are all bad", "a, and c": the list's letters read as the capitals the rules know, before
+        # any of them (this build's review loop, round 1: the combination read an upper-cased "AND")
+        # a lone "a" or "i" only where the end or a separator follows it ("b, a"; round 2): "a cron job" is the article
+        lift = lambda t: re.sub(r"(?<![\w'’])([a-z])(?![\w'’-])", lambda x: x.group(1).upper()   # noqa: E731
+                                if x.group(1).upper() in letters and (x.group(1) not in "ai"
+                                                                      or re.match(r"\s*(?:$|[,.;:)/&+])", t[x.end():]))
+                                else x.group(1), t)
+        rest = lift(rest)
+        b = b[:m.start(1)] + letter + rest
+    own = next((t for l, t in options if l == letter), "")
+    cut = _cut_echo(rest, own)
+    other = [x for m2 in PICK_OTHER_LETTER_RE.finditer(cut[:200]) for x in m2.groups() if x and x in letters and x != letter]
+    if other or _combo(cut, letters) or _withdrawn(b, rest, own, letters, letter):
+        return None
+    # past the option's own words, what follows is judged as words after a letter ("A — rent a cloud VM is out; B")
+    return None if _post_refuses(rest, letter, options) or (cut is not rest and _post_refuses(cut, letter, options)) \
+        else letter
+
+
+def _pick_norm(t):
+    """`t` lower-cased, its punctuation and spacing folded to single spaces: an answer compared with an option's text."""
+    return " ".join(re.findall(r"[a-z0-9'’]+", (t or "").lower()))
+
+
+def pick_of(answer, options):
+    """(class, letter) of one answer against its item's listed options [(letter, text)]: class "letter",
+    "recommended" or "none", or (None, None) when there is no answer or no option to pick. Each pick is a shape
+    on the lists above; whatever matches none of them is none."""
+    a = (answer or "").strip()
+    if not a or not options:
+        return None, None
+    letters = [o[0] for o in options]
+    m = PICK_TAKEN_RE.match(a)
+    yolo, tap = bool(YOLO_ANSWER_RE.match(a)), bool(CHAT_ANSWER_RE.match(a))
+    if m:
+        a = a[m.end():].strip()
+        t = PICK_TAP_RE.match(a)
+        if tap and t and t.group(1) in letters:   # light_write writes a listed letter only for a tap
+            return "letter", t.group(1)
+    a = PICK_OTHER_RE.sub("", a, count=1)
+    a = PICK_ITEM_PREFIX_RE.sub("", a, count=1)   # "D1: B, …"
+    every_refused = bool(PICK_ALL_REFUSED_RE.search(a[:160]))
+    if not every_refused:
+        b = PICK_LEADIN_RE.sub("", a, count=1)
+        hit = _lead_pick(b, letters, options)
+        if hit:
+            return "letter", hit
+        # #504's review round: the answer is one option's whole text ("merge", "no"), which the option-words road
+        # below (a head over 8 characters) and the go-ahead road misread as the recommendation or as none
+        # a: the lead-in cut ate "No."; a question ("Merge?") is none unless the option's own text asks one (round 2)
+        whole = [l for l, t in options if _pick_norm(plain(t)) and _pick_norm(plain(t)) == _pick_norm(a)
+                 and ("?" in plain(t) or "?" not in a)]
+        if len(whole) == 1:
+            return "letter", whole[0]
+        low = " ".join(_pick_words(b)).lower()
+        for letter, text in options:   # the answer opens with an option's own words ("another road, please")
+            head = " ".join(_pick_words(plain(text))[:4]).lower()
+            if len(head) > 8 and (low + " ").startswith(head + " "):
+                rest = b[list(re.finditer(r"[A-Za-z0-9'’]+", b))[len(head.split()) - 1].end():]
+                # past the option's words beyond its first four too (round 2: "Rent a cloud VM for the node" read none)
+                rest = _cut_echo(rest, " ".join(_pick_words(plain(text))[4:])) if len(_pick_words(plain(text))) > 4 else rest
+                # the option's words then a separator or words said of a pick, as after a letter: "rent a cloud VM
+                # sounds expensive" is none (round 1 of the review loop)
+                if PICK_LEAD_OK_RE.match(rest) and not PICK_JOIN_RE.match(rest) and not PICK_STRONG_REFUSE_RE.search(rest) \
+                        and not _post_refuses(rest, letter, options) and not _withdrawn(b, rest, text, letters, letter):
+                    return "letter", letter
+        for x in PICK_CHOICE_RE.finditer(a[:160]):
+            rest = a[x.end(1):]
+            if PICK_FALLBACK_RE.search(a[:x.start(1)]):   # round 2: the letter as a fallback to the owner's own option
+                continue
+            if x.group(1) in letters and not _post_refuses(rest, x.group(1), options) and not _combo(rest, letters) \
+                    and not _withdrawn(a, rest, next((t for l, t in options if l == x.group(1)), ""), letters, x.group(1)):
+                return "letter", x.group(1)
+    if yolo:   # keel yolo's take is the ➤ Recommended pick by construction, whatever its words
+        return "recommended", None
+    m = PICK_REC_RE.match(a) or PICK_REC_TAKE_RE.match(a)
+    # round 4: "Recommendation: none of these work" refuses; "Recommended, but skip the docs" still takes it
+    # the review loop's round 2: a recommendation questioned, doubted or withdrawn ("recommended?", "Recommended, no",
+    # "as recommended, not yet") is none, as a letter is
+    if m and not every_refused and not PICK_STRONG_REFUSE_RE.search(re.split(r"\bbut\b", a[m.end():], maxsplit=1)[0]) \
+            and not _withdrawn(a, re.sub(r"^\s*(?:and|then|with|plus|please)\b", "", a[m.end():], flags=re.I), "", letters) \
+            and "?" not in a[:m.end()] \
+            and not any(_is_ref(a, j.end(), letters) for j in PICK_REC_JOIN_RE.finditer(a)):
+        return "recommended", None
+    d = PICK_DELEGATE_RE.search(a[:300])
+    if d and not every_refused and not PICK_STRONG_REFUSE_RE.search(a) and (
+            (PICK_DELEGATED_RE.match(a) and not _withdrawn(a, a[d.end():], "", letters) and not PICK_DOUBT_RE.search(a[:d.start()])
+             and not PICK_DOUBT_RE.search(a[d.end():]) and not _refs(a, letters, joined=False))
+            or (not PICK_DOUBT_RE.search(a) and not re.search(r"\bbut\b", a, re.I)
+                                           and not _withdrawn(a, a[d.end():], "", letters) and all(
+                w.lower() in PICK_GO_WORDS for w in _pick_words(PICK_LEADIN_RE.sub("", a[:d.start()]) + " " + a[d.end():])))):
+        return "recommended", None
+    if PICK_STRONG_REFUSE_RE.search(a[:160]):   # a refusal leads; a long answer's later "not" is its reasons
+        return "none", None
+    m = PICK_CHAT_RE.match(a)
+    if m:
+        # round 3 of the review loop: a relay of words that refuse or doubt ("no", "I hate all three", "maybe B? let's
+        # talk first") is none; a relayed question that asks for work ("can you dispatch those finishes …?") stays a pick
+        q = a[m.end():].strip().strip('"“”')
+        qc = [c for c in re.split(r"[;,.!—–:]", q) if c.strip()]
+        if not qc or any(PICK_CLAUSE_REFUSE_RE.match(c) or PICK_CLAUSE_VERDICT_RE.match(c) for c in qc) \
+                or PICK_DOUBT_RE.search(qc[0].replace("?", "")) \
+                or re.search(r"\b(?:hate|none\s+of|neither)\b", q, re.I):
+            return "none", None
+        return "letter", None
+    # round 2 of the review loop: a go-ahead asked ("Yes?", "Merge?") or naming a listed letter ("ok A": the letter's,
+    # never "the recommendation") is none
+    if PICK_GO_RE.match(a) and not PICK_REFUSE_RE.search(a) and not PICK_DOUBT_RE.search(a) and not _withdrawn(a, a, "", letters) \
+            and not any(w in letters for w in _pick_words(a)) \
+            and all(w.lower() in PICK_GO_WORDS for w in _pick_words(a) if not w.isdigit()):
+        # #504's review round 3: "yes, merge" names option A "merge", never the recommendation; two options named: none
+        named = [l for l, t in options if _pick_norm(plain(t)) and
+                 re.search(r"(?:^| )%s(?: |$)" % re.escape(_pick_norm(plain(t))), _pick_norm(a))]
+        if len(named) == 1:
+            return "letter", named[0]
+        return ("none", None) if named else ("recommended", None)
+    return "none", None
+
+
+def item_pick(it):
+    """The pick class of a parsed item's answer (pick_of), or None."""
+    return pick_of(it.get("answer"), it.get("options") or [])[0]
+
+
+# Intake's reopen of a no-pick answer (D3-A): `keel pull` and every Save (merge) write it under an item whose
+# new answer is `none`. It binds while the box picks nothing (reopened), and the step after the item waits
+# on the owner's new Answer or a fresh architect's design pass (nopick_holds).
+NOPICK_RE = re.compile(r"^\s*>\s*\*\*Reopened\.\*\*\s+no listed option picked\b")
+# the builder reads this line: it names who releases the hold, never the recipe (the second fix round, item 15:
+# the trailer is as easy to write as the line); keel's README says how a design pass is written
+NOPICK_REPLY = ("> **Reopened.** no listed option picked — %s answers again with a letter (on the page or on GitHub), "
+                "or a fresh architect's design pass revises %s; a builder's reply releases nothing")
+DESIGN_PASS_RE = re.compile(r"^Design-pass:[ \t]*(\S+)[ \t]+(D\d+(?:[ \t]*,[ \t]*D\d+)*)\b[^\n]*$", re.M | re.I)
+
+
+PICKED_RE = re.compile(r"^\s*>\s*\*\*Picked\.\*\*")
+# a fresh architect's design pass writes `> **Design pass.** <what changed>` under the item and commits it with the
+# `Design-pass: <doc> D<n>` trailer. The line clears the text's reopen; in git, the commit that adds the line ends
+# the hold, and so does the trailer alone (the second fix round, item 10: /finish's curation drops the trailer, which
+# left main holding for good what its text read as answered; and the trailer is no harder to write than the line)
+DESIGN_PASS_LINE_RE = re.compile(r"^\s*>\s*\*\*Design pass\.\*\*")
+PICKED_REPLY = ("> **Picked.** %s — %s's new Answer, taken in: the no-pick reopen above no longer holds the step "
+                "after %s")
+# the same where the no-pick answer before it reached the checkout with no reopen written (a plain fast-forward of the
+# owner's GitHub commit, which `keel pull` never saw): git held from that commit (this build's review loop, round 1)
+PICKED_BARE_REPLY = ("> **Picked.** %s — %s's new Answer, taken in: the no-pick answer before it no longer holds the "
+                     "step after %s")
+FENCE_LINE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})")
+
+
+def fence_mask(lines):
+    """{line index} inside a code fence, as the core's `fenced()` reads it — the CommonMark rule parse uses (round 3 of
+    this build's loop: a pairing of any two fence lines read a nested fence's inner line as content)."""
+    return {i for i, f in enumerate(fenced(lines)) if f}
+
+
+def _region_end(it, lines, mask, feedback=False):
+    """The index past the item's region: the next item, a heading or (with `feedback`) the feedback marker, none of
+    them inside a code fence (round 2 of this build's loop: a `# comment` in a bash fence ended the region)."""
+    k = it["end"]
+    while k < len(lines) and (k in mask or not (item_match(lines[k]) or STOP_RE.match(lines[k].strip())
+                                                  or (feedback and is_feedback_marker(lines[k])))):
+        k += 1
+    return k
+
+
+def intake_state(it, lines):
+    """(count, last) of intake's lines under the item: the no-pick reopen and the `> **Picked.**` that a later
+    answer naming an option writes after it; `last` is "reopen", "picked" or None. Only intake writes them
+    (merge, `keel pull`), so a Save a session's checkpoint commits still ends the hold it started (round 1)."""
+    n, last = 0, None
+    mask = fence_mask(lines) if any(FENCE_LINE_RE.match(x) for x in lines) else set()
+    for k in range(it["end"], _region_end(it, lines, mask)):
+        if k in mask:
+            continue
+        if NOPICK_RE.match(lines[k]):
+            n, last = n + 1, "reopen"
+        elif PICKED_RE.match(lines[k]):
+            n, last = n + 1, "picked"
+        elif DESIGN_PASS_LINE_RE.match(lines[k]):
+            n, last = n + 1, "design"
+    return n, last
+
+
+def nopick_marked(it, lines):
+    """The item's last intake line is the no-pick reopen."""
+    return intake_state(it, lines)[1] == "reopen"
+
+
+def mark_nopicks(text, ids=None, others=(), before=None):
+    """(text, reopened ids, picked ids): intake's lines under each item of `ids` (every item when None), after
+    its last line of replies, at its indent — the no-pick reopen under an answer that picks none (unless the
+    reopen is the item's last intake line already: a second no-pick Save adds nothing), and `> **Picked.**`
+    under an answer that picks once a reopen was the last. Only an answer taken in here gets either, and the `Picked.`
+    never for an item in `others`, whose new answer someone other than the owner gave (a collaborator's page Save, a
+    builder's commit `keel pull` brings in): the reopen stands (the second fix round's review loop, rounds 1 and 2).
+    `before`, the text before this take-in: an item whose answer there picked none gets the `Picked.` too, reopen
+    or not — git holds from the owner's commit that wrote it, whichever road brought it in (this build's review loop).
+    The lines go after the region's last line, a code fence in it included, never into the fence."""
+    lines, items, _ = parse(text)
+    was_none = set()
+    if before is not None:
+        try:
+            was_none = {x["id"] for x in parse(before)[1] if item_pick(x) == "none"}
+        except Stop:
+            pass
+    todo = []
+    for it in items:
+        if ids is not None and it["id"] not in ids:
+            continue
+        pk, letter = pick_of(it.get("answer"), it.get("options") or [])
+        last = intake_state(it, lines)[1]
+        if pk == "none" and last != "reopen":
+            todo.append((it, NOPICK_REPLY % (WHO, it["id"]), "reopen"))
+        elif pk and pk != "none" and (last == "reopen" or it["id"] in was_none) and it["id"] not in others \
+                and not taken_answer(it.get("answer") or ""):
+            what = letter or ("the recommendation" if pk == "recommended" else "a listed option")
+            todo.append((it, (PICKED_REPLY if last == "reopen" else PICKED_BARE_REPLY) % (what, WHO, it["id"]), "picked"))
+    mask = fence_mask(lines) if any(FENCE_LINE_RE.match(x) for x in lines) else set()
+    for it, reply, _ in sorted(todo, key=lambda x: x[0]["start"], reverse=True):
+        k = _region_end(it, lines, mask, feedback=True)   # after the region's last line, a fence's too (round 2)
+        while k > it["end"] and not lines[k - 1].strip():
+            k -= 1
+        ind = " " * it["content"]
+        new = ([""] if k > 0 and lines[k - 1].strip() else []) + [ind + reply]
+        if k < len(lines) and lines[k].strip():
+            new.append("")
+        lines[k:k] = new
+    ids_of = lambda kind: sorted((it["id"] for it, _, w in todo if w == kind), key=id_key)
+    return "\n".join(lines), ids_of("reopen"), ids_of("picked")
 
 
 def yolo_settled(it, lines):
@@ -997,6 +1644,19 @@ def lint(text, strict=False, path=None):
             # yolo never take an unmarked item — a warning makes authors mark them
             warnings.append("%s (line %d): no `Reversible: yes|no` line — no default can ever take it (yolo, "
                             "the stand sweep); mark it above `➤ Recommended:`" % (it["id"], it["start"] + 1))
+        if strict and item_pick(it) == "none":
+            # rabbit-holes D3-A: a builder that reads a no-pick answer as a pick builds a design nobody chose. The
+            # second fix round (item 8): said as it stands — reopened at intake while the reopen binds, never met
+            # intake when no intake line is under it, quiet once a design pass or a Picked. line came after it
+            last, at = intake_state(it, lines)[1], (it["answer_line"] or it["start"]) + 1
+            if last == "reopen" and reopened(it, lines):
+                warnings.append("%s (line %d): its answer picks no listed option (pick: none) — reopened at intake; "
+                                "the step after it waits for %s's new Answer or a fresh architect's design pass, never "
+                                "a builder's reply" % (it["id"], at, WHO))
+            elif last is None:
+                warnings.append("%s (line %d): its answer picks no listed option (pick: none) and never met intake "
+                                "(keel pull or a Save writes its reopen): only git's history can hold the step after it "
+                                "(`keel held` says whether it does), so a builder must not read it as a pick" % (it["id"], at))
     ke, kw = keel_lint(text, path)
     fe, fw = figure_lint(text, path)
     # a set's component carries no Receipt of its own: the entry holds the set's (the shared body's set shape)
@@ -1792,6 +2452,623 @@ def landing(where, base=None):
         return 1
     print("landing: no brief on this branch names an open step")
     return 0
+
+
+# rabbit-holes S3 (D3-A): a step whose `after:` names an item answered with no listed option picked waits
+# for the owner's new Answer or a fresh architect's design pass, never a builder's reply. The text's reopen
+# (NOPICK_RE) is what keel's own readers see; this is what dispatch and pickup ask before they start a step,
+# read from git, where a builder's `Revised.` or its own edit of the box changes nothing.
+KEEL_STEP_CMD_RE = re.compile(r"\bkeel\s+step\s+`?(?P<doc>[^\s`<>]+\.md)`?\s+(?P<id>S\d+)\b")
+
+
+OWNER_VIEWERS_KEY = "keel/owner-viewers"   # the overlay's: the names the owner saves a page under, one per line
+
+
+def owner_viewer(name):
+    """Whether a page Save's viewer name is the owner's: one of OWNER_VIEWERS_KEY's names (casefolded). With the key
+    unset, every viewer is (round 4's rule), as the room's display name is all a Save carries and the owner's own Saves
+    say neither `regatta/owner` nor an address (two on record, `Saved-By:` a short name, 2026-11-05). Read per call."""
+    names = {viewer_name(n).casefold() for n in (_config_lines(OWNER_VIEWERS_KEY) or []) if n.strip()}
+    return not names or viewer_name(name).casefold() in names   # as the trailer writes it (viewer_name)
+
+
+def plumbed_by_other(body):
+    """A page Save's plumbed commit (its `Taken-By:` names the lookout's tool) with a `Saved-By:` viewer that is not the
+    owner's (owner_viewer; with no viewer named, the `(no name)` one). A viewer's display name is never verified, so
+    this tells a collaborator saving under their own name from the owner, nothing more (the second fix round, item 9:
+    a collaborator's Save of a letter released the hold; its review loop, item 3: matched against `regatta/owner`, the
+    owner's own Saves never did)."""
+    if TAKEN_BY not in body:
+        return False
+    # a take-in of page comments alone carries no `Saved-By:` (plumb_commit writes one per Save): the comments were
+    # the owner's by address (sheep_answers), so the commit is (the review loop's round 2)
+    names = [l[len(SAVED_BY):].strip() for l in body.splitlines() if l.startswith(SAVED_BY)]
+    return not all(owner_viewer(n) for n in names)
+
+
+def owners_commit(body, parents=1):
+    """A commit whose answer `keel pull` takes in as the owner's: one no agent trailer claims — GitHub's web
+    editor, a hand edit, or a page Save's plumbed commit (its `Taken-By:` names the tool) whose viewers are all the
+    owner (plumbed_by_other). A session's commit (a checkpoint, a builder's) is not, though on the laptop its author
+    is the owner, and neither is it when GitHub commits it: "Rebase and merge" makes GitHub the committer of a
+    builder's commit, trailer and all (round 3) — so who committed it never counts, only the trailer. Nor is a
+    merge, whoever made it (GitHub's "Update branch" too): it carries another line's words, never the owner's new
+    ones (round 1)."""
+    return parents <= 1 and not AGENT_TRAILER_RE.search(body) and not plumbed_by_other(body)
+
+
+# blank lines inside the box too (#504's review round 3: an owner's two-paragraph pick read as its first line alone)
+GAP_ANSWER_RE = re.compile(r"➤ Answer:([^\n]*)\n((?:(?:[ \t]*\n)*[ \t]+[^\s>][^\n]*\n?)*)")
+
+
+def gap_answers(text):
+    """{item title: answer} of every `➤ Answer:` box in a version that does not parse (a D-id twice), each read
+    as _hold_view reads an answer (whitespace folded), keyed by the title of the item it sits under, which a
+    builder's renumbering keeps: the owner's words in the gap (round 3). Never as one set across boxes: a
+    renumbering that set the no-pick box to another box's words released the hold (the landing review,
+    2026-11-05). A title two items share keys None, which matches no answer (held)."""
+    lines = text.split("\n")
+    fence = fenced(lines)
+    heads = []   # (line, title) of each item heading outside a fence
+    for i, line in enumerate(lines):
+        m = None if fence[i] else item_match(line)
+        if m:
+            heads.append((i, split_title(m.group("rest"))[0]))
+    out, seen = {}, set()
+    for m in GAP_ANSWER_RE.finditer(text):
+        at = text.count("\n", 0, m.start())
+        if at < len(fence) and fence[at]:
+            continue
+        title = next((t for i, t in reversed(heads) if i < at), None)
+        if title is None:
+            continue
+        ans = " ".join((m.group(1) + " " + m.group(2)).split())
+        out[title] = None if title in seen else ans
+        seen.add(title)
+    return out
+
+
+def _hold_view(text):
+    """{Dn: (answer, pick, intake count, last intake line)} of one version of a doc; None when it does not parse."""
+    try:
+        lines, items, _ = parse(text)
+    except Stop:
+        return None
+    out = {}
+    for it in items:
+        n, last = intake_state(it, lines)
+        out[it["id"]] = (" ".join((it["answer"] or "").split()), item_pick(it), n, last)
+    return out
+
+
+def renamed_from(top, parent, sha, rel):
+    """The path `sha` moved to `rel` from, against `parent` (git's rename detection), or None."""
+    r = git(top, "diff", "-M", "--name-status", "--diff-filter=R", parent, sha, check=False)
+    for line in (r.stdout or "").splitlines() if r.returncode == 0 else []:
+        f = line.split("\t")
+        if len(f) == 3 and f[2] == rel:
+            return f[1]
+    return None
+
+
+def nopick_holds(top, ref, rel, _depth=0, _state=False, released=None):
+    """{Dn: sha} — the items of `rel` at `ref` whose no-pick answer still holds the step after them, each
+    with the commit its hold started at. Each commit that touched the doc, oldest first, is judged against
+    its own first parent's version (never the log's previous entry, which after a fork is another line's).
+    A hold starts at the owner's commit (owners_commit) that answers with no listed option picked, or at a
+    commit that adds intake's reopen while the box picks nothing (a carried doc; a Save a checkpoint
+    committed). It ends at the owner's commit that changes the Answer — judged afresh, so a second no-pick
+    holds again — at a commit that adds intake's `Picked.` line under an answer that picks (the owner's new
+    Answer taken in by a session; never a collaborator's plumbed Save: plumbed_by_other), at a commit that adds
+    a `> **Design pass.**` line under the item, or at one carrying `Design-pass: <doc> D<n>`. A builder's other
+    replies, its own edit of the box, a merge, and an answer someone other than the owner took (keel yolo's, a
+    skipper's relay: taken_answer) end nothing. A version that does not parse is passed over, and the last one
+    not parsing is a Stop; an item gone from the doc drops its hold. `released`, a dict given by the caller, gets
+    {Dn: sha} of the last commit on this line that released the item, held here or not (held_steps: a hold the line
+    took in by a merge and then released, the finish review's round 2).
+    Once a branch lands, `/finish` has curated its commits under a session's trailer, so on `main` the
+    owner's answer commits are gone and intake's lines are what hold and release (a `Design-pass:` trailer is
+    dropped too, which is why the `Design pass.` line releases on its own). An answer that never met intake
+    (answered and landed before S3, or typed into the doc and committed by a session) holds nothing on `main`."""
+    # the branch's own line (round 2): a side line's commits count only as the merge brings their text in
+    r = git(top, "log", "--first-parent", "--reverse", "--format=%H%x1f%P%x1f%B%x1e", ref, "--", rel, check=False)
+    if r.returncode:   # the review loop's round 2: a log that fails is no history, never "not held"
+        raise Stop("git log could not read %s's history at %s: %s" % (rel, ref, (r.stderr or "").strip()[:120]))
+    raw = r.stdout
+    recs = []
+    for rec in raw.split("\x1e"):
+        parts = rec.strip("\n").split("\x1f")
+        if len(parts) >= 3:
+            recs.append((parts[0], parts[1].split(), parts[2]))
+    # round 3: one `git cat-file --batch` for every version, and one parse per distinct blob — the walk was two
+    # `git show` and two parses per commit. Along the first-parent line a commit's first parent holds the
+    # version the previous entry left (no first-parent commit between them changed the doc), and the oldest
+    # entry's parent had none: path-limited first-parent history lists every change on the line
+    blobs = _blobs_at(top, ["%s:%s" % (r[0], rel) for r in recs])
+    views, held, prev, last_unread, gap_owner, gap_text = {}, {}, {}, None, False, {}
+    # #504's review round: a doc whose oldest version here was a move (`git mv` by a builder) carries the old path's
+    # holds and its last version, or the move's commit, not the owner's, would start the doc afresh and drop them
+    # (round 2: the whole walk state, so an old version that did not read is cleared by the next one that does here)
+    if recs and recs[0][1] and _depth < 8:
+        old = renamed_from(top, recs[0][1][0], recs[0][0], rel)
+        if old:
+            held, prev, last_unread, gap_owner, gap_text = nopick_holds(top, recs[0][1][0], old, _depth + 1, _state=True,
+                                                                                released=released)
+    for (sha, parents, body), (oid, blob) in zip(recs, blobs):
+        if blob is None:
+            held, prev, last_unread, gap_owner = {}, {}, None, False   # the doc removed at this commit
+            continue
+        if oid not in views:   # the blob's own id keys the parse (the second fix round, item 22)
+            views[oid] = _hold_view(blob)
+        cur = views[oid]
+        if cur is None:
+            # an owner's commit while the doc does not read (a D-id twice) is carried to the next version that reads,
+            # to start a hold, never to release one: a builder's renumbering released node-lands' shape (round 1 of
+            # the second fix round's review loop, item 6)
+            if owners_commit(body, len(parents)):
+                gap_text = gap_answers(blob)   # round 3: the owner's boxes in the gap, read as text
+            last_unread, gap_owner = sha, gap_owner or owners_commit(body, len(parents))
+            continue
+        last_unread = None
+        owner, other = owners_commit(body, len(parents)), plumbed_by_other(body)
+        # round 2 of this build's loop: the owner's words in the gap are unread, so a box someone else changed after it
+        # holds, whatever it picks — a builder's renumbering that also set a letter released the owner's no-pick
+        gap = gap_owner and not owner
+        starts, gap_owner = owner or gap_owner, False
+        passed = {d.strip().upper() for m in DESIGN_PASS_RE.finditer(body)
+                  if posixpath.normpath(m.group(1).strip("`")) == posixpath.normpath(rel)
+                  for d in m.group(2).split(",")}
+        # {Dn: title} of this version, read only after a gap: the gap's boxes are matched by title (gap_answers)
+        titles = {it["id"]: it["title"] for it in parse(blob)[1]} if gap and gap_text else {}
+        for d, (ans, pk, n, last) in cur.items():
+            was = prev.get(d, ("", None, 0, None))
+            if starts and ans != was[0] and not taken_answer(ans):
+                # the gap's answer is the owner's where its words are in the owner's unreadable version, else someone
+                # else's (round 3: the owner's real picks in a gap were held)
+                mine = gap and ans and gap_text.get(titles.get(d)) == ans
+                if pk == "none" or (gap and pk and not mine):
+                    held[d] = sha
+                elif pk and (owner or mine):   # round 4: an emptied box keeps the hold; only a pick releases it
+                    held.pop(d, None)
+                    if released is not None:
+                        released[d] = sha
+            if n > was[2]:   # intake wrote a line here
+                # whatever the box holds (item 15): a reopen as the last intake line under a box that picks is a box
+                # changed after the reopen with no take-in, which only a builder's commit or a curated one makes
+                if last == "reopen":
+                    held.setdefault(d, sha)
+                elif last == "picked" and pk and pk != "none" and not taken_answer(ans) and not other:
+                    held.pop(d, None)
+                    if released is not None:
+                        released[d] = sha
+                elif last == "design":   # round 3 held this for the trailer, which curation drops (fix round 2, item 10)
+                    held.pop(d, None)
+                    if released is not None:
+                        released[d] = sha
+            if d in passed:
+                held.pop(d, None)
+                if released is not None:
+                    released[d] = sha
+        held = {d: x for d, x in held.items() if d in cur}
+        prev, gap_text = cur, {} if not gap_owner else gap_text
+    if _state:   # a move's old path, read for the walk that follows it (round 2)
+        return held, prev, last_unread, gap_owner, gap_text
+    if last_unread:   # round 4: a doc keel cannot parse (a D-id twice, node-lands' shape) is "could not tell", never "not held"
+        raise Stop("%s does not read at %s (keel lint says why)" % (rel, last_unread[:7]))
+    return held
+
+
+def _blobs_at(top, specs):
+    """[(oid, text)] of each `<rev>:<path>` in `specs`, read through one `git cat-file --batch`; (None, None) where
+    git has no blob there (the doc absent at that commit, or the path a folder then)."""
+    if not specs:
+        return []
+    try:
+        r = subprocess.run(["git", "-C", str(top), "cat-file", "--batch"], input="\n".join(specs).encode() + b"\n",
+                           capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Stop("git cat-file could not read %s's versions: %s" % (specs[0].split(":", 1)[-1], e))
+    if r.returncode:   # a missing object is a "missing" line, not an exit: a non-zero exit read nothing
+        raise Stop("git cat-file failed (exit %d)" % r.returncode)
+    out, buf, i = [], r.stdout, 0
+    for _ in specs:
+        nl = buf.find(b"\n", i)
+        if nl < 0:
+            out.append((None, None))
+            continue
+        head = buf[i:nl].split()
+        if len(head) == 3 and head[2].isdigit():   # "<oid> <type> <size>", then the content, whatever the type
+            size = int(head[2])
+            body = buf[nl + 1:nl + 1 + size]
+            i = nl + 1 + size + 1
+            # the second fix round, item 12: a tree's content was read as the next header
+            out.append((head[0].decode(), body.decode("utf-8", "surrogateescape")) if head[1] == b"blob" else (None, None))
+        else:
+            out.append((None, None))   # "<spec> missing", "ambiguous": a header line alone
+            i = nl + 1
+    return out
+
+
+def pick_status(memo):
+    """(picks, held) for `status --json`: {Dn: class} of every answered item with listed options, and the ids
+    whose no-pick answer holds the step after them at HEAD (nopick_holds). Walked wherever an item has a pick,
+    since a box a builder edited to a letter still holds (round 3: the old shortcut, walked only where the text
+    picked none, said `held: []` where `keel held` held); a doc with no item costs no git log.
+    Never raises: ({}, []) where it cannot read."""
+    try:
+        p = Path(memo).resolve()
+        lines, items, _ = parse(p.read_text())
+    except (OSError, UnicodeDecodeError, Stop):
+        return {}, []
+    picks = {it["id"]: item_pick(it) for it in items if item_pick(it)}
+    # round 4: an emptied box still holds; #504's review rounds 2 and 3: so does one whose options a builder deleted
+    if not items:
+        return picks, []
+    r = git(p.parent, "rev-parse", "--show-toplevel", check=False)
+    if r.returncode:
+        return picks, []
+    top = Path(r.stdout.strip())
+    try:
+        held = nopick_holds(top, "HEAD", p.relative_to(top.resolve()).as_posix())
+    except (ValueError, OSError, Stop):
+        return picks, []
+    return picks, sorted(held, key=id_key)
+
+
+def brief_steps(brief):
+    """[(doc, step)] a brief names: its `Steps:` lines (BRIEF_STEPS_RE) and each `keel step <doc> S<n>` it
+    asks the build to run, a doc's path as written (`~` expanded; brief_doc_rel resolves it against a checkout).
+    Order kept, no repeats."""
+    out = []
+    # the brief's own text only: a lookout brief quotes the owner's thread below its fixed text, indented, and a
+    # `keel step` the owner wrote there is no step the run builds (round 3 of the review loop)
+    brief = brief.split("The threads, as the lookout read them:", 1)[0]
+    brief = "\n".join(l for l in brief.split("\n") if not re.match(r"^(?: {4}|\t|\s*>)", l))
+    for m in list(BRIEF_STEPS_RE.finditer(brief)):
+        out += [(m.group("doc"), x.strip()) for x in m.group("ids").split(",")]
+    for m in KEEL_STEP_CMD_RE.finditer(brief):
+        head = brief[brief.rfind("\n", 0, m.start()) + 1:m.start()]
+        # "do not run `keel step …`": only a negation of the command itself (round 4: "until it is green, then `keel step`" counts)
+        # #504's review round 3: the command named by its path too ("do not run `python3 …/bin/keel step …`")
+        if not re.search(r"\b(?:not|never|don['’]?t|do not)\s+(?:run\s+|call\s+)?[`'\"]?\s*(?:python3?\s+)?(?:[^\s`'\"]*/)?$",
+                         head, re.I):
+            out.append((m.group("doc"), m.group("id")))
+    norm = []
+    for doc, sid in out:
+        doc = os.path.expanduser(doc)
+        if (doc, sid) not in norm:
+            norm.append((doc, sid))
+    return norm
+
+
+def brief_doc_rel(top, ref, doc):
+    """(rel, note, wt_ref) of a doc a brief names, as a path in the repo at `top`: a relative path as it is; an absolute
+    one under a checkout of this repo (any worktree, the main one included) relative to it, with `wt_ref` that
+    worktree's HEAD when it is not `top` (the second fix round, item 13: the owner's answer may be only on the branch
+    that worktree has out, while `ref` is a seed's base); else, where a part of it is the repo's own folder name (a
+    brief written on another Mac names its own checkout), the longest tail after that part that is a file at `ref`.
+    Round 3: a cut at the first `/docs/` judged `modules/keel/docs/x.md` as `docs/x.md`, and another repo's doc as
+    this one's same-named doc. (None, note, None) where none fits."""
+    if not doc.startswith("/"):
+        return posixpath.normpath(doc), None, None   # round 4: "./docs/d.md" is docs/d.md
+    p = os.path.realpath(doc)
+    here = os.path.realpath(str(top))
+    roots = [str(top)] + [l[len("worktree "):] for l in git(top, "worktree", "list", "--porcelain", check=False)
+                          .stdout.splitlines() if l.startswith("worktree ")]
+    for r in sorted({os.path.realpath(x) for x in roots}, key=len, reverse=True):
+        if p.startswith(r.rstrip("/") + "/"):
+            rel = p[len(r.rstrip("/")) + 1:]
+            if rel.startswith(".claude/worktrees/") and rel.count("/") >= 3:
+                # a worktree since removed (no root of its own): its path is the repo's (round 3 of the review loop)
+                return rel.split("/", 3)[3], None, None
+            wt_ref = None
+            if r != here:
+                h = git(r, "rev-parse", "--verify", "--quiet", "HEAD", check=False)
+                wt_ref = h.stdout.strip() if h.returncode == 0 and h.stdout.strip() else None
+            return p[len(r.rstrip("/")) + 1:], None, wt_ref
+    common = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False).stdout.strip()
+    name = os.path.basename(os.path.dirname(common.rstrip("/"))) if common else ""
+    parts = doc.strip("/").split("/")
+    for i, part in enumerate(parts[:-1]):
+        if part != name:
+            continue
+        rest = parts[i + 1:]
+        if rest[:2] == [".claude", "worktrees"]:
+            rest = rest[3:]
+        rel = "/".join(rest)
+        if rel and git(top, "cat-file", "-e", "%s:%s" % (ref, rel), check=False).returncode == 0:
+            return rel, None, None
+    return None, "%s is not a doc of this repo at %s" % (doc, ref), None
+
+
+def set_rels(top, ref, rel):
+    """{slug: rel} of the nested set `rel` is in at `ref`, the entry's under "entry"; {} when it is in none."""
+    d = posixpath.dirname(rel)
+    names = [posixpath.basename(n) for n in git(top, "ls-tree", "--name-only", ref, "--", (d + "/") if d else ".",
+                                                 check=False).stdout.split("\n") if n.endswith(".md")]
+
+    def read(n):
+        r = git(top, "show", "%s:%s" % (ref, posixpath.join(d, n)), check=False)
+        return None if r.returncode else r.stdout
+    st = set_names(posixpath.basename(rel), names, read)
+    if not st:
+        return {}
+    out = {k: posixpath.join(d, n) for k, n in st["slugs"].items()}
+    out["entry"] = posixpath.join(d, st["entry"])
+    return out
+
+
+UNJUDGED = "could not tell: "   # a held_steps note for a named step the hold could not judge (keel held's exit 4)
+
+
+def box_pick(top, ref, rel, item):
+    """The letter the box of `item` (`D3`, or `<file> D3`) picks at `ref` — None when it picks none, or the doc does not
+    read there."""
+    where, d = item.rsplit(" ", 1) if " " in item else (rel, item)
+    show = git(top, "show", "%s:%s" % (ref, where), check=False)
+    if show.returncode:
+        return None
+    try:
+        it = next((x for x in parse(show.stdout)[1] if x["id"] == d), None)
+    except Stop:
+        return None
+    pk = pick_of(it.get("answer"), it.get("options") or []) if it else (None, None)
+    return pk[1] if pk[0] == "letter" else None
+
+
+def path_then(top, then, ref, rel):
+    """The path `rel` (at `ref`) had at commit `then`: itself where `then` has it, else the path git's rename
+    detection moves to it between the two, else `rel`."""
+    if git(top, "cat-file", "-e", "%s:%s" % (then, rel), check=False).returncode == 0:
+        return rel
+    r = git(top, "diff", "-M", "--name-status", "--diff-filter=R", then, ref, check=False)
+    for line in (r.stdout or "").splitlines() if r.returncode == 0 else []:
+        f = line.split("\t")
+        if len(f) == 3 and f[2] == rel:
+            return f[1]
+    return rel
+
+
+def box_answer(top, ref, rel, item):
+    """The words in the box of `item` (`D3`, or `<file> D3`) at `ref`, stripped; None where the doc or item does not read."""
+    where, d = item.rsplit(" ", 1) if " " in item else (rel, item)
+    show = git(top, "show", "%s:%s" % (ref, where), check=False)
+    if show.returncode:
+        return None
+    try:
+        it = next((x for x in parse(show.stdout)[1] if x["id"] == d), None)
+    except Stop:
+        return None
+    return (it.get("answer") or "").strip() if it else None
+
+
+def doc_tips(top, rel):
+    """{sha}: the newest commit that touched `rel` on each line of history, across every branch — the commits rev-list's
+    path-limited walk lists that no other listed commit names as a (rewritten) parent. A failed walk is a Stop."""
+    # #504's review round: branches and remote branches, never refs/archive or refs/stash, whose stale copy of a
+    # rewritten design line kept a hold the live line had released
+    r = git(top, "rev-list", "--branches", "--remotes", "--parents", "--", rel, check=False)
+    if r.returncode:
+        raise Stop("git rev-list could not read %s's history: %s" % (rel, (r.stderr or "").strip()[:120]))
+    rows = [l.split() for l in r.stdout.splitlines() if l.strip()]
+    parents = {x for row in rows for x in row[1:]}
+    return {row[0] for row in rows if row[0] not in parents}
+
+
+def held_steps(top, ref, pairs):
+    """([(doc, step, Dn, since)], notes) for the (doc, step) pairs at `ref`: each open step whose `after:`
+    names an item that nopick_holds holds — of its own doc, or of its set's entry or a component (`entry D3`,
+    `<slug> D3`), as keel_derive reads them; the item is named `<that doc> D3` then. A doc named by another
+    worktree's path is judged at `ref` and at that worktree's HEAD, held where either holds. A named step the
+    hold cannot judge — its doc another repo's, absent, not parsing, without the step, or an `after:` naming no
+    file of its set — is a note led by UNJUDGED, never a silent "not held" (the second fix round, items 11 and 14).
+    The parsed steps, the set's files and each doc's holds are read once per (doc, ref) (item 23)."""
+    found, notes, holds, docs, sets = [], [], {}, {}, {}
+    ref_sha = git(top, "rev-parse", "--verify", "--quiet", ref + "^{commit}", check=False).stdout.strip() or ref
+
+    def steps_at(r, rel):
+        if (r, rel) not in docs:
+            show = git(top, "show", "%s:%s" % (r, rel), check=False)
+            if show.returncode:
+                docs[(r, rel)] = None
+            else:
+                try:
+                    docs[(r, rel)] = {x["id"]: x for x in keel_parse(show.stdout.split("\n"))["steps"]}
+                except Stop as e:
+                    docs[(r, rel)] = str(e)
+        return docs[(r, rel)]
+
+    rels = {}
+
+    def holds_at(r, rel):
+        if (r, rel) not in holds:
+            rels[(r, rel)] = {}
+            try:
+                holds[(r, rel)] = nopick_holds(top, r, rel, released=rels[(r, rel)])
+            except Stop as e:
+                holds[(r, rel)] = str(e)
+        return holds[(r, rel)]
+
+    for doc, sid in pairs:
+        rel, why, wt_ref = brief_doc_rel(top, ref, doc)
+        if rel is None:
+            notes.append(UNJUDGED + "%s — %s not judged" % (why, sid))
+            continue
+        # the other worktree's HEAD only where it holds `ref`'s last change to the doc, or `ref` has none: it is then the
+        # newer word (a design branch's answer beside a seed's base). Not where `ref` changed the doc since (the review
+        # loop: a doc named by the main checkout's path judged main's older version too, a step new on the branch was
+        # refused, and main's stale hold beat the branch's release, rounds 1 and 2)
+        extra = None
+        if wt_ref and wt_ref != ref_sha:
+            last = git(top, "log", "-1", "--format=%H", ref_sha, "--", rel, check=False).stdout.strip()
+            if not last or git(top, "merge-base", "--is-ancestor", last, wt_ref, check=False).returncode == 0:
+                extra = wt_ref
+        seen = set()
+
+        def judge(r):
+            """(this ref's UNJUDGED notes, [(item, since)] it holds, whether the doc or the step is absent there)."""
+            mine, hits = [], []
+            st = steps_at(r, rel)
+            absent = st is None or (not isinstance(st, str) and st.get(sid) is None)
+            if st is None:
+                mine.append(UNJUDGED + "%s is not on %s — %s not judged" % (rel, (ref_sha if r == ref else r)[:12], sid))
+            elif isinstance(st, str):
+                mine.append(UNJUDGED + "%s does not read at %s (%s) — %s not judged" % (rel, (ref_sha if r == ref else r)[:12], st, sid))
+            elif st.get(sid) is None:
+                mine.append(UNJUDGED + "%s has no step %s at %s" % (rel, sid, (ref_sha if r == ref else r)[:12]))
+            elif st[sid]["status"] not in ("done", "superseded"):
+                for t in st[sid]["after"]:
+                    m = re.fullmatch(r"(?:([\w-]+)\s+)?(D\d+)", t.strip())
+                    if not m:
+                        continue
+                    where = rel
+                    if m.group(1):
+                        if (r, rel) not in sets:
+                            sets[(r, rel)] = set_rels(top, r, rel)
+                        where = sets[(r, rel)].get(m.group(1))
+                        if not where and m.group(1) == "entry" and not sets[(r, rel)]:
+                            where = rel   # a doc of no set: its own D3, as keel_derive reads it (round 2)
+                        if not where:
+                            mine.append(UNJUDGED + "%s %s's after: %s names no file of its set at %s" % (rel, sid, t, (ref_sha if r == ref else r)[:12]))
+                            continue
+                    h = holds_at(r, where)
+                    if isinstance(h, str):
+                        mine.append(UNJUDGED + "%s — %s %s not judged" % (h, rel, sid))
+                        continue
+                    if m.group(2) in h:
+                        hits.append((m.group(2) if where == rel else "%s %s" % (where, m.group(2)), h[m.group(2)]))
+            return mine, hits, absent
+
+        def add(hits):
+            for item, since in hits:
+                if (rel, sid, item) not in seen:
+                    seen.add((rel, sid, item))
+                    found.append((rel, sid, item, since))
+
+        primary_notes, hits, absent = judge(ref)
+        mine, xhits = judge(extra)[:2] if extra else (None, [])
+        # #504's review round 3: where the newer word read clean, `ref`'s stale hold no longer beats its release. The
+        # finish review: a `ref` hold the extra ref's walk judged — its start on the extra ref's own first-parent line, or
+        # released there by a commit that holds the start (round 2: a merged-in no-pick the owner then answered). A hold
+        # the extra ref took in by a merge (a plain `git pull` of the design branch) and never released stands: its walk
+        # never saw the owner's commit, so dropping it let the no-pick through (round 1)
+        if extra and not mine and hits:
+            fp = set(git(top, "rev-list", "--first-parent", extra, check=False).stdout.split())
+
+            def judged_there(item, since):
+                if since in fp:
+                    return True
+                where, d = item.rsplit(" ", 1) if " " in item else (rel, item)
+                at = rels.get((extra, where), {}).get(d)
+                return bool(at) and git(top, "merge-base", "--is-ancestor", since, at, check=False).returncode == 0
+            hits = [(i, s) for i, s in hits if not judged_there(i, s)]
+        add(hits)
+        if extra:
+            add(xhits)
+            # the extra ref judged it: `ref`'s own "could not tell" stands aside; else both say why — the newer word
+            # unread is could-not-tell even where `ref` read clean (the landing review, 2026-11-05)
+            primary_notes = primary_notes + mine if mine else []
+        elif absent:
+            # round 3 of the review loop (its S1): a seed's base or a seed branch lacks a design doc that still lives on
+            # its own branch (7 of the 80 newest seeds). This build's review loop, round 1: not the newest commit by date
+            # on any ref, which a sibling line that touched the doc later decides, but the tip of every line that
+            # touched it (rev-list's rewritten parents): each that has the step is judged, a hold one tip finds stands
+            # unless another tip that holds the commit it started at has released it, and exit 4 only where none has it
+            try:
+                tips = doc_tips(top, rel) - {ref_sha}
+            except Stop as e:   # never exit 1, which dispatch and pickup pass: could not tell
+                tips, primary_notes = set(), primary_notes + [UNJUDGED + "%s — %s not judged" % (e, sid)]
+            judged, unread = [], []
+            for t in sorted(tips):
+                mine, hits, gone = judge(t)
+                if not mine:
+                    judged.append((t, dict(hits)))
+                elif not gone:   # round 2: a tip that has the doc but does not read is could-not-tell, never outweighed
+                    unread += mine
+            def released_on(u, item, since):
+                """Tip `u` holds the commit the hold started at and no longer holds the item: released after it."""
+                where, d = item.rsplit(" ", 1) if " " in item else (rel, item)
+                h = holds_at(u, where) if steps_at(u, where) is not None else None
+                return isinstance(h, dict) and d not in h and \
+                    git(top, "merge-base", "--is-ancestor", since, u, check=False).returncode == 0
+
+            for t, hs in judged:
+                add([(item, since) for item, since in hs.items()
+                     if not any(u != t and released_on(u, item, since) for u, _ in judged)])
+            if judged:
+                primary_notes = unread
+        notes += primary_notes
+    return found, notes
+
+
+def held_cmd(brief=None, doc=None, steps=(), repo=None, ref="HEAD"):
+    """`keel held`: exit 3 when a step the brief (or `doc` and `steps`) names waits on a no-pick answer, one
+    `held:` line each; 4 when none does but a named step could not be judged (an UNJUDGED note: its doc another
+    repo's, absent, not parsing, without the step; the last line says why, led by `could not tell:`); 0 when
+    every named step was judged and none is held; 1 on keel's Stop (the brief or the checkout does not read).
+    dispatch and pickup refuse a run on 3 and on 4 (the second fix round, items 11 and 14: 4 was a note that
+    passed, so a hold failed open); any other exit, a crash's 1 included, is noted and passes."""
+    if brief is not None:
+        text = sys.stdin.read() if brief == "-" else Path(brief).read_text()
+        where = Path(repo) if repo else Path.cwd()
+        if not repo and brief != "-" and git(Path(brief).resolve().parent, "rev-parse", "--show-toplevel", check=False).returncode == 0:
+            where = Path(brief).resolve().parent   # a brief in a checkout reads that checkout; one outside, the cwd's
+        pairs = brief_steps(text)
+    else:
+        p = Path(doc)
+        where = Path(repo) if repo else (p.resolve().parent if p.exists() else Path.cwd())
+        top0 = git(where, "rev-parse", "--show-toplevel", check=False).stdout.strip()
+        rel = doc
+        if top0 and p.exists():
+            try:
+                rel = p.resolve().relative_to(Path(top0).resolve()).as_posix()
+            except ValueError:
+                pass
+        unread = None
+        if not steps:
+            shown = git(where, "show", "%s:%s" % (ref, rel), check=False)
+            try:
+                if shown.returncode:
+                    raise Stop("not on %s" % ref)
+                steps = [x["id"] for x in keel_parse(shown.stdout.split("\n"))["steps"]]
+            except Stop as e:   # the review loop's item 7: an absent or unreadable doc is no "no step named"
+                unread, steps = "%s%s: %s — its steps not judged" % (UNJUDGED, rel, e), []
+        pairs = [(rel, s.upper()) for s in steps]
+    r = git(where, "rev-parse", "--show-toplevel", check=False)
+    if r.returncode:
+        raise Stop("not in a git checkout: %s" % where)
+    top = Path(r.stdout.strip())
+    found, notes = held_steps(top, ref, pairs)
+    if brief is None and unread:
+        notes.append(unread)
+    for n in notes:
+        print("note: " + n)
+    for d, sid, item, since in found:
+        # this build's review loop, round 1: a box that already shows a letter under the reopen was changed by someone
+        # else (only a builder's or a curated commit does that), so the owner's Save of the same words changes nothing
+        # and releases nothing: the line says so, where the owner and the skipper read it
+        shown = box_pick(top, ref, d, item)
+        # #504's review round: a box whose words are the ones the hold started on reads as a letter only because its
+        # options changed since; the owner never wrote that letter, so no "confirmed" of it is asked
+        then = path_then(top, since, ref, d)   # #504's review round 3: a doc moved since the hold began
+        moved = bool(shown) and box_pick(top, since, then, item) is None and \
+            box_answer(top, ref, d, item) == box_answer(top, since, then, item)
+        # round 3: no "or a Save" here — a Save still on the page is not in git, and the lookout's seed for it
+        # meets this hold before its run takes it in; that road is rabbit-holes S5's. The second fix round (items 15
+        # and 16): no recipe for the release, which a builder reads, and the roads that release named
+        print("held: %s %s waits on %s — its answer picks no listed option (since %s): %s's new Answer releases it, "
+              "given on the doc's page or on GitHub (an answer typed into a session's checkout releases nothing), or "
+              "a fresh architect's design pass, which this run does not make; a builder's reply releases nothing%s" % (
+                  d, sid, item, since[:7], WHO,
+                  "" if not shown else "; the box's words are %s's own, read as %s only because the options changed "
+                  "since the answer" % (WHO, shown) if moved else "; the box's %s was not %s's own take-in, so the answer "
+                  "is written again in other words (\"%s, confirmed\")" % (shown, WHO, shown)))
+    unjudged = [n for n in notes if n.startswith(UNJUDGED)]
+    if not found and unjudged:   # round 5: the last line is what dispatch and pickup quote as the reason
+        print(unjudged[-1])
+    elif not found:
+        print("not held: %s" % ("no step named" if not pairs else ", ".join("%s %s" % p for p in pairs)))
+    return 3 if found else (4 if unjudged else 0)
 
 
 # ----------------------------------------------------------------------------- markdown subset
@@ -4496,7 +5773,7 @@ def place_note(lines, anchors, c):
     return hits[0] if len(hits) == 1 else None
 
 
-def merge(text, answers, today=None):
+def merge(text, answers, today=None, others=()):
     lines, items, feedback_line, _, ctx = page_parts(text, draw=False)
     today = today or dt.date.today().isoformat()
     changed = []
@@ -4579,9 +5856,11 @@ def merge(text, answers, today=None):
     # several notes on one line (rows of one table) keep their order: the later is applied first
     for e in sorted(edits, key=lambda e: (e[0], e[1], e[3] if len(e) > 3 else -1), reverse=True):
         lines[e[0]:e[1]] = e[2]
-    return "\n".join(lines), {"changed": changed, "unchanged": unchanged, "feedback": fb_added,
-                              "notes": placed, "notes_to_feedback": len(stray),
-                              "unknown": sorted(set(answers["items"]) - {it["id"] for it in items})}
+    # intake (rabbit-holes D3-A): an answer that picks no listed option is reopened where it is taken in
+    out, nopick, _ = mark_nopicks("\n".join(lines), set(changed), others=others, before=text)
+    return out, {"changed": changed, "unchanged": unchanged, "feedback": fb_added,
+                 "notes": placed, "notes_to_feedback": len(stray), "reopened": nopick,
+                 "unknown": sorted(set(answers["items"]) - {it["id"] for it in items})}
 
 
 def summarize(rep):
@@ -4590,7 +5869,8 @@ def summarize(rep):
         "added" if rep["feedback"] else "none",
         ("; notes: %d" % rep["notes"]) if rep.get("notes") else "",
         ("; notes the memo moved away from, put under feedback: %d" % rep["notes_to_feedback"]) if rep.get("notes_to_feedback") else "",
-        ("; unknown ids ignored: " + ", ".join(rep["unknown"])) if rep["unknown"] else "")
+        ("; unknown ids ignored: " + ", ".join(rep["unknown"])) if rep["unknown"] else "") + (
+        ("; reopened, no listed option picked: " + ", ".join(rep["reopened"])) if rep.get("reopened") else "")
 
 
 # ----------------------------------------------------------------------------- the page
@@ -5794,6 +7074,83 @@ def answers_of(text):
     return {it["id"]: (it["answer"] or "") for it in items}, "\n".join(lines[fb + 1:]).strip() if fb is not None else ""
 
 
+def answer_others(top, base, ref, rel):
+    """{Dn} whose answer a commit in `base..ref` (GitHub's side of a pull) changed that is no owner's (owners_commit):
+    `keel pull` writes no `Picked.` for those, so a builder's box edit on another host is never taken in as the
+    owner's new Answer (the second fix round's review loop, round 2). A version that does not read changes nothing."""
+    raw = git(top, "log", "--first-parent", "--reverse", "--format=%H%x1f%P%x1f%B%x1e", "%s..%s" % (base, ref), "--",
+              rel, check=False).stdout
+    recs = [r.strip("\n").split("\x1f") for r in raw.split("\x1e")]
+    recs = [r for r in recs if len(r) >= 3]
+    blobs = _blobs_at(top, [x for r in recs for x in ("%s^:%s" % (r[0], rel), "%s:%s" % (r[0], rel))])
+    out = set()
+
+    def read(blob):
+        try:
+            return answers_of(blob)[0] if blob is not None else {}
+        except Stop:
+            return None
+
+    for k, r in enumerate(recs):
+        a0, a1 = read(blobs[2 * k][1]), read(blobs[2 * k + 1][1])
+        if a0 is None or a1 is None:
+            # a side that does not read hides what the commit changed: someone else's commit then counts as changing every
+            # item the readable side names, never as changing nothing (this build's review loop, round 1: a builder's box
+            # edit beside a D-id twice was taken in as the owner's); an owner's changes nothing either way
+            if not owners_commit(r[2], len(r[1].split())):
+                out |= set(a1 or {}) | set(a0 or {})
+            continue
+        moved = {d for d in a1 if a1[d] != a0.get(d)}
+        # the last commit that changed an item decides (round 3 of the review loop: an owner's answer after a
+        # builder's box edit in one pull is the owner's)
+        out = (out - moved) if owners_commit(r[2], len(r[1].split())) else (out | moved)
+    return out
+
+
+def released_picks(top, rel, p):
+    """Intake's reopen under each item git holds at HEAD whose box picks none and was never reopened (the finish
+    review: a no-pick fast-forwarded in), and its `Picked.` under each reopened item whose box picks and which git no longer holds at HEAD
+    (nopick_holds): the owner's answer that reached this checkout by another road than `keel pull` or a Save — a plain
+    fast-forward of a GitHub commit (round 2 of this build's loop: the text stayed reopened and, once curated, main
+    held for good). A builder's box edit is still held in git, so it gets none. Written, not committed."""
+    try:
+        holds = nopick_holds(top, "HEAD", rel)
+        text = p.read_text()
+        lines, items, _ = parse(text)
+    except (Stop, OSError):
+        return
+    ids = {it["id"] for it in items if it["id"] not in holds and intake_state(it, lines)[1] == "reopen"
+           and item_pick(it) not in ("none", None) and not taken_answer(it.get("answer") or "")}
+    if ids:   # round 3: the box's answer must be the owner's, never a builder's later edit (answer_others over the history)
+        roots = git(top, "rev-list", "--max-parents=0", "HEAD", check=False).stdout.split()
+        try:
+            ids -= answer_others(top, roots[-1], "HEAD", rel) if roots else ids
+        except Stop:
+            return
+    if ids:
+        new, _, picked = mark_nopicks(text, ids)
+        if picked:
+            p.write_text(new)
+            text = new
+            print("picked: %s — %s's new Answer, already released in git, taken in (written, not committed)"
+                  % (", ".join(picked), WHO))
+    # the finish review: the mirror for a no-pick fast-forwarded in — git holds it, the text was never reopened, and
+    # once `/finish` curates the owner's commit away, main would hold nothing. Intake's reopen under each item git
+    # holds whose box picks none and whose last intake line is not a reopen already
+    try:
+        lines, items, _ = parse(text)
+    except Stop:
+        return
+    hold = {it["id"] for it in items if it["id"] in holds and item_pick(it) == "none"
+            and intake_state(it, lines)[1] != "reopen"}
+    if hold:
+        new, nopick, _ = mark_nopicks(text, hold)
+        if nopick:
+            p.write_text(new)
+            print("reopened: %s — no listed option picked, held in git since %s's answer came in by another road; "
+                  "the step after it waits (written, not committed)" % (", ".join(nopick), WHO))
+
+
 def pull(memo):
     p, top, branch, rel, _ = locate(memo)
     missing = fetch(top, branch)
@@ -5802,6 +7159,7 @@ def pull(memo):
     ref = "refs/remotes/origin/" + branch
     if git(top, "merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode == 0:
         print("nothing new on GitHub for %s" % branch)
+        released_picks(top, rel, p)
         return 0
     if git(top, "status", "--porcelain", "--", rel).stdout.strip():
         raise Stop("%s has uncommitted changes here; commit them first (a checkpoint does at turn end)" % rel)
@@ -5827,11 +7185,26 @@ def pull(memo):
         print("answers not compared: %s" % e)
         return 1
     changed = [k for k in a1 if a1[k] != a0.get(k)]
+    picks = {it["id"]: pick_of(it["answer"], it["options"]) for it in parse(after)[1]}
     for k in changed:
-        print("  %s → %s" % (k, a1[k] or "(empty)"))
+        cls, letter = picks.get(k, (None, None))
+        print("  %s → %s%s" % (k, a1[k] or "(empty)", " (pick: %s%s)" % (cls, " " + letter if letter else "") if cls else ""))
     print("changed: %s; unchanged: %s; feedback: %s" % (
         ", ".join(changed) or "none", ", ".join(k for k in a1 if k not in changed) or "none",
         "changed" if f1 != f0 else "none"))
+    # intake (rabbit-holes D3-A): an answer that picks no listed option is reopened under it, left for the
+    # session's checkpoint to commit; the step after it waits (`keel held`)
+    new, nopick, picked = mark_nopicks(after, set(changed), others=answer_others(top, old, ref, rel), before=before)
+    if picked:
+        print("picked: %s — %s's new Answer names an option; the reopen no longer holds the step (written, "
+              "not committed)" % (", ".join(picked), WHO))
+    if new != after:
+        p.write_text(new)
+    released_picks(top, rel, p)
+    if nopick:
+        print("reopened: %s — no listed option picked; the step after %s waits for %s's new Answer or a "
+              "fresh architect's design pass (written, not committed)" % (
+                  ", ".join(nopick), "it" if len(nopick) == 1 else "each", WHO))
     if before == after:
         print("(the memo itself did not change; GitHub's commits touched other files)")
     return 0
@@ -7538,6 +8911,14 @@ def push_receipt(mcp, space, receipt):
     return ("pushed to %d open tab%s" % (tabs, "" if tabs == 1 else "s")) if isinstance(tabs, int) else "pushed to the page"
 
 
+def takein_others(answers, saved, others):
+    """The items a page take-in writes no `Picked.` for: where any Save in it is another viewer's (`others` truthy, a
+    Save that changed nothing included, as plumb_commit names every Save's viewer), every
+    item it takes in — each Save's and each comment thread's — as git judges the plumbed commit whole
+    (plumbed_by_other); else none (this build's review loop, round 1: a thread's item got a Picked. git refused)."""
+    return (set(saved) | set(answers["items"])) if others else set()
+
+
 def sheep_pull(memo, write=False, plumb=False, take=()):
     """Comments and the page's Saves → the memo, through `merge`. Without --write: what would
     change, nothing written or posted (Saves are drained into the pin, never applied). With it: the
@@ -7618,8 +8999,10 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
     # pull of this page (review 2026-10-14)
     import copy
     save_lines, refused, kept = [], [], []
+    others, saved, other_viewer = set(), set(), False   # the items a Save under a name not the owner's answered, and every Save's
     for sv in sorted(saves, key=lambda x: x.get("seq") or 0):
         trial, kept_here = (copy.deepcopy(answers), list(taken), list(skipped)), []
+        had = dict(answers["items"])
         try:
             lines_ = fold_saves(*trial, [sv], top=top, rel=rel, now=now, text=text, applied=pin.get("applied"), kept_out=kept_here)
             parse(merge(text, trial[0])[0])
@@ -7629,7 +9012,15 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
         answers, taken, skipped = trial
         save_lines += lines_
         kept += kept_here
-    new_text, rep = merge(text, answers)
+        moved = {d for d, a in answers["items"].items() if had.get(d) != a}
+        saved |= moved
+        others |= moved if not owner_viewer(save_viewer(sv)) else set()
+        other_viewer = other_viewer or not owner_viewer(save_viewer(sv))   # round 2: a Save that changed nothing too
+    # a Save a collaborator made takes its words in, never as the owner's new Answer (owner_viewer: the review loop). The
+    # take-in is one plumbed commit, which git judges as a whole (plumbed_by_other), so where any of its Saves is
+    # another viewer's, no item gets a Picked. and text and git hold alike (round 3 of the review loop) — a comment
+    # thread's item in the same commit included, which `saved` lacked (this build's review loop, round 1)
+    new_text, rep = merge(text, answers, others=takein_others(answers, saved, others or other_viewer))
     talking = talking_ids(pin, take, threads)
     # a talking thread's replies are the session's to answer: never late, never marked seen below
     late = [(t, rs) for t, rs in late_replies(threads, pin) if t["id"] not in talking]
@@ -7658,7 +9049,8 @@ def sheep_pull(memo, write=False, plumb=False, take=()):
     summary = "changed: %s; unchanged: %s; feedback: %s; notes: %d%s" % (
         ", ".join(rep["changed"]) or "none", ", ".join(rep["unchanged"]) or "none",
         "added" if rep["feedback"] else "none", rep["notes"],
-        ("; unknown ids ignored: " + ", ".join(rep["unknown"])) if rep["unknown"] else "")
+        ("; unknown ids ignored: " + ", ".join(rep["unknown"])) if rep["unknown"] else "") + (
+        ("; reopened, no listed option picked: " + ", ".join(rep["reopened"])) if rep.get("reopened") else "")
     what = "%d thread%s%s" % (len(taken), "" if len(taken) == 1 else "s",
                               " and %d Save%s from the page" % (len(saves) - len(refused), "" if len(saves) - len(refused) == 1 else "s")
                               if len(saves) > len(refused) else "")
@@ -9603,7 +10995,8 @@ STANDS_RE = re.compile(r"^Stands:\s*(\S+)(?:.*?\bset\s+(\S+))?")
 # A commit that is not the owner's: the checkpoint's own trailer, an agent's, or this tool's. On the
 # laptop every commit's author is the owner (rules: git-workflow, "Who the commit is from"), so the
 # author cannot tell a checkpoint from an edit the owner committed himself; the trailers can.
-AGENT_TRAILER_RE = re.compile(r"^(?:Claude-Session:|Co-Authored-By:\s*Claude\b|Stood-By:)", re.M | re.I)
+# Codex and Antigravity sessions sign as lighthouse's vendor_hook writes it (round 4 of rabbit-holes S3: their box edit read as the owner's)
+AGENT_TRAILER_RE = re.compile(r"^(?:Claude-Session:|Co-Authored-By:\s*(?:Claude|Codex|Antigravity)\b|Stood-By:)", re.M | re.I)
 # A checkpoint commit quotes the prompts it carries (hooks/checkpoint.py build_message)
 PROMPT_RE = re.compile(r"^(?:Prompt|Prompts \(oldest first\)):\s*\n> ", re.M)
 
@@ -10510,7 +11903,14 @@ def light_check(text):
         if not 2 <= n <= 4:
             why.append("C2 options: %s has %d `- A — …` options, a chip question takes 2 to 4" % (it["id"], n))
         rec = " ".join((it["recommended"] or "").split())
-        if reopened(it, lines):  # --write's read-back is answered(), which a Reopened reply keeps False
+        if nopick_marked(it, lines) and reopened(it, lines):   # rabbit-holes D3-A: not the session's to release
+            # the second fix round, item 16: the re-ask stays on the owner's own roads, which commit as the owner; a tap
+            # here is taken in by this session's commit, whose Picked. line the hold takes on trust (round 4's gap)
+            why.append("C3 ready: %s picks no listed option — %s answers it again on the page or on GitHub, which "
+                       "commit as %s (a tap here is taken in by this session's commit), or a fresh architect's design "
+                       "pass revises it"
+                       % (it["id"], WHO, WHO))
+        elif reopened(it, lines):  # --write's read-back is answered(), which a Reopened reply keeps False
             why.append("C3 ready: %s is reopened — the session answers its reopen first" % it["id"])
         elif not rec:
             why.append("C3 ready: %s has no ➤ Recommended: pick" % it["id"])
@@ -10831,13 +12231,19 @@ def light_write(memo, why, review=None, session=None):
     new = set_gate(new, gate)
     p.write_text(new)
     lines2, after, _ = parse(new)
+    # a tap typed in Other picks no listed option: it is written with intake's reopen (rabbit-holes D3-A), which
+    # keeps answered() False, so the read-back takes the reopen as the answer having taken
     left = [it["id"] for it in after if it["id"] in take
-            and not (answered(it, lines2) and CHAT_ANSWER_RE.match(it["answer"] or ""))]
+            and not ((answered(it, lines2) or nopick_marked(it, lines2)) and CHAT_ANSWER_RE.match(it["answer"] or ""))]
     if left or not gate_of(lines2):  # read back, never assumed
         p.write_text(text)
         raise Stop("the answers did not take for %s — the doc is as it was" % (", ".join(left) or "the Gate line"))
     for k in sorted(take, key=lambda x: int(x[1:])):
         print("took %s: %s" % (k, take[k].split("\n")[0]))
+    nopick = [it["id"] for it in after if it["id"] in take and nopick_marked(it, lines2)]
+    if nopick:
+        print("reopened: %s — the answer typed in Other picks no listed option; the step after it waits for %s's new "
+              "Answer or a fresh architect's design pass" % (", ".join(nopick), WHO))
     if feedback:
         print("open feedback: %d note%s" % (len(feedback), "" if len(feedback) == 1 else "s"))
     elif not asked_fb:
@@ -13881,6 +15287,12 @@ def main(argv=None):
     ld = sub.add_parser("landing", help="refuse (exit 1) when a brief this branch added names a step its doc has open (entry D6, S7)")
     ld.add_argument("where", nargs="?", default=".")
     ld.add_argument("--base", help="the ref the branch is compared with (default origin/main, else main)")
+    hd = sub.add_parser("held", help="exit 3 while a step a brief names waits on an answer that picks no listed option (rabbit-holes D3-A)")
+    hd.add_argument("doc", nargs="?", help="a Course doc: its steps (or the ones named after it) instead of a brief's")
+    hd.add_argument("steps", nargs="*", help="S<n> of the doc; every step when none is named")
+    hd.add_argument("--brief", help="a brief file, or - for stdin: the steps its `Steps:` lines and `keel step` calls name")
+    hd.add_argument("--repo", help="the checkout to read git from (default: the brief's or doc's own)")
+    hd.add_argument("--ref", default="HEAD", help="the ref the docs are read at (default HEAD)")
     y = sub.add_parser("yolo", help="E12: take every open bare pick unattended, or stop (exit 3) and write nothing; --dnd holds D1-A's classes (exit 4)")
     y.add_argument("memo")
     y.add_argument("--dry-run", action="store_true", help="say what it would take or where it stops; write nothing")
@@ -14040,6 +15452,7 @@ def main(argv=None):
                 ks = keel_summary(a.memo)
                 if ks:
                     res["keel"] = ks
+                res["picks"], res["held"] = pick_status(a.memo)
                 print(json.dumps(res, ensure_ascii=False))
             else:
                 print(status_line(res))
@@ -14066,6 +15479,10 @@ def main(argv=None):
             return light_write(a.memo, a.why, review=a.review, session=a.session)
         if a.cmd == "landing":
             return landing(a.where, a.base)
+        if a.cmd == "held":
+            if bool(a.brief) == bool(a.doc):
+                raise Stop("held: --brief FILE|- or a doc, one of the two")
+            return held_cmd(brief=a.brief, doc=a.doc, steps=a.steps, repo=a.repo, ref=a.ref)
         if a.cmd == "render":
             return render(a.memo, out=a.out, style=a.style, force=a.force, palette=a.palette)
         if a.cmd == "lookout":
@@ -14161,7 +15578,7 @@ def main(argv=None):
             kd = keel_derive(text, memo)
             print(json.dumps({"items": [dict({k: v for k, v in it.items() if k in ("id", "title", "body", "recommended", "answer", "shape", "options", "reversible")},
                                              answered=answered(it, lines), settled=yolo_settled(it, lines),
-                                             reopened=reopened(it, lines)) for it in items],
+                                             reopened=reopened(it, lines), pick=item_pick(it)) for it in items],
                               "steps": [{k: v for k, v in x.items() if k != "line"} for x in kd["steps"]],
                               "goals": [dict({k: v for k, v in g.items() if k != "line"}, measured=kd["measured"].get(g["id"]))
                                         for g in kd["goals"]],
