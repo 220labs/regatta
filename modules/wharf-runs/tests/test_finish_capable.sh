@@ -79,7 +79,7 @@ def refused(piece):
         m.cmd_list(SimpleNamespace(all=True, status=False, json=False), None)
     check("not here: " + why in listing.getvalue(), "queue row names: " + piece)
     with contextlib.redirect_stderr(claim):
-        check(m._claim(SimpleNamespace()) == [], "no claim starts")
+        check(m._claim(SimpleNamespace(cap=1)) == [], "no claim starts")
     check("not claimed fixture:entry: " + why in claim.getvalue(), "claim says: " + piece)
     report = m.finish_readiness()
     out = subprocess.run(["sh", str(module / "install.sh"), "--check"], text=True, capture_output=True)
