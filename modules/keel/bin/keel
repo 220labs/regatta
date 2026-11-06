@@ -4950,6 +4950,21 @@ tr.noted td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
 @media (prefers-reduced-motion: no-preference){.chip{transition:background .2s}}
 /* only a table at the page's top level breaks out: inside a card or a quote it would run past the card's border */
 main > .tbl.wide{--w:max(100%,min(64rem,calc(100vw - 48px)));width:var(--w);margin-inline:calc((100% - var(--w)) / 2)}
+/* Round 7 (Porthole, the owner's pick, 2026-11-06): the page's shape — rounded type from the foundation's --display and
+   --sans, round-cornered source, notes and cards, a rounded text box. Radii, rims and type only: the page's own colours
+   stay, and the column stays 42rem (the tables' break-out, and the spacesheep capsule's edges, are measured from it). */
+h1{font:650 clamp(1.75rem,4vw,2.25rem)/1.15 var(--display,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif);letter-spacing:-.025em;margin:.5rem 0 1rem}
+h2{font-family:var(--sans);font-weight:600}
+code{border-radius:6px}
+pre{border:1px solid var(--line);border-radius:18px;padding:1rem}
+pre.mermaid{border:0}
+main pre[data-at]{border-radius:18px}
+:where(main) .opt[data-at]{border-radius:18px}
+.card{border-radius:28px;padding:1.35rem}
+textarea{border-radius:18px}
+.note{border-radius:0 18px 18px 0}
+.opt{border-radius:18px}
+.state{font-family:var(--sans)}
 """
 
 
@@ -5668,7 +5683,7 @@ SHEEP_CSS = """
 :root[data-theme="dark"]{--paper:#1c2028;--ink:#f2f4f8;--muted:#a2aab8;--line:#363d4b;--card:#252a34;--soft:#2c313d;--code:#2c313d;--accent:#e39a68;--accent-ink:#1f1206;--warn:#ecbc63;--warn-bg:#3d341b;--ok:#34d399;--bad:#ff8080;--fire-1:#e8894f;--fire-2:#d0702f;--fire-tint:#33261d;--fire-line:#5e4231;--focus:#e8894f;--pill-ok:#34d399;--pill-bad:#ff8080;--pill-on:#12141a;--elev:inset 0 1px 0 rgba(255,255,255,.07),0 12px 32px rgba(0,0,0,.6)}
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding-block:0 8rem}
 a{text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent);text-underline-offset:2px}
-.card{border-left:3px solid var(--fire-line);border-radius:10px}
+.card{border-left:3px solid var(--fire-line);border-radius:28px}
 .card .eyebrow,.opt .L,.foot .k{color:var(--muted)}
 .chip{background:var(--soft);color:var(--muted)}
 textarea:focus{outline-color:var(--focus)}

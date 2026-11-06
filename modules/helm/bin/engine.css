@@ -58,7 +58,7 @@
 .eroom .rt.held { border-color: transparent; color: var(--wait); background: var(--wait-wash); }
 .eroom .rt.need { border-color: transparent; color: var(--park); background: var(--park-wash); }
 .eroom .rt.any { border-color: transparent; color: var(--graphite); background: transparent; padding: 0; }
-.eroom .queue td .st { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; }
+.eroom .queue td .st { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; border-radius: 12px; }
 .eroom .opsline { margin: 16px 0 0; font: var(--t-small); color: var(--graphite); }
 .eroom .opsline b { color: var(--ink); }
 .eroom .lbl2 { font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; color: var(--graphite); margin-right: 8px; }
@@ -152,7 +152,7 @@
 .eroom .acts-td { min-width: 180px; }
 .eroom .eacts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .eroom .rts.inrow { display: none; margin-top: 8px; }
-.eroom .rcpt { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; }
+.eroom .rcpt { white-space: normal; height: auto; padding: 5px 9px; line-height: 17px; border-radius: 12px; }
 .eroom .econfirm { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--flag-wash); border: 1px solid var(--flag-line); font: var(--t-small); color: var(--ink); }
 .eroom .econfirm > span { flex: 1 1 24ch; }
 @media (max-width: 1100px) {

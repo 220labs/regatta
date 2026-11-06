@@ -67,8 +67,10 @@
   --glass: rgba(255, 255, 255, .86);
   --scrim: rgba(21, 23, 28, .32);
 
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  /* round 7 (Porthole, the owner's pick, 2026-11-06): rounded system type, no download — ui-rounded where the OS has it
+     (SF Pro Rounded on Apple), else the system faces as before */
+  --sans: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "SF Pro Display", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   /* type, opened up in round 5: 40 headline · 22 doc · 19 question · 16 option and body · 14 meta · 12.5 mono */
@@ -84,7 +86,7 @@
   --t-label: 650 11.5px/14px var(--mono);
   --t-title: 650 21px/27px var(--display);
 
-  --r-chip: 7px;
+  --r-chip: 999px;   /* round 7: a chip is a pill */
   --r-row: 12px;
   --r-card: 16px;
   --r-pill: 999px;

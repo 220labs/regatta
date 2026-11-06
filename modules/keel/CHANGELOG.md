@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The Porthole look (the helm council's round 7, the owner's pick, 2026-11-06): the decision component, the Course page's cards,
+  source and text boxes and the shared tokens take the rounder shape — a double rim round a compact row group, a round number window, pill keys and chips, rounded system type (`ui-rounded`, no download); density, the keys and the colour meanings are round 6's, and the B and C shapes were not built.
 - The hold and the pick class after #504's review rounds (rabbit-holes S3): a doc in no commit stays could-not-tell
   (exit 4), so a brief must name a doc the repo holds; the hold follows a `git mv` of the doc, reads branches and remote
   branches only (never `refs/archive` or the stash), and lets the newer release in a worktree the brief names beat the
@@ -16,6 +18,7 @@
   one `--approve-for-me`); every other permission hook is untouched. Every privacy check runs before either.
   The receiver's reading of it is unverified (`docs/sheep-codex-activity-upstream-2026-11-04.md`).
 
+- Source in a decision keeps its own theme ink and wash when an option is picked or the question is focused, so the selected row's flag text colour cannot make inline or fenced code unreadable. The decision render case covers both themes and both states.
 - A reply that hands the owner a doc no longer closes on WAITING FOR NOTHING: the Stop lint blocks it, as it does a Do this now block or a ⚠ stop, and asks for the WAITING FOR YOU line, because a handed doc waits on the owner's reading or answers, D-items or none (the owner, 2026-11-01). `hands_doc` in `bin/keel` is the reader, by the hand-over line's own shape: a link to github or to a file inside prose is no hand-over, a dated doc's file link alone on its line (all `keel line` prints for a new doc on a branch not pushed yet) is one. A WAITING FOR YOU line over a handed doc is no longer sent to another closing line. A skippered run is told to relay the doc in the same block, and that relay is the only ending it hears; a turn that owes a skill's line, a landed digest, keeps that finding. Such a branch now waits for the owner before autofinish lands it, as after any WAITING FOR YOU reply (`reply_veto`).
 - `keel lint` refuses an open D-item asking to land, launch or finish a build's own branch in a build digest (its heading says so, or a worker wrote it) or in a dispatched run's doc. Outside a digest only "this branch", or the branch's topic landed, merged or finished, counts. Product-launch decisions and attended design docs keep their existing rules.
 - The principal rule's incomplete check judges the arms' rows only: a reviewer that timed out, or the parent's refused

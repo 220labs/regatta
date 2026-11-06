@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The board takes keel's Porthole tokens (rounded type, pill chips) and rounder cards, timeline and comment sheet (28 px).
 - A refused build's card puts dispatch's cause and next action first, so the evidence summary keeps them visible.
 - Landing retries use the finish week ceiling in their preflight, so a login past its build ceiling
   can reach autofinish-run; build retries keep the normal ceiling.
