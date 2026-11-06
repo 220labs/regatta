@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `pr hold` (check-ci-default's landing review, 2026-11-06): labels this branch's PR `hold` as build CI's own, with check_ci.py's
+  marker and ownership note, through the token, so an unattended `/finish` re-landing a ready PR holds it before its push
+  (it may not call `gh`); an owner's unmarked hold is kept and nothing claimed. Step 11.2 names it.
 - A Linux runner's berth parts (free CI S6, docs/free-ci-2026-11-03.md, 2026-11-04): the image is ubuntu:26.04, hosted
   ubuntu-latest's release, by its index digest, its packages upgraded at each build, procps added and the base's own login
   gone (the runner keeps uid 1001); the container is capped by the new live limit `wharf/ci-runner-limits` (modules/wharf/limits,
@@ -17,6 +20,9 @@
   node's sessions. Install and remove refuse a name another registration holds (a unit or volume alone included), and
   install refuses a second name from a repo whose directory registered one, each before minting a token and again on
   the host; a first install reserves the repo and name before registering, so its owner can retry or remove a failed one.
+- `/finish` checks its curated, rebased tip through the PR's CI, with the final review in
+  parallel, then releases only its tool-owned hold. Local inputs and live checks stay here.
+
 - `pr ready` carries build CI's hold ownership through curation and releases the label, while
   an explicit `--hold` replaces it with a hold the landing keeps.
 
