@@ -900,21 +900,51 @@ echo '{"oauthAccount": ' > "$F/.claude.json"
 check "$(SA)" 1 "a .claude.json that does not parse → owed"
 has "$T/out" "work: first-start keys owed — $F/.claude.json:" "…naming the file"
 check "$(cat "$F/.claude.json")" '{"oauthAccount": ' "…which is left as it was"
-# A Claude Code save that read before setup's write lands after it: the file as it was, $1 times
-strip_keys() {
-  n=0; i=0
-  while [ $n -lt "$1" ] && [ $i -lt 300 ]; do
-    if grep -q hasCompletedOnboarding "$F/.claude.json" 2>/dev/null; then fixture; n=$((n+1)); fi
-    sleep 0.02; i=$((i+1))
-  done
+# Land an atomic Claude Code save at setup's settling point, $1 times. A background grep
+# racing a 0.6-second delay missed the second write on loaded Linux runners. Exercise setup's
+# real entry point, but control only the work row's settling events, never subprocess's clock.
+setup_saves() {
+  ACCOUNTS_FILE="$ACCOUNTS_FILE.f" python3 - "$B/account" "$1" > "$T/out" 2>&1 <<'PY'
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+import os, sys, types
+from unittest.mock import patch
+
+loader = SourceFileLoader("account_saves", sys.argv[1])
+a = module_from_spec(spec_from_loader(loader.name, loader))
+loader.exec_module(a)
+wanted = int(sys.argv[2])
+write = a.write_first_start
+calls = []
+
+def write_with_saves(row, version):
+    if row["label"] != "work":
+        return write(row, version)
+    p = a.claude_json(row)
+    stale = p.read_bytes()
+    def save(delay):
+        calls.append(delay)
+        assert len(calls) <= 2, "setup must retry at most once"
+        if len(calls) <= wanted:
+            tmp = p.with_name(p.name + ".save")
+            tmp.write_bytes(stale)
+            os.chmod(tmp, p.stat().st_mode & 0o7777)
+            os.replace(tmp, p)
+    with patch.object(a, "time", types.SimpleNamespace(sleep=save)):
+        return write(row, version)
+
+with patch.object(a, "write_first_start", write_with_saves):
+    rc = a.main(["setup"])
+assert calls == [a.SETTLE, a.SETTLE], calls
+sys.exit(rc)
+PY
+  echo $?
 }
-fixture; strip_keys 1 & sp=$!
-check "$(ACCOUNT_SETTLE=0.6 SA)" 0 "a save that takes the keys once → read back and written again"
-wait $sp
+fixture
+check "$(setup_saves 1)" 0 "a save that takes the keys once → read back and written again"
 check "$(keys | cut -d' ' -f1-4)" "True 2.1.310 1 False" "…and they hold"
-fixture; strip_keys 2 & sp=$!
-check "$(ACCOUNT_SETTLE=0.6 SA)" 1 "…twice → owed, never a loop"
-wait $sp
+fixture
+check "$(setup_saves 2)" 1 "…twice → owed, never a loop"
 has "$T/out" "work: first-start keys owed — a Claude Code save took the keys twice from $F/.claude.json — run setup again" "…saying so"
 login "$F/.claude.json" u-other x@example.com
 
