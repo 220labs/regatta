@@ -305,6 +305,11 @@ reader.rows = lambda c: {"node-b": {"at": fresh}}
 assert "argon-agent" not in h.message_peers(), h.message_peers()
 (argon / "scope").write_text("open\n")
 assert h.message_peers()["argon-agent"] == "argon-ssh"
+# ...and a folder naming an unknown scope blocks its row with no `ssh` file too (only the row would reach it).
+(argon / "ssh").unlink(); (argon / "scope").write_text("ghost\n")
+reader.rows = lambda c: {"node-b": {"at": fresh}, "argon-agent": {"at": fresh}}
+assert "argon-agent" not in h.message_peers(), h.message_peers()
+(argon / "ssh").write_text("argon-ssh\n")
 (argon / "scope").unlink()
 (argon / "ssh").unlink(); argon.rmdir()
 # A builder user's row names no ssh host: never an automatic peer, unless a configured alias names it.

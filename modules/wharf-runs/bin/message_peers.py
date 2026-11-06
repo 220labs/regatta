@@ -192,8 +192,9 @@ def blocked_hosts(core, reg):
     opened = {n for n, sc in ((reg.get("scopes") if isinstance(reg, dict) else None) or {}).items()
               if isinstance(n, str) and isinstance(sc, dict) and sc.get("confidential", False) is False}
     try:
-        for path in sorted((core.CONFIG / "wharf-runs" / "nodes").glob("*/ssh")):
-            name = path.parent.name
+        # Every folder, as nodes_here walks them: one with no `ssh` is still its scope's node.
+        root = core.CONFIG / "wharf-runs" / "nodes"
+        for name in sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
             if name.startswith("."):
                 continue
             scope = (core.config_line("wharf-runs/nodes/%s/scope" % name) or "").strip()

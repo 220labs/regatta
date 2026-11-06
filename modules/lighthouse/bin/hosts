@@ -257,7 +257,7 @@ def role(h):
     return "linux node" if platform.system() == "Linux" else None
 
 
-def node_scope_mark():
+def node_scope_mark(h=None):
     """A named node's scope as the core's scope_marker (hail's message discovery blocks a row whose marker is
     no open scope there), None on a shared node or a host that is no node. A key that will not read marks the
     row as an unknown scope's, so discovery fails closed."""
@@ -271,7 +271,25 @@ def node_scope_mark():
         if why:
             return unread
         name = ((lines or [""])[0] or "").strip()
-        return common.scope_marker(name) if name else None
+        if name:
+            return common.scope_marker(name)
+        if lines is not None:   # the key there and empty: a shared node
+            return None
+        clones, why = read("wharf-runs/node/clones")
+        if why:
+            return unread
+        if not clones:   # no named node's payload: no node (a Mac's own node folders never mark it)
+            return None
+        # A named node rendered before the scope key: the core's own verdict from its clones (nodes_here).
+        reg, torn = common.read_registry()
+        if torn or not isinstance(reg, dict):
+            return unread
+        me = host_here(h)   # the row's own name, as the core tells this host's node (H: the row's)
+        told, why, _held = common.nodes_here(reg, me=me)
+        if why or not isinstance(told, dict):
+            return unread
+        owner = told.get(me)
+        return common.scope_marker(owner) if owner else None
     except Exception:   # noqa: BLE001 — no scope read: no open scope's either
         return unread
 
@@ -486,7 +504,7 @@ def sample(h=None, cap=None, logins=None, keep_history=True):
     r = role(h)
     if r:
         row["role"] = r
-    mark = node_scope_mark()
+    mark = node_scope_mark(h)
     if mark:
         row["scope"] = mark
     if builder_row():
