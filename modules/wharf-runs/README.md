@@ -169,3 +169,15 @@ or missing, and never falls back locally. CI neither waits for a local slot nor 
 (macOS). The suites run in three lanes at once, test_dispatch alone in one, each lane printed whole, in lane order,
 when it ends; `WHARF_RUNS_CHECK_LANES=1` runs them one after another. A suite the checkout lacks is
 skipped with a line.
+
+`bash modules/wharf-runs/tests/check.sh --list-shards` prints a partition of every script;
+`--shard NAME` runs one group in one lane; off macOS it runs `LINUX_OK`'s suites only, and
+`WHARF_RUNS_LINUX_PROOF=1` runs the group whole, to prove a candidate. The check line names the suite
+once (a Mac's whole line runs it in lanes); `share.sh` splits it into one id per shard. The PR's
+`check-linux` runs seven of the eight that passed on Linux (#500, 2026-11-05); the macOS share runs
+`wharf-runs-pickup` (until the self-hosted Linux runners have `lsof`), `wharf-runs-queue` and `wharf-runs-macos`.
+`test_harness` needs macOS's research seatbelt, and `test_rc_hosts` compiles and signs the TCC
+launcher; both stay in `macos`.
+`share.sh` names a command ending in `tests/check.sh --shard NAME` as `<module>-NAME`, and a plain
+`bash <module>/tests/check.sh` whose script answers `--list-shards` as one such id per shard. Both Actions matrices
+read `share.sh linux-ids`; CircleCI's static matrix must match `.github/ci/linux-ids`.

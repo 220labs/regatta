@@ -10,7 +10,7 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # this suite runs inside unattended /finish runs too; its cases set CLAUDE_UNATTENDED themselves
 unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
-# The outer macOS share sets this flag; nested fixtures select their own share.
+# A hand run of check.sh may set this flag; nested fixtures select their own share.
 unset WHARF_RUNS_SKIP_LINUX_OK
 export CHECK_SLOT_DIR="$T/slots" CHECK_LOGS="$T/logs" CHECK_SLOT_POLL=0.2 CHECK_SLOTS=1 CHECK_PASS_TTL=0   # the memory off; its own cases turn it on
 # wait up to 10 s for a condition
@@ -550,7 +550,7 @@ PYEVENT
   check "$(ranof):$(grep -c '^selected:' "$T/mac.out")" ":0" "a carried green skips every check step"
   event pull_request false '' ''
   check "$(ranof):$(grep -c '^selected: check, the rest$' "$T/mac.out")" "b c:1" "without runner variables, the twin keeps its rest job"
-  # wharf-runs spans both shares; whole must run all its scripts, without the share-only flag.
+  # whole must run a Linux-list id here too, all its scripts, without the share-only flag.
   mk
   mkdir -p "$T/mac/modules/wharf-runs/tests" "$T/mac/modules/wharf-runs/.claude-plugin"
   echo '{}' > "$T/mac/modules/wharf-runs/.claude-plugin/plugin.json"
@@ -567,8 +567,11 @@ PYLINE
   pr modules/wharf-runs/tests/check.sh
   event pull_request false
   check "$(cat "$T/mac/ran-wharf-runs")" "unset" "whole runs wharf-runs without WHARF_RUNS_SKIP_LINUX_OK"
+  # since wharf-runs-linux each wharf-runs shard is an id of its own, so the macOS share no longer runs a Linux-list
+  # id with a split flag: it leaves the id to its Linux job, as any other
+  rm -f "$T/mac/ran-wharf-runs"
   event pull_request true
-  check "$(cat "$T/mac/ran-wharf-runs")" "1" "the scoped macOS share keeps wharf-runs' split flag"
+  check "$(cat "$T/mac/ran-wharf-runs" 2>/dev/null || echo none)" "none" "the scoped macOS share leaves a Linux-list id to its Linux job"
   mk; pr docs/note.md
   ( cd "$T/mac" && bash .github/ci/share.sh macos-scope ) > "$T/local.scope" 2>&1
   check "$(grep -c 'scope input: HEAD\^1 (.*)\.\.HEAD (.*); a local merge reads its first-parent delta' "$T/local.scope")" "1" "macos-scope names its input on a local merge HEAD"
@@ -578,10 +581,17 @@ PYLINE
     local pairs n
     pairs="$(bash "$ROOT/.github/ci/share.sh" ids)"
     n="$(printf '%s\n' "$pairs" | cut -f1 | grep -n -x "$2" | cut -d: -f1)"
+    [ -n "$n" ] || { echo "MISSING $2"; return; }   # an empty n would print every verdict
     CHECK_CMDS="$(printf '%s\n' "$pairs" | cut -f2-)" python3 "$B/check_scope.py" "$ROOT" base "$1" | grep -v '^SCOPE' | sed -n "${n}p" | cut -f1
   }
   for m in keel wharf-runs wharf plumb; do check "$(verdict_of "modules/$m/bin/zz" sextant)" "RUN" "sextant's suite is reached by modules/$m, which it runs by name"; done
-  for m in lighthouse plumb aurora atlas helloworld; do check "$(verdict_of "modules/$m/bin/zz" wharf-runs)" "RUN" "wharf-runs' suite is reached by modules/$m, which its tools resolve by name"; done
+  # wharf-runs runs as shards (`wharf-runs-<shard>` ids): judge a Linux one and a Mac one, never the gone `wharf-runs`
+  # id, whose empty line number made `sed -n "p"` print every verdict
+  for m in lighthouse plumb aurora atlas helloworld; do
+    for id in wharf-runs-core wharf-runs-queue; do
+      check "$(verdict_of "modules/$m/bin/zz" "$id")" "RUN" "wharf-runs' suite ($id) is reached by modules/$m, which its tools resolve by name"
+    done
+  done
   check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "steps.carry.outputs.carry != 'true'")" "1" "check.yml's macOS step yields to a carried green"
   check "$(grep -c -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml")" "1" "check.yml's macOS step asks for the scope"
   check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "github.event_name == 'pull_request'")" "1" "…on a pull_request event only"

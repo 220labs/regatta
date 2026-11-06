@@ -15,8 +15,8 @@
 #   share.sh ids            each command of the check line, its id first (tab-separated)
 #   share.sh line DIR       DIR's check line, one command a line (check.yml's `check` step)
 #   share.sh linux ID       run the command whose id is ID (one `suite` job)
-#   share.sh macos [--scoped]  run every command whose id is not on the Linux list, past a failure,
-#                           and wharf-runs' macOS-only scripts where wharf-runs is on it; --scoped (a
+#   share.sh macos [--scoped]  run every command whose id is not on the Linux list, past a failure;
+#                           --scoped (a
 #                           pull request: check.yml) runs only those the change reaches, check_scope.py's
 #                           verdicts over what the PR's merge commit adds to its base, a `SKIP <id>` line
 #                           for the rest; a change that cannot be read runs them all (free-ci S3)
@@ -35,8 +35,9 @@
 #
 # The line is check.yml's `check` step, so a module that appends its check there lands in the rest
 # until it joins the Linux list. An id is `plugin` for `claude plugin validate`, the module for its
-# tests/check.sh, `<module>-<script>` for another script, `line-<n>` for any other command (its place
-# in the line). In the private repo, on a pull request only: a push, the nightly run and a hand start
+# tests/check.sh, `<module>-<shard>` for tests/check.sh --shard NAME (and one per shard for a plain
+# check.sh whose script answers --list-shards: wharf-runs'), `<module>-<script>` for another script,
+# `line-<n>` for any other command (its place in the line). In the private repo, on a pull request only: a push, the nightly run and a hand start
 # run the whole line on a Mac (check.yml), so every Darwin branch is still run each day.
 # Public since free CI's S2 (2026-11-04; .circleci/ held it before, unpublished): it names no
 # machine and no login, and reads a private file only where the file exists.
@@ -96,7 +97,7 @@ ids() {
     cmds="$(line_of "$repo")" || return 2
     local n=0
     printf '%s\n' "$cmds" | while IFS= read -r cmd; do
-        local id path
+        local id path shard shards
         n=$((n + 1))
         case "$cmd" in
             *"claude plugin validate"*) id=plugin ;;
@@ -105,7 +106,31 @@ ids() {
                 # any other command is the line's own (`line-<n>`): in the macOS share until the
                 # matrix names it, never a refusal of both shares
                 if [ -z "$path" ]; then id="line-$n"
-                else id="$(printf '%s' "$path" | sed -E 's#modules/([^/]*)/tests/(.*)\.sh#\1-\2#; s#-check$##')"; fi
+                else
+                    id="$(printf '%s' "$path" | sed -E 's#modules/([^/]*)/tests/(.*)\.sh#\1-\2#; s#-check$##')"
+                    if [ "${path##*/}" = check.sh ]; then
+                        shard="$(printf '%s' "$cmd" | sed -nE 's/.* --shard ([a-z0-9-]+)([ ;}].*)?$/\1/p')"
+                        [ -z "$shard" ] || id="$id-$shard"
+                        # a plain `bash <module>/tests/check.sh` whose script lists shards is one row per
+                        # shard: the line keeps one command (a Mac's lanes; a branch's older check.sh), the
+                        # shares judge and run each shard by its own id (wharf-runs-linux's landing review)
+                        if [ -z "$shard" ] && [ "$cmd" = "bash $path" ] && grep -q -e '--list-shards)' "$repo/$path" 2>/dev/null; then
+                            # its status first, then cut: a failed partition check's FAIL line must not become ids
+                            # stdout alone: a shell's warning on stderr (a locale, BASH_ENV) is no shard name
+                            errf="$(mktemp)"
+                            shards="$(bash "$repo/$path" --list-shards </dev/null 2>"$errf")" \
+                                || { echo "share.sh: $path --list-shards: $shards $(cat "$errf")" >&2; rm -f "$errf"; return 2; }
+                            rm -f "$errf"
+                            shards="$(printf '%s\n' "$shards" | cut -f1)"
+                            [ -n "$shards" ] || { echo "share.sh: $path --list-shards named no shard" >&2; return 2; }
+                            if printf '%s\n' "$shards" | grep -qv '^[a-z0-9-]*$'; then
+                                echo "share.sh: $path --list-shards printed a name that is no shard's: $(printf '%s' "$shards" | grep -v '^[a-z0-9-]*$' | head -1)" >&2; return 2
+                            fi
+                            for shard in $shards; do printf '%s-%s\t%s --shard %s\n' "$id" "$shard" "$cmd" "$shard"; done
+                            continue
+                        fi
+                    fi
+                fi
                 ;;
         esac
         printf '%s\t%s\n' "$id" "$cmd"
@@ -243,20 +268,31 @@ case "${1:-}" in
             printf '%s\n' "$verdict" | awk -F'\t' '$1 == "SCOPE" { print "=== scope: " $2 }'
         fi
         summary=(); failed=0
+        # `whole` runs a command ids split into shards once, as the line names it (a Mac's three lanes),
+        # not shard by shard in one lane each; every shard of it shares one module's scope verdict
+        line=""; [ "$1" != whole ] || { line="$(line_of "$repo")" || exit 2; }
+        ran_base=""; ran_id=""; ran_rc=""
         while IFS=$'\t' read -r id cmd; do
-            if [ "$1" != whole ] && on_linux "$id" "$lx"; then
-                # wharf-runs runs its Linux-proven scripts there and the rest here
-                [ "$id" = wharf-runs ] || { summary+=("LINUX  $id"); continue; }
-                cmd="WHARF_RUNS_SKIP_LINUX_OK=1 $cmd"
-            fi
+            # `whole` runs every line here; the other shares leave a Linux-list id (a wharf-runs shard included:
+            # each shard is its own id since wharf-runs-linux) to its Linux job
+            if [ "$1" != whole ] && on_linux "$id" "$lx"; then summary+=("LINUX  $id"); continue; fi
             if [ -n "$scoped" ]; then
                 # a command the verdicts do not name runs: never fewer than the line
                 sk="$(printf '%s\n' "$verdict" | awk -F'\t' -v id="$id" '$1 == id && $2 == "SKIP" { print $3; exit }')"
                 if [ -n "$sk" ]; then echo "SKIP $id: $sk"; summary+=("SKIP  $id"); continue; fi
             fi
+            base="${cmd% --shard *}"
+            if [ -n "$line" ] && [ "$base" != "$cmd" ] && printf '%s\n' "$line" | grep -Fxq -- "$base"; then
+                if [ "$base" = "$ran_base" ]; then
+                    if [ "$ran_rc" = 0 ]; then summary+=("PASS  $id (in $ran_id's run)"); else summary+=("FAIL  $id (in $ran_id's run)"); fi
+                    continue
+                fi
+                ran_base="$base"; ran_id="$id"; cmd="$base"
+            fi
             t0=$(date +%s)
-            if run_one "$cmd"; then summary+=("PASS $(( $(date +%s) - t0 ))s  $id")
-            else failed=$((failed + 1)); summary+=("FAIL $(( $(date +%s) - t0 ))s  $id"); fi
+            if run_one "$cmd"; then r=0; summary+=("PASS $(( $(date +%s) - t0 ))s  $id")
+            else r=1; failed=$((failed + 1)); summary+=("FAIL $(( $(date +%s) - t0 ))s  $id"); fi
+            [ "$cmd" != "$ran_base" ] || ran_rc=$r
         done <<< "$all"
         echo
         if [ "$1" = whole ]; then echo "=== the whole line: $failed failed"
@@ -335,5 +371,5 @@ print(" ".join(i for i, v in zip(ids, vs) if v == "RUN"))')" || exit 2
         done
         exit $bad
         ;;
-    *) sed -n '2,42p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,43p' "$0" >&2; exit 2 ;;
 esac

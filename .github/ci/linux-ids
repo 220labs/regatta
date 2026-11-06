@@ -1,9 +1,13 @@
-# The Linux list: the check line's commands proven on Linux, one id a line (`share.sh ids` names every
+# The Linux list: the check line's commands assigned to Linux, one id a line (`share.sh ids` names every
 # command's id). Read by share.sh, so the PR check's Linux share (check-linux.yml), the twin's matrix
 # (check.yml's `suite` jobs), the macOS share and the rest all split the line by this one file.
 # CircleCI's static matrix (.circleci/parts/check-linux.yml) must list the same ids: share.sh fails
 # when it differs. An id joins once its suite passes on Linux (.circleci/linux-local.sh reproduces one
-# on a Mac); off it: sextant, whose suite needs macOS, and wharf-runs' scripts off its LINUX_OK list.
+# on a Mac). wharf-runs' check.sh is one command of the line and ten `wharf-runs-<shard>` ids here
+# (share.sh reads its --list-shards); eight passed on Linux (#500, 2026-11-05), seven are here. Off this
+# list: sextant and wharf-runs-macos, whose suites need macOS, wharf-runs-queue, whose finish-queue cases
+# read a Mac's claim and memory floors, and wharf-runs-pickup until the self-hosted runners have lsof
+# (TODO.md [runner-lsof]). A wharf-runs shard joins with its suites on check.sh's LINUX_OK, in one change.
 plugin
 regatta
 regatta-classes
@@ -14,5 +18,12 @@ lighthouse
 wharf
 aurora
 atlas
-wharf-runs
+wharf-runs-core
+wharf-runs-autofinish
+wharf-runs-dispatch
+# wharf-runs-pickup is off until the self-hosted runners' image has lsof (TODO.md [runner-lsof])
+wharf-runs-jobs
+wharf-runs-landing
+wharf-runs-wharf
+wharf-runs-tools
 helm
