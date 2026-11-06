@@ -36,4 +36,8 @@ Read `README.md` first: it is the chart. For an agent:
   Excalidraw half also needs the library in keel's cache folder (the first render fetches it) and says
   so when it skips. Chrome is started without `--user-data-dir`: with a fresh one it did not exit
   on one of the Macs (2026-10-23).
+- A fenced block before a D-item's `Recommended` line ends the parser's item: it becomes the
+  older, non-selectable shape. A contrast fixture must assert `data-shape="new"` before testing
+  a picked option. For a component-only fenced-source case, use `render_md` inside the rendered
+  question; keep a document's source excerpt before its D-item (keel-ui-round, 2026-11-05).
 - check: `bash modules/keel/tests/check.sh` (on a Mac: some cases read the overlay's peers).

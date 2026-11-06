@@ -191,6 +191,40 @@ check "$(python3 -c 'import sys; h=open(sys.argv[1]).read(); print(h.count("id=\
   "options in two runs: one words row, in the last group (the owner's words last)"
 
 CHROME="$(python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; print(L("m", sys.argv[1]).load_module().chrome_path() or "")' "$B/keel" 2>/dev/null)"
+# A question with fenced source and code in its options. The selected row changes its text colour;
+# source must retain a readable pair, including while that question has the keyboard cursor.
+cat > "$T/code.md" <<'EOF'
+# Source in a question
+
+- **D1 — Which command keeps the source readable?**
+
+  - A — keep `regatta check` as the command and inspect the whole source block
+  - B — use `regatta help` before the next pass
+
+  Reversible: yes
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+EOF
+"$B/keel" build "$T/code.md" -o "$T/code.html" > /dev/null
+# Exercise the component's block styling through the real Markdown renderer. The document parser
+# treats a fence as an item's boundary, so feeding it a fence before Recommended would quietly
+# turn this into the older, non-selectable shape instead of testing the picked option.
+python3 - "$B/keel" "$T/code.html" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader as L
+m = L("code_render", sys.argv[1]).load_module()
+p = sys.argv[2]
+h = open(p).read()
+source = m.render_md(["```sh", "regatta check", "```"])
+open(p, "w").write(h.replace('<div class="dq-ctx body">', '<div class="dq-ctx body">' + source, 1))
+PY
+has "$T/code.html" 'data-shape="new" data-tier="safe"' "the source case is selectable, not an older pre-filled question"
+has "$T/code.html" '<pre><code>regatta check</code></pre>' "fenced source renders inside the question through render_md"
+has "$T/code.html" '<span class="ot">keep <code>regatta check</code>' "inline source renders inside an option"
+has "$T/code.html" '.dq code, .dq pre { color: var(--ink); background: var(--wash); }' "source carries a text/surface pair independent of the selected row"
+
 # run <name> <probe js>: the page with a probe that writes its log into <pre id="probe">, at 1440 wide, read back
 run() {   # run <name> <probe js> [<page>, the suite's page by default]
   python3 - "${3:-$T/page.html}" "$T/$1.html" "$2" <<'PY'
@@ -210,6 +244,19 @@ PY
 if [ "$(uname -s)" != Darwin ] || [ -z "$CHROME" ] || [ ! -x "$CHROME" ]; then
   echo "  skip the keys in Chrome: no headless Chrome on this Mac, or not a Mac"
 else
+  echo "code contrast, in Chrome"
+  CODE='var lum=function(c){var a=c.match(/[\d.]+/g).slice(0,3).map(function(x){x=+x/255;return x<=.04045?x/12.92:Math.pow((x+.055)/1.055,2.4);});return .2126*a[0]+.7152*a[1]+.0722*a[2];};
+    var pair=function(el){var s=getComputedStyle(el),bg=el;while(getComputedStyle(bg).backgroundColor==="rgba(0, 0, 0, 0)")bg=bg.parentElement;
+      var a=lum(s.color),b=lum(getComputedStyle(bg).backgroundColor);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
+    var bad=[],n=0,s=$("card-D1"),a=s.querySelector("button.opt[data-letter=A]");
+    ["light","dark"].forEach(function(t){document.documentElement.dataset.theme=t;
+      [false,true].forEach(function(picked){$("ans-D1").value=picked?"A":"";KDC.sync(s);
+        [false,true].forEach(function(focus){if(focus)KDC.K.focus(s,"A",false);else KDC.K.release();
+          s.querySelectorAll("pre,code").forEach(function(el){n++;if(pair(el)<4.5)bad.push(t+":"+picked+":"+focus+":"+el.tagName);});});});});
+    var x=document.createElement("pre");x.id="probe";x.textContent=n+" reads; "+(bad.length?bad.join(","):"all at least 4.5:1");document.body.appendChild(x);'
+  out=$(run code "$CODE" "$T/code.html")
+  check "$out" "32 reads; all at least 4.5:1" "fenced and inline code: both themes, selected and unselected, focused and released"
+
   echo "the keys, in Chrome"
   KEYS='var key=function(k,o){var e=new KeyboardEvent("keydown",Object.assign({key:k,bubbles:true,cancelable:true},o||{}));(document.activeElement||document.body).dispatchEvent(e);};
     var at=function(){var s=KDC.K.cur();return (s?s.dataset.id:"-")+":"+(KDC.K.kopt==null?"-":KDC.K.kopt);};

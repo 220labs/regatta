@@ -6,34 +6,47 @@
    options sit side by side; the keys walk either shape by its visual rows. The blue flag marks the recommended row,
    the owner's pick fills with it, the ink ring is the keys' cursor and never a choice. Left out on purpose: the
    board's step 1 and 2 (the doc's paragraph and the framed doc), its notes box (the page notes any line) and the
-   "changed since you looked" strip (S11). */
+   "changed since you looked" strip (S11).
+   Round 7 (the owner's pick, A Porthole, 2026-11-06; the council's docs/helm-council-2026-11-01/rounder/): the shape
+   is a porthole — a double rim round a compact group of rows, the number in a round window, pill keys and chips, a
+   rounder frame for the owner's own words and the confirm. Density, the keys and the colour meanings are round 6's;
+   radii, rims, spacing and a few sizes moved (the number window, the tier line, source in a 14 px box, the mode switch's wash). The B (cabin windows per option) and C (soft hull) shapes were not built. */
 
-.dq { position: relative; margin: 1rem 0; padding: 22px 20px 18px; border: 1px solid var(--rule); border-radius: 18px;
-  background: var(--surface); scroll-margin-top: .75rem; transition: box-shadow var(--slow) var(--ease); }
-.dq-h { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; column-gap: 4px; align-items: baseline; }
-.dq-n { font: 650 13px/26px var(--mono); color: var(--graphite); }
+.dq { position: relative; margin: 1rem 0; padding: 22px; border: 1px solid var(--rule-strong); border-radius: 30px;
+  background: var(--surface); scroll-margin-top: .75rem; transition: box-shadow var(--slow) var(--ease);
+  box-shadow: inset 0 0 0 5px var(--wash), var(--shadow-1); }
+.dq-h { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; column-gap: 8px; align-items: start; }
+.dq-n { display: grid; place-items: center; align-self: start; width: 34px; height: 34px; border: 1px solid var(--rule-strong);
+  border-radius: 50%; font: 650 12px/1 var(--mono); color: var(--ink); box-shadow: 0 0 0 3px var(--wash); }
 .dq .dq-t { margin: 0; padding: 0; border: 0; font: var(--t-q); letter-spacing: -.008em; color: var(--ink); text-wrap: pretty; }
-.dq-m { display: inline-flex; align-items: center; gap: 10px; padding-left: 14px; white-space: nowrap; align-self: center; }
+.dq-m { display: inline-flex; align-items: center; gap: 6px; padding-left: 4px; font-size: 12px; white-space: nowrap; align-self: center; }
 .dq-m .tier .tb { display: inline-flex; }
 .dq-m .tier .tb:empty { display: none; }
 .dq .reopened { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: var(--r-chip);
   font: 600 12.5px/1 var(--sans); color: var(--bad); background: var(--bad-wash); }
 .dq-ctx { margin: 4px 0 0 42px; font: var(--t-ctx); color: var(--ink-2); text-wrap: pretty; }
 .dq-ctx > :first-child { margin-top: 0; }
+/* Code keeps its own text/surface pair when the option around it takes the flag's ink.
+   This also covers fenced source in the focused question, in either page's theme. */
+.dq code, .dq pre { color: var(--ink); background: var(--wash); }
+.dq code { border-radius: 6px; }
+.dq pre { border: 1px solid var(--rule); border-radius: 18px; padding: 16px; font-size: 14px; }
+.dq pre code { background: transparent; }
 .dq .dq-ctx .opts { margin-left: 0; }   /* options in the doc's lines: the context already holds the 42 px */
 .dq-cond { margin: 12px 0 0 42px; display: flex; gap: 8px; align-items: baseline; font: 500 14.5px/21px var(--sans); color: var(--ink-2); }
 .dq-cond .flagmark { color: var(--flag); display: inline-flex; }
 .dq-cond em { font-style: normal; color: var(--graphite); }
 
 /* the options: one grouped list, an inset table — hairlines between full-text rows */
-.dq .opts { display: block; margin: 14px 0 0 42px; padding: 0; border: 1px solid var(--rule); border-radius: 14px; overflow: hidden; background: var(--surface); }
+.dq .opts { display: block; margin: 16px 0 0 42px; padding: 0; border: 1px solid var(--rule); border-radius: 24px; overflow: hidden; background: var(--surface); }
 .dq .opt { position: relative; display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; column-gap: 12px; align-items: start; width: 100%;
-  margin: 0; padding: 13px 18px 13px 16px; cursor: pointer; border: 0; border-top: 1px solid var(--rule); border-radius: 0; background: transparent;
+  margin: 0; padding: 13px 18px 13px 16px; min-height: 52px; cursor: pointer; border: 0; border-top: 1px solid var(--rule); border-radius: 0; background: transparent;
   text-align: left; font: inherit; color: inherit; box-shadow: none; transition: background var(--fast); }
 .dq .opts > :first-child { border-top: 0; }
 .dq .opt:hover { background: var(--wash); }
 .dq .opt:focus { outline: none; }
 .dq .opt:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ink); }
+.dq .kc { border-radius: 999px; }
 .dq .opt .kcw { display: flex; align-items: center; gap: 5px; margin-top: 1px; }   /* the letter, and the flag beside it */
 .dq .opt .recflag { display: inline-flex; color: var(--flag); }
 .dq .opt .ot { font: var(--t-opt); color: var(--ink); text-wrap: pretty; min-width: 0; }
@@ -45,6 +58,12 @@
 .dq .opt .tick { display: none; align-self: center; width: 14px; height: 8px; border-left: 2px solid var(--flag-ink); border-bottom: 2px solid var(--flag-ink);
   transform: rotate(-45deg) translate(1px, -2px); }
 .dq .opt.pick .tick { display: inline-block; }
+/* the press light (fx.css) is inset 2 px with a 10 px radius, sized to the old 12 px rows: re-cut it to the rounder clips */
+.dq .opts.grid .opt.lit::after { border-radius: 19px; }
+.dq .opts:not(.grid) > .opt:first-child.lit::after { border-top-left-radius: 21px; border-top-right-radius: 21px; }
+/* the words row is the group's last child; while it is hidden (not focused, not hovered, not opened) the row above is the bottom */
+.dq:not(.focus):not(:hover) .opts:not(.grid) > .opt.lit:has(+ .opt.free:not(.pick):not(.open):not(.kfocus):not(:focus-within))::after { border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }
+.dq .opts:not(.grid) > .opt:last-child.lit::after { border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }
 .dq .opt.kfocus { box-shadow: inset 0 0 0 2px var(--ink); z-index: 1; }
 .dq .opt.pick.kfocus { box-shadow: inset 0 0 0 2px var(--flag-ink), inset 0 0 0 4px var(--flag); }
 
@@ -58,14 +77,14 @@
 .dq .opt.free.pick .ot { color: var(--ink); }
 .dq .opt.free.pick .kc { background: var(--flag); color: var(--flag-ink); border-color: var(--flag); }
 .dq .opt.free.pick .tick { display: none; }
-.dq .opt.free textarea { width: 100%; min-height: 56px; margin: 0; resize: vertical; border: 1px solid var(--rule-strong); border-radius: 10px;
-  padding: 9px 12px; font: var(--t-opt); color: var(--ink); background: var(--ground); outline: none; }
+.dq .opt.free textarea { width: 100%; min-height: 56px; margin: 0; resize: vertical; border: 1px solid var(--rule-strong); border-radius: 18px;
+  padding: 9px 14px; font: var(--t-opt); color: var(--ink); background: var(--ground); outline: none; }
 .dq .opt.free textarea:focus { border-color: var(--flag); box-shadow: 0 0 0 3px var(--flag-wash); outline: none; }
 .dq .opt.free textarea::placeholder { color: var(--graphite); }
 
 /* all-short options: buttons side by side, wrapping into rows — two across for four, else three */
 .dq .opts.grid { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px; border: 0; border-radius: 0; overflow: visible; background: transparent; }
-.dq .opts.grid .opt { border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); align-items: center; min-height: 56px; overflow: hidden; }
+.dq .opts.grid .opt { border: 1px solid var(--rule); border-radius: 22px; background: var(--surface); align-items: center; min-height: 56px; overflow: hidden; }
 .dq .opts.grid .opt.free { grid-column: 1 / -1; }
 .dq .opts.grid .opt.rec { border-color: var(--flag-line); }
 .dq .opts.grid .opt.pick { border-color: var(--flag); background: var(--flag); }
@@ -73,7 +92,7 @@
 .dq .opts.grid .opt.kfocus { border-color: var(--ink); }
 
 /* the consequence confirm, inline, naming the pick and what it costs */
-.dq .confirm { display: none; margin: 14px 0 0 42px; padding: 14px 16px; border-radius: 14px; border: 1px solid; align-items: center; gap: 14px; }
+.dq .confirm { display: none; margin: 14px 0 0 42px; padding: 14px 18px; border-radius: 22px; border: 1px solid; align-items: center; gap: 14px; }
 .dq.confirming .confirm { display: flex; }
 .dq .confirm.irreversible { background: var(--irr-wash); border-color: color-mix(in srgb, var(--irr) 40%, transparent); }
 .dq .confirm.held, .dq .confirm.yours { background: var(--held-wash); border-color: color-mix(in srgb, var(--held) 40%, transparent); }
@@ -86,26 +105,26 @@
 .dq .btn.go .k, .takeall .btn.go .k { color: inherit; opacity: .85; }
 
 /* the foot: the chip and the verbs; the focused decision shows its keys */
-.dq-f { display: flex; align-items: center; gap: 6px; margin: 12px 0 0 42px; min-height: 28px; flex-wrap: wrap; font: var(--t-small); color: var(--graphite); }
+.dq-f { display: flex; align-items: center; gap: 8px; margin: 12px 0 0 42px; min-height: 28px; flex-wrap: wrap; font: var(--t-small); color: var(--graphite); }
 .dq-f .chip { font: 600 12.5px/1.6 var(--sans); }
 .dq-f .btn.ghost { color: var(--graphite); font-weight: 550; }
 .dq-f .btn.ghost:hover { color: var(--ink); }
 .dq-f .btn[hidden] { display: none; }
-.dq-f .hint { display: none; margin-left: auto; font: 500 12.5px/1 var(--sans); color: var(--graphite); gap: 5px; align-items: center; white-space: nowrap; }
+.dq-f .hint { display: none; margin-left: auto; font: 500 12.5px/1.5 var(--sans); color: var(--graphite); gap: 5px; align-items: center; flex-wrap: wrap; }
 .dq.focus .dq-f .hint { display: inline-flex; }
 .dq-f .hint .kc { height: 20px; min-width: 20px; font-size: 10.5px; }
 
 /* the focused decision: lifted, with the flag's edge */
-.dq.focus { border-color: transparent; box-shadow: 0 0 0 1px var(--rule-strong), var(--shadow-2); z-index: 2; }
-.dq.focus::before { content: ""; position: absolute; left: 0; top: 22px; bottom: 22px; width: 3px; border-radius: 0 3px 3px 0; background: var(--flag); }
-.dq.answered:not(.focus) .opts .opt:not(.pick):not(.rec) .ot { color: var(--graphite); }
+.dq.focus { box-shadow: inset 0 0 0 5px var(--wash), 0 0 0 2px var(--flag), var(--shadow-2); z-index: 2; }
+.dq.answered:not(.focus) .opts .opt:not(.pick):not(.rec) .ot,
+.dq.answered:not(.focus) .opts .opt:not(.pick):not(.rec) .ot code { color: var(--graphite); }
 
 /* a decision the mode takes: two quiet lines — its question, then the mode's word and the pick it takes */
 .dq .fold { display: none; }
 .dq.folded { padding: 0; }
 .dq.folded > :not(.fold) { display: none; }
-.dq.folded > .fold { display: grid; grid-template-columns: 38px minmax(0, 1fr); column-gap: 4px; row-gap: 3px; align-items: baseline; width: 100%;
-  margin: 0; padding: 13px 20px; border: 0; border-radius: 18px; background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--graphite); }
+.dq.folded > .fold { display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 8px; row-gap: 3px; align-items: baseline; width: 100%;
+  margin: 0; padding: 16px 22px; border: 0; border-radius: 30px; background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--graphite); }
 .dq .fold:hover { background: var(--wash); }
 .dq .fold .dq-n { grid-row: 1 / 3; }
 .dq .fold .ft { min-width: 0; font: 550 16px/23px var(--sans); color: var(--ink-2); }
@@ -116,14 +135,16 @@
 .dq .fold .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--graphite); min-width: 0; }
 
 /* the mode switch: the doc's skipper mode and what it takes */
-.cmode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: .75rem 0 1rem; font: var(--t-small); color: var(--graphite); }
+.cmode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: .75rem 0 1rem; padding: 10px 14px; border-radius: 24px;
+  background: var(--wash); font: var(--t-small); color: var(--graphite); }
 .cmode .cl { font: var(--t-label); letter-spacing: .09em; text-transform: uppercase; }
-.cmode .modes button { font: inherit; font-weight: 600; }
-.cmode .cm2 { flex: 1 1 14rem; min-width: 0; }
+.cmode .modes { display: flex; flex-wrap: wrap; gap: 4px; }
+.cmode .modes button { min-height: 36px; padding: 6px 12px; border-radius: 999px; font: inherit; font-weight: 600; }
+.cmode .cm2 { flex: 1 1 14rem; min-width: 0; font-size: 12px; }
 
 /* Accept all's second question: the irreversible picks, behind one confirm (actions D1, answered C) */
 .takeall { position: absolute; left: 0; right: 0; bottom: calc(100% + .6rem); display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center;
-  padding: 12px 14px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--irr) 40%, transparent); background: var(--irr-wash);
+  padding: 12px 18px; border-radius: 24px; border: 1px solid color-mix(in srgb, var(--irr) 40%, transparent); background: var(--irr-wash);
   color: var(--ink); font: 400 14.5px/21px var(--sans); box-shadow: var(--shadow-2); }
 .takeall[hidden] { display: none; }
 .takeall .tw { flex: 1 1 16rem; min-width: 0; }
@@ -134,8 +155,8 @@
   .dq .opts.grid { --cols: 2 !important; }
 }
 @media (max-width: 520px) {
-  .dq { padding: 14px 14px 14px; border-radius: 14px; }
-  .dq-h { grid-template-columns: 30px minmax(0, 1fr); }
+  .dq { padding: 18px 16px; }
+  .dq-h { grid-template-columns: 34px minmax(0, 1fr); }
   .dq-m { grid-column: 1 / 3; padding-left: 0; margin-top: 6px; gap: 10px; flex-wrap: wrap; }
   .dq-ctx, .dq .opts, .dq .confirm, .dq-cond, .dq-f { margin-left: 0; }
   .dq-ctx { margin-top: 6px; font-size: 14.5px; line-height: 21px; }
@@ -144,6 +165,6 @@
   .dq .opt .tick { grid-column: 3; grid-row: 1; }
   .dq .opts.grid { --cols: 1 !important; gap: 8px; }
   .dq .confirm { flex-direction: column; align-items: stretch; }
-  .dq.folded > .fold { grid-template-columns: 30px minmax(0, 1fr); padding: 12px 14px; }
+  .dq.folded > .fold { grid-template-columns: 34px minmax(0, 1fr); padding: 14px 16px; }
   .dq-f .hint { display: none !important; }
 }
