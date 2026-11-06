@@ -4,6 +4,9 @@
 
 - Owner peer counts resolve custom builder host names through the owner's local fleet-ssh binding, so `make --host` keeps the configured builder cap and leaves room for owner runs. Peer-supplied host names and caps remain ignored.
 
+- `check` never holds a PR `/finish` launched (check-ci-default's landing review, 2026-11-06): with CI the default, a plain
+  check on a ready, curated, unheld PR labelled it `hold` again, which nothing took off; now its own head is only waited on,
+  and a newer local tip falls back to the local line, naming `pr hold`.
 - The runner berth (free CI S6, 2026-11-04): with `wharf-runs/node/runner` naming a login, `yard-node render agent` makes
   the guest a CI runner's berth (`node/runner/`): that login with no sudo, password or group and its ssh keys restricted;
   podman, uidmap, slirp4netns and nftables; its subordinate ids, linger, the user instance's cgroup controllers delegated,
@@ -57,6 +60,15 @@
 
 - Slot publications re-read the queue's held reservations when no count is supplied: spent or expired claims stop holding the peer's cap even when no new queued build is eligible here.
 
+- `check` defaults to PR CI, reusing required greens on the exact tree before a push or local
+  slot. `--local` selects local suites; `--only`, `--full` and `--fresh` rerun locally. Missing
+  protection files use the API, unavailable CI explains its fallback, and the private publish
+  gate runs beside CI without slots and counts in its verdict. `--ci-no-merge` protects a curated tip.
+  Unattended checks keep the listed local gates from both main and the branch, and wait through
+  gh's initial "no checks reported" response while CI starts.
+
+- `check --ci` marks a checkpoint draft's body before readying it, keeping later CI checks able
+  to merge a newer main without mistaking the build PR for a curated landing.
 - `check --ci` records ownership of the `hold` it adds; `/finish`'s `pr ready` releases it during
   curation so automerge can finish after a CI wait times out. A pre-existing manual hold stays owned by its owner.
 - `check --ci` returns red immediately for a failed required context, even when another is pending
@@ -64,17 +76,16 @@
 
 - `check <worktree> --ci` uses the branch's held, non-draft PR CI for build loops: the Linux
   matrix and scoped macOS share run in parallel, with required contexts read from origin/main's
-  protection file and a verdict tied to the pushed head. Main is merged only for builds (with main
-  moved, a ready landing answers locally; `--ci-merge-main` is the owner's yes, refused unattended),
-  conflicts abort and report their files, failed jobs print their failing log lines, a signal ends
-  the helper with INTERRUPTED, and unavailable CI, a branch already landed, or a confidential or
-  guarded repo (the core's `fenced_scopes`) falls back locally. A green lists each contract command
-  CI's own line (`.github/ci/share.sh line`) never runs as `UNRUN`, exit 3 (a repo without that file
-  checks locally); a head with no check yet is pending; a new PR opens as a draft, labelled before it
-  is readied. build-review counts a clean merge of main as no new code (`branch_moved`), so
-  `--ci`'s merge owes no extra review round. `--ci-wait MIN`
-  defaults to 120. Dispatch's shared build prompt names this road for Claude Code and Codex;
-  `/finish` keeps its local check. This spends CI minutes and may open or ready a PR labelled hold.
+  protection file, else the API, and a verdict tied to the pushed head. Main is merged only for builds
+  (with main moved, a ready landing answers locally; `--ci-merge-main` is the owner's yes, refused
+  unattended), conflicts abort and report their files, failed jobs print their failing log lines,
+  and a signal ends the helper with INTERRUPTED. Unavailable CI, a branch already landed, or a
+  confidential or guarded repo falls back locally. Commands neither CI's line (`.github/ci/share.sh
+  line`) nor check's explicit local-input list covers stay `UNRUN`, exit 3; a repo without that CI
+  line checks locally. A new PR opens as a draft, labelled before it is readied. build-review counts
+  a clean merge of main as no new code (`branch_moved`), so it owes no extra review round.
+  `--ci-wait MIN` defaults to 120. Dispatch's shared build prompt names this road for Claude Code
+  and Codex. This spends CI minutes and may open or ready a PR labelled hold.
 
 - Tests: prepare Linux candidates with portable date, sed, plist and mtime operations, an isolated
   git identity across HOME moves, and a named stuck-hook process on each OS. `tests/check.sh`

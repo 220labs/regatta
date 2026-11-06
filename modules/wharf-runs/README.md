@@ -19,7 +19,7 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/launcherlib.py` | the one rule for starting a job through claude-host (ask `rc-hosts --launcher`, executable or bare); `rc-hosts`, `clock` and helm load it |
 | `bin/clock` | the calendar: every agent-run job as an Orca automation, one launcher line on haiku in a neutral workspace (`schedule`, or `--launchd` for the OS form kept), launchd left the script jobs and `dispatch --at`; `list` both Macs, `check` (G5: an agent-run job on launchd, a confidential pass without its `--account`), `board` one page, `fire` a long job detached through launchd, or as an automation's precheck (seam P: a scheduled run starts no claude in Orca); `canary beat|check` a start path's heartbeat (the hourly `canary` automation's precheck fires the beat through launchd, `check` fails a beat past its window and a run that never beat) |
 | `bin/yard-node`, `node/` | the yard node: a hypervisor host (Ubuntu 24.04 autoinstall, an Incus preseed) and its agent guest's `#cloud-config`, rendered from the config dir and driven over `ssh <alias> incus …` (`render`, `apply`, `launch`, `snap`, `check`; `words`, the publish gate's word list to a named node, which every host's queue sweep runs `--all` hourly); a named node (`--node NAME`) is the same guest as a cloud VPS, its scope's repos in it, bought and booted through OpenTofu (`cloud plan|apply|show`; `tofu/hostinger/`, the guest's render as a post-install script; `tofu/oci/`, one arm64 Oracle A1.Flex with its A1 quota and a budget alert, the render as its user-data); every guest gets Node and sessionpipe in `/usr/local`, and a named node's clone unit gates sessionpipe's hooks with keel's `sheep` and writes no sink until the owner adds the sessions key; once the node's config names a queue home, the same unit joins it to the fleet — the queue's jobs (`dispatch --queue-jobs`) and one request for lighthouse's reef bounds, which the first sweep seeds (`reef apply --seed`), rerun by `yard-join.path` when the key or an overlay's marker lands; with `runner` set, the guest is also a CI runner's berth (`node/runner/`: its login, rootless podman's packages and ids, the nftables fence; the runner is wharf's `ci-provider --runner install`) |
-| `bin/check` | a checkout's `check:` line under a few local slots, or `--ci` through its branch's held PR, the Linux matrix and scoped macOS share in parallel |
+| `bin/check` | a checkout's check through its PR CI by default, with private inputs checked here; `--local` or unavailable CI uses local slots |
 | `bin/build-review` | the record of a build's own review loop: each dispatched build merges main in, runs `/finish`'s two reviewers, has a fresh reviewer verify each S1 and S2, fixes the confirmed ones, checks and repeats in its own session only while a round confirms a finding or its check is red (at most `wharf-runs/build-review-rounds`, 3), and records each round beside `autofinish.json` and the ended loop in the log dir's `build-review.jsonl`; a brief's `Review: finish only` line opts a doc-only run out. `covers` tells `/finish` its review may be skipped (the loop ended clean on the same code, its last review on the tip it handed over; a later tests-only check fix kept); `--phase finish` keeps an unattended landing's own loop, and `picks` says which of its verified findings' choices it takes itself; `compare` sets the builds' review beside the finishes' |
 | `hooks/cold_prompt.py` | every typed `/finish` in a `claude/*` worktree handed to a fresh run: cold or Fable at once, warm after the session commits its summary |
 | `hooks/force_mark.py` | the owner's typed message asking for "force", in any wording ("use the force", "force it"; never one with a refusing word within six words, a flag or rank named, a description or a git or OS force verb), marks the session for one `dispatch --priority force` (UserPromptSubmit; quoted, pasted, framed and subagent prompts never do) |
@@ -144,31 +144,42 @@ where that key is set; a prefix moved (`label-prefix-previous`) boots the old jo
 
 ## Check
 
-`check <worktree> --ci [--ci-wait MIN] [--ci-merge-main] --out <dir>` commits nothing: commit
-before calling it. It fetches origin/main and merges it if needed, aborting a conflict and reporting
+`check <worktree> [--ci-wait MIN] --out <dir>` defaults to PR CI (`--ci` is also accepted) when
+a PR workflow and required checks exist, gh answers and every matching scope permits it. Commit
+before calling it. A PR whose required checks are green on this exact tree counts as `PASSED <when> CI`
+on both roads, before any fetch, push or label edit. Otherwise it fetches origin/main and merges it if needed, aborting a conflict and reporting
 its files, then pushes only the current `claude/*` branch without force. It finds or opens a non-draft
 PR labelled `hold`, keeping automerge off, and waits for this exact head's required contexts from
-origin/main's `.github/main-protection.json` (never the branch's own). The Linux matrix and scoped macOS share run in parallel, spending
+origin/main's `.github/main-protection.json` (never the branch's own), else the branch protection API. The Linux matrix and scoped macOS share run in parallel, spending
 CI minutes; each call may open or ready a PR. Dispatch asks both builders to use it in their
 review → fix → check loops; `build-review round --check green|red` records the outcome as before.
-`/finish` still runs the local check and curates the branch before landing. Its `pr ready` releases
+`/finish` curates and rebases first, pushes, then runs `check --ci --ci-no-merge` on the tip to land,
+with the review gate in parallel; a moved main asks it to rebase again. Its `pr ready` releases
 the hold CI added; a hold already present before CI, or an explicit landing `--hold`, stays in place.
 
-A PR already readied by `/finish` never receives a merge of main: with main moved, the local line
-answers instead (`--ci-merge-main` is the owner's yes, refused to an unattended run); use `/finish`
-to rebase a landing PR. Once readied, every later checkpoint push of the branch runs the PR's CI.
-A CI green covers only what CI's own line runs (`.github/ci/share.sh line`): each command of the
-contract's line it never holds (the publish gate, which reads a word list CI lacks) is printed as
-`UNRUN <command>` before `DONE`, exit 3, for the caller to run by its own call; a repo without that
-file uses the local line. A new PR opens as a draft and is readied once labelled; a head with no
-check registered yet is pending; and build-review counts a clean merge of main as no new code. CI green ends `DONE n/n`; red or a moved PR head ends `FAILED`
+A PR already readied by `/finish` cannot receive a merge of main unless `--ci-merge-main` is given;
+that flag is the owner's yes, refused unattended. With main moved, a ready landing uses the local
+line unless `--ci-no-merge` requires a rebase. Use `/finish` to rebase a landing PR.
+New PRs open as drafts, labelled before they are readied; a failed label call leaves a draft.
+Once readied, later checkpoint pushes run the PR's CI too. A signal ends the helper with `INTERRUPTED`,
+and build-review counts a clean merge of main as no new code.
+Commands with inputs CI lacks are in check_ci.py's explicit
+`LOCAL_COMMANDS` list: today the contract's private publish gate, `helloworld check . --ref HEAD`.
+Unattended checks include listed commands from both main and the branch, so a new gate runs
+before it lands and a branch cannot drop main's gate; each runs once.
+They run here beside the CI wait, without a slot, including when CI was already green; their result
+counts in the summary and a local failure fails the check. CI green ends `DONE n/n`; red or a moved PR head ends `FAILED`
 and exits 1, with each failed job and its failing log lines in the summary, full failed-step logs
 beside it where GitHub Actions provides them (external jobs retain their log link). Missing gh,
 network, a refused push, no PR, a branch already landed or no verdict within `--ci-wait` (whole minutes, default 120) prints
 one fallback line and runs the local check. Confidential or guarded repos (the core's `fenced_scopes`), an unreadable scope registry,
 uncommitted work, a branch outside `claude/*` and local-only `--only`, `--full` or `--fresh` also
-use the local road. A required failure returns red immediately, even while another job is pending
-or missing, and never falls back locally. CI neither waits for a local slot nor fills its pass memory.
+use the local road. `--local` forces it; `--only`, `--full` and `--fresh` also bypass CI reuse.
+A required failure returns red immediately, even while another job is pending
+or missing, and never falls back locally. When gh reports no checks yet, check keeps polling
+until a verdict or the wait limit. CI neither waits for a local slot nor fills its pass memory.
+CI's coverage comes from `.github/ci/share.sh line`: contract commands neither it nor the explicit
+local list runs remain `UNRUN <command>`, exit 3. Without that CI line to compare, check runs locally.
 
 `bash modules/wharf-runs/tests/check.sh` — scratch paths only; no Orca, no network, no real launchd
 (macOS). The suites run in three lanes at once, test_dispatch alone in one, each lane printed whole, in lane order,

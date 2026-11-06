@@ -615,10 +615,10 @@ YARD_RULES = """### Yard rules
 - Read a file's first lines on `main` before editing it. A source or exec shim's text lives in `~/projects/regatta`'s module: edit it there, in a regatta worktree, and name both branches in the report.
 - A suite killed by the OS (exit 137 or 143, "Killed", low memory) is rerun alone, once. It is not a failure and not a question.
 - Report done once the work is committed and the marker written, saying what of the check did not run: the launch's `/finish` runs it whole.
-- A whole check runs through `{check} <worktree>`, never by hand: with `run_in_background`, or under `CLAUDE_UNATTENDED` as `nohup … --out <dir> > <dir>.out 2>&1 &` in one call, then poll `<dir>/summary` until its last line starts `DONE`, `INTERRUPTED` or `REFUSED`. It waits for one of the Mac's two check slots; a suite to rerun goes through `--only <script>`; an `UNRUN` command (exit 3, a script only this branch's line has) is run by its own Bash call.
+- A whole check runs through `{check} <worktree>`, never by hand: PR CI is the default; commit first. Use `run_in_background`, or under `CLAUDE_UNATTENDED` start `nohup … --out <dir> > <dir>.out 2>&1 &` in one call, then poll `<dir>/summary` until its last line starts `DONE`, `FAILED`, `INTERRUPTED` or `REFUSED`. CI's private-input commands run here without slots. `--local` or unavailable CI uses scoped local slots; a suite to rerun goes through `--only <script>`. An `UNRUN` command (exit 3, a script only this branch's local check line has) is run by its own Bash call.
 - Never wait on the coordinator for anything the brief already answers."""
 
-# The rules' earlier texts, newest first: a Task made under one is not drift (diff()). Added 2026-10-19
+# The rules' earlier texts: a Task made under one is not drift (diff()). Added 2026-10-19
 # with the bin/check rule (check-slots, the skipper's answer): yard-smooth's four rules.
 YARD_RULES_PAST = (
     """### Yard rules
@@ -626,6 +626,13 @@ YARD_RULES_PAST = (
 - Read a file's first lines on `main` before editing it. A source or exec shim's text lives in `~/projects/regatta`'s module: edit it there, in a regatta worktree, and name both branches in the report.
 - A suite killed by the OS (exit 137 or 143, "Killed", low memory) is rerun alone, once. It is not a failure and not a question.
 - Report done once the work is committed and the marker written, saying what of the check did not run: the launch's `/finish` runs it whole.
+- Never wait on the coordinator for anything the brief already answers.""",
+    """### Yard rules
+
+- Read a file's first lines on `main` before editing it. A source or exec shim's text lives in `~/projects/regatta`'s module: edit it there, in a regatta worktree, and name both branches in the report.
+- A suite killed by the OS (exit 137 or 143, "Killed", low memory) is rerun alone, once. It is not a failure and not a question.
+- Report done once the work is committed and the marker written, saying what of the check did not run: the launch's `/finish` runs it whole.
+- A whole check runs through `{check} <worktree>`, never by hand: with `run_in_background`, or under `CLAUDE_UNATTENDED` as `nohup … --out <dir> > <dir>.out 2>&1 &` in one call, then poll `<dir>/summary` until its last line starts `DONE`, `INTERRUPTED` or `REFUSED`. It waits for one of the Mac's two check slots; a suite to rerun goes through `--only <script>`; an `UNRUN` command (exit 3, a script only this branch's line has) is run by its own Bash call.
 - Never wait on the coordinator for anything the brief already answers.""",
 )
 
@@ -648,7 +655,7 @@ def _past_rules():
     """YARD_RULES_PAST, plus the rules as a Task made before B14b holds them: filled in with the
     overlay's `bin/check`, which _check_tool() named first until then. Without it every pending Task
     reads as spec drift and `wharf apply` re-specs whole plans (the B14b landing review)."""
-    past = YARD_RULES_PAST
+    past = tuple(r.replace("{check}", _check_tool()) for r in YARD_RULES_PAST)
     try:
         import common
         ov = common.overlay_root()
@@ -656,7 +663,8 @@ def _past_rules():
         ov = None
     if ov:
         home, p = str(Path.home()), str(Path(ov).expanduser() / "bin" / "check")
-        past += (YARD_RULES.replace("{check}", "~" + p[len(home):] if p.startswith(home + "/") else p),)
+        past += tuple(r.replace("{check}", "~" + p[len(home):] if p.startswith(home + "/") else p)
+                      for r in (YARD_RULES,) + YARD_RULES_PAST)
     return past
 
 

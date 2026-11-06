@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 
 B = Path(os.environ['CHECK_CI_BIN'])
@@ -44,18 +45,25 @@ if kind == 'git':
         if d.get('push_refused'):
             print('remote with ' + os.environ.get('GH_TOKEN', ''), file=sys.stderr)
             sys.exit(1)
-        d['pushed'] = True; save(); sys.exit(0)
+        d['pushed'] = True
+        d['pushed_head'] = subprocess.check_output([os.environ['CI_REAL_GIT'], 'rev-parse', 'HEAD'], text=True).strip()
+        save(); sys.exit(0)
     os.execv(os.environ['CI_REAL_GIT'], [os.environ['CI_REAL_GIT']] + a)
 if kind != 'gh': invalid()
+if a == ['api', 'repos/example/checks/branches/main/protection/required_status_checks']:
+    if d.get('api_refused'): sys.exit(1)
+    emit(d.get('required_rule', {'checks': [{'context': 'mac-tests'}, {'context': 'linux-tests'}]}))
+    sys.exit(0)
 if len(a) < 2 or a[-2:] != ['--repo', 'example/checks']: invalid()
 a = a[:-2]
 branch = 'claude/test/check-ci'
 head = subprocess.check_output([os.environ['CI_REAL_GIT'], 'rev-parse', 'HEAD'], text=True).strip()
+remote_head = d.get('pr_head', d.get('pushed_head', d.get('initial_head', head)))
 fields = 'number,isDraft,headRefOid,body,baseRefName,isCrossRepository,labels'
 if a == ['pr', 'list', '--head', branch, '--state', 'open', '--json', fields]:
     if d.get('offline'): sys.exit(1)
     body = d.get('body', 'curated by `/finish`' if d.get('ready') else '<!-- wharf-runs check --ci -->')
-    emit([dict(number=17, isDraft=d.get('draft', False), headRefOid=head, body=body,
+    emit([dict(number=17, isDraft=d.get('draft', False), headRefOid=remote_head, body=body,
                baseRefName='main', isCrossRepository=False, labels=d.get('labels', []))] if d.get('pr') else [])
 elif a == ['pr', 'list', '--head', branch, '--state', 'merged', '--base', 'main', '--json', 'number']:
     emit([dict(number=5)] if d.get('landed') else [])
@@ -80,24 +88,33 @@ elif a[:2] == ['pr', 'create']:
     if d.get('no_pr'): sys.exit(1)
     if not d.get('pushed'): invalid()
     if d.get('create_label_refused'):
-        # gh made the PR, then its label call failed: a draft, unlabelled, and gh exits 1
         d.update(pr=True, draft=True, held=False, body=body, labels=[]); save(); sys.exit(1)
     d.update(pr=True, draft=True, held=True, body=body, labels=[dict(name='hold')]); save()
 elif a == ['pr', 'view', '17', '--json', 'headRefOid,state']:
     d['views'] = d.get('views', 0) + 1; save()
     moved = d.get('moved') or (d.get('moved_after') and d['views'] >= 2)
-    emit(dict(headRefOid='other-head' if moved else head, state='OPEN'))
+    emit(dict(headRefOid='other-head' if moved else remote_head, state='OPEN'))
 elif a == ['pr', 'checks', '17', '--json', 'name,bucket,link']:
+    if d.get('checks_error'):
+        print('HTTP 503 ' + os.environ.get('GH_TOKEN', ''), file=sys.stderr); sys.exit(1)
+    if d.get('checks_malformed'):
+        print(d['checks_malformed']); sys.exit(0)
+    if not d.get('pushed') and not d.get('pre_green'):
+        emit([dict(name='mac-tests', bucket='pending', link='')]); sys.exit(8)
     d['polls'] = d.get('polls', 0) + 1; save()
     if d.get('slow'):
         import time; time.sleep(60)
-    names = json.loads(Path('.github/main-protection.json').read_text())['required_status_checks']['checks']
-    rows = [dict(name=n['context'], bucket='pass', link='') for n in names]
-    if d.get('no_checks_first') and d['polls'] == 1:
-        # gh's answer for a head with no context yet (cli/cli pkg/cmd/pr/checks/checks.go): no stdout
+    if os.environ.get('CI_WAIT_SEEN'): Path(os.environ['CI_WAIT_SEEN']).touch()
+    if d.get('no_checks') or d['polls'] <= d.get('no_checks_polls', 0):
         print("no checks reported on the '%s' branch" % branch, file=sys.stderr); sys.exit(1)
+    text = subprocess.run([os.environ['CI_REAL_GIT'], 'show', 'origin/main:.github/main-protection.json'],
+                          text=True, capture_output=True).stdout
+    rule = (json.loads(text)['required_status_checks'] if text else d.get('required_rule',
+               {'checks': [{'context': 'mac-tests'}, {'context': 'linux-tests'}]}))
+    names = rule.get('checks', []) + [dict(context=n) for n in rule.get('contexts', [])]
+    rows = [dict(name=n['context'], bucket='pass', link='') for n in names]
     if d.get('pending_once') and d['polls'] == 1:
-        # under --json gh exits 0 with pending rows (its exporter returns before the pending error)
+        # gh --json returns 0 for pending rows; its non-JSON road returns 8.
         rows[0]['bucket'] = 'pending'; emit(rows); sys.exit(0)
     if d.get('red'):
         rows[0].update(bucket='fail', link='https://github.com/example/checks/actions/runs/10/job/20')
@@ -152,10 +169,12 @@ class CheckCI(unittest.TestCase):
         self.protection = self.wt / '.github/main-protection.json'
         self.protection.write_text(json.dumps({'required_status_checks': {'checks': [
             {'context': 'mac-tests'}, {'context': 'linux-tests'}]}}))
-        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh`\n')
-        # the CI's own line, as regatta's .github/ci/share.sh prints it
+        workflows = self.wt / '.github/workflows'
+        workflows.mkdir()
+        (workflows / 'check.yml').write_text('on: [pull_request]\njobs: {}\n')
         (self.wt / '.github/ci').mkdir()
         (self.wt / '.github/ci/share.sh').write_text('[ "$1" = line ] && echo "{ [ ! -f x ] || bash local.sh; }"\n')
+        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh`\n')
         (self.wt / 'local.sh').write_text('echo ran >> "$LOCAL_MARK"\n')
         (self.wt / 'shared').write_text('base\n')
         self.g('add', '.'); self.g('commit', '-qm', 'base')
@@ -179,6 +198,7 @@ class CheckCI(unittest.TestCase):
                                        env=self.env, text=True, stderr=subprocess.STDOUT).strip()
 
     def set_state(self, **kw):
+        kw.setdefault('initial_head', self.g('rev-parse', 'HEAD'))
         self.state.write_text(json.dumps(kw))
 
     def events(self):
@@ -186,7 +206,7 @@ class CheckCI(unittest.TestCase):
 
     def run_check(self, *args):
         # Several Python/git startups per call: allow loaded runners room, while bounding a hang.
-        p = subprocess.run(['bash', str(B / 'check'), str(self.wt), '--ci', '--out', str(self.out), *args],
+        p = subprocess.run(['bash', str(B / 'check'), str(self.wt), '--out', str(self.out), *args],
                            env=self.env, text=True, capture_output=True, timeout=120)
         self.assertNotIn('fakekey', p.stdout + p.stderr)
         return p
@@ -217,6 +237,200 @@ class CheckCI(unittest.TestCase):
         self.assertFalse((self.root / 'logs/passed').exists())
         self.assertFalse((self.root / 'local').exists())
         self.assertIn(['git', 'push', 'origin', 'HEAD:refs/heads/claude/test/check-ci'], self.events())
+
+    def test_explicit_ci(self):
+        self.assertEqual(self.run_check('--ci').returncode, 0)
+        self.assertTrue(any(e[:2] == ['git', 'push'] for e in self.events()))
+
+    def test_local_and_only_never_push(self):
+        for args in (('--local',), ('--only', 'local.sh'), ('--full',), ('--fresh',)):
+            with self.subTest(args=args):
+                p = self.run_check(*args)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertTrue((self.root / 'local').exists())
+                self.assertFalse(any(e[:2] == ['git', 'push'] for e in self.events()))
+                self.assertFalse(any(e[:3] == ['gh', 'pr', 'edit'] for e in self.events()))
+
+    def test_local_unattended_keeps_contract_source_first(self):
+        self.env['CLAUDE_UNATTENDED'] = 'dispatch'
+        p = self.run_check('--local')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(p.stdout.splitlines()[0],
+                         "check: unattended — the check line from origin/main, not this branch's")
+
+    def test_blueprint_prompt_preserves_pending_specs(self):
+        import importlib.util
+        import types
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('blueprintlib', B / 'blueprintlib.py')
+        b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+        st = dict(id='probe', raw=dict(provider='orca', physical='none'),
+                  section='Task: check', kind='build', deps=[])
+        bp = dict(name='checks', meta=dict(repo='shop', created='2026-11-05'),
+                  waves=[['probe']], blocks=[st], by_id=dict(probe=st))
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.dict(sys.modules, common=types.SimpleNamespace(overlay_root=lambda: None)):
+            self.assertIn('PR CI is the default', b.spec_of(bp, st))
+            old_rules = [r.replace('{check}', b._check_tool()) for r in b.YARD_RULES_PAST]
+            for rules in old_rules + [b.yard_rules()]:
+                state = dict(tasks=[dict(id='t1', task_title='probe', status='dispatched',
+                                         deps='[]', spec=st['section'] + '\n\n' + rules)])
+                rows = b.diff(bp, 'laptop', dict(probe=dict(orca_task='t1')), state)['orca']
+                self.assertEqual([r[0] for r in rows], ['ok'], rules)
+
+    def test_existing_green_both_roads_and_same_tree_rewrite(self):
+        old = self.g('rev-parse', 'HEAD')
+        self.g('commit', '--amend', '-qm', 'curated change')
+        self.assertNotEqual(old, self.g('rev-parse', 'HEAD'))
+        self.advance_main()  # no fetch/merge needed for an exact-tree green, even if main moved
+        for args in ((), ('--local',)):
+            with self.subTest(args=args):
+                self.set_state(pr=True, pre_green=True, pr_head=old, ready=True)
+                p = self.run_check(*args)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertRegex(p.stdout, r'PASSED .* CI\n')
+                self.assertIn('DONE 2/2', p.stdout)
+                self.assertFalse((self.root / 'slots').exists())
+                self.assertFalse((self.root / 'local').exists())
+                self.assertFalse(any(e[:2] in (['git', 'push'], ['git', 'fetch'], ['git', 'merge'])
+                                     or e[:3] == ['gh', 'pr', 'edit'] for e in self.events()))
+
+    def test_different_tree_never_reuses_green(self):
+        old = self.g('rev-parse', 'origin/main')
+        self.set_state(pr=True, pre_green=True, pr_head=old)
+        p = self.run_check('--local')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn('PASSED', p.stdout)
+        self.assertTrue((self.root / 'local').exists())
+
+    def test_known_red_never_becomes_local_green(self):
+        self.set_state(pr=True, pre_green=True, red=True, push_refused=True)
+        p = self.run_check()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertFalse((self.root / 'local').exists())
+        self.assertFalse(any(e[:2] in (['git', 'push'], ['git', 'fetch']) for e in self.events()))
+
+    def test_no_required_checks(self):
+        self.protection.write_text('{"required_status_checks":{"checks":[]}}')
+        self.g('add', '.'); self.g('commit', '-qm', 'no required checks')
+        self.g('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        p = self.local()
+        self.assertIn('(no required checks)', p.stdout)
+        self.assertFalse(any(e[:2] == ['git', 'push'] for e in self.events()))
+
+    def test_required_api_without_file(self):
+        self.protection.unlink()
+        self.g('add', '.'); self.g('commit', '-qm', 'protection from API')
+        self.g('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        p = self.run_check()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(['gh', 'api', 'repos/example/checks/branches/main/protection/required_status_checks'], self.events())
+
+    def test_empty_or_unreadable_api(self):
+        self.protection.unlink()
+        self.g('add', '.'); self.g('commit', '-qm', 'protection from API')
+        self.g('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        for state in ({'required_rule': {'contexts': []}}, {'api_refused': True}):
+            self.set_state(pr=True, **state)
+            self.local()
+        self.assertFalse(any(e[:2] == ['git', 'push'] for e in self.events()))
+
+    def test_no_pr_workflow(self):
+        (self.wt / '.github/workflows/check.yml').write_text('on: [push]\n')
+        self.g('add', '.'); self.g('commit', '-qm', 'push only')
+        p = self.local()
+        self.assertIn('(no PR workflow)', p.stdout)
+        self.assertFalse(any(e[0] == 'gh' for e in self.events()))
+
+    def publish_gate(self):
+        gate = self.wt / 'modules/helloworld/bin/helloworld'
+        gate.parent.mkdir(parents=True)
+        gate.write_text('''import os, sys, time
+from pathlib import Path
+assert sys.argv[1:] == ['check', '.', '--ref', 'HEAD'], sys.argv
+Path(os.environ['GATE_MARK']).write_text('ran')
+if os.environ.get('CI_WAIT_SEEN'):
+    deadline = time.monotonic() + 10
+    while not Path(os.environ['CI_WAIT_SEEN']).exists():
+        assert time.monotonic() < deadline, 'CI did not wait beside gate'
+        time.sleep(0.01)
+sys.exit(int(os.environ.get('GATE_RC', '0')))
+''')
+        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh && python3 modules/helloworld/bin/helloworld check . --ref HEAD`\n')
+        self.env['GATE_MARK'] = str(self.root / 'gate')
+        self.g('add', '.'); self.g('commit', '-qm', 'branch change')
+
+    def test_publish_gate_beside_ci(self):
+        self.publish_gate()
+        self.env['CI_WAIT_SEEN'] = str(self.root / 'ci-wait')
+        p = self.run_check()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue((self.root / 'gate').exists())
+        self.assertIn('rc=0', (self.out / 'summary').read_text())
+        self.assertTrue(p.stdout.endswith('DONE 3/3\n'), p.stdout)
+        self.assertFalse((self.root / 'slots').exists())
+
+    def test_publish_gate_red_overrides_ci_green(self):
+        self.publish_gate()
+        self.env['GATE_RC'] = '1'
+        self.set_state(pr=True, pre_green=True)
+        p = self.run_check()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertTrue(p.stdout.endswith('FAILED 2/3 checks passed (local inputs included)\n'))
+        self.assertTrue((self.root / 'gate').exists())
+
+    def test_ci_red_counts_the_local_gate_too(self):
+        self.publish_gate()
+        self.set_state(pr=True, pre_green=True, red=True)
+        p = self.run_check()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        summary = (self.out / 'summary').read_text()
+        self.assertIn('FAILED 2/3 checks passed; 1/2 CI checks passed', summary.splitlines()[-1])
+        self.assertFalse(any(line.startswith('FAILED') for line in summary.splitlines()[:-1]))
+
+    def test_reused_green_still_runs_publish_gate(self):
+        self.publish_gate()
+        self.set_state(pr=True, pre_green=True)
+        p = self.run_check('--local')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('PASSED', p.stdout)
+        self.assertTrue(p.stdout.endswith('DONE 3/3\n'))
+        self.assertTrue((self.root / 'gate').exists())
+
+    def test_unattended_branch_adds_publish_gate(self):
+        # main's contract predates the gate. A branch addition must still run beside CI,
+        # including reuse through --local; a failed gate must override an existing green.
+        self.publish_gate()
+        self.env['CLAUDE_UNATTENDED'] = 'dispatch'
+        for args, code in (((), 0), (('--local',), 0), ((), 1)):
+            with self.subTest(args=args, gate_rc=code):
+                self.env['GATE_RC'] = str(code)
+                self.set_state(pr=True, pre_green=True)
+                (self.root / 'gate').unlink(missing_ok=True)
+                p = self.run_check(*args)
+                self.assertEqual(p.returncode, code, p.stdout + p.stderr)
+                self.assertTrue((self.root / 'gate').exists())
+                self.assertIn('FAILED 2/3 checks passed' if code else 'DONE 3/3', p.stdout)
+                self.assertFalse((self.root / 'slots').exists())
+
+    def test_unattended_branch_cannot_drop_main_publish_gate(self):
+        self.publish_gate()
+        self.g('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh`\n')
+        self.g('add', '.'); self.g('commit', '-qm', 'branch change')
+        self.env['CLAUDE_UNATTENDED'] = 'dispatch'
+        self.set_state(pr=True, pre_green=True)
+        p = self.run_check()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue((self.root / 'gate').exists())
+        self.assertTrue(p.stdout.endswith('DONE 3/3\n'))
+
+    def test_no_merge_for_curated_tip(self):
+        self.advance_main()
+        p = self.run_check('--ci', '--ci-no-merge')
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn('use /finish to rebase before CI', p.stdout)
+        self.assertFalse(any(e[:2] in (['git', 'push'], ['git', 'merge']) for e in self.events()))
 
     def test_new_pr(self):
         self.set_state(pr=False)
@@ -301,6 +515,9 @@ class CheckCI(unittest.TestCase):
         ready = next(i for i, e in enumerate(ev) if e[:3] == ['gh', 'pr', 'ready'])
         self.assertLess(marked, ready)
         self.advance_main()
+        # An unchanged-tree green now returns before fetching; change the tree to test merging.
+        (self.wt / 'next-change').write_text('next\n')
+        self.g('add', '.'); self.g('commit', '-qm', 'branch change')
         p = self.run_check()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.g('merge-base', 'HEAD', 'origin/main'), self.g('rev-parse', 'origin/main'))
@@ -332,87 +549,22 @@ class CheckCI(unittest.TestCase):
         p = self.run_check('--ci-merge-main')
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
-    def test_unrun_contract_commands(self):
-        # what the contract runs and CI's line never does (the publish gate) is said after a green, exit 3
-        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh && bash gate.sh --ref HEAD`\n')
-        self.g('add', '.'); self.g('commit', '-qm', 'gate')
+    def test_launched_pr_never_held_again(self):
+        # the landing review's probe: a PR `pr ready` launched, CI pending, main unmoved
+        self.set_state(pr=True, ready=True, pre_green=True, pending_once=True)
         p = self.run_check()
-        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
-        lines = (self.out / 'summary').read_text().splitlines()
-        self.assertEqual(lines[-2:], ['UNRUN bash gate.sh --ref HEAD', 'DONE 2/2'])
-        self.assertNotIn('UNRUN bash local.sh', lines)
-
-    def test_no_ci_line_uses_local(self):
-        (self.wt / '.github/ci/share.sh').unlink()
-        self.g('add', '-A'); self.g('commit', '-qm', 'no share')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        state = json.loads(self.state.read_text())
+        self.assertNotIn('hold', [l['name'] for l in state.get('labels', [])])
+        self.assertFalse(state.get('held'))
+        self.assertFalse(any(e[:3] == ['gh', 'pr', 'edit'] or e[:2] == ['git', 'push']
+                             or e[:3] == ['gh', 'label', 'create'] for e in self.events()))
+        # a newer local tip on it: never held or pushed here; `pr hold` first, else the local line
+        (self.wt / 'next-change').write_text('next\n')
+        self.g('add', '.'); self.g('commit', '-qm', 'branch change')
         p = self.local()
-        self.assertIn('no .github/ci/share.sh line', p.stdout)
-        self.assertFalse(any(e[0] == 'gh' for e in self.events()))
-
-    def test_no_checks_yet_waits(self):
-        self.set_state(pr=True, no_checks_first=True)
-        import importlib.util
-        from unittest.mock import patch
-        spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
-        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-        self.out.mkdir()
-        with patch.dict(os.environ, self.env, clear=True):
-            ci = m.CI(self.wt, self.out, 1, False)
-            ci.slug = 'example/checks'
-            tick = [0]
-            real_sleep = time.sleep
-            def sleep(seconds):
-                if seconds >= 1: tick[0] += seconds
-                else: real_sleep(seconds)
-            with patch.object(m.time, 'monotonic', lambda: tick[0]), patch.object(m.time, 'sleep', sleep):
-                self.assertEqual(ci.wait(17, self.g('rev-parse', 'HEAD'), ['mac-tests', 'linux-tests']), 0)
-        self.assertEqual(json.loads(self.state.read_text())['polls'], 2)
-
-    def test_new_pr_label_refused_stays_draft(self):
-        # gh's label call failing after the PR exists leaves a draft, which automerge never arms
-        self.set_state(pr=False, create_label_refused=True)
-        self.local()
-        self.assertTrue(json.loads(self.state.read_text())['draft'])
-        self.assertFalse(any(e[:3] == ['gh', 'pr', 'ready'] for e in self.events()))
-
-    def test_landed_branch_never_pushed(self):
-        self.set_state(pr=False, landed=True)
-        p = self.local()
-        self.assertIn('branch already landed', p.stdout)
-        self.assertFalse(any(e[:2] == ['git', 'push'] or e[:3] == ['gh', 'pr', 'create'] for e in self.events()))
-
-    def test_required_contexts_from_origin_main(self):
-        # a branch that narrows its own protection file does not narrow what its green means
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
-        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-        self.protection.write_text(json.dumps({'required_status_checks': {'checks': [{'context': 'mac-tests'}]}}))
-        self.g('add', '.'); self.g('commit', '-qm', 'narrow')
-        self.out.mkdir()
-        ci = m.CI(self.wt, self.out, 1, False)
-        self.assertEqual(ci.required(), ['mac-tests', 'linux-tests'])
-
-    def test_signal_ends_helper(self):
-        import signal, time
-        self.set_state(pr=True, slow=True)
-        p = subprocess.Popen(['bash', str(B / 'check'), str(self.wt), '--ci', '--out', str(self.out)],
-                             env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        for _ in range(600):
-            if any(e[:3] == ['gh', 'pr', 'checks'] for e in self.events()): break
-            time.sleep(0.1)
-        p.send_signal(signal.SIGTERM)
-        out, err = p.communicate(timeout=60)
-        self.assertEqual(p.returncode, 143, out + err)
-        self.assertTrue((self.out / 'summary').read_text().endswith('INTERRUPTED 0/0 by SIGTERM\n'))
-        time.sleep(1)
-        ps = subprocess.run(['pgrep', '-f', 'check_ci.py ' + str(self.wt)], capture_output=True, text=True)
-        self.assertEqual(ps.stdout.strip(), '', 'the helper outlived its check')
-
-    def test_guarded_repo_uses_local(self):
-        self.registry.write_text(json.dumps({'guarded': [self.wt.name]}))
-        p = self.local()
-        self.assertIn('confidential scope', p.stdout)
-        self.assertFalse(any(e[0] == 'gh' for e in self.events()))
+        self.assertIn('PR launched by /finish is unheld', p.stdout)
+        self.assertFalse(any(e[:3] == ['gh', 'pr', 'edit'] or e[:2] == ['git', 'push'] for e in self.events()))
 
     def test_moved_head(self):
         for key in ('moved', 'moved_after'):
@@ -447,6 +599,13 @@ class CheckCI(unittest.TestCase):
         for reason in ('offline', 'push_refused', 'no_pr', 'label_refused'):
             with self.subTest(reason=reason):
                 self.set_state(pr=(reason != 'no_pr'), **{reason: True})
+                self.local()
+
+    def test_check_response_errors_fall_back(self):
+        for state in ({'checks_error': True}, {'checks_malformed': 'not JSON'},
+                      {'checks_malformed': '{}'}):
+            with self.subTest(state=state):
+                self.set_state(pr=True, pre_green=True, **state)
                 self.local()
 
     def test_confidential_all_scopes_and_absolute_path(self):
@@ -500,24 +659,43 @@ class CheckCI(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
         m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         self.out.mkdir()
-        for missing in (False, True):
-            self.set_state(pr=True, pending_once=not missing, missing=missing)
+        for state in ({'pending_once': True}, {'missing': True}, {'no_checks': True}):
+            self.set_state(pr=True, pushed=True, **state)
             with patch.dict(os.environ, self.env, clear=True):
                 ci = m.CI(self.wt, self.out, 1, False)
                 ci.slug = 'example/checks'
                 tick = [0]
-                real_sleep = time.sleep
-                # the patch reaches the shared time module, so subprocess's own wait loop (sleeps
-                # of 0.05 s or less) would move the fake clock too, more the more loaded the box
-                def sleep(seconds):
-                    if seconds >= 1: tick[0] += seconds
-                    else: real_sleep(seconds)
-                with patch.object(m.time, 'monotonic', lambda: tick[0]), patch.object(m.time, 'sleep', sleep):
-                    if missing:
+                def sleep(seconds): tick[0] += seconds
+                clock = types.SimpleNamespace(monotonic=lambda: tick[0], sleep=sleep, strftime=time.strftime)
+                with patch.object(m, 'time', clock):
+                    if not state.get('pending_once'):
                         with self.assertRaises(m.Unavailable): ci.wait(17, self.g('rev-parse', 'HEAD'), ['mac-tests', 'linux-tests'])
+                        self.assertEqual(tick[0], 60)
                     else:
                         self.assertEqual(ci.wait(17, self.g('rev-parse', 'HEAD'), ['mac-tests', 'linux-tests']), 0)
                         self.assertEqual(json.loads(self.state.read_text())['polls'], 2)
+
+    def test_no_checks_waits_through_startup(self):
+        import importlib.util
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        self.out.mkdir()
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                self.set_state(pr=existing, pre_green=True, no_checks_polls=2)
+                tick = [0]
+                def sleep(seconds): tick[0] += seconds
+                clock = types.SimpleNamespace(monotonic=lambda: tick[0], sleep=sleep, strftime=time.strftime)
+                argv = ['check_ci.py', str(self.wt), str(self.out), '1', '0']
+                with patch.dict(os.environ, self.env, clear=True), patch.object(sys, 'argv', argv), \
+                     patch.object(m, 'time', clock):
+                    self.assertEqual(m.main(), 0)
+                self.assertEqual(json.loads(self.state.read_text())['polls'], 3)
+                self.assertEqual(tick[0], 15 if existing else 30)
+                self.assertTrue((self.out / 'summary').read_text().endswith('DONE 2/2\n'))
+                self.assertFalse((self.root / 'local').exists())
+                self.assertFalse((self.root / 'slots').exists())
 
     def test_required_failure_never_falls_back(self):
         import importlib.util
@@ -527,23 +705,110 @@ class CheckCI(unittest.TestCase):
         self.out.mkdir()
         for other in ('other_pending', 'other_missing'):
             with self.subTest(other=other):
-                self.set_state(pr=True, red=True, **{other: True})
+                self.set_state(pr=True, pushed=True, red=True, **{other: True})
                 tick = [0]
-                real_sleep = time.sleep
-                # the patch reaches the shared time module, so subprocess's own wait loop (sleeps
-                # of 0.05 s or less) would move the fake clock too, more the more loaded the box
-                def sleep(seconds):
-                    if seconds >= 1: tick[0] += seconds
-                    else: real_sleep(seconds)
+                def sleep(seconds): tick[0] += seconds
                 argv = ['check_ci.py', str(self.wt), str(self.out), '1', '0']
+                # Patch only this module's clock: patching time.sleep globally also counts
+                # subprocess.wait's short process-reaping sleeps as CI polling on a busy Mac.
+                clock = types.SimpleNamespace(monotonic=lambda: tick[0], sleep=sleep, strftime=time.strftime)
                 with patch.dict(os.environ, self.env, clear=True), patch.object(sys, 'argv', argv), \
-                     patch.object(m.time, 'monotonic', lambda: tick[0]), patch.object(m.time, 'sleep', sleep):
+                     patch.object(m, 'time', clock):
                     self.assertEqual(m.main(), 1)
                 summary = (self.out / 'summary').read_text()
                 self.assertIn('FAIL expected [yes] got [no] ***', summary)
                 self.assertTrue(summary.endswith('FAILED 0/2 CI checks passed\n'), summary)
-                self.assertEqual(json.loads(self.state.read_text())['polls'], 1)
+                self.assertEqual(tick[0], 0, 'a known failure must not wait for another context')
                 self.assertFalse((self.root / 'local').exists())
+
+
+    def test_unrun_contract_commands(self):
+        # what the contract runs and CI's line never does (the publish gate) is said after a green, exit 3
+        (self.wt / 'AGENTS.md').write_text('- check: `bash local.sh && bash gate.sh --ref HEAD`\n')
+        self.g('add', '.'); self.g('commit', '-qm', 'gate')
+        p = self.run_check()
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        lines = (self.out / 'summary').read_text().splitlines()
+        self.assertEqual(lines[-2:], ['UNRUN bash gate.sh --ref HEAD', 'DONE 2/2'])
+        self.assertNotIn('UNRUN bash local.sh', lines)
+
+
+    def test_no_ci_line_uses_local(self):
+        (self.wt / '.github/ci/share.sh').unlink()
+        self.g('add', '-A'); self.g('commit', '-qm', 'no share')
+        p = self.local()
+        self.assertIn('no .github/ci/share.sh line', p.stdout)
+        self.assertFalse(any(e[0] == 'gh' for e in self.events()))
+
+
+    def test_no_checks_yet_waits(self):
+        self.set_state(pr=True, pre_green=True, no_checks_polls=1)
+        import importlib.util
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        self.out.mkdir()
+        with patch.dict(os.environ, self.env, clear=True):
+            ci = m.CI(self.wt, self.out, 1, False)
+            ci.slug = 'example/checks'
+            tick = [0]
+            def sleep(seconds): tick[0] += seconds
+            clock = types.SimpleNamespace(monotonic=lambda: tick[0], sleep=sleep, strftime=time.strftime)
+            with patch.object(m, 'time', clock):
+                self.assertEqual(ci.wait(17, self.g('rev-parse', 'HEAD'), ['mac-tests', 'linux-tests']), 0)
+        self.assertEqual(json.loads(self.state.read_text())['polls'], 2)
+
+
+    def test_new_pr_label_refused_stays_draft(self):
+        # gh's label call failing after the PR exists leaves a draft, which automerge never arms
+        self.set_state(pr=False, create_label_refused=True)
+        self.local()
+        self.assertTrue(json.loads(self.state.read_text())['draft'])
+        self.assertFalse(any(e[:3] == ['gh', 'pr', 'ready'] for e in self.events()))
+
+
+    def test_landed_branch_never_pushed(self):
+        self.set_state(pr=False, landed=True)
+        p = self.local()
+        self.assertIn('branch already landed', p.stdout)
+        self.assertFalse(any(e[:2] == ['git', 'push'] or e[:3] == ['gh', 'pr', 'create'] for e in self.events()))
+
+
+    def test_required_contexts_from_origin_main(self):
+        # a branch that narrows its own protection file does not narrow what its green means
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('check_ci', B / 'check_ci.py')
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        self.protection.write_text(json.dumps({'required_status_checks': {'checks': [{'context': 'mac-tests'}]}}))
+        self.g('add', '.'); self.g('commit', '-qm', 'narrow')
+        self.out.mkdir()
+        ci = m.CI(self.wt, self.out, 1, False)
+        self.assertEqual(ci.required(), ['mac-tests', 'linux-tests'])
+
+
+    def test_signal_ends_helper(self):
+        import signal, time
+        self.set_state(pr=True, slow=True)
+        p = subprocess.Popen(['bash', str(B / 'check'), str(self.wt), '--ci', '--out', str(self.out)],
+                             env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for _ in range(600):
+            if any(e[:3] == ['gh', 'pr', 'checks'] for e in self.events()): break
+            time.sleep(0.1)
+        p.send_signal(signal.SIGTERM)
+        out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 143, out + err)
+        self.assertTrue((self.out / 'summary').read_text().endswith('INTERRUPTED 0/0 by SIGTERM\n'))
+        time.sleep(1)
+        ps = subprocess.run(['pgrep', '-f', 'check_ci.py ' + str(self.wt)], capture_output=True, text=True)
+        self.assertEqual(ps.stdout.strip(), '', 'the helper outlived its check')
+
+
+    def test_guarded_repo_uses_local(self):
+        self.registry.write_text(json.dumps({'guarded': [self.wt.name]}))
+        p = self.local()
+        self.assertIn('confidential scope', p.stdout)
+        self.assertFalse(any(e[0] == 'gh' for e in self.events()))
+
 
 
 suite = (unittest.defaultTestLoader.loadTestsFromNames(sys.argv[1:], module=sys.modules[__name__])
