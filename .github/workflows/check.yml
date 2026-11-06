@@ -216,14 +216,16 @@ jobs:
       # suite jobs cover those suites; without runner variables, this workflow's suite jobs cover them on
       # every event.
       # The carry (wharf's `pr restack`, 2026-11-04): a push whose patch is the previous head's, list files
-      # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of running again. It is what `pr restack`
-      # pushes when GitHub marks a ready PR DIRTY on a list file alone, and the 85-min re-run it would start
-      # tested nothing new: the PR's code is the tested code, and main's own commits between the two bases are
-      # what `strict: false` (main-protection.json) already lands untested. No suite reads this repo's lists bar
+      # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of the whole line: per file the same entry,
+      # or the same added and removed lines in order in a file a clean merge onto main's copy makes. It is what
+      # `pr restack` pushes when GitHub marks a ready PR DIRTY where git's plain merge conflicts in list files
+      # alone, and the 85-min re-run it would start tested nothing new: the PR's lines are the tested lines, and
+      # main's own commits between the two bases are what `strict: false` (main-protection.json) already lands
+      # untested. No suite reads this repo's lists bar
       # `todo-md lint`, which runs here. `pr carry` judges it from git alone, and the judge is the base's copy (a
       # worktree of origin/$BASE), never the PR's own: a push that broke carry_verdict would otherwise decide its
       # own test (the build review). Any doubt (the newest `check` on the previous head not green, a commit not
-      # fetchable, a code path, mode or type that differs) runs the check as before (on a pull request, the scoped share below).
+      # fetchable, a changed line, mode or type in a code path) runs the check as before (on a pull request, the scoped share below).
       - name: carry the previous head's green
         id: carry
         if: github.event_name == 'pull_request' && github.event.action == 'synchronize'

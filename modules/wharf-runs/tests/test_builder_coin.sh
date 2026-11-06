@@ -59,6 +59,9 @@ seed sonnet "Tier: Sonnet 5.5 high"
 seed block "tier: worker"
 seed sr "Tier: Opus 5.5 high (sr-worker; not Sonnet)"
 seed prin "Tier: principal-worker"
+seed bullet-sr "- Tier: sr-worker"
+seed bullet-worker "- Tier: worker"
+seed bullet-prin "- Tier: principal-worker"
 seed plain "Tier: Opus 5.5 high, per the rules' tier table"
 seed xhigh "Tier: Opus 5.5 xhigh"
 printf -- '- physical: none\n' > "$R/AGENTS.md"   # the contract dispatch requires, untracked on main
@@ -132,12 +135,12 @@ r=""; for line in "Tier: worker" "Tier: Sonnet 5.5 high" "Tier: Opus 5.5 high" "
 done
 check "$r" "specced.specced.plain.plain.plain.-.-.-.-.-.-.-.plain.plain.plain.-.-.-.-.-." "specced, then plain Opus (the rules' default line and nothing more, bold or lower-case); any other Opus line, a reason, a tier word or no Tier line draws nothing"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
-w = c.read_odds()[0]; print(w, [sum(c.coin_of(r, w) == k for r in range(sum(w))) for k in range(3)])' "$B")" "(1, 2, 2) [1, 2, 2]" \
-  "the coin: no builder-odds reads 1:2:2, and of 5 rolls 1 draws Opus, 2 Sonnet, 2 Argon (the owner's D2, 2026-11-04)"
+w = c.read_odds()[0]; print(w, [sum(c.coin_of(r, w) == k for r in range(sum(w))) for k in range(5)])' "$B")" "(1, 2, 2, 1, 1) [1, 2, 2, 1, 1]" \
+  "the coin: no builder-odds reads 1:2:2:1:1, and of 7 rolls each of the five arms draws by its weight (the owner's D2, 2026-11-04; S8's two Sol arms)"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
-print(c.road_weights((1, 2, 2), True), c.road_weights((1, 2, 2)))' "$B")|$(DISPATCH_COIN_ROADS=antigravity python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
-print(c.road_weights((1, 2, 2), True), c.road_weights((1, 2, 2)))' "$B")" "(1, 2, 0) (1, 2, 0)|(1, 2, 2) (1, 2, 0)" \
-  "  rolled: an arm with no road in dispatch weighs 0 (1:2:2 draws 1:2 until S4), a test's road at the draw only"
+print(c.road_weights((1, 2, 2, 1, 1), True), c.road_weights((1, 2, 2, 1, 1)))' "$B")|$(DISPATCH_COIN_ROADS=antigravity python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
+print(c.road_weights((1, 2, 2, 1, 1), True), c.road_weights((1, 2, 2, 1, 1)))' "$B")" "(1, 2, 0, 1, 1) (1, 2, 0, 1, 1)|(1, 2, 2, 1, 1) (1, 2, 0, 1, 1)" \
+  "  rolled: an arm with no road in dispatch weighs 0 (Argon until S4; Codex has its road), a test's road at the draw only"
 # a claude-code block's tier: worker key over a Tier: line that is not specced: dispatch reads the line, so wharf check warns
 cat > "$T/bp.md" <<'MD'
 ---
@@ -186,12 +189,12 @@ has "$T/bp2.out" "has tier: sr-worker, but its Tier: line reads as plain" "a tie
 echo "the draw, on the one-shot road"
 echo "until $UNTIL" > "$KEY"
 check "$(sched worker DISPATCH_COIN=1)" "sonnet-high:1:$UNTIL:1" "Tier: worker, a forced coin of 1: Sonnet, forced"
-has "$T/out" "builder rotation on until $UNTIL; odds opus-high=1,sonnet-high=2,argon-high=2; coin 1: sonnet-high (forced)" "  the caller is told"
+has "$T/out" "builder rotation on until $UNTIL; odds opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1; coin 1: sonnet-high (forced)" "  the caller is told"
 check "$(sched worker DISPATCH_COIN=0)" "opus-high:0:$UNTIL:1" "a forced coin of 0: Opus"
 check "$(sched sonnet DISPATCH_COIN=1)" "sonnet-high:1:$UNTIL:1" "Tier: Sonnet …: specced"
 check "$(sched block DISPATCH_COIN=1)" "sonnet-high:1:$UNTIL:1" "a lower-case tier: worker line (a blueprint block's key carried into its brief): specced"
 check "$(sched worker)" "$(armof "$(pl worker)")" "an unforced draw is carried as drawn"
-case "$(armof "$(pl worker)")" in opus-high:0:$UNTIL:0|sonnet-high:1:$UNTIL:0|opus-high:2:$UNTIL:0) r=ok;; *) r="$(armof "$(pl worker)")";; esac
+case "$(armof "$(pl worker)")" in opus-high:0:$UNTIL:0|sonnet-high:1:$UNTIL:0|opus-high:[234]:$UNTIL:0) r=ok;; *) r="$(armof "$(pl worker)")";; esac
 check "$r" "ok" "  an unforced word: any arm, coin and arm agreeing (Argon's coin as its Opus fallback, no road yet), not forced"
 check "$(sched worker DISPATCH_COIN=1 -- --model claude-opus-5-5)" "" "a typed --model draws nothing"
 check "$(sched worker DISPATCH_COIN=1 -- --effort medium)" "" "a typed --effort draws nothing"
@@ -255,6 +258,45 @@ cp "$T/conf.json" "$T/repos.json"
 fire worker "sonnet-high:1:$UNTIL:0"
 check "$(rowsof)" "0" "a repo fenced at fire time (rotation: false): no row"
 has "$H/fire-worker.log" "dropped — fenced: scope vault does not rotate (rotation: false)" "  the arm is dropped, said in the log"
+clean
+fire worker "gpt-big:3:$UNTIL:0"
+check "$?" "0" "a GPT arm fenced since the draw: today's builder runs"
+has "$T/claude.calls" "--model claude-opus-5-5 --effort high" "  the cancelled arm falls back to Opus"
+has "$H/fire-worker.log" "the vendor arm was disabled before fire — fallback to Opus before any vendor turn" "  skips vendor pre-flight after cancelling the arm"
+check "$(rowsof)|$(recof worker | cut -d' ' -f1,2)" "0|null None" "  no arm or sample for the cancelled draw"
+cp "$T/open.json" "$T/repos.json"
+clean
+# a worker brief here and at the draw; on origin, since, it names a principal tier: the fire's fetch reads that one
+seed toprin "Tier: worker"
+br=claude/laptop/2026-11-02-toprin
+blob=$(printf '# toprin\nTask: build it\nTier: principal-worker\n' | git -C "$R" hash-object -w --stdin)
+GIT_INDEX_FILE="$T/seed.idx" git -C "$R" read-tree "$br"
+GIT_INDEX_FILE="$T/seed.idx" git -C "$R" update-index --add --cacheinfo "100644,$blob,docs/handoff/2026-11-02-toprin.md"
+tree=$(GIT_INDEX_FILE="$T/seed.idx" git -C "$R" write-tree); rm -f "$T/seed.idx"
+git --git-dir="$R/.git" send-pack "$T/origin.git" "$(git -C "$R" commit-tree "$tree" -p "$br" -m "toprin: principal now"):refs/heads/$br" >/dev/null 2>&1
+fire toprin "gpt-big:3:$UNTIL:0"
+check "$?" "0" "a GPT arm whose brief names a principal tier at fire: the Claude principal build runs, never FAILED"
+has "$H/fire-toprin.log" "the vendor arm was disabled before fire" "  the cancelled-arm road is the one taken"
+has "$T/claude.calls" "--model opus --effort xhigh" "  at the tier's own model and effort, never the GPT model or the fallback's high"
+check "$(grep -c 'FAILED' "$H/fire-toprin.log")" "0" "  no FAILED line"
+cp "$T/conf.json" "$T/repos.json"
+clean
+cp "$T/open.json" "$T/repos.json"
+echo repo > "$REGATTA_CONFIG/wharf-runs/public-repos"
+fire worker "gpt-mid:4:$UNTIL:0"
+check "$?" "0" "a GPT coin arm on a public repo falls back before any vendor turn"
+has "$H/fire-worker.log" "vendor pre-flight fallback: a public repo: no vendor build" "  the vendor fence gives the fallback reason"
+has "$T/claude.calls" "--model claude-opus-5-5 --effort high" "  Opus builds the public repo"
+check "$(recof worker | awk '{print $(NF-2)}')" "fallback" "  the record identifies the coin fallback"
+for flag in --harness --model; do
+  clean
+  value=codex; [ "$flag" = --model ] && value=gpt-6.1-sol
+  fire worker "gpt-mid:4:$UNTIL:0" "$flag" "$value"
+  check "$?" "2" "a typed $flag $value on a public repo stays refused, even with a carried coin word"
+  has "$H/fire-worker.log" "refused for good: a public repo: no vendor build" "  the typed selection keeps the fence refusal"
+  check "$(wc -c < "$T/claude.calls" | tr -d ' ')" "0" "  no Claude fallback for the typed selection"
+done
+rm -f "$REGATTA_CONFIG/wharf-runs/public-repos"
 clean
 cp "$T/odd.json" "$T/repos.json"
 fire worker "sonnet-high:1:$UNTIL:0"
@@ -378,7 +420,7 @@ None" "a record's arm rides as DISPATCH_ARM, its model untyped; an entry without
 
 echo "the third arm: one grammar, held in every copy (S3 of docs/argon-builder-arm-2026-11-03.md)"
 G=$(python3 "$B/buildercoin.py" grammar)
-check "$G" "(opus-high|sonnet-high|argon-high):[0-2]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]" "buildercoin's grammar names the three arms, its coin 0 to 2"
+check "$G" "(opus-high|sonnet-high|argon-high|gpt-big|gpt-mid):[0-4]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]" "buildercoin's grammar names the five arms, its coin 0 to 4"
 HB="$(cd "$B/../../helm/bin" && pwd)"
 check "$(grep -c -F -- "[[ \"\$arm_word\" =~ ^$G\$ ]]" "$B/dispatch")" "2" "dispatch's two tests (a carried word, the draw's) are the grammar, word for word"
 check "$(grep -c -F -- "ARM_WORD = re.compile(r\"$G\")" "$B/dispatch-queue")" "1" "dispatch-queue's ARM_WORD is the grammar"
@@ -402,7 +444,7 @@ q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
 sys.path.insert(0, sys.argv[2])
 import stalls_tick as k
 u = sys.argv[3]
-for w in ("argon-high:2:%s:0" % u, "opus-high:2:%s:1" % u, "argon-high:3:%s:0" % u):
+for w in ("argon-high:2:%s:0" % u, "opus-high:2:%s:1" % u, "argon-high:5:%s:0" % u):
     print(q.bad_args({"args": [], "env": {"DISPATCH_ARM": w}}))
 arm = {"name": "argon-high", "model": "gemini-4-argon-high", "effort": "high", "coin": 2, "until": u, "forced": False, "agent": "antigravity"}
 print(k.arm_word({"model": "gemini-4-argon-high", "effort": "high", "arm": arm}))
@@ -411,9 +453,9 @@ print(q.arm_word({"model": "gemini-4-argon-high", "effort": "high", "arm": arm})
 PY
 check "$(python3 "$T/copies.py" "$B/dispatch-queue" "$HB" "$UNTIL" 2>&1)" "None
 None
-env DISPATCH_ARM 'argon-high:3:$UNTIL:0' is no builder arm
+env DISPATCH_ARM 'argon-high:5:$UNTIL:0' is no builder arm
 argon-high:2:$UNTIL:0
-opus-high:2:$UNTIL:0
+None
 argon-high:2:$UNTIL:0" "the queue holds an argon-high word and a fallback one, refuses a coin past the arms; helm's and the queue's retry rebuild both words"
 
 echo "the odds: a fleet limit, read at the draw"
@@ -427,7 +469,8 @@ has "$T/out" "odds opus-high=0,sonnet-high=1,argon-high=0; coin 1: sonnet-high" 
 printf 'sonnet-high=1\n' > "$ODK"
 check "$(sched worker)" "sonnet-high:1:$UNTIL:0" "  an arm left out weighs 0"
 echo "argon-high=1" > "$ODK"
-check "$(sched worker)" "" "builder-odds weighing only Argon while it has no road: no arm, never Opus in its place"
+# a bare draw, no brief class: with both Claude weights 0 a worker brief would take gpt-mid alone (gpt_class, S8)
+check "$(python3 "$B/buildercoin.py" draw "$R" 2> "$T/out")" "" "builder-odds weighing only Argon while it has no road: no arm, never Opus in its place"
 has "$T/out" "weighs only arms with no road in dispatch yet" "  said"
 printf 'opus-high=0, sonnet-high=1 # the owner, a note\nargon-high=1\n' > "$ODK"
 check "$(sched worker)" "sonnet-high:1:$UNTIL:0" "a note after # (on its line and the lines after it) is no text, spaces split arms"
@@ -435,8 +478,8 @@ has "$T/out" "odds opus-high=0,sonnet-high=1; coin 1" "  read without it"
 echo "opus-high=0,sonnet-high=0,argon-high=0" > "$ODK"
 check "$(sched worker)" "" "every weight 0: no arm"
 has "$T/out" "gives every arm 0" "  said"
-echo "1:2:2" > "$ODK"
-check "$(sched worker)" "" "a positional value (the row's form, never the limit's): no arm"
+echo "1:2" > "$ODK"
+check "$(sched worker)" "" "an invalid positional value draws no arm"
 has "$T/out" "not \`opus-high=W,sonnet-high=W,argon-high=W\`" "  said"
 rm -f "$ODK"
 
@@ -528,6 +571,21 @@ DISPATCH_COIN=2 DISPATCH_COIN_ROADS=antigravity env -u DISPATCH_LABEL "$B/dispat
 check "$rc|$(qentry | cut -d' ' -f1-2)" "0|opus-high:2:$UNTIL:1 []" "an Argon draw the queue pins here by its login (no agy here): put again as its Opus fallback, never refused"
 has "$T/out" "the queue could not meet its agy, so its fallback opus-high:2:$UNTIL:1" "  said"
 qreset
+# a typed --harness codex: its codex need is the harness's (--arm-need), so a pre-flight fallback to Claude drops it and
+# a codex-only builder host never takes the Claude build alone; a caller's own --needs codex stays typed (S8's finish review)
+echo "buildbox:codex" > "$REGATTA_CONFIG/wharf-runs/features"
+env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" --harness codex > "$T/out" 2>&1; rc=$?
+check "$rc|$(git --git-dir="$T/q3.git" show "refs/regatta/queue:$(git --git-dir="$T/q3.git" ls-tree -r --name-only refs/regatta/queue | grep '^queue/' | head -1)" 2>/dev/null | python3 -c 'import json, sys; e = json.load(sys.stdin); print(e.get("needs"), e.get("arm_need"))')" "0|['codex'] codex" \
+  "a typed --harness codex: queued needing codex, named the harness's own"
+qreset
+env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" --harness codex --needs codex > "$T/out" 2>&1; rc=$?
+check "$rc|$(git --git-dir="$T/q3.git" show "refs/regatta/queue:$(git --git-dir="$T/q3.git" ls-tree -r --name-only refs/regatta/queue | grep '^queue/' | head -1)" 2>/dev/null | python3 -c 'import json, sys; e = json.load(sys.stdin); print(e.get("needs"), e.get("arm_need"))')" "0|['codex'] None" \
+  "  a typed --needs codex beside it stays the caller's"
+qreset
+env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" --harness codex --mode dnd > "$T/out" 2>&1; rc=$?
+check "$rc" "2" "  a typed --mode dnd with --harness codex is refused: a vendor build hands no landing"
+qreset
+echo "buildbox:agy" > "$REGATTA_CONFIG/wharf-runs/features"
 # a one-shot carries the word and the typed needs alone; its fire adds the arm's need again
 w=$(sched worker DISPATCH_COIN=2 DISPATCH_COIN_ROADS=antigravity)
 check "$w|$(grep -c '<string>--needs</string>' "$(pl worker)")" "argon-high:2:$UNTIL:1|0" "an Argon one-shot's plist: the word, and no --needs (the fire adds the arm's)"
@@ -624,12 +682,12 @@ clean
 fire worker "argon-high:2:$UNTIL:0"
 has "$T/claude.calls" "--model claude-opus-5-5 --effort high --permission-mode auto" "an argon-high word fired by a dispatch with no road for it: Opus, its fallback"
 has "$H/fire-worker.log" "== builder coin: argon-high:2:$UNTIL:0 has no road here — its fallback, opus-high:2:$UNTIL:0" "  said in the log"
-check "$(recof worker)" "{\"agent\": \"claude\", \"coin\": 2, \"effort\": \"high\", \"fallback\": true, \"forced\": false, \"model\": \"claude-opus-5-5\", \"name\": \"opus-high\", \"until\": \"$UNTIL\"} coin claude-opus-5-5 high" \
+check "$(recof worker)" "{\"agent\": \"claude\", \"coin\": 2, \"effort\": \"high\", \"fallback\": true, \"forced\": false, \"model\": \"claude-opus-5-5\", \"name\": \"opus-high\", \"until\": \"$UNTIL\"} fallback claude-opus-5-5 high" \
   "  the record's arm: Opus under Argon's coin, fallback"
 check "$(python3 -c 'import json, sys
 r = [json.loads(l) for l in open(sys.argv[1])]
-print(len(r), *[(x["arm"], x["coin"], x["drawn"], x["agent"], x["fallback"], x["odds"]) for x in r])' "$ROWS" 2>&1)" "1 ('opus-high', 2, 'argon-high', 'claude', True, '1:2:0')" \
-  "  its row: drawn argon-high, run by claude, fallback, the odds o:s:a as rolled (Argon 0 with no road)"
+print(len(r), *[(x["arm"], x["coin"], x["drawn"], x["agent"], x["fallback"], x["odds"]) for x in r])' "$ROWS" 2>&1)" "1 ('opus-high', 2, 'argon-high', 'claude', True, '1:2:0:1:1')" \
+  "  its row: drawn argon-high, run by claude, fallback, the odds as rolled (Argon 0 with no road)"
 clean
 fire worker "opus-high:2:$UNTIL:0"
 has "$T/claude.calls" "--model claude-opus-5-5 --effort high" "a fallback word (the draw's, or the sweep's) fires as Opus"
@@ -645,6 +703,58 @@ echo "opus-high=x" > "$ODK"
 fire worker "sonnet-high:1:$UNTIL:0"
 has "$T/claude.calls" "--model opus --effort high" "odds that do not read at fire time: today's builder"
 check "$(rowsof)" "0" "  no row"
+rm -f "$ODK"
+
+echo "Codex: both dispatch roads, both sizes, and zero means never"
+echo "$T/q3.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+qreset
+echo "buildbox:codex" > "$REGATTA_CONFIG/wharf-runs/features"
+hostrow "$(date +%s)"
+DISPATCH_COIN=3 env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" > "$T/out" 2>&1
+check "$(qentry | cut -d' ' -f1-2)" "gpt-big:3:$UNTIL:1 ['codex']" "a direct queue draw: GPT big needs codex"
+qreset
+w=$(sched worker DISPATCH_COIN=4)
+check "$w" "gpt-mid:4:$UNTIL:1" "a one-shot draws GPT mid"
+fire worker "$w"
+check "$(qentry | cut -d' ' -f1-2)" "gpt-mid:4:$UNTIL:1 ['codex']" "  fired: queued with its codex need"
+qreset
+echo "0:0:0:1:1" > "$ODK"
+for spec in worker:gpt-mid sr:gpt-big; do
+  qreset
+  t=${spec%%:*}; arm=${spec#*:}
+  env -u DISPATCH_LABEL "$B/dispatch" "claude/laptop/2026-11-02-$t" --repo "$R" --if-room > "$T/out" 2>&1
+  check "$?" "2" "a drawn $arm refuses --if-room before enqueue"
+  has "$T/out" "$arm — builder host buildbox fresh" "  the coin drew GPT with a fresh Codex host"
+  has "$T/out" "takes no --if-room: it judges the Claude week" "  the refusal names the unrelated Claude budget"
+  check "$(qentry)" "" "  no GPT entry carrying --if-room was queued"
+done
+qreset
+fire worker "gpt-mid:4:$UNTIL:0" --if-room
+check "$?" "2" "a carried GPT word refuses --if-room before the fire path's Claude week check"
+has "$T/fire.out" "takes no --if-room: it judges the Claude week" "  the fire uses the same argument refusal"
+check "$(qentry)" "" "  the refused fire enqueues nothing"
+qreset
+# an unattended --next takes its session's login label before the draw (account which); a drawn GPT arm drops it after the
+# draw, or enqueue pins the entry to this codex-less host and it always falls back (the finish review, 2026-11-06). The
+# --next road needs a live run to reach, so its order is read from the source, as test_priority reads caller-prio's
+check "$(awk '/arm_word=\$\(DISPATCH_COIN=/ {d=NR} /if vendor_pending && \[ "\$account_typed" = 0 \]; then case "\$account" in .*login_free && account=""/ {l=NR} END {print (d && l > d) ? "after" : "missing"}' "$B/dispatch")" "after" \
+  "a drawn GPT arm drops an inherited login label after the draw where the primary may run the repo (login_free), never a typed one"
+DISPATCH_COIN=3 env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" --account acct-x > "$T/out" 2>&1
+check "$(git --git-dir="$T/q3.git" show "refs/regatta/queue:$(git --git-dir="$T/q3.git" ls-tree -r --name-only refs/regatta/queue | grep '^queue/' | head -1)" 2>/dev/null | python3 -c 'import json, sys; e = json.load(sys.stdin); a = e.get("args") or []; print(e.get("env", {}).get("DISPATCH_ARM", "").split(":")[0], "--account" in a and a[a.index("--account") + 1])')" "opus-high acct-x" \
+  "  a typed --account on a GPT draw rides as typed: pinned here (no codex), so its Opus fallback"
+qreset
+check "$(sched sr DISPATCH_COIN=3)" "gpt-big:3:$UNTIL:1" "Claude weights zero: a sr-worker/Opus brief draws GPT big"
+check "$(sched worker DISPATCH_COIN=4)" "gpt-mid:4:$UNTIL:1" "  a worker brief draws GPT mid"
+check "$(sched bullet-sr DISPATCH_COIN=4)" "gpt-big:3:$UNTIL:0" "  a bulleted sr-worker draws only GPT big, even with a forced mid coin"
+check "$(sched bullet-worker DISPATCH_COIN=3)" "gpt-mid:4:$UNTIL:0" "  a bulleted worker draws only GPT mid, even with a forced big coin"
+check "$(sched bullet-prin DISPATCH_COIN=3)" "" "  a bulleted principal tier stays Claude"
+check "$(sched prin DISPATCH_COIN=3)" "" "  a principal tier stays Claude"
+echo "0:0:0:0:1" > "$ODK"
+w=$(sched sr)
+check "$w" "" "all eligible big arms zero: today's Claude builder, never mid"
+check "$(sched worker DISPATCH_COIN=0)" "gpt-mid:4:$UNTIL:0" "even a forced zero-weight Claude arm is never drawn"
+echo "1:0:0:1:1" > "$ODK"
+check "$(sched sr DISPATCH_COIN=3)" "" "a positive Claude weight restores the old class rule"
 rm -f "$ODK"
 
 echo

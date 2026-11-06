@@ -15,6 +15,12 @@
   nameless REFUSED line, now that trim collects a rotating one nameless (scope-rotation, 2026-11-04): the night's log names the
   repo and its folder, and embark-memo quotes it into a pushed memo (TODO.md [trim-night-fenced]).
 
+- `week-digest` leaves out the prompts a launcher typed (the core's `transcript.machine_start`: dispatch's brief,
+  autofinish-run's `/finish … --unattended`, a seed's pickup tab, a skipper's brief, weekly-run's `/aurora` and
+  sextant-run's `/sextant`, hail's and dispatch-rc's frames, clock's head, a `Task:` brief), which Claude Code records
+  as human; they are counted by launcher, in a text line and `--json`'s `machine` (prompts, sessions, by), on the
+  copy of a session evolve S11's merge makes. A session of a launcher keeps any prompt the owner typed into it. The
+  week's read needs a core with the rule (exit 2, one line, without); `--promote-tags` does not.
 - `week-digest` merges a session's archive and live copies by event uuid, the newest file's copy of a prompt kept
   (evolve S11; the first file seen per session id used to win, so a resumed session's later prompts, the
   corrections among them, were lost when the archive's copy was older); a line with no uuid is keyed by its time and

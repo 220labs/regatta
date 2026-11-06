@@ -179,6 +179,12 @@ check "$(echo "$J" | j 'sorted(r["kind"] for r in d["rows"] if r["channel"]=="pe
 check "$(echo "$J" | j '[r["kind"] for r in d["rows"] if r["channel"]=="notice"]')" "['elicitation_dialog']" "notices: idle and the permission repeat are left out"
 check "$(echo "$J" | j 'sorted(d["channels"]["relay"]["kinds"].items())')" "[('answered', 1), ('escalated', 1)]" "relays from record(), both kinds"
 check "$(echo "$J" | j 'd["total"]')" "18" "the total leaves relays and unattended repeats out: 6 ask + 6 handoff + 3 repeat + 2 permission + 1 notice"
+check "$(echo "$J" | j 'd["total"] == sum(c["in_total"] for c in d["channels"].values()), d["outside_total"], sum(c["n"] for c in d["channels"].values()) - d["total"]')" \
+  "True {'relay': 2, 'unattended': 2} 4" "  the total is the channels' in_total summed; what each n holds beyond it, in outside_total (evolve-readers)"
+check "$(echo "$J" | j 'd["channels"]["repeat"]["n"], d["channels"]["repeat"]["in_total"], d["channels"]["relay"]["in_total"], d["rows_note"]')" \
+  "5 3 0 every row, newest first; a confidential scope's blanked" "  repeat's n holds its two unattended rows, its in_total not; rows listed, said"
+check "$("$B/interruptions" --days 7 --no-memo --json | j 'd["rows"], d["rows_note"], d["total"]')" \
+  "[] not listed: --list all gives every row, --list predictable the predictable ones 18" "  --json without --list: rows empty, and the field says why"
 check "$(echo "$J" | j 'd["trust_waiting"]')" "{'.claude': ['~/projects/household']}" "trust: the repo with no entry waits on a dialog"
 check "$("$B/interruptions" --days 7 --no-memo --list predictable | wc -l | tr -d ' ')" "2" "--list predictable prints the predictable rows only"
 

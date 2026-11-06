@@ -8,18 +8,26 @@ counts only through the brief's line, and `wharf check` warns when they differ �
 Opus alone, no tier word and no effort but `high`, the rules' default written out (the owner, 2026-11-03) — and
 no principal tier, `sr-worker` or other tier, and that no `--model` or `--effort` was given for, draws its
 builder once, when dispatch enqueues or schedules it, by the odds the fleet limit `wharf-runs/builder-odds` gives
-(`opus-high=1,sonnet-high=2,argon-high=2` by default — Opus 5.5, Sonnet 5.5 and Gemini 4 Argon, each at `high`, 1:2:2 — the owner's D2 of
-docs/argon-builder-arm-2026-11-03.md; 3 in 5 Sonnet from 2026-11-03 and 1 in 5 before, both without Argon), each by full
-id; blueprintlib's `brief_rotates` says which class, and the row keeps it as `brief_class`. No key, a passed day or a
+(`opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1` by default — Opus 5.5, Sonnet 5.5 and Gemini 4 Argon, each
+at `high`, and Codex's gpt-6.1-sol at `xhigh` (gpt-big, the Opus mirror) and `high` (gpt-mid, the Sonnet one), 1:2:2:1:1 —
+the owner's D2 of docs/argon-builder-arm-2026-11-03.md, and S8's two Sol arms, the owner's pick of 2026-11-04; 3 in 5
+Sonnet from 2026-11-03 and 1 in 5 before, both without Argon), each by full id; a positional live value
+(`0:0:0:1:1`) reads ahead of a named base line, an arm it omits weighing 0; blueprintlib's `brief_rotates` says which class, and the row keeps it as `brief_class`. No key, a passed day or a
 line that does not parse is today's dispatch, unchanged. The fence comes first, as the finisher's, one rule in the
 core (`scope_rotates`): a repo any of whose scopes says `"rotation": false` (or a `rotation` that is not a bool), a
 repo in no scope, or a registry that does not read or walk draws nothing. A confidential scope draws unless it opts
-out so (the owner, 2026-11-04: one scope opts out, the others draw); its row says `scope` and `confidential: true`.
+out so (the owner, 2026-11-04: one scope opts out, the others draw); its row says `scope` and `confidential: true`,
+and its vendor arms weigh 0. A run that carries an origin marker draws nothing.
 
-An arm whose agent is no `claude` (Argon's `antigravity`, agy-road's provider word) runs only on a builder host, one whose
-`wharf-runs/features` line names the agent's feature (`agy`): the draw asks the hosts ref for a fresh row of such a host
+While BOTH Claude weights are zero (Codex takes every new build, the owner, 2026-11-04), a worker or Sonnet brief
+takes only gpt-mid and an sr-worker or Opus one only gpt-big (`gpt_class`), Claude tier lines with reasons or an
+explicit effort included; a principal tier and every other class keep their Claude route, and any positive Claude
+weight restores the old class rule. A zero-weight arm is never drawn, even by DISPATCH_COIN.
+
+An arm whose agent is no `claude` (Argon's `antigravity`, agy-road's provider word; `codex`, S8's) runs only on a builder host, one whose
+`wharf-runs/features` line names the agent's feature (`agy`, `codex`): the draw asks the hosts ref for a fresh row of such a host
 that may take the repo (`dispatch-queue fresh`), and dispatch adds the feature to the run's --needs. With none, or with no
-road for the agent in dispatch yet (ROADS: `run_vendor` is S4), it draws Opus in its place and says so: the word keeps
+road for the agent in dispatch yet (ROADS: Codex's since S8, Antigravity's build loop is S4), it draws Opus in its place and says so: the word keeps
 the coin drawn and names opus-high (`opus-high:2:…`), and the record and the row say `fallback`. The fire path asks the
 road again and falls back the same way; the queue's sweep makes the same Opus word of a vendor entry no host claimed
 within REDRAW_AGE (dispatch-queue's).
@@ -33,10 +41,12 @@ weight above 0, the arm decides the model and effort and goes into the
 run record as `arm` ({name, model, effort, coin, until, forced, agent[, fallback]}) with `arm_source` (`coin`, or `pinned` for a
 forced coin); and one row goes to <logs>/builder-rotation.jsonl beside finisher-rotation.jsonl, outside git,
 private to this Mac — the fence asked again there, so a repo fenced meanwhile writes none. trim's collect
-joins the rows by session. DISPATCH_COIN=0|1|2 forces the coin (the tests), and the row says `forced`;
+joins the rows by session; run_vendor writes a vendor run's row at its end, with its conversation, cost,
+turns, rounds and outcome. DISPATCH_COIN=0..4 forces the coin (the tests), and the row says `forced`;
 DISPATCH_COIN_ROADS (the tests' too, dispatch hands it to the draw alone) names agents the draw may treat as having a road.
 
-    buildercoin.py draw REPO [--needs A,B] [--pin H]   # stdout: the word, or nothing; stderr: why (only with the key file
+    buildercoin.py draw REPO [--needs A,B] [--pin H] [--brief-class CLASS] [--origin MARK]
+                                        # stdout: the word, or nothing; stderr: why (only with the key file
                                         # there); a vendor arm's builder host must meet the run's own needs and pin
     buildercoin.py arm WORD [--repo R]  # stdout: "<model> <effort> <word> <record json>"; exit 1, why on stdout, for a
                                         # word that does not read, or with R: the key's window closed today, R fenced, or
@@ -76,23 +86,25 @@ ROTATION_KEY = "wharf-runs/builder-rotation"
 # rules); the agent that runs it: `claude`, or a vendor CLI by agy-road's provider word (lighthouse's `account`)
 ARMS = (("opus-high", "claude-opus-5-5", "high", "claude"),
         ("sonnet-high", "claude-sonnet-5-5", "high", "claude"),
-        ("argon-high", "gemini-4-argon-high", "high", "antigravity"))
+        ("argon-high", "gemini-4-argon-high", "high", "antigravity"),
+        ("gpt-big", "gpt-6.1-sol", "xhigh", "codex"),
+        ("gpt-mid", "gpt-6.1-sol", "high", "codex"))
 # the feature a builder host's `wharf-runs/features` line names for an agent: what the run's --needs asks of a host
-AGENT_NEED = {"antigravity": "agy"}
-# the agents dispatch's fire path runs: a vendor arm weighs 0 at the draw until its road lands (run_vendor, S4 of
-# docs/argon-builder-arm-2026-11-03.md; road_weights), and a carried vendor word fires as its Opus fallback
-ROADS = ("claude",)
+AGENT_NEED = {"antigravity": "agy", "codex": "codex"}
+# the agents dispatch's fire path runs: Codex's since S8 (run_vendor); any other vendor arm weighs 0 at the draw until
+# its road lands (Antigravity's build loop, S4 of docs/argon-builder-arm-2026-11-03.md; road_weights), and a carried
+# word of it fires as its Opus fallback
+ROADS = ("claude", "codex")
 # a fleet limit (wharf-runs' limits file): a whole weight per arm by its name, `opus-high=1,sonnet-high=2,argon-high=2`,
-# an arm left out weighing 0. Named, never the row's positional `o:s:a`: the config's grammar reads `1:` as a host's word,
-# so a live layer of `2:1:0` over a config's line would merge as two lines (the core's live_merge), and an arm added later
-# (S8's) reads 0 in a value written before it
+# an arm left out weighing 0. Positional live values read ahead of a named base.
+# An arm added later reads 0 in a value written before it.
 ODDS_KEY = "wharf-runs/builder-odds"
-ODDS_DEFAULT = (1, 2, 2)               # the owner's D2-B, 2026-11-04
+ODDS_DEFAULT = (1, 2, 2, 1, 1)         # Opus, Sonnet, Argon, GPT big, GPT mid
 ODDS_MAX = 1000                        # a weight past this is a typo, never odds
 # The word's one grammar (S3 of the Argon doc): every copy is held to it, a case each (test_builder_coin.sh)
 WORD_GRAMMAR = r"(%s):[0-%d]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]" % ("|".join(x[0] for x in ARMS), len(ARMS) - 1)
 WORD_RE = re.compile(WORD_GRAMMAR)
-ODDS_RE = re.compile(r"^(\d+):(\d+):(\d+)$")   # the row's form
+ODDS_RE = re.compile(r"^\d+(?::\d+){2}(?::\d+:\d+)?$")
 ODDS_NAMED_RE = re.compile(r"^([a-z0-9-]+)=(\d+)$")   # one arm's weight in the limit
 ODDS_OLD_RE = re.compile(r"^(\d+)/(\d+)$")   # #459's row: n Sonnet draws in d, no Argon
 ROTATION_LOG = "builder-rotation.jsonl"   # in LOGS: private to this Mac, outside git
@@ -153,7 +165,7 @@ def odds_of(text):
     t = "".join(str(text or "").split())
     m = ODDS_RE.match(t)
     if m:
-        w = tuple(int(x) for x in m.groups())
+        w = tuple(int(x) for x in t.split(":"))
         return w if all(x <= ODDS_MAX for x in w) else None
     m = ODDS_OLD_RE.match(t)
     if m:
@@ -207,6 +219,13 @@ def _read_odds():
     text = ",".join(t for t in re.split(r"[\s,]+", body) if t)
     if not text:
         return ODDS_DEFAULT, ODDS_DEFAULT_TEXT, "%s's default %s" % (ODDS_KEY, ODDS_DEFAULT_TEXT)
+    # a positional live value (`0:0:0:1:1`, S8) can stand ahead of a named base line, as live_merge leaves it: the first
+    # value wins when it reads as positional, an arm it omits weighing 0
+    first = text.split(",", 1)[0]
+    positional = odds_of(first) if ":" in first else None
+    if positional is not None:
+        w = tuple(positional) + (0,) * (len(ARMS) - len(positional))
+        return w, first, "%s %s" % (ODDS_KEY, first)
     named = odds_named(text)
     if named is None:
         return None, None, "%s says %r, not `opus-high=W,sonnet-high=W,argon-high=W` (whole weights)" % (ODDS_KEY, text[:60])
@@ -233,7 +252,44 @@ def coin_of(r, weights=ODDS_DEFAULT):
 def rotates(text):
     """blueprintlib's brief_rotates: "specced", "plain", or None."""
     import blueprintlib
-    return blueprintlib.brief_rotates(text)
+    old = blueprintlib.brief_rotates(text)
+    return gpt_class(text) or old
+
+
+def gpt_class(text):
+    """While BOTH Claude weights are zero, worker/Sonnet and sr-worker/Opus
+    briefs draw only their size's GPT arm. Principal and every other class stay
+    on the old rule. Any positive Claude weight restores that rule at the next draw (a word already drawn keeps its
+    arm: dispatch's arm_keep_gpt).
+    """
+    w, _ = read_odds()
+    if w is None or any(w[:2]):
+        return None
+    return gpt_size(text)
+
+
+def gpt_size(text):
+    """The GPT arm of this brief's size, whatever the odds read: gpt_class's rule, and at fire the test of a drawn word."""
+    import blueprintlib
+    match = blueprintlib.TIER_LINE_RE.search(text or "")
+    line = match.group(1).lower() if match else ""
+    if "principal" in line:
+        return None
+    # A tier word decides alone: sr-worker is big, worker mid, and any other tier (architect, sr-architect,
+    # main, …) keeps its Claude route even when it names a model. Only a line with no tier word is read by
+    # its model words (an Opus or Sonnet line).
+    tier = blueprintlib.brief_tier(text or "")
+    if tier == "sr-worker":
+        return "gpt-big"
+    if tier == "worker":
+        return "gpt-mid"
+    if tier:
+        return None
+    if re.search(r"\bopus\b", line):
+        return "gpt-big"
+    if re.search(r"\bsonnet\b", line):
+        return "gpt-mid"
+    return None
 
 
 def has_road(agent, at_draw=False):
@@ -268,7 +324,7 @@ def builder_host(primary, need, needs=(), pin=""):
     return None, why or "dispatch-queue fresh exit %d" % r.returncode
 
 
-def draw(primary, needs=(), pin=""):
+def draw(primary, needs=(), pin="", brief_class="", origin=""):
     """(word, why): the arm drawn for a build of this repo, as DISPATCH_ARM's word, or None and why not. NEEDS and PIN
     are the run's own (dispatch's --needs and --pin): a vendor arm's builder host must meet them too, or it falls back."""
     end, why = rotation_window()
@@ -281,9 +337,14 @@ def draw(primary, needs=(), pin=""):
     # bytes to Google: 0", which leaned on this fence before scope-rotation let such a scope draw): those arms weigh
     # 0 for it, as a road-less arm does, so its odds stay the claude arms' (1:2:2 draws as 1:2)
     confidential = bool(fields.get("confidential"))
+    if origin:
+        return None, "builder rotation fenced: an origin marker — today's builder, no row"
     weights, otext, owhy = _read_odds()
     if weights is None:
         return None, "builder rotation off: %s" % owhy
+    # A size-pinned override never swaps sr-worker for the mid arm (or vice versa).
+    if brief_class in ("gpt-big", "gpt-mid") and not any(weights[:2]):
+        weights = tuple(w if ARMS[i][0] == brief_class else 0 for i, w in enumerate(weights))
     if not sum(weights):
         return None, "builder rotation off: %s gives every arm 0" % ODDS_KEY
     rolled = road_weights(weights, True)
@@ -293,6 +354,8 @@ def draw(primary, needs=(), pin=""):
         return None, "builder rotation off: %s weighs only arms with no road in dispatch yet" % ODDS_KEY
     forced = os.environ.get("DISPATCH_COIN")
     forced = forced if forced in [str(i) for i in range(len(ARMS))] else None
+    if forced and not weights[int(forced)]:
+        forced = None  # even a test pin cannot draw an arm the owner's odds weigh 0 (a road-less one it may: its fallback)
     coin = int(forced) if forced else coin_of(random.SystemRandom().randrange(sum(rolled)), rolled)
     name, agent, note = ARMS[coin][0], ARMS[coin][3], ""
     if agent != "claude":
@@ -382,6 +445,10 @@ def write_row(arm, a):
            # the scope that let it rotate, and whether it is confidential: trim counts such a row in its arm
            # tallies only, never naming it (trimlib's collect_fence)
            "scope": scope.get("scope"), "confidential": bool(scope.get("confidential"))}
+    end = getattr(a, "end", None)
+    if end:
+        row.update({k: end.get(k) for k in ("conversation", "cost", "turns", "rounds", "outcome", "ended", "last_answer")})
+    row["arm_source"] = "fallback" if arm.get("fallback") else ("pinned" if arm["forced"] else "coin")
     with rotation_lock() as path:
         with open(path, "a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -392,6 +459,7 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="buildercoin.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("draw"); d.add_argument("repo"); d.add_argument("--needs", default=""); d.add_argument("--pin", default="")
+    d.add_argument("--brief-class", default=""); d.add_argument("--origin", default="")
     w = sub.add_parser("arm"); w.add_argument("word"); w.add_argument("--repo", default="")
     r = sub.add_parser("row"); r.add_argument("word")
     for k in ("--repo", "--branch", "--topic", "--session"):
@@ -421,7 +489,7 @@ def main(argv):
             print(c)
         return 0 if c else 1
     if a.cmd == "draw":
-        word, why = draw(os.path.realpath(a.repo), [n.strip().lower() for n in a.needs.split(",") if n.strip()], a.pin.strip().lower())
+        word, why = draw(os.path.realpath(a.repo), [n.strip().lower() for n in a.needs.split(",") if n.strip()], a.pin.strip().lower(), a.brief_class, a.origin)
         if word:
             print(word)
         # with no key file the start is unchanged, said nothing (the finisher's `arm=off` rule)

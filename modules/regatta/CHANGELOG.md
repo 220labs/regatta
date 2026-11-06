@@ -5,12 +5,25 @@
 - `ready_pr` releases build CI's owned hold as well as the draft fallback's, spending either
   ownership note once so later manual holds remain in place.
 
+- Plain live limit values retain colons through their trial read and `--all`/`--on` targeting, so five positional builder weights can override named base weights.
+- `regatta limit` supports lighthouse's `week-max-finish` login limit and reports its finish-only
+  effect. The core carries one-use finish receipts between launchers and account picks without
+  passing them to sessions; `run_group` can pass the receipt descriptor through a timed probe.
+
 - `scope_rotates(primary, reg)` (scope-rotation, 2026-11-04): the coins' one scope rule, which both rotation fences ask — a repo
   rotates when some scope lists it and every scope that lists it, each judged alone, has no `rotation` key or `rotation: true`;
   `rotation: false`, a `rotation` that is no bool, no scope or a registry it cannot walk fences. `confidential` alone no
   longer fences. `rotation_problem` names a `rotation` that does not read, and `regatta check` lists it as a finding.
 
 - `launchd_session_keys()` supplies Background session keys beside `launchd_domain()` for jobs bootstrapped into a user domain.
+- `hooks/transcript.py`: `machine_start(text)`, the one rule for a user prompt a launcher typed (dispatch's brief,
+  autofinish-run's `/finish … --unattended`, a pickup tab's prefill and orientation, helm's skipper brief, a council
+  arm, weekly-run's and sextant-run's `/aurora`, `/sextant` and `/embark`, a `Task:` brief or the gate's labelling
+  prompt, hail's frame, dispatch-rc's nudge, clock's head, dispatch's `--probe`), anchored at the prompt's start so an
+  owner's look-alike stays the owner's; a raw slash command is read as `/name args` whatever its tags' order. plumb's
+  `asks` and aurora's `week-digest` read it. The core's check renders the launcher templates it can import or read (where
+  their modules are in the tree: ten today) and fails on one the rule reads as a person's. An orientation that carries the owner's
+  `--note` (`. Then: <note>`) stays the owner's.
 - `host_name()` reads `wharf-runs/host` first (a builder host's row; absent everywhere else). `launchd_domain()`: `gui/<uid>`, or `user/<uid>` where `DISPATCH_LAUNCHD_DOMAIN` (else
   `wharf-runs/launchd-domain`) says `user` — a builder user's jobs (the Argon arm's S2). fence.py's builder keychain:
   `builder_signin_put` / `builder_signin_read` (a keychain file in a builder's home holding agy's item, its random

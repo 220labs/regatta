@@ -427,10 +427,11 @@ RUNNER_CONTAINERFILE = """\
 FROM %(base)s
 LABEL ci-provider.runner=true
 # linux-local's package list (.circleci/linux-local/Containerfile, the suites' Linux stand-in on 26.04) bar its
-# sudo, and procps, which a suite's ps and pgrep need
+# sudo, and procps (a suite's ps and pgrep) and lsof (pickup's ide_windows finds a VS Code window by its listening
+# port; PR 500's run read 19 test_pickup cases red on an image without it, runner-lsof), which hosted ubuntu ships
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq >/dev/null && \\
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \\
-      ca-certificates curl git jq python3 python3-yaml ruby sqlite3 xz-utils openssh-client locales tzdata procps \\
+      ca-certificates curl git jq python3 python3-yaml ruby sqlite3 xz-utils openssh-client locales tzdata procps lsof \\
       >/dev/null && rm -rf /var/lib/apt/lists/*
 # /state is the runner's: podman gives a fresh volume its mount point's owner after it applies `:U` (4.9.3's
 # fixVolumePermissions, read)

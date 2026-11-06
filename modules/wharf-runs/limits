@@ -9,6 +9,7 @@ wharf-runs/headroom     host*  avail=10,rate=50  HEADROOM_HOST={host} bin/headro
 # host's value changes how it places runs, not how others place onto it.
 wharf-runs/load-max     plain  1.5               bin/berth --load-key wharf-runs/load-max
 wharf-runs/load-margin  plain  0.5               bin/berth --load-key wharf-runs/load-margin
-# builder-odds is the builder coin's weight per arm, by name (bin/buildercoin.py; S3 of docs/argon-builder-arm-2026-11-03.md),
-# read where a run is drawn and again where it fires: a weight of 0 there runs today's builder. A fleet value, one line.
-wharf-runs/builder-odds plain  opus-high=1,sonnet-high=2,argon-high=2  bin/buildercoin.py odds
+# builder-odds is the builder coin's weight per arm, by name here (bin/buildercoin.py; S3 and S8 of docs/argon-builder-arm-2026-11-03.md);
+# a live value may also be positional, opus:sonnet:argon:gpt-big:gpt-mid. Read where a run is drawn and again where it fires:
+# a weight of 0 is never drawn. A fleet value, one line.
+wharf-runs/builder-odds plain  opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1  bin/buildercoin.py odds

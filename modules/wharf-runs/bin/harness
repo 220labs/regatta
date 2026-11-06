@@ -145,9 +145,9 @@ import sys
 import time
 import types
 
-common = None   # the core's config reader; none on a peer (stdin has no path), where nothing here needs it
+common = None   # the core's config reader, when an installed core can be found
 CORE_MISSING = False   # True: a copy run from its file whose core did not import — the spawn gate fails closed
-if "__file__" in globals():   # here, not on a peer from stdin: the regatta core on the path, for the adapters' peers
+if "__file__" in globals():   # stdin sets __file__ too; a copy hail execs on a peer has none and keeps common None (hail puts the peer's core on sys.path for the adapters)
     sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
     try:
         import core_path
@@ -209,14 +209,16 @@ def machine():
     """This Mac's name as branches and repos.json spell it (`laptop`, `buildbox`): LocalHostName,
     lower-cased — helmlib.host()'s reading. HARNESS_HOST stands in for it (tests, as PICKUP_HOST)."""
     if os.environ.get("HARNESS_HOST"):
-        return os.environ["HARNESS_HOST"]
+        return os.environ["HARNESS_HOST"].lower()
+    if common:
+        return common.host_name()
     try:
         r = subprocess.run(["/usr/sbin/scutil", "--get", "LocalHostName"], capture_output=True, text=True, timeout=5)
         if r.stdout.strip():
-            return r.stdout.strip().lower()
+            return re.sub(r"[^a-z0-9-]", "-", r.stdout.strip().lower()).strip("-") or "host"
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return socket.gethostname().split(".")[0].lower()
+    return re.sub(r"[^a-z0-9-]", "-", socket.gethostname().split(".")[0].lower()).strip("-") or "host"
 
 
 def coding_root():
@@ -322,6 +324,27 @@ def peers():
               if k.startswith("HARNESS_PEER_") and v})
     p.pop(machine(), None)
     return p
+
+
+_MESSAGE_READER = []
+
+
+def message_peers(here=None, aliases=None, target=None):
+    """Message-only discovery; placement keeps peers(). TARGET is an explicit hail --host,
+    allowed to reach a confidential yard or node; automatic walks reach configured placement
+    aliases as main did and skip every added name that is a confidential yard or node."""
+    try:
+        if not _MESSAGE_READER:
+            path = common.tool("message_peers.py") if common else None
+            if not path:
+                return peers() if aliases is None else aliases
+            reader = types.ModuleType("harness_message_peers")
+            with open(path) as f:
+                exec(compile(f.read(), str(path), "exec"), reader.__dict__)
+            _MESSAGE_READER.append(reader)
+        return _MESSAGE_READER[0].message_peers(common, here or machine(), peers() if aliases is None else aliases, target)
+    except Exception:   # discovery cannot cost the configured roads
+        return peers() if aliases is None else aliases
 
 
 def hosts_for(arg):

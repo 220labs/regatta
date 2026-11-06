@@ -9,7 +9,7 @@ T=$(cd "$(mktemp -d)" && pwd -P); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # this suite runs inside unattended /finish runs too; its cases set CLAUDE_UNATTENDED themselves
-unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
+unset CLAUDE_UNATTENDED REGATTA_UNATTENDED TURN_RELEASE
 # A hand run of check.sh may set this flag; nested fixtures select their own share.
 unset WHARF_RUNS_SKIP_LINUX_OK
 export HOME="$T/home" REGATTA_CONFIG="$T/config" CLAUDE_CONFIG_DIR="$T/claude"
@@ -33,9 +33,15 @@ EOF
 echo "third $*"
 EOF
   chmod +x "$d/third.sh"
-  # turn.sh: records who ran when, in order, then holds for $HOLD seconds
+  # turn.sh: records who ran when, then holds until released or for $HOLD seconds
   cat > "$d/turn.sh" <<'EOF'
-echo "${WHO:-?} start" >> "$ORDER"; echo $$ > "$ORDER.$WHO.pid"; sleep "${HOLD:-1}"; echo "${WHO:-?} end" >> "$ORDER"
+echo "${WHO:-?} start" >> "$ORDER"; echo $$ > "$ORDER.$WHO.pid"
+if [ -n "${TURN_RELEASE:-}" ]; then
+  while [ ! -f "$TURN_RELEASE" ]; do sleep 0.1; done
+else
+  sleep "${HOLD:-1}"
+fi
+echo "${WHO:-?} end" >> "$ORDER"
 EOF
   echo "$d"
 }
@@ -138,11 +144,16 @@ check "$(tr '\n' ' ' < "$ORDER")" "A start A end B start B end C start C end " "
 check "$(grep -c waiting "$T/B.out")" "1" "the wait is printed once"
 check "$(tail -1 "$T/C.out")" "DONE 1/1" "the last in the queue still runs"
 : > "$ORDER"
-CHECK_SLOTS=2 WHO=A HOLD=3 "$B/check" --local "$Q" > "$T/A2.out" 2>&1 & pa=$!
-CHECK_SLOTS=2 WHO=B HOLD=3 "$B/check" --local "$Q" > "$T/B2.out" 2>&1 & pb=$!
-wait $pa $pb
-check "$(cat "$T/A2.out" "$T/B2.out" | grep -c waiting)" "0" "two slots: two checks run together"
-check "$(head -2 "$ORDER" | grep -c start)" "2" "…both started before either ended"
+TURN_RELEASE="$T/release2" CHECK_SLOTS=2 WHO=A2 "$B/check" --local "$Q" > "$T/A2.out" 2>&1 & pa=$!
+TURN_RELEASE="$T/release2" CHECK_SLOTS=2 WHO=B2 "$B/check" --local "$Q" > "$T/B2.out" 2>&1 & pb=$!
+# A waiter may see the other run's ticket before its slot has a pid and print `waiting` for one poll.
+# Hold both scripts until their start markers exist: overlap is the contract, regardless of that message.
+until_ "[ -s '$ORDER.A2.pid' ] && [ -s '$ORDER.B2.pid' ]"
+check "$?" "0" "two slots: two checks run together"
+check "$(head -2 "$ORDER" | grep -c start)" "2" "…both started before either was released"
+touch "$T/release2"   # release even on a timeout, so a serialized pair fails without hanging the suite
+wait $pa; ra=$?; wait $pb; rb=$?
+check "$ra:$rb" "0:0" "…both checks passed"
 
 echo "the count per host, from wharf-runs/check-slots (2026-10-23)"
 mkdir -p "$T/cfg/wharf-runs"; printf 'other:5\nlaptopx: 3\n*:1\n' > "$T/cfg/wharf-runs/check-slots"

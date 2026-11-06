@@ -42,34 +42,40 @@
                                   archives a launched one at session start (coding-on-workflow D4).
 
   pr restack <N> | --all [--dry-run]
-                                  a ready claude/* PR GitHub marks DIRTY only because main appended to
-                                  a list file (TODO.md, CHANGELOG.md): rebased onto origin/main in a
-                                  scratch worktree of this repo, whose merge.union.driver must be
-                                  list-merge, and force-pushed with a lease on the PR's head, so
-                                  automerge lands it with no hand step. Pushed only when every path
-                                  both sides changed since the fork is a list file the attributes
-                                  merge as union, the rebase is clean, those files hold no conflict
-                                  markers, `todo-md lint . --base origin/main` passes, and a CHANGELOG
-                                  whose first `## ` heading was Unreleased still has it first.
+                                  a ready claude/* PR GitHub marks DIRTY where git's plain merge
+                                  conflicts in list files alone (TODO.md, CHANGELOG.md,
+                                  .helloworld/allowlist.txt): rebased onto origin/main in a scratch
+                                  worktree of this repo, whose merge.union.driver must be list-merge,
+                                  and force-pushed with a lease on the PR's head, so automerge lands it
+                                  with no hand step (an allowlist conflict settled as a set). Pushed only
+                                  when every TODO.md or CHANGELOG.md both sides changed is `merge=union`,
+                                  every other path has no merge attribute and merges clean, the rebase is clean, the list files hold no conflict markers,
+                                  `todo-md lint . --base origin/main` passes, a CHANGELOG whose first
+                                  `## ` heading was Unreleased still has it first, and `pr carry` holds.
+                                  A ready PR whose required check failed before main last moved is
+                                  restacked the same way onto main (once a push), and one whose failure
+                                  main has not moved past gets its failed jobs rerun, once a run.
                                   Otherwise its finding goes on the PR as a comment, once per tip.
                                   Only a PR opened by the token's own login or the registry's
                                   machine_account (another login's PR, and one labelled `hold`, is left
-                                  alone, unsaid), and only once the base's required checks passed on
-                                  its head, or none ever ran there (a push would cancel a running one;
+                                  alone, unsaid), and a DIRTY one only once the base's required checks
+                                  passed on its head, or none ever ran there (a push would cancel a running one;
                                   GitHub runs none on a PR that conflicts). --all: every such open, ready claude/* PR of
                                   this repo (the autofinish sweep's call, armed). Never merges, never
-                                  touches main. Exit 0 restacked or nothing to do, 1 refused, 2 not now
-                                  (checks running or red, GitHub or git unanswerable, a lost lease);
+                                  touches main. Exit 0 restacked, rerun or nothing to do, 1 refused, 2 not now
+                                  (checks running, GitHub or git unanswerable, a lost lease);
                                   --all exits 0 or 2, each refusal on its PR.
   pr carry <before> <after> [--base <ref>]
-                                  CI's question after a push (check.yml, check-linux.yml): is <after>'s
-                                  patch on <base> (default origin/main) <before>'s on its fork, with only
-                                  list files differing? `CARRY …` exit 0, else `RUN …` exit 1: the
-                                  workflow then keeps <before>'s green instead of the whole line.
+                                  CI's question after a push (check.yml, check-linux.yml): does <after>
+                                  on <base> (default origin/main) add and remove, file by file and in
+                                  order, the lines <before> did on its fork, TODO.md and CHANGELOG.md
+                                  aside? `CARRY …` exit 0, else `RUN …` exit 1: the workflow then keeps
+                                  <before>'s green instead of the whole line.
 
 Token and host come from hooks/common.py: the token git already has, nothing new. Base is the
 repo's main (workflow.json "main", else main). docs/record/repo-sync-2026-09-22.md.
 """
+import collections
 import datetime
 import json
 import os
@@ -320,11 +326,14 @@ def refuse_sweep_gate(up, base, verb, hold=None):
                                         else " The PR could not be labelled `hold`: label it, or automerge may launch it.")
         sys.exit(f"pr: NOT merged — this launch is held at a ready PR ({why}); it lands by "
                  f"{common.OWNER_NAME or 'the owner'}'s tap, never by its own run.{keep}")
-    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief", "handed") or st.get("ended"):
+    # `lander` (stuck-ships S1, task-shape D1-C) is re-judged as `handed` is: it lands what a typed /finish lands,
+    # every gate run, and is no person's yes; carrying a mode flag (`land_by`), it is that mode's launch
+    if not st or st.get("by") not in ("sweep", "yolo", "dnd", "ship", "brief", "handed", "lander") or st.get("ended"):
         return
     # the labels judged by their own slice rather than the whole list (autofinish-run's landing())
-    own = {"brief": "brief_held", "handed": "handed_held"}.get(st.get("by")) \
-        if not (st.get("by") == "handed" and st.get("rule") == "M") else None
+    mode_launch = st.get("rule") == "M" or (st.get("by") == "lander" and st.get("land_by"))
+    own = {"brief": "brief_held", "handed": "handed_held", "lander": "handed_held"}.get(st.get("by")) \
+        if not (st.get("by") in ("handed", "lander") and mode_launch) else None
     from importlib.machinery import SourceFileLoader
     found = common.tool("autofinish")
     gate, problem = None, "autofinish (wharf-runs) is not installed"
@@ -361,7 +370,7 @@ def refuse_sweep_gate(up, base, verb, hold=None):
             # read here only: a brief or handed run is judged by its own slice, and must() exits on a git failure
             paths = must("-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{up}...HEAD").splitlines()
             gate = af.touches_gate(primary, base, exclude, paths)
-        if not gate and not problem and not own and (st.get("by") in af.LAND_MODES or st.get("rule") == "M"
+        if not gate and not problem and not own and (st.get("by") in af.LAND_MODES or mode_launch
                                          or st.get("by") == "ship"):
             mode, why_mode = af.landing_mode(git("symbolic-ref", "--quiet", "--short", "HEAD"), primary)
             # autofinish's effective_mode, the rule landing() judged the start by (follow-ups' landing review,
@@ -385,32 +394,67 @@ def refuse_sweep_gate(up, base, verb, hold=None):
         else:
             keep = ("the PR is labelled `hold`, so automerge leaves it" if hold()
                     else "the PR is ready and could not be labelled `hold`: label it, or automerge may launch it")
-        who = "a dispatch hand-over (by handed)" if st.get("by") == "handed" else "the autofinish sweep"
+        who = {"handed": "a dispatch hand-over (by handed)", "lander": "the lander's road (by lander)"}.get(
+            st.get("by"), "the autofinish sweep")
         sys.exit(f"pr: NOT {verb} — this /finish was started by {who}, and {why}. "
                  f"A gate launches by a /finish or /autofinish {common.OWNER_NAME or 'the owner'} starts, never unwatched: stop with "
                  f"`⚠ step 11 — {why}`; {keep}.")
 
 
-# ---- restack: a ready PR GitHub marks DIRTY only on a list file -----------------------------------
+# ---- restack: a ready PR GitHub marks DIRTY on list files, or red on a base main has moved past -----
 #
 # Why (the owner, 2026-11-03: "We should have a tool for that now that resolves in finish"): GitHub's
 # server merge runs no custom driver and does not even apply `merge=union`, so a ready PR whose base gained
 # a TODO.md or CHANGELOG.md line reads CONFLICTING (regatta#439, #442 twice), while a local rebase with
 # list-merge is clean. Each cost a hand rebase, the owner's word for the force push and a fresh 85-min check.
+# Widened (restack-clean-overlap, the owner 2026-11-04 on #434: "figure out how to make resolution of trivial
+# conflicts like that automatic and not rerun the CI"): #434 changed README.md and `limits` beside main too,
+# in hunks git merged clean, and the first build refused any non-list path changed on both sides. Now the
+# judge is git's plain merge: the rebase runs with list-merge on the list files alone, every other path both
+# sides changed must carry no merge attribute (git's text merge, which GitHub's own merge also runs), and a
+# conflict there stops the rebase and refuses. So "may restack" is "every path git's plain merge conflicts in
+# is a list file", decided by the one rebase whose result is pushed.
 #
 # Why the push is no new permission: it is the push /finish's step 11 makes (`--force-with-lease` of the
 # branch's own claude/* ref after its rebase onto origin/main), of commits the launch already approved, and
 # the PR was ready, so its landing was already decided; this tool never merges (automerge.yml lands the new
 # head under the same required checks) and never writes main. The lease is the PR head GitHub showed, so a
-# push by anyone meanwhile wins. Its gate is what it may change: a rebase that merged a list file alone.
+# push by anyone meanwhile wins. Its gate is what it may change: a rebase whose plain merge conflicted in
+# list files alone, with the PR's own lines unchanged (carry_verdict).
+# Why carrying the green adds no risk: main's protection is `strict: false`, so GitHub already lands a green PR
+# onto a moved main with no re-test when the merge is textually clean, and automerge rebase-merges, commit by
+# commit, as this rebase does. A rebase whose only conflicts are list files, merged by item, is the tree
+# GitHub would land had it run the driver; the carry keeps the green only where the PR's own added and
+# removed lines are unchanged, so what it accepts untested is main's commits, which `strict: false` accepts.
 # Why no re-landing: automerge lands a ready PR's new head by itself, so no autofinish run is asked for and
 # autofinish-run's "no retry on the same tip" never meets it; the tip is new besides, a rebase's commits.
+#
+# The red road (the owner, 2026-11-04: "why is this not a mechanism yet?"): on #434 a draft/ready toggle
+# reran `check` on the stale merge ref after main's fix, an hour lost. A rerun replays the same merge commit,
+# so a failure main has fixed since fails again; a restack onto main makes a new tip CI tests against the fix.
+# A required check that saw an old main (a merge-ref run made before main's tip landed: the run's `created_at`,
+# which a rerun keeps; a head-tested status on a head behind main) is restacked, never rerun; on a tip a red
+# restack made, or tried from, it is left. One that saw main's tip gets `rerun-failed-jobs`, once a run (a flake).
+# So a PR red on its merits costs, per push of its own, one red restack and one rerun per run at most; past
+# them the red is the PR's own and nothing more is spent. The bound's marks are PR comments written before the
+# act they bound, so a lost mark never repeats it.
 
-LIST_FILES = ("TODO.md", "CHANGELOG.md")   # list-merge's kinds (its kind_of); any other union file is not ours
+LIST_FILES = ("TODO.md", "CHANGELOG.md")   # list-merge's kinds (its kind_of): their patch the carry never reads
+# settled by restack_tree with list-merge's set merge (set_settle: what either side deleted stays gone, nothing
+# twice), and judged by the carry against that merge: two branches each listing a new file conflict at the same
+# alphabetical slot (#464 at 11:41, beside wharf's CHANGELOG). It carries no merge attribute, so a plain merge
+# conflicts there everywhere else: union (the build review, probed twice) revived a path main took off the list,
+# which would publish it again.
+LIST_PATHS = (".helloworld/allowlist.txt",)
 RESTACK_MARK = "<!-- pr-restack tip=%s -->"        # a finding on that tip: once a tip
 RESTACK_DONE = "<!-- pr-restack pushed=%s -->"     # a push that made that tip: never read as a finding on it
+RESTACK_RED = "<!-- pr-restack red=%s -->"         # a push the red road made: that tip is never red-restacked again
+RESTACK_RED_FROM = "<!-- pr-restack red-from=%s -->"   # a red restack tried from that tip: never tried again
+RESTACK_RERUN = "<!-- pr-restack rerun=%s -->"     # a run whose failed jobs were rerun: once a run
 MARKER_RE = r"^(<<<<<<< |=======$|>>>>>>> )"
 RESTACK_WAIT = float(os.environ.get("PR_RESTACK_WAIT", "3"))   # GitHub computes mergeable_state lazily
+RUN_ID_RE = re.compile(r"/actions/runs/(\d+)")
+RED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")   # never `cancelled`: a cancel is someone's choice
 
 
 def run(cwd, *args, timeout=120, env=None):
@@ -419,6 +463,13 @@ def run(cwd, *args, timeout=120, env=None):
 
 
 def is_list_file(path):
+    """Restacked by itself: a path list-merge merges by item, or one merged as union (LIST_PATHS)."""
+    return os.path.basename(path) in LIST_FILES or path in LIST_PATHS
+
+
+def carry_exempt(path):
+    """A path whose patch the carry never compares: a release cut moves a CHANGELOG line, and no suite reads
+    this repo's TODO.md or CHANGELOG.md bar `todo-md lint`, which the carry runs."""
     return os.path.basename(path) in LIST_FILES
 
 
@@ -443,12 +494,101 @@ def unreleased_first(text):
     return bool(re.match(r"##\s+\[?unreleased\]?\s*$", head, re.I))
 
 
+def changed_lines(cwd, a, b, path):
+    """What <path>'s diff a..b adds and removes, in order, as bytes: every `+`, `-` and `\\ No newline` line,
+    and the mode lines (a new file, a deletion, a chmod, a type change), with no context, no hunk positions and
+    no blob ids. Bytes, not text: universal newlines would read a CRLF → LF change as none. Not patch-id, which
+    drops whitespace (AGENTS.md's trap): a space changed inside a line counts. None for a binary diff, whose
+    lines say nothing."""
+    r = subprocess.run(["git", "--literal-pathspecs", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
+                        "--no-textconv", a, b, "--", path], cwd=cwd, capture_output=True, timeout=120)
+    if r.returncode:
+        raise RuntimeError(f"git diff {a[:8]} {b[:8]} -- {path}: {r.stderr.decode(errors='replace').strip()[:200]}")
+    out, body = [], False
+    for ln in r.stdout.split(b"\n"):
+        if ln.startswith(b"diff --git "):
+            body = False   # a type change is two sections, a deletion and a creation
+        elif not body:
+            # the header: `--- a/x` and `+++ b/x` are no content, while a removed line `-- x` reads `--- x` in the body
+            if ln.startswith(b"@@"):
+                body = True
+            elif ln.startswith((b"Binary files ", b"GIT binary patch")):
+                return None
+            elif ln.startswith((b"old mode ", b"new mode ", b"new file mode ", b"deleted file mode ")):
+                out.append(ln)
+        elif ln[:1] in (b"+", b"-", b"\\"):
+            out.append(ln)
+    return out
+
+
+def blob_bytes(cwd, rev, path):
+    """<path>'s bytes at <rev>, or None where the rev has no such blob."""
+    r = subprocess.run(["git", "cat-file", "blob", f"{rev}:{path}"], cwd=cwd, capture_output=True, timeout=60)
+    return None if r.returncode else r.stdout
+
+
+def clean_merge(cwd, f_old, f_new, before, after, path):
+    """True when <path> at <after> is exactly what git's three-way merge of <before>'s change (f_old → before)
+    onto main's copy at f_new makes, with no conflict: list-merge's set merge for LIST_PATHS (the same lines,
+    in any order, as the order is free there), else git's plain text merge.
+
+    Why (round 1 of the build review, probed): equal added and removed lines are no proof of the tree. A rebase
+    whose conflict was resolved by hand, keeping the PR's lines and dropping main's, and an amend that moves a
+    line into another function both keep the lines, while GitHub would have refused the first as DIRTY and CI
+    never ran the second. A clean merge is what GitHub lands under `strict: false`, so only it is carried.
+    Blobs go through temp files: `merge-file --object-id` needs git 2.43, newer than the oldest runner Mac's (2.37)."""
+    texts = [blob_bytes(cwd, rev, path) for rev in (f_new, f_old, before, after)]
+    if any(t is None for t in texts):
+        return False   # created or deleted somewhere: the strict rule's case, never this one
+    tmp = tempfile.mkdtemp(prefix="pr-carry-")
+    try:
+        names = []
+        for i, t in enumerate(texts[:3]):
+            names.append(os.path.join(tmp, str(i)))
+            with open(names[-1], "wb") as f:
+                f.write(t)
+        if path in LIST_PATHS:   # the driver the rebase ran: <ours> (main's copy) takes the result
+            lm = Path(__file__).resolve().parent.parent / "bin" / "list-merge"
+            r = subprocess.run([sys.executable, str(lm), names[1], names[0], names[2], path], capture_output=True,
+                               timeout=60)
+            with open(names[0], "rb") as f:
+                got = f.read()
+            return r.returncode == 0 and sorted(got.split(b"\n")) == sorted(texts[3].split(b"\n"))
+        for extra in (["--diff-algorithm=histogram"], []):   # merge-ort's algorithm; a git before 2.44 lacks the flag
+            r = subprocess.run(["git", "merge-file", "-p", "-q", *extra, *names], capture_output=True,
+                               timeout=60)
+            if r.returncode != 129 or not extra:
+                break
+        return r.returncode == 0 and r.stdout == texts[3]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def listed(cwd, rev, path):
+    """A LIST_PATHS file's entries at <rev>, counted as the publish gate reads them (helloworld's lines_of: stripped,
+    blank and `#` lines skipped); empty for any other path."""
+    if path not in LIST_PATHS:
+        return collections.Counter()
+    return collections.Counter(l.strip() for l in (blob_bytes(cwd, rev, path) or b"").decode(errors="replace").split("\n")
+                               if l.strip() and not l.strip().startswith("#"))
+
+
+def doubled(cwd, before, after, path):
+    """The entries <after> lists twice or more that <before> did not: the publish gate refuses them ("listed
+    twice") on every Mac once on main, and the gate never runs in CI (round 1's and 2's probes: union doubled one,
+    and `foo.md ` beside `foo.md`)."""
+    now, was = listed(cwd, after, path), listed(cwd, before, path)
+    return sorted(k for k, c in now.items() if c > 1 and c > was.get(k, 0))
+
+
 def carry_verdict(before, after, up, cwd=None):
-    """(True, why) when <after>'s patch on its fork is <before>'s on its own, list files aside: every other
-    path either side changes holds the same blob at both heads, and the same at both forks. Then what CI
-    would run on <after> differs from <before>'s run only by main's own commits and the list files, and the
-    first is what the protection's `strict: false` already lands untested (check.yml's CI_SKIP_MAIN_PUSH
-    comment). No suite reads this repo's TODO.md or CHANGELOG.md bar `todo-md lint`, which the carry runs."""
+    """(True, why) when <after>'s patch on its fork is <before>'s on its own, TODO.md and CHANGELOG.md aside:
+    every other path either side changes holds the same entry at both heads and at both forks, or the same
+    added and removed lines in order, whatever context and positions main's commits gave them, in a file that is
+    exactly a clean merge of the PR's change onto main's (clean_merge). Then what CI would run on <after>
+    differs from <before>'s run only by main's own commits and the lists, and the first is what the
+    protection's `strict: false` already lands untested (check.yml's CI_SKIP_MAIN_PUSH comment; the restack
+    section's header says why)."""
     for rev in (before, after, up):
         if run(cwd, "cat-file", "-e", f"{rev}^{{commit}}").returncode:
             return False, f"{rev[:12]} is not here"
@@ -460,11 +600,25 @@ def carry_verdict(before, after, up, cwd=None):
         paths = names_between(cwd, f_old, before) | names_between(cwd, f_new, after)
     except RuntimeError as e:
         return False, str(e)
-    lists = sorted(p for p in paths if is_list_file(p))
+    lists = sorted(p for p in paths if carry_exempt(p))
+    by_lines = []
     for p in sorted(paths - set(lists)):
-        if entry_at(cwd, before, p) != entry_at(cwd, after, p) or entry_at(cwd, f_old, p) != entry_at(cwd, f_new, p):
-            return False, f"{p} differs between the two patches"
-    return True, (f"the patch is {before[:8]}'s, list files aside ({', '.join(lists) or 'none'})")
+        if entry_at(cwd, before, p) == entry_at(cwd, after, p) and entry_at(cwd, f_old, p) == entry_at(cwd, f_new, p):
+            continue
+        try:
+            old, new = changed_lines(cwd, f_old, before, p), changed_lines(cwd, f_new, after, p)
+            if old is None or new is None or old != new:
+                return False, f"{p} differs between the two patches ({'a binary file' if old is None or new is None else 'its added or removed lines'})"
+            if not clean_merge(cwd, f_old, f_new, before, after, p):
+                return False, f"{p} differs between the two patches (not what a clean merge onto main's copy makes)"
+            twice = doubled(cwd, before, after, p)
+            if twice:
+                return False, f"{p} lists {twice[0][:80]} twice"
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        by_lines.append(p)
+    lines = f"; {', '.join(by_lines[:8])}{' …' if len(by_lines) > 8 else ''} by its own lines, main's context aside" if by_lines else ""
+    return True, f"the patch is {before[:8]}'s, list files aside ({', '.join(lists) or 'none'}){lines}"
 
 
 def gh_pull(slug, n, tok):
@@ -495,10 +649,10 @@ def gh_open_pulls(slug, tok):
     return out
 
 
-def said_on(slug, n, tip, tok):
-    """True when a finding for this tip is on the PR already (one comment a tip, however many sweeps), and when
-    the comments cannot be read: a failed read must not post the finding again every tick."""
-    mark = RESTACK_MARK % tip
+def said_on(slug, n, mark, tok):
+    """True when a comment holding <mark> is on the PR already (a finding: one comment a tip, however many
+    sweeps), and when the comments cannot be read: a failed read must not post again every tick, nor rerun or
+    red-restack again."""
     for page in range(1, 21):   # oldest first, 100 a page: the mark may sit past the first
         st, items = common.api("GET", f"/repos/{slug}/issues/{n}/comments?per_page=100&page={page}", tok=tok)
         if st != 200 or not isinstance(items, list):
@@ -511,7 +665,7 @@ def said_on(slug, n, tip, tok):
 
 
 def leave(slug, n, tip, tok, text, dry):
-    if dry or said_on(slug, n, tip, tok):
+    if dry or said_on(slug, n, RESTACK_MARK % tip, tok):
         return
     common.api("POST", f"/repos/{slug}/issues/{n}/comments", {"body": f"{RESTACK_MARK % tip}\n{text}"}, tok=tok)
 
@@ -521,9 +675,11 @@ def worktree_of(primary, ref):
     return next((path for path, name, _gd in branches.worktrees(Path(primary)) if name == ref), None)
 
 
-def restack_tree(primary, ref, sha, base, dry):
+def restack_tree(primary, ref, sha, base, dry, red=False, before_push=None):
     """(code, text, new): the rebase and its gates; pushed unless dry. code 0 pushed (or would), 1 refused
-    with a finding for the PR, 2 not judged now (try again; nothing said on the PR)."""
+    with a finding for the PR, 2 not judged now (try again; nothing said on the PR). <red>: the red road's
+    call, for a PR GitHub may not mark DIRTY, so no path need be changed on both sides. <before_push>(new): what
+    must be written before the push (the red road's mark), False to push nothing."""
     up = f"origin/{base}"
     f = run(primary, "fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}",
             f"+refs/heads/{ref}:refs/remotes/origin/{ref}", timeout=180)
@@ -532,10 +688,6 @@ def restack_tree(primary, ref, sha, base, dry):
     if run(primary, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{ref}").stdout.strip() != sha:
         return 2, f"origin's {ref} is not the PR's head {sha[:8]} now: judged at the next pass", None
     lm = Path(__file__).resolve().parent.parent / "bin" / "list-merge"
-    c = subprocess.run([str(lm), "install", primary, "--check"], capture_output=True, text=True, timeout=30)
-    if c.returncode:
-        return 2, ("this clone's merge.union.driver is not list-merge (`list-merge install <repo>`): "
-                   + (c.stdout.strip() or c.stderr.strip())[:200]), None
     # A local branch past the PR's head is work origin lacks: a restack under it would leave that work to a
     # rebase by hand. A worktree on the head itself (the /finish session that readied it, idle or not) loses
     # nothing: its next push is refused as non-fast-forward, never forced, and its own /finish's lease reads
@@ -553,38 +705,92 @@ def restack_tree(primary, ref, sha, base, dry):
     if merges:
         return 1, (f"the PR holds {len(merges)} merge commit(s) ({merges[0][:8]}): a rebase would drop what a merge "
                    f"changed itself, so `/finish` rebases it"), None
+    if red and fork == run(primary, "rev-parse", up).stdout.strip():
+        return 1, f"it is on {up}'s tip already: nothing to restack onto", None
     both = sorted(names_between(primary, fork, sha) & names_between(primary, fork, up))
-    if not both:
+    if not both and not red:
         return 1, "GitHub says DIRTY, yet no path changed on both sides since the fork: not a list file's conflict", None
-    code = [p for p in both if not is_list_file(p)]
-    if code:
-        return 1, (f"a code conflict: {', '.join(code[:8])}{' …' if len(code) > 8 else ''} changed on both sides "
-                   f"since the fork (only {', '.join(LIST_FILES)} restack by themselves): `/finish` rebases it"), None
+    lists = [p for p in both if is_list_file(p)]
+    plain = [p for p in both if not is_list_file(p)]
     tmp = tempfile.mkdtemp(prefix="pr-restack-")
     wt = os.path.join(tmp, "tree")
     try:
         a = run(primary, "worktree", "add", "-q", "--detach", wt, sha)
         if a.returncode:
             return 2, f"no scratch worktree: {a.stderr.strip()[:200]}", None
-        ca = run(wt, "check-attr", "merge", "--", *both)
-        if ca.returncode:   # an attribute that cannot be read is no union: never fail open
-            return 2, f"git check-attr could not be read: {ca.stderr.strip()[:200]}", None
-        attrs = ca.stdout.split("\n")
-        plain = [l.split(":")[0] for l in attrs if l and not l.endswith(": merge: union")]
-        if plain:
-            return 1, f"{', '.join(plain)} not `merge=union` in .gitattributes: list-merge never runs there", None
+        # -z: a path is read whole, whatever it holds (a `: ` in a name would split a line wrong). Read at main's
+        # tip and at the PR's head: each pick merges under the tree it lands on, main's attributes first (round 1's
+        # probe: a `merge=union` main added after the fork union-merged a path read here as plain). A list file
+        # needs union where the rebase meets it, at main's; any other path no attribute at either.
+        attrs = {}
+        for at in (up, sha):
+            if not both:
+                break
+            co = run(wt, "checkout", "-q", "--detach", at)
+            if co.returncode:
+                return 2, f"no checkout of {at[:12]} in the scratch worktree: {co.stderr.strip()[:200]}", None
+            ca = run(wt, "check-attr", "-z", "merge", "--", *both)
+            if ca.returncode:   # an attribute that cannot be read is no answer: never fail open
+                return 2, f"git check-attr could not be read: {ca.stderr.strip()[:200]}", None
+            fields = ca.stdout.split("\0")
+            attrs[at] = {fields[i]: fields[i + 2] for i in range(0, len(fields) - 2, 3)}
+            if any(p not in attrs[at] for p in both):
+                return 2, "git check-attr did not answer for every path", None
+        if both and run(wt, "rev-parse", "HEAD").stdout.strip() != sha:
+            return 2, f"the scratch worktree is not on {sha[:12]} again", None
+        # TODO.md and CHANGELOG.md merge through the clone's driver (union); a LIST_PATHS file carries no attribute,
+        # so git conflicts on it everywhere else and the loop below settles it with list-merge's set merge (round
+        # 3: a union there revived a path main took off the list wherever list-merge was not the driver)
+        not_union = [p for p in lists if p not in LIST_PATHS and attrs[up][p] != "union"]
+        if not_union:
+            return 1, f"{', '.join(not_union)} not `merge=union` in {up}'s .gitattributes: list-merge never runs there", None
+        unioned = [p for p in lists if attrs[up][p] == "union"]
+        if unioned:
+            # the driver is asked for only where a union file needs it (round 3: a red PR with no list file was
+            # held for a driver it never used). Either copy passes: the one beside this `pr` (a suite's scratch
+            # clone installs it) or the main checkout's, which sync.py installs (the landing review: a `pr` run
+            # from a worktree refused a driver installed right)
+            c = subprocess.run([str(lm), "install", primary, "--check", "--here"], capture_output=True, text=True,
+                               timeout=30)
+            if c.returncode:
+                c = subprocess.run([str(lm), "install", primary, "--check"], capture_output=True, text=True, timeout=30)
+            if c.returncode:
+                return 2, ("this clone's merge.union.driver is not list-merge (`list-merge install <repo>`): "
+                           + (c.stdout.strip() or c.stderr.strip())[:200]), None
+        # every other path is merged by git's text merge, as GitHub's own merge would: a union, a custom driver
+        # or `-merge` is a merge GitHub never makes, so the plain merge would not be the judge there
+        driven = sorted({f"{p} (merge={a[p]})" for a in attrs.values() for p in plain if a[p] not in ("unspecified", "set")})
+        if driven:
+            return 1, (f"{', '.join(driven[:8])} changed on both sides, with a merge attribute git's plain merge "
+                       f"does not have: `/finish` rebases it"), None
+        editors = {"GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
         r = run(wt, "-c", "rebase.updateRefs=false", "-c", "rebase.autoStash=false", "rebase", "-q", up,
-                timeout=300, env={"GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"})
+                timeout=300, env=editors)
+        picks = int(run(primary, "rev-list", "--count", f"{fork}..{sha}").stdout.strip() or 0)
+        for _ in range(picks):   # each stop a pick whose only conflicts are LIST_PATHS files: settled as a set
+            if not r.returncode:
+                break
+            stuck = sorted(set(run(wt, "diff", "--name-only", "-z", "--diff-filter=U").stdout.split("\0")) - {""})
+            if not stuck or any(p not in LIST_PATHS for p in stuck) or not all(set_settle(wt, lm, p) for p in stuck):
+                break
+            r = run(wt, "-c", "core.editor=true", "rebase", "--continue", timeout=300, env=editors)
         if r.returncode:
-            stuck = sorted(set(run(wt, "diff", "--name-only", "--diff-filter=U").stdout.split("\n")) - {""})
+            stuck = sorted(set(run(wt, "diff", "--name-only", "-z", "--diff-filter=U").stdout.split("\0")) - {""})
             run(wt, "rebase", "--abort")
+            code = [p for p in stuck if not is_list_file(p)]
+            if code:
+                return 1, (f"a code conflict: {', '.join(code[:8])}{' …' if len(code) > 8 else ''} conflicts under "
+                           f"git's plain merge (only {', '.join(LIST_FILES + LIST_PATHS)} restack by themselves): "
+                           f"`/finish` rebases it"), None
             return 1, (f"the rebase onto {up} stopped" + (f" in {', '.join(stuck)}" if stuck else "")
                        + f": `/finish` rebases it ({(r.stderr or r.stdout).strip()[:160]})"), None
         new = run(wt, "rev-parse", "HEAD").stdout.strip()
         if not names_between(wt, up, new):
             return 1, f"nothing of the PR is left once on {up}: its work is on main already", None
-        g = run(wt, "--literal-pathspecs", "grep", "-n", "-E", MARKER_RE, "HEAD", "--", *both)
-        if g.stdout.strip():
+        # the list files only: a driver ran there; a plain merge that is clean writes no markers, and a README's
+        # setext `=======` underline is text, while a line of the PR's own the merge changed fails the carry below
+        g = run(wt, "--literal-pathspecs", "grep", "-n", "-E", MARKER_RE, "HEAD", "--", *lists) if lists else None
+        if g is not None and g.stdout.strip():
             return 1, f"conflict markers after the rebase: {g.stdout.strip().split(chr(10))[0][:160]}", None
         todo_md = lm.parent / "todo-md"
         if os.path.isfile(os.path.join(wt, "TODO.md")) and todo_md.is_file():
@@ -592,7 +798,7 @@ def restack_tree(primary, ref, sha, base, dry):
                                capture_output=True, text=True, timeout=120)
             if l.returncode:
                 return 1, f"`todo-md lint . --base {up}` fails on the rebased tree: {(l.stdout + l.stderr).strip()[:300]}", None
-        for p in both:
+        for p in lists:
             if os.path.basename(p) == "CHANGELOG.md":
                 was = run(wt, "show", f"{sha}:{p}").stdout
                 now = run(wt, "show", f"{new}:{p}").stdout
@@ -602,8 +808,13 @@ def restack_tree(primary, ref, sha, base, dry):
         same, why = carry_verdict(sha, new, up, cwd=wt)
         if not same:
             return 1, f"the rebased patch is not the PR's: {why}", None
+        merged = "; ".join(x for x in (f"list-merge: {', '.join(lists)}" if lists else "",
+                                        f"git's plain merge: {', '.join(plain[:8])}{' …' if len(plain) > 8 else ''}"
+                                        if plain else "") if x) or "no path changed on both sides"
         if dry:
-            return 0, f"would push {sha[:8]} → {new[:8]} (merged by list-merge: {', '.join(both)})", new
+            return 0, f"would push {sha[:8]} → {new[:8]} ({merged})", new
+        if before_push is not None and not before_push(new):
+            return 2, f"the mark for {new[:8]} could not be written on the PR: nothing pushed", None
         # the push shape /finish's step 11 makes, from the repo itself so its pre-push guard reads the ref
         p = run(primary, "push", "-q", f"--force-with-lease=refs/heads/{ref}:{sha}", "origin",
                 f"{new}:refs/heads/{ref}", timeout=180)
@@ -614,12 +825,37 @@ def restack_tree(primary, ref, sha, base, dry):
             run(primary, "update-ref", f"refs/heads/{ref}", new, sha)
         note = (f"; its worktree {path} is on the old tip: `git -C {path} reset --keep origin/{ref}` before working there"
                 if path else "")
-        return 0, f"pushed {sha[:8]} → {new[:8]} (merged by list-merge: {', '.join(both)}){note}", new
+        return 0, f"pushed {sha[:8]} → {new[:8]} ({merged}){note}", new
     finally:
         if os.path.isdir(wt):
             run(primary, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
         run(primary, "worktree", "prune")
+
+
+def set_settle(wt, lm, path):
+    """Settle a rebase's conflict in a LIST_PATHS file with list-merge's set merge of its three stages (base, ours:
+    the tree being built on main, theirs: the pick) and stage the result. False when a stage is missing (added or
+    deleted on one side) or list-merge does not settle it: the rebase is refused, never guessed."""
+    stages = []
+    for n in (1, 2, 3):
+        r = subprocess.run(["git", "--literal-pathspecs", "show", f":{n}:{path}"], cwd=wt, capture_output=True, timeout=60)
+        if r.returncode:
+            return False
+        stages.append(r.stdout)
+    tmp = tempfile.mkdtemp(prefix="pr-settle-")
+    try:
+        names = [os.path.join(tmp, x) for x in ("o", "a", "b")]
+        for name, data in zip(names, stages):
+            with open(name, "wb") as f:
+                f.write(data)
+        m = subprocess.run([sys.executable, str(lm), *names, path], capture_output=True, timeout=60)
+        if m.returncode:
+            return False
+        shutil.copyfile(names[1], os.path.join(wt, path))
+        return run(wt, "--literal-pathspecs", "add", "--", path).returncode == 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def own_logins(tok):
@@ -681,6 +917,155 @@ def never_ran(slug, sha, contexts, tok):
 CI_MARK = "<!-- wharf-runs check --ci -->"
 
 
+def iso_epoch(text):
+    """An API time (`2026-11-04T12:00:00Z`) as an epoch, or None."""
+    try:
+        return datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def red_checks(slug, sha, contexts, tok):
+    """The required contexts that failed on sha, each (context, when its run was made as an epoch or None, the
+    Actions run id or None, whether it tests the head); [] when none failed or any is still running (a push would
+    cancel it: round 2 of the build review, check red while check-linux ran; round 3, a status whose rerun runs);
+    None when a run's making cannot be read now. Failed is RED_CONCLUSIONS: a cancelled run is someone's choice.
+
+    A check run (check.yml's `check`) tests GitHub's merge ref, made at the event: its time is the Actions run's
+    `created_at`, which a rerun keeps (round 1: a hand rerun after main's fix read as "not moved"). A status
+    (check-linux, from its workflow or CircleCI) tests the PR's head itself (check-linux.yml checks out
+    `pull_request.head.sha`), so no time says what it saw: red_road judges it by the PR's fork (round 3)."""
+    import urllib.parse
+    out = []
+    for ctx in contexts:
+        q = urllib.parse.quote(ctx, safe="")
+        st, body = common.api("GET", f"/repos/{slug}/commits/{sha}/check-runs?check_name={q}&per_page=20", tok=tok)
+        if st != 200 or not isinstance(body, dict):
+            return []
+        r = next((x for x in body.get("check_runs") or [] if isinstance(x, dict) and x.get("conclusion") != "skipped"), None)
+        if r is not None:
+            if r.get("status") != "completed":
+                return []
+            if r.get("conclusion") in RED_CONCLUSIONS:
+                m = RUN_ID_RE.search(str(r.get("details_url") or ""))
+                made = iso_epoch(r.get("started_at"))   # without an Actions run, the check run's own start
+                if m:
+                    made, state, _ = run_made(slug, m.group(1), tok)
+                    if made is None:
+                        return None
+                    if state != "completed":
+                        return []
+                out.append((ctx, made, m.group(1) if m else None, False))
+            continue
+        st, body = common.api("GET", f"/repos/{slug}/commits/{sha}/status?per_page=100", tok=tok)
+        if st != 200 or not isinstance(body, dict):
+            return []
+        x = next((x for x in body.get("statuses") or [] if isinstance(x, dict) and x.get("context") == ctx), None)
+        if x is None or x.get("state") not in ("success", "failure", "error"):
+            return []   # not reported yet, or pending: still running
+        if x.get("state") != "success":
+            m = RUN_ID_RE.search(str(x.get("target_url") or ""))
+            if m:   # a rerun of the run behind it posts nothing until it ends: ask the run itself
+                made, state, concl = run_made(slug, m.group(1), tok)
+                if made is None:
+                    return None
+                if state != "completed":
+                    return []
+                if concl == "cancelled":
+                    # check-linux's gather posts `failure` for a cancelled run too: a cancel is someone's choice,
+                    # never red (the landing review); a timed-out run ends `failure` and stays red
+                    continue
+            out.append((ctx, None, m.group(1) if m else None, True))
+    return out
+
+
+def run_made(slug, run_id, tok):
+    """(the Actions run's `created_at` as an epoch, its status, its conclusion), or (None, None, None) when GitHub
+    does not say."""
+    st, body = common.api("GET", f"/repos/{slug}/actions/runs/{run_id}", tok=tok)
+    if st != 200 or not isinstance(body, dict):
+        return None, None, None
+    return iso_epoch(body.get("created_at")), body.get("status"), body.get("conclusion")
+
+
+def red_road(slug, tok, n, ref, sha, base, primary, red, dry):
+    """(code, line) for a PR whose required check is red. Stale (red_checks says how each context is judged):
+    restacked onto main to a new tip, never a rerun, which would replay what main has moved past; on a tip a red
+    restack made or tried, nothing more. Otherwise its failed jobs rerun once a run (a flake). Main's tip landed at its committer time: GitHub's rebase-merge writes the
+    merge time there (read on origin/main: `github-actions[bot]`), and a commit pushed by hand later than it was
+    made reads as older, which sends it to the rerun road, the cheap side."""
+    names = ", ".join(c for c, _, _, _ in red)
+    # the head too: one pushed from another host is not here yet, and its fork would read as behind (the landing
+    # review: a PR on main's tip sent to the restack road)
+    f = run(primary, "fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}",
+            f"+refs/heads/{ref}:refs/remotes/origin/{ref}", timeout=180)
+    if f.returncode:
+        return 2, f"#{n} {ref}: not now — fetch failed: {f.stderr.strip()[:200]}"
+    try:
+        landed = int(run(primary, "log", "-1", "--format=%ct", f"origin/{base}").stdout.strip())
+    except ValueError:
+        return 2, f"#{n} {ref}: not now — origin/{base} has no commit time here"
+    made = [t for _, t, _, head in red if t is not None and not head]
+    tip = run(primary, "rev-parse", f"origin/{base}").stdout.strip()
+    fork = run(primary, "merge-base", f"origin/{base}", sha).stdout.strip()
+    if tip and not fork:
+        return 2, f"#{n} {ref}: not now — its head {sha[:12]} has no fork with origin/{base} here"
+    behind = tip and fork != tip
+    # a merge-ref run made before main's tip landed, or a head-tested one on a head behind main, saw an old main
+    stale = (made and landed > min(made)) or (behind and any(head for _, _, _, head in red))
+    why = f"its required check ({names}) failed on a base {base} has since moved past"
+    if stale:
+        if said_on(slug, n, RESTACK_RED % sha, tok):
+            return 1, (f"#{n} {ref}: red — {why}, on a tip a red restack made already: its own fix comes first "
+                       f"(a push of the PR's own is restacked again)")
+        if said_on(slug, n, RESTACK_RED_FROM % sha, tok):
+            # its push failed after the mark (a guard, a credential): one try a tip, never a comment a tick
+            return 1, f"#{n} {ref}: red — {why}; a red restack of this tip was tried already: its own push comes next"
+
+        def mark(new):   # the bound's marks before the push, both tips: a lost one would repeat the act
+            st, _ = common.api("POST", f"/repos/{slug}/issues/{n}/comments", {"body": (
+                f"{RESTACK_DONE % new} {RESTACK_RED % new} {RESTACK_RED_FROM % sha}\n**pr restack:** {why}, so it "
+                f"is rebased onto `{base}` and pushing as {new[:12]}. The check runs on the new head; a red there is "
+                f"the PR's own (no second red restack of that tip).")}, tok=tok)
+            return st == 201
+        try:
+            code, text, new = restack_tree(primary, ref, sha, base, dry, red=True, before_push=mark)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return 2, f"#{n} {ref}: not judged ({type(e).__name__}: {str(e)[:200]})"
+        if code == 1:
+            leave(slug, n, sha, tok, f"**pr restack: not restacked.** {why[0].upper() + why[1:]}, and {text}.\n\n"
+                  f"Head {sha[:12]}; the next push to the branch is judged again.", dry)
+            return 1, f"#{n} {ref}: refused — {why}, and {text}"
+        return code, f"#{n} {ref}: " + ("restacked — " if code == 0 else "not now — ") + f"{why}: {text}"
+    since = (f"its run was made after {base} last moved" if made
+             else f"its head is on {base}'s tip" if not behind else "when its run was made cannot be read")
+    ids = sorted({r for _, _, r, _ in red if r})
+    if not ids:
+        return 1, f"#{n} {ref}: red ({names}): {since}, and no Actions run to rerun: its own fix comes first"
+    fresh = [i for i in ids if not said_on(slug, n, RESTACK_RERUN % i, tok)]
+    if not fresh:
+        return 1, f"#{n} {ref}: red ({names}) after its rerun was asked: its own fix comes first"
+    if dry:
+        return 0, f"#{n} {ref}: would rerun the failed jobs of run {', '.join(fresh)} ({names}): {since}"
+    done = []
+    for i in fresh:
+        # the mark first: a rerun whose mark could not be written would be asked again every tick
+        st, _ = common.api("POST", f"/repos/{slug}/issues/{n}/comments", {"body": (
+            f"{RESTACK_RERUN % i}\n**pr restack:** the required check ({names}) failed on {sha[:12]}, and {since}, "
+            f"so a rerun of its failed jobs is asked, once (run {i}); a red after it is the PR's own.")}, tok=tok)
+        if st != 201:
+            return 2, f"#{n} {ref}: not now — the rerun's mark could not be written (HTTP {st})"
+        st, _ = common.api("POST", f"/repos/{slug}/actions/runs/{i}/rerun-failed-jobs", {}, tok=tok)
+        if st not in (200, 201, 204):
+            # said on the PR, so its mark does not read as a rerun done; never asked again (it would refuse again)
+            common.api("POST", f"/repos/{slug}/issues/{n}/comments", {"body": (
+                f"**pr restack:** GitHub refused the rerun of run {i} (HTTP {st}); it is not asked again: rerun it "
+                f"by hand, or push a fix.")}, tok=tok)
+            return 1, f"#{n} {ref}: the rerun of run {i} was refused (HTTP {st}); said on the PR, not asked again"
+        done.append(i)
+    return 0, f"#{n} {ref}: rerun — the failed jobs of run {', '.join(done)} ({names}): {since}"
+
+
 def held(p):
     """The PR carries the `hold` label: it lands by the owner's tap, so its head is theirs to review, never rewritten."""
     return any(isinstance(l, dict) and l.get("name") == common.HOLD["name"] for l in p.get("labels") or [])
@@ -706,7 +1091,9 @@ def restack_one(slug, tok, n, base, primary, dry=False, logins=None):
     if held(p):
         return 1, f"#{n} {ref}: labelled `{common.HOLD['name']}`, it waits for the owner's tap: left alone"
     state = p.get("mergeable_state")
-    if state != "dirty":
+    # dirty: a conflict; blocked: a required check red (or running, or a review owed); behind: a strict base. Any
+    # other state is mergeable with its required checks green, or not judged yet: nothing to do
+    if state not in ("dirty", "blocked", "behind"):
         return 0, f"#{n}: nothing to do (GitHub says {state or 'nothing yet'})"
     logins = own_logins(tok) if logins is None else logins
     if logins is None:
@@ -714,6 +1101,17 @@ def restack_one(slug, tok, n, base, primary, dry=False, logins=None):
     author = (p.get("user") or {}).get("login") or ""
     if author not in logins:
         return 1, f"#{n} {ref}: opened by {author or 'an unknown login'}, not this token's login or the machine account: left alone"
+    contexts = common.required_contexts(slug, base, tok) or ["check"]
+    red = red_checks(slug, sha, contexts, tok)
+    if red is None:
+        return 2, f"#{n} {ref}: not now — a red run's making could not be read from GitHub"
+    if red:
+        try:
+            return red_road(slug, tok, n, ref, sha, base, primary, red, dry)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return 2, f"#{n} {ref}: not judged ({type(e).__name__}: {str(e)[:200]})"
+    if state != "dirty":
+        return 0, f"#{n}: nothing to do (GitHub says {state}, and no required check is red)"
     wait = checks_settled(slug, sha, base, tok)
     if wait:
         return 2, f"#{n} {ref}: not now — {wait}"
@@ -728,10 +1126,10 @@ def restack_one(slug, tok, n, base, primary, dry=False, logins=None):
     if code == 0 and not dry:
         # the carry is said only where this repo's check.yml has one (regatta's; the template has none)
         wf = run(primary, "show", f"origin/{base}:.github/workflows/check.yml").stdout
-        tail = (" Only list files changed, so check.yml carries the last green (`pr carry`)." if "pr carry" in wf
-                else " Only list files changed; this repo's check runs again on the new head.")
+        tail = (" The PR's own lines are unchanged bar the lists, so check.yml carries the last green (`pr carry`)."
+                if "pr carry" in wf else " This repo's check runs again on the new head.")
         common.api("POST", f"/repos/{slug}/issues/{n}/comments", {"body": (
-            f"{RESTACK_DONE % new}\n**pr restack:** rebased onto `{base}` with list-merge and pushed, {text}.{tail}")},
+            f"{RESTACK_DONE % new}\n**pr restack:** rebased onto `{base}` and pushed, {text}.{tail}")},
             tok=tok)
     return code, f"#{n} {ref}: " + ("restacked — " if code == 0 else "not now — ") + text
 

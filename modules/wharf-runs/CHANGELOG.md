@@ -2,8 +2,38 @@
 
 ## Unreleased
 
+- `dispatch-queue`: no host claims a landing (a `finish` entry) below `normal` priority (landing-floor, 2026-11-06).
+  A `low` finish stays queued and the listing says why and how to lift it (`autofinish-run <worktree> --priority
+  high`); a landing takes a normal run slot, and builds keep no floor.
+- dispatch: a drawn GPT arm's step no longer inherits its session's login label (which pinned it to a host with no codex),
+  unless the primary may not run the repo; a vendor fallback the queue did not take waits rather than dropping the entry.
+
+- Vendor pre-flight fallback preserves hard pins, including login and held-worktree pins: changing to Claude never lets another host claim a build pinned elsewhere. A vendor-only pinned host leaves its fallback queued.
+
+- `autofinish-run`: a branch entry stored as `null` in `lander.json` refuses automatic starts as unreadable,
+  including before the origin gate moves a tree on a newer tip. Only a missing key reads as an empty entry;
+  a person's start and a claim using another host's store retain their existing behavior.
+
+- `wharf-runs-pickup` is back on the Linux list (runner-lsof, 2026-11-06): the self-hosted runners' image has `lsof` (reinstalled by hand, read back on all 13), so `test_pickup` and `test_seed_from` rejoin `LINUX_OK`, the shard rejoins `.github/ci/linux-ids` and CircleCI's matrix, and test_shards expects eight Linux shards.
+
+- A `--next` no longer inherits a login that lends to its repo (lighthouse's lend bar, 2026-11-05): where `account
+  limits LABEL --repo`'s `lends` is true, the step walks (auto), on both roads, so past the bar another repo's work
+  moves on rather than wait there for the week's reset. A typed `--account` rides as typed.
+- GPT coin builds refuse `--if-room` before enqueue or schedule, as explicit Codex builds do: the flag judges Claude's week and must not hold vendor work on a Claude login.
+
 - Owner peer counts resolve custom builder host names through the owner's local fleet-ssh binding, so `make --host` keeps the configured builder cap and leaves room for owner runs. Peer-supplied host names and caps remain ignored.
 
+- The vendor road's landing review (S8): a review turn is a plain `codex exec` under the read-only rewrite, as `codex exec
+  review` ignores the format it is given; a `NO_FINDINGS` trailer passes; the fix turn carries the failing commands and log
+  tails; a check's exit 3 is green with a note and its exit 2 holds the build; `Held` decides a hold, never a word in the
+  text; a run's note reaches the first turn; a `Review: finish only` brief runs the check alone; a blip before any turn
+  writes no rotation row; a failed turn keeps the vendor's words; a crashed pre-flight is a wait; a drawn GPT word stays on
+  the coin for a brief of its size on a row without the live odds; `dispatch --status` reads a vendor run. Round 6: a review
+  turn's base profile is `:read-only`, as `:workspace` grants the cwd whatever its entry says; only `turn.failed` fails a
+  turn; a hold is the last line, never a mention, and precedes the dirty-tree refusal; a turn that commits nothing is a
+  failure; the run keeps its mode and task for `--next`; a merge with no conflict is a wait; a fallback clears a pin.
+  Round 7: a reviewer's report with no verdict and no word is asked for again in one short turn, as a clean report in
+  prose is the common shape.
 - `check` never holds a PR `/finish` launched (check-ci-default's landing review, 2026-11-06): with CI the default, a plain
   check on a ready, curated, unheld PR labelled it `hold` again, which nothing took off; now its own head is only waited on,
   and a newer local tip falls back to the local line, naming `pr hold`.
@@ -19,6 +49,10 @@
   `-finish-queue` cannot disappear on a failed read. Host samples advertise grants with negations applied,
   keeping the host row valid when finishes are disabled; unreadable features are reported as unknown.
 - `builder-host check` uses enforcement's run-cap parser, so comments cannot hide an invalid live row or misreport a narrowed cap; normalized host names and live precedence agree with dispatch.
+- Landing preflights in the sweep and dispatch's completed-build handover use finish picks too,
+  so a login between its build and finish ceilings reaches the launcher. Build `--if-room` checks
+  retain their normal ceiling and a separate cached verdict. The typed handoff test expects the finish marker.
+
 - The Engine room's S4 (docs/engine-room-2026-11-02.md), the page's queue verbs: `dispatch-queue repin QID HOST|any
   [--dry-run]` pins a queued fleet entry to a host (a typed pin, as `--pin` writes) or unpins it, refused to an
   unattended caller, for a scope's store, an entry not queued (a finish's tombstone included) or held for a live run
@@ -50,6 +84,17 @@
   refused); a peer leg marked `DISPATCH_CANCEL_BY` exits 5 for an entry refused, which its sender reads as 2, apart from
   any dispatch's usage or no-repo 2; `--cancel --on HOST` keeps the local fleet judgement's refusal. Cases in `tests/test_queue.sh`.
 
+- A GPT arm cancelled at fire skips vendor pre-flight and uses its Opus fallback. Any vendor fence refusal during a coin draw's pre-flight also falls back (exit 3), including a public repo; typed Codex harness and GPT model selections keep exit 2.
+
+- The vendor road's landing review fixes, round 2: run-vendor's pre-flight probes the worktree's lock and live owner, so a wait hands the entry back before it is marked started, and a race past it ends in the cap's waiting words with the entry kept (exit 4); a registry that does not walk is a wait too; a typed vendor refusal's FAILED line is run-vendor's verdict alone, never a peer's stderr note before it; a GPT arm cancelled at fire on a brief now principal runs the Claude principal build at its own model and effort; a failure before any commit queues its Claude retry with the run's skipper, mode, depth, note and origin, without the codex need; a typed codex run requeued from its record comes back a codex build (`entry_of_record`). Round 3: a wait on the real call hands the claimed entry back queued (it was removed by the sweep's end), and any fence or pre-flight refusal there is such a wait, the next fire's pre-flight deciding; a cancelled arm keeps the model its tier gave it; `--harness codex`'s parse-time refusals end a fired job's entry and plist (`codex_refuse`); the launcher lock is released before `--next`, whose pre-flight probes it. Round 4: a Tier line's tier word decides the GPT class alone (an architect or main brief naming Opus keeps its Claude route); a launcher failure before any vendor turn (a fetch) is a wait, exit 4; the fallback's login pick refuses as the main road does; `--next` reads only this topic's own brief name.
+- The vendor road's landing review fixes: a typed `--harness codex` names its codex need the harness's own, so a pre-flight fallback to Claude drops it; a typed yolo or dnd with codex is refused and an inherited one dropped (a GPT arm's too); an ended held, cap or failed run frees its worktree's lock; a merge of main that conflicts is aborted and the run held; a stop (`--end`, `--requeue`, a signal) asks no Claude retry and keeps its reason; a refusal a wait fixes (a torn registry, a live launcher) exits 4 in the cap's waiting words; an edit of the builder's own brief schedules no `--next`; a refused `--next` no longer crashes the launcher; vendor rows carry their brief class.
+
+- Vendor dispatch reserves its host slot through launcher preflight. A fallback keeps caller-required host features, bar codex (only a codex builder row has it, and it has no Claude login); a code reviewer's NO_FINDINGS reads as []. A vendor turn holds on a checkout with a `.codex/` path or a builder home whose hooks.json holds any hook but regatta's PreToolUse handler; a confidential scope name holds at least what the publish gate holds (5+ characters anywhere, a shorter one at a token's start); run-vendor merges the main checkout's main (workflow.json's `main`); the house WAITING line holds with no name, a spaced or an accented one; a check refused under load runs once more; a principal next-step brief no longer fails the review; a turn keeps its DISPATCH_DEPTH; `--harness codex` takes no `--if-room`; a typed codex dry run names the model it will run; cross-vendor reviews read spaced and split-line feature lists. Origin checks match only the current topic's review, and zero-Claude-weight builds read bulleted Tier lines with the shared brief parser so each GPT arm keeps its size.
+
+- Vendor launchers accept an abandoned worktree owner after the shared lease TTL, while the advisory launcher lock still excludes a live run. Checks and continuation keep the skipper, ship and relay address without carrying the old fired job's identity into the next step.
+
+- Vendor review fixes: launchers mark checks unattended so they read main's contract; a check-only fix needs a fresh review, including at the round cap. A committed next brief is dispatched with its branch while the launcher still owns the worktree. Launcher merges no longer suppress a separate Claude retry after a vendor fails before committing.
+
 - The builder sign-in retry preserves the selected owner, so running make through another administrator's sudo cannot switch whose configuration it copies.
 
 - A feature-restricted GUI host keeps its run cap and can claim eligible builds without a builder receipt; only a user-domain restriction or an existing receipt requires builder state.
@@ -67,6 +112,10 @@
 
 - `check --ci` marks a checkpoint draft's body before readying it, keeping later CI checks able
   to merge a newer main without mistaking the build PR for a curated landing.
+- Finish picks carry `--for finish` and an internal one-use receipt, on autofinish-run's direct and
+  claimed queue roads, its cached retry, and dispatch's auto and bound start picks. Dispatch consumes
+  its receipt before the session starts, so a later build inherits no finish allowance.
+
 - `check --ci` records ownership of the `hold` it adds; `/finish`'s `pr ready` releases it during
   curation so automerge can finish after a CI wait times out. A pre-existing manual hold stays owned by its owner.
 - `check --ci` returns red immediately for a failed required context, even when another is pending
@@ -90,13 +139,30 @@
   accepts `--list-shards` and `--shard NAME` (off macOS still `LINUX_OK`'s suites only;
   `WHARF_RUNS_LINUX_PROOF=1` runs a shard whole, to prove it). The check line names the suite once;
   share.sh splits it into ten `wharf-runs-<shard>` ids. Eight passed on GitHub's ubuntu (#500);
-  seven joined the Linux list and `LINUX_OK`, and `pickup` (until its runners have `lsof`), `queue` and `macos`
+  eight joined the Linux list and `LINUX_OK` (`pickup` after its runners got `lsof`, runner-lsof), `queue` and `macos`
   stay in the Mac share. `share.sh whole` runs the suite once, in its lanes, not shard by shard.
+
+- `autofinish-run`: an inherited hold survives a retry that dispatch refused or whose waiter could not detach
+  (stuck-ships S1). Those starts record `never-started` at a refused gate, which previously lost the died run's
+  hold at the next retry. A record carries a hold only where it was carried (`hold_from`: a chain or lander relaunch,
+  a retry, a lander's own hold that is no mode ask), whether or not the retry's own judgement also holds, until a
+  person's typed or merge launch; a hold a run judged by the mode's ask is judged again, so a mode raised since is
+  read. A stuck key or a dead road tombstones a claim's tip `failed` only for a lander's claim of this host's own put
+  (`claim_final`); another launch it refused is handed back, so `lander reset` lets it go again. Cases record repeated dispatch refusals through
+  `record()`, repeat failed detaches through `give_back()`, and check the retry's prompt and the person's release.
 
 - The builder coin's and the finisher's rotation fences ask the core's `scope_rotates` (scope-rotation, 2026-11-04): a
   confidential scope draws unless it says `"rotation": false` (the owner: one scope opts out, the others draw); a `rotation` that is no
   bool fences. Each rotation row (`builder-rotation.jsonl`, `finisher-rotation.jsonl`) carries `scope` and `confidential`, and
   `autofinish-run rotation` counts a rotating confidential scope's rows.
+
+- Message peers for hail (node-hail): `bin/message_peers.py` adds the fleet hosts ref's fresh bare names (`dispatch-queue
+  hosts get --cached`, no fetch), `wharf-runs/kick-ssh` and the node folders' aliases to the configured `wharf-runs/ssh`
+  peers, so direct hails and mailbox pulls reach nodes with no node on `wharf-runs/ssh` and no change to placement. An
+  added name that is a confidential scope's yard or own node (the core's `nodes_here`, `<scope>-agent`) is skipped by
+  automatic walks, and so is a host whose fleet row is torn or carries a `scope` marker that is no open scope here, however old the row; a node folder whose `scope` names no open scope here is blocked, and a builder user's row (`builder: true`) is added only by a configured alias; a kick alias alone is added only while a fresh, unmarked row vouches for it (a sample up to 5 min ahead of the reader's clock reads fresh); a registry, yard or node folder that does not read drops every added name; an explicit `--host`
+  keeps its exception. Mail pulls reserve their settle time; the generated ssh bundle carries the core locator, and its
+  peer half judges the sender's transmitted fence verdict (a typed `--peer-half` still judges its own cwd).
 
 - A capable non-Mac host now meets `finish-queue` without a feature line: the loaded autofinish schedule,
   publish gate's word list and `/finish` in every login dir are checked by the same function as `install.sh --check`,
@@ -115,11 +181,20 @@
   tight); a build asks only at `--priority` high or force, a finish at any of its ranks (normal up; the owner, 2026-11-05). The pick only decides; dispatch logs it with `account overdraw-log` once the session began, its own pick's
   object or the one autofinish-run hands its `dispatch --start` (ACCOUNT_OVERDRAW_PICK, never passed to a session),
   and says so in an `== overdraw:` line.
+- A node's Orca refusal and its Linux suite (yard-orca-serve, 2026-11-05; on the orca adapter's Linux road below): on
+  Linux, `wharf apply`'s gate and `harness run`'s "Orca is not running here" (not yet `wharf status` or the per-pass reads: TODO.md [orca-hint-rest]) names the headless server and its host (`systemctl --user
+  start orca-serve`; installing it, `modules/wharf-runs/bin/orca-serve-agent here`, is the owner's) instead of the Mac's app, and `harness run` with no
+  `orca-ide` on PATH says so on its own; a Mac's words are unchanged, both callers' now from `not_running_hint(caller, machine)`.
+  `HARNESS_ORCA_PROC` stands in for `/proc`. `tests/test_orca_runtime.sh` (on the Linux list, as test_harness's argv
+  cases are not): each OS's road and every refusal's whole words through the adapter, and wharf's own gate, with
+  stand-ins for pgrep, orca, orca-ide and the process table. docs/yard-orca-serve-2026-11-05.md.
 - pickup: past `run()`'s refused-exec answer (126/127, the `run()` entry below), three of pickup's four `ps` calls go
   through `ps()`, None when ps cannot run (`own_outputs` keeps its own guard) (sandboxed-seed; docs/sandboxed-seed-2026-11-04.md): `running()` reads a live pid whose start it cannot read
   (ps refused, timed out, or blank with exit 0) as running, and a blank with exit 1 (no such process) as gone (as an entry with no `procStart`: the session
   lock it gates stays held), and the VS Code walks read as no window and the PATH's `code`. The seed path's own fences
   read no `ps`; the tests' `ps_refused.py` refuses every `ps` with EPERM and shows each still refusing, the seed laying.
+- Codex builders (Argon S8, ahead of S4): `run_vendor` drives one fenced conversation through build, fresh reviews, verified fixes and checks; the launcher owns Git network steps, the lock and PID record, provider token totals and the end row. `build-review review --cli codex|antigravity` adds the CLI review verb (Antigravity is the S4 seam). Two Sol arms, `gpt-big` at xhigh and `gpt-mid` at high, widen default odds to 1:2:2:1:1; named and positional values read. Zero Claude weights route worker/Sonnet and sr-worker/Opus briefs to their matching GPT size, preserving principal tiers and restoring the old rule with any positive Claude weight. `builder-user codex` shares the trusted source user's plan login without copying the Homebrew CLI. Vendor checks leave the two landing-only commands to /finish; fallback entries return to the fleet and never enter arm samples. Principal tiers are refused again at fire time; a failure before any commit queues its separate Claude retry only after the current claim ends.
+
 - The builder coin's third arm, Gemini 4 Argon (S3 of docs/argon-builder-arm-2026-11-03.md): `buildercoin.py`'s `ARMS`
   gain an `agent` column (`claude`, Argon's `antigravity`) and `argon-high`; the word's one grammar is its
   `WORD_GRAMMAR` (`buildercoin.py grammar`), the coin 0 to 2, and dispatch's two tests and dispatch-queue's
@@ -154,10 +229,13 @@
   `TF_VAR_*` only, from the node's secrets file. The guest's Node and Orca installers pick their build by `uname -m`,
   the arm64 Node pinned by its own sha256. A stand-in user-data (a render that refused, for a recorded instance)
   applies only through a saved plan that creates no instance; a region with more than one availability domain is refused.
+- A done build hands its landing over without asking: dispatch reads its changed docs, accepts an idle ending, a legacy landing-only D-item or a wait solely for a step stamp (waived only when the Course doc is not on the branch, or the ⏳ line names that doc and step and keel reads it as wip; an unstarted, blocked or missing step always holds; a landing question counts only where the branch added it), and checks that origin holds the exact tip. Real asks, warnings, review holds and unfinished waits still stop it. The finish prompt removes obsolete landing questions and names owed doc/step stamps in the PR. Every refusal records what would make it land for helm's card; the build prompt and scheduling skill forbid landing questions.
+- A question the build relayed and nobody answered holds its hand-over on any ending, its doc changed or not. A done `default` or `ask` build with no hand-over (the landing switch off at its start) records that in its run, so helm cards it for `/finish`.
 - `autofinish-run` no longer lets the landing ladder pin a mode or hand-over finish to a host that cannot claim one:
   where this host lacks `finish-queue` (off a Mac with no feature line), that pin is dropped, the entry goes to the
   fleet, and a hold the ladder judged here rides in its rights as a ready PR. A node's handed landing waited for a
-  person before (principal tier S4, 2026-11-04). A typed `--on here`, a ship, a brief and a chain that resolved to
+  person before (principal tier S4, 2026-11-04). A typed `--on here`, a ship, a brief, a lander (its caps stay in this
+  host's `lander.json`) and a chain that resolved to
   another launch stay pinned and still wait there (TODO.md [finish-ladder]), as does dispatch-queue's own pin at the
   put (`held_here`).
 
@@ -293,6 +371,34 @@
   here (pickup's `if scope:` road reads no brief through keel): the fire path judges it as it fires. On exit 4
   `--next` refuses with the cap's waiting words and pickup with the fix named.
 
+- stuck-ships S1, the lander's record (docs/stuck-ships-2026-10-31.md): `autofinish-run --by lander --road
+  refinish|login|limit|stand`, the road a stopped branch's next move takes, each lifting today's same-tip refusal
+  only while its predicate holds — a ready DIRTY PR with no `hold` label on this worktree's HEAD after main moved
+  past it (a launched run, a ready no-landing stop or G11), a login failure, a usage-limit end past the reset its login
+  recorded, a G4 stop whose items stood, never taken by keel yolo (judged on the stop, never on a refused start's record). Judged in order: a
+  `stuck` key or a store that does not read (refused for every start that is not a person's), a run not ended (a wait, exit 3), the road's cap (exit 9), the predicate (exit 8 when it can never hold:
+  a `hold` label, no exhaustion row, no D-list doc), then the same-tip test. One store per Mac, `lander.json` in autofinish's state
+  dir, keyed `<repo>/<branch>`, every write under its flock: the caps (re-finishes 2, a relaunch per class 1, reruns 2,
+  rounds 1), the same-tip refusals per tip (logged once an hour, never into `autofinish.json`), the lander's hold and
+  the state. A road is spent before the run's state is written (a store that does not write refuses the start) and
+  refunded on a refusal, one dispatch made after an unconfirmed verdict included, so every exit-0 verdict
+  spends it; each text a lander start is refused with is logged once an hour; a person's
+  start (typed, or with `--merge`, no unattended caller) resets the counts. `autofinish-run lander show|hold|lift|
+  stuck|reset|spend|armed` are the store's verbs for the tick, `pr stuck` and the finish (S3–S5). A lander start lands
+  as a typed `/finish` (task-shape D1-C), judged as `handed` is at its start and at `pr`'s re-judge, held again where
+  the stopped run was held, the mode is `ask` or unreadable; on finish-as-task's road it is a fleet finish pinned to its host, as `handed` is
+  (its caps that host's `lander.json`), its entry naming `road` and the `land_by` its put judged (dispatch-queue's
+  `finish_bad` reads both; a claim keeps a flag only where its own judgement agrees), the put spending nothing and
+  the claimed start spending the road; the queue lets it past the tombstone of its own tip only when that stop ran on
+  the putting host and was no cancel (`tomb_holds`), and the migration of `_land` carries its road and flag; it keeps a chain relaunch `lander`, and carries
+  `--yolo`/`--dnd` through the record's new `land_by` while the branch's mode still says so (as does the sweep's retry
+  of a died one). The record also gains `automerge`, the PR's auto-merge request at the run's end, and `road`. Cases:
+  `tests/test_lander.sh` (Linux eligibility awaits a recorded pass there), the lander's in `tests/test_finish_queue.sh`.
+  The stand road reads nested Markdown docs as keel's stand sweep does and accepts only consecutive commits with
+  `Stood-By: autofinish` and Markdown changes, including set Status stamps without D-items. Every died lander retry
+  keeps its inherited hold after HEAD moves, including later retries recorded as `sweep`; a person's typed or
+  merge launch can release it. Every automatic start checks a stuck or unreadable cap store before ending a warm
+  run or following origin.
 - free-ci S3 (the owner's D1 answer, E with A, 2026-11-04): the Macs' PR `check` job is scoped. check.yml's macOS-share
   step runs `.github/ci/share.sh macos --scoped`: `check_scope.py`'s verdicts over what the pull request's merge commit
   adds to its base (HEAD^1..HEAD; the checkout's fetch-depth is 2 on a pull request), a `SKIP <id>` line for each suite
@@ -341,6 +447,24 @@
   finish needs a Mac or a `finish-queue` feature line, a pinned finish claimed late takes its clean worktree, a
   `failed` start holds no person's launch, `dispatch-queue finished` is denied to a session, stamps compare as instants.
 
+- A claimed entry's job that fails before its run starts claims the next entry for the slot it frees
+  (claim-after-failed-start): dispatch's exit (`cleanup`) runs the run end's `queue_claim` once the queue's `failed`
+  word took, and the fire path's own end claim leaves a job with no record to it, so one slot is claimed for once.
+  One claim per chain: what that claim starts carries a mark (`dispatch-queue claim --exit-claim`, the job's
+  `DISPATCH_EXIT_CLAIMED`), and a marked job's failed exit claims nothing, so a host-wide failure (origin down, a
+  broken `worktree add`) fails at most the slots free when that one exit claim ran, per claim that began the chain
+  (a sweep's, a watcher's, a run end's), never a cascade through the queue; while the failure lasts, each claim pass
+  still loses about twice what main lost. The exit claim's `--event-at` is the `failed` word's time. Never after a refusal (said or
+  not, a login refused for good included), a start lock given up, a signal once the run's record exists, `waiting` alone, a probe or a requeued end; a one-shot not
+  from the queue claims nothing at its exit, and the never-started retry that cannot take the lock again claims
+  nothing (a claim waits on that lock). The fire path's second spawn judgement, a for-good refusal of this
+  entry alone, claims at its exit: the next entry is another's. Not covered: the first spawn judgement's final
+  refusal, which says `failed` before the exit trap is set, the never-started-twice retry's plain claim (TODO.md
+  [exit-claim-main]), and a stale job's exit, which frees its reservation without a `failed` word:
+  both still wait for the sweep. A claimed job's TERM, HUP or INT before its word is said by a trap (bash 3.2 gives
+  an EXIT trap the last command's status, never 128+n), and its exit then claims nothing; the trap goes before cleanup's bootout; `after()` runs as a child
+  the job `wait`s on, so a signal ends a long wait at once. Before, the next entry waited for the pending poll,
+  another run's end or the 10-minute sweep. Cases: `tests/test_dispatch.sh`.
 - `harness` research mode builds the Codex arm's seatbelt with its scratch `config.toml`, `AGENTS.md`, `hooks.json`
   and `auth.json` read-only (the core's `fence.codex_ro`), as council's `arm_home` names them; it named none.
 - dispatch-rc ends any run idle a minute on its closing line — done, WAITING, RELAYED, the hand-over; not WAITING
@@ -386,6 +510,24 @@
   end after that names the check in `cut.checks_done`. This is the rc road's watcher only; the headless road's
   watchdog still ends a run at the cap. `last_answer` reads a transcript mid-write without dying on a split
   character.
+- stuck-ships S1 after the merge of main (its landing review): `STUCK_RC` is 9 (main's origin gate took 6, which
+  `cold_prompt` blocks on); the road's stop is `road_stop` (main's `judged_stop` is the origin gate's); a lander start
+  is judged whole before the origin gate, so the refinish road's launched leg lives; a lander start is judged as
+  `--by handed` is, at its start and at `pr`'s re-judge (`handed_held`; rule M or a carried mode flag a mode launch);
+  the refinish road reads "main moved" from git, never the run's `base_tip`, and refuses a PR labelled `hold`
+  (`DEAD_ROAD_RC`) or a draft; no road starts on a HEAD with work its stop never saw; a G4 stop with no D-list doc,
+  or one keel refuses, is a dead road; a chain relaunch of a lander run that never started judges the kept
+  stop; a store key in a shape no writer makes refuses as an unreadable store; a road reads its own stop's
+  `autofinished` line only; `lander armed` needs helm's tick armed past its dry hours.
+- stuck-ships S1's build review, three rounds: a refinish keeps the tip its run pushed on a kept stop, and with none
+  recorded a HEAD off its start is a dead road; a lander's mode flag rides only while the branch's mode says it
+  (`flag_rides`, one predicate for the start and `landing()`; never E12's standing yes, which is a person's); a
+  chain relaunch of a lander run keeps that run as the stop; the keel's no and a died lander run's hold carry over;
+  the stand road takes commits on D-list docs keel reads items in, and reads keel's own `memo:` refusal as a dead
+  road, anything else as a wait; `lander reset --aside` sets a store that does not parse aside (a plain reset never
+  does); entries holding only old refusal counts are pruned; the store is probed before a warm run ends, and the
+  origin gate never moves the tree for a lander start; a skipper is no person to the lander; `lander armed` takes
+  `armed` or `landings`.
 - autofinish: a root `.gitattributes` that only adds `TODO.md` / `CHANGELOG.md merge=union` lines (and blanks or
   comments) no longer holds a handed landing, and rides with records under rule A: a repo's first `/todo` writes
   one (todo-driver, 2026-11-02). Any other added line, or a removed one, holds as before.

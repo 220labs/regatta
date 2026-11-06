@@ -17,8 +17,9 @@ Hail design, its section "Hail" and S2 (docs/crosstalk-2026-10-20.md on its bran
         unsent. Exit 0; 3 when a fulfilled row found no road.
     hail mail [--pull] [--dry-run] [--json]
         The mailbox, state_dir()/hail-mailbox.jsonl: the rows this Mac holds for sessions on other
-        Macs. --pull (the bell's, `ask poll`, every host) fetches this Mac's own rows from each peer it
-        has an ssh alias for, posts each by the socket road and settles it on the peer. A peer that does
+        Macs. --pull (the bell's, `ask poll`, every host) fetches this Mac's own rows from each automatic
+        message peer (message_peers.py: configured aliases and fresh fleet rows, less confidential
+        yards and nodes), posts each by the socket road and settles it on the peer. A peer that does
         not answer is one line when it goes quiet and one when it answers again. Exit 0; 3 when a
         settle did not reach the peer (its rows settle from this Mac's ledger at their next take).
     hail mail --take HOST | --settle HOST --results JSON
@@ -71,8 +72,9 @@ file or row reads as ROADS. A road left out is never taken. The target's own roa
 orca: one applies to a session) always goes first whatever its place, since its refusal of a busy
 session must stop the hail; talk, mailbox and file follow in the row's order.
 
---host PEER: the adapter roads run on PEER over ssh (bin/harness's peers and alias; this code and the
-adapters go over stdin, as `harness status --host` does), then Talk from here. ssh runs one way: a
+--host PEER: the adapter roads run on PEER over ssh (bin/harness's message_peers: fleet hosts plus
+configured ssh aliases; this code and the adapters go over stdin, as `harness status --host`
+does), then Talk from here. ssh runs one way: a
 peer this Mac has no alias for gets Talk, or the mailbox, which that peer pulls over its own alias.
 
 The frame is fixed text; the caller's words are a pointer, not content:
@@ -106,7 +108,24 @@ import time
 import types
 import uuid
 
-if "__file__" in globals():   # here, not on a peer from stdin: the regatta core on the path, for asklib
+
+def peer_core_path():
+    """Run the shared locator without a source checkout; all paths belong to the receiver."""
+    src = globals().get("HAIL_EMBEDDED", {}).get("core_path")
+    if not src:
+        return None
+    mod = types.ModuleType("hail_peer_core_path")
+    exec(compile(src, "core_path.py", "exec"), mod.__dict__)
+    return mod.hooks()
+
+
+if "HAIL_EMBEDDED" in globals():
+    # The mailbox's take/settle bundle has no adapters and needs no core.
+    if HAIL_EMBEDDED.get("harness"):
+        hooks = peer_core_path()
+        if hooks:
+            sys.path.insert(1, hooks)
+elif "__file__" in globals():   # here: the regatta core on the path, for asklib and the adapters
     sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
     try:
         import core_path
@@ -480,7 +499,9 @@ def bundle():
         me = f.read()
     # ascii(): one line of the whole harness, non-ASCII escaped — Python 3.9 reading source from stdin
     # failed "Non-UTF-8 code" on the literal form (test_hail.sh, 2026-10-21)
-    return "HAIL_EMBEDDED = %s\n%s" % (ascii({"harness": hsrc, "adapters": H.adapter_sources()}), me)
+    with open(os.path.join(here_bin(), "..", "lib", "core_path.py")) as f:
+        locator = f.read()
+    return "HAIL_EMBEDDED = %s\n%s" % (ascii({"harness": hsrc, "adapters": H.adapter_sources(), "core_path": locator}), me)
 
 
 PEER_MARK = "hail: the peer half runs"   # its first stderr line: proof the code ran there, whatever ssh exits
@@ -532,7 +553,7 @@ def deliver(args, msg):
     allowed = list(ROADS) if msg.get("roads") is None else msg["roads"]   # [] is a row that allows no road
 
     if host not in ("here", me):
-        alias = H.peers().get(host)
+        alias = H.message_peers(target=host).get(host)
         if alias is None:
             tried.append(["ssh", "no ssh alias from %s to %s: ssh runs one way; Talk or the mailbox only" % (me, host)])
         else:
@@ -1083,7 +1104,7 @@ def mail_peer_state(host, ok):
 
 
 def mail_pull(dry=False):
-    """This Mac's rows from each peer it has an ssh alias for, posted here and settled there: (results, rc).
+    """This host's rows from automatic message peers, posted here and settled there: (results, rc).
     rc 3 when a settle failed (the rows wait out their take, then settle from the ledger)."""
     H = harness()
     me, out, rc, allowed = H.machine(), [], 0, roads()
@@ -1093,7 +1114,13 @@ def mail_pull(dry=False):
             live = expire(rows, time.time())
             if len(live) != len(rows):
                 write_subs(live, mail_path())
-    for host, alias in sorted(H.peers().items()):
+    left = poll_left()
+    if left is not None and left < readback_s() + 60:
+        return out, rc
+    for host, alias in sorted(H.message_peers().items()):
+        left = poll_left()
+        if left is not None and left < readback_s() + 60:
+            break   # never take a new peer's rows without room to settle them
         rows, why, _ = on_peer(host, alias, ["mail", "--take", me] + (["--dry-run"] if dry else []), src=mail_bundle(), want=list,
                                quiet=True, timeout=30)
         if why:
@@ -1247,6 +1274,9 @@ def main(argv):
         own = roads()
         msg = {"kind": a.get("kind") or "event", "frame": f, "dry": bool(a.get("dry-run")), "idle_s": IDLE_S,
                "sender_fenced": bool(a.get("sender-fenced")),
+               # Only the generated ssh bundle has already judged a remote sender. The public
+               # --peer-half flag alone must still judge this process's cwd as the sender's.
+               "peer_half": bool((embedded() or {}).get("harness")),
                # the sender's hail.roads: the peer takes only what the sender's row allows
                # and this Mac's own row, as the mailbox's receiver honours both
                "roads": [r for r in (",".join(ROADS) if a.get("roads") is None else a["roads"]).split(",") if r in ROADS and r in own]}

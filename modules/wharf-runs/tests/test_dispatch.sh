@@ -40,7 +40,7 @@ for k, v in (("KEEL", common.tool("keel")), ("STALLS_TICK", common.tool("stalls_
     print("%s=%s" % (k, shlex.quote(str(v) if v else "")))
 CORE
 )"
-fails=0
+fails=0; failed=()
 # helm's ask and helm as the run prompt names them: stand-ins, so the prompt cases do not depend on
 # which overlay this Mac has (G22's case sets DISPATCH_HELM empty: helm not installed)
 export DISPATCH_ASK="$T/peer/bin/ask" DISPATCH_HELM="$T/peer/bin/helm"
@@ -48,9 +48,10 @@ export DISPATCH_ASK="$T/peer/bin/ask" DISPATCH_HELM="$T/peer/bin/helm"
 # date went past and failed 5 cases (2026-10-04); one a year ahead is now refused
 FUT=$(days_from_now 30); FY=${FUT%%-*}; FM=$((10#${FUT:5:2})); FD=$((10#${FUT:8:2}))
 E2=$(days_from_now 60); EM=$((10#${E2:5:2})); ED=$((10#${E2:8:2}))
-check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
-has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
-hasnt() { if [ ! -f "$1" ]; then echo "  FAIL $3: no file $1 to read"; fails=$((fails+1)); elif grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
+fail() { echo "  FAIL $1"; failed+=("$1"); fails=$((fails+1)); }
+check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else fail "$3: expected [$2] got [$1]"; fi; }
+has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else fail "$3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fi; }
+hasnt() { if [ ! -f "$1" ]; then fail "$3: no file $1 to read"; elif grep -qF -- "$2" "$1"; then fail "$3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; else echo "  ok   $3"; fi; }
 # a blueprint's front matter is read by PyYAML, installed per user on these Macs: keep its site when HOME
 # moves below (bin/blueprintlib.py; dispatch --next and pickup seed read blueprints, wharf-on-orca S5)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
@@ -139,7 +140,7 @@ env -u DISPATCH_LABEL DISPATCH_DEPTH=5 "$B/dispatch" $BR --repo "$T/repo" --at "
 has "$T/out" "a person starts the next" "  saying who starts it"
 env -u DISPATCH_LABEL RUN_SEED_DEPTH=5 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null 2>&1; check "$?" "2" "  RUN_SEED_DEPTH (a session started before the rename) counts too"
 has "$T/calls" "bootstrap gui/" "job loaded"
-python3 -c 'import plistlib,sys; plistlib.load(open(sys.argv[1], "rb"))' "$P" && echo "  ok   plist lints" || { echo "  FAIL plist lint"; fails=$((fails+1)); }
+python3 -c 'import plistlib,sys; plistlib.load(open(sys.argv[1], "rb"))' "$P" && echo "  ok   plist lints" || fail "plist lint"
 
 echo "epoch time"
 EP=$(python3 -c 'import datetime,sys; print(int(datetime.datetime.strptime(sys.argv[1], "%Y-%m-%d %H:%M").timestamp()))' "$E2 07:09")
@@ -192,6 +193,7 @@ case "\$1" in
           unknown) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"limits unknown (no probe answered, none cached)\"}]";;
           fable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"max\", \"fable\": true, \"fable_week\": 37, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           nofable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"pro\", \"fable\": false, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
+          lends) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\", \"lends\": true}]";;
           fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
@@ -414,7 +416,7 @@ has "$T/ssh.calls" "--background deny" "  and over ssh"
 P=$(pl); PL=$(basename "$P" .plist)
 has "$P" "<key>DISPATCH_LOG</key>" "log path fixed in the plist"
 has "$P" "<key>DISPATCH_YEAR</key><string>$FY</string>" "scheduled year in the plist"
-DISPATCH_YEAR=2019 DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" 2>&1 | grep -q "not running" && echo "  ok   a job a year late refuses to run" || { echo "  FAIL year guard"; fails=$((fails+1)); }
+DISPATCH_YEAR=2019 DISPATCH_LABEL=$PL "$B/dispatch" $BR --repo "$T/repo" 2>&1 | grep -q "not running" && echo "  ok   a job a year late refuses to run" || fail "year guard"
 
 echo "fire (as launchd would), headless"
 "$B/dispatch" $BR --repo "$T/repo" --at "$FUT 04:10" >/dev/null; P=$(pl); PL=$(basename "$P" .plist)
@@ -508,7 +510,7 @@ for pt in architect:fable worker:opus; do
   git -C "$T/repo" update-ref "refs/heads/$PB" "$(git -C "$T/repo" commit-tree "$ptree" -p main -m seed)"
   git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$PB:refs/heads/$PB" >/dev/null 2>&1
   out=$("$B/dispatch" $PB --repo "$T/repo" --on here --headless --dry-run 2>&1)
-  case "$out" in *"--model $pm --effort xhigh (tier principal-$pn)"*) echo "  ok   principal-$pn: the dry run names $pm xhigh and the tier";; *) echo "  FAIL principal-$pn dry run: [$out]"; fails=$((fails+1));; esac
+  case "$out" in *"--model $pm --effort xhigh (tier principal-$pn)"*) echo "  ok   principal-$pn: the dry run names $pm xhigh and the tier";; *) fail "principal-$pn dry run: [$out]";; esac
   "$B/dispatch" $PB --repo "$T/repo" --at "$FUT 04:10" >/dev/null
   PP=$(ls "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.prin-$pn.[0-9]*.plist 2>/dev/null | head -1)
   check "$([ -f "$PP" ] && grep -c '<string>--model</string>\|<string>--effort</string>' "$PP")" "0" "  its job carries no --model or --effort: the brief decides when it fires"
@@ -675,7 +677,7 @@ has "$T/claude.calls" "only while the round before confirmed a real finding or i
 has "$T/claude.calls" "at most 3 rounds (" "  the round cap's words: build-review cap's default (TODO.md [second-review]'s D2-B)"
 has "$T/claude.calls" "bin/build-review end $T/repo/.claude/worktrees/demo --outcome clean" "  (f) the record ended clean"
 has "$T/claude.calls" "never a new dispatch" "  every round in this session"
-has "$T/claude.calls" "plan --base origin/main\` in the worktree" "  reviewed against origin/main, which (a) merged in, not a local main that may be behind"
+has "$T/claude.calls" "plan --phase build --base origin/main\` in the worktree" "  reviewed against origin/main, which (a) merged in, not a local main that may be behind"
 has "$T/claude.calls" "merge --phase build --base origin/main --reviewer" "    the merge too, its log line marked a build round's (TODO.md [second-review])"
 has "$T/claude.calls" "changes no code or config (prose only)" "  a prose-only diff skips the reviewers, as /finish step 1 does"
 has "$T/claude.calls" "--found 0\` in place of --verdicts when the merged list held no S1, S2, S? or WRONG item" "  found counts the verified findings only, so a round of S3s ends the loop"
@@ -2030,6 +2032,14 @@ own sess-A
 FIRE=" " STUB_WHICH=acct-c DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1; check "$?" "0" "--next from a session on acct-c…"
 grep -l "<string>--account</string><string>acct-c</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "0" "  …schedules the next step on acct-c (work-account E5)"
 own sess-A
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist
+FIRE=" " STUB_WHICH=acct-c STUB_LIMITS=lends DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1; check "$?" "0" "--next from a session on a login that lends (a lend bar, not its repo)…"
+grep -l "<string>--account</string><string>acct-c</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "1" "  …does not inherit it: the fire-time pick walks (lighthouse's lend bar)"
+own sess-A
+rm_own "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist
+FIRE=" " STUB_WHICH=acct-c STUB_LIMITS=lends DISPATCH_ACCOUNT="$T/acct" nx --account acct-c > "$T/out" 2>&1; check "$?" "0" "--next --account acct-c typed, on a login that lends…"
+grep -l "<string>--account</string><string>acct-c</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "0" "  …rides as typed"
+own sess-A
 FIRE=" " STUB_WHICH=acct-c DISPATCH_PIN=bound DISPATCH_ACCOUNT="$T/acct" nx > "$T/out" 2>&1; check "$?" "0" "--next from a bound run (DISPATCH_PIN)…"
 grep -l "<string>--account</string><string>bound</string>" "$HOME"/Library/LaunchAgents/org.example.claude.dispatch.repo.step.*.plist >/dev/null 2>&1; check "$?" "0" "  …stays bound, whatever account which says (design_route)"
 own sess-A
@@ -2286,7 +2296,7 @@ DISPATCH_TRUST="$T/trust" STUB_RUN=work STUB_ACCT=f DISPATCH_ACCOUNT="$T/acct" D
 has "$HOME/acct8.log" "not trusted: $T/repo — trusting it" "a repo trusted under ~/.claude but not under the picked dir → trusted there"
 has "$T/trust.calls" "trust $HOME/.acct-c/.claude.json" "  in the picked dir"
 rm "$HOME/.claude.json"
-STUB_ACCT=f DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --dry-run | grep -qF "account acct-c" && echo "  ok   a dry run names the account" || { echo "  FAIL dry run account"; fails=$((fails+1)); }
+STUB_ACCT=f DISPATCH_ACCOUNT="$T/acct" "$B/dispatch" $BR --repo "$T/repo" --dry-run | grep -qF "account acct-c" && echo "  ok   a dry run names the account" || fail "dry run account"
 
 echo "--account bound: the primary, for work the account owns (hooks/design_route.py, 2026-10-10)"
 : > "$T/env.calls"; : > "$T/acct.calls"
@@ -2440,21 +2450,23 @@ grep -q -- "--yolo" "$T/ssh.calls"; check "$?" "0" "…and so does one scheduled
 "$B/dispatch" --launch "/x" "$T/repo" "n" --yolo > "$T/out" 2>&1; check "$?" "2" "  …and with --launch, its old name kept as an alias for a week (S1 of docs/wharf-rename-2026-10-16.md)"
 has "$T/out" "dispatch: --start takes no BRANCH" "  …refused as --start: the alias is the same flag"
 "$B/dispatch" $BR --repo "$T/repo" --yolo --dry-run | grep -qF -- "--yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo" \
-  && echo "  ok   a dry run says the gate and the launch" || { echo "  FAIL yolo dry run"; fails=$((fails+1)); }
+  && echo "  ok   a dry run says the gate and the launch" || fail "yolo dry run"
 # the build session, standing in: writes an architect doc with one D-item marked $YMARK, puts it
 # through the gate the prompt names, and commits, as a real session's checkpoint would
 cat > "$T/yclaude" <<EOF
 #!/bin/bash
 echo "claude \$*" >> "$T/claude.calls"
 mkdir -p docs
-{ echo "# D"; echo; echo 'Written by \`architect\` (Fable 5.1, \`high\`) on 2026-10-08 for "t".'; echo; echo "## Decisions"; echo
-  echo "- **D1 — Pick.** Context."; echo "  - A — one"; echo "  - B — two"; echo; echo "  Reversible: \$YMARK"; echo
+{ echo "# D — \${YDOC_KIND:-design}"; echo; echo 'Written by \`architect\` (Fable 5.1, \`high\`) on 2026-10-08 for "t".'; echo; echo "## Decisions"; echo
+  echo "- **D1 — \${YTITLE:-Pick}.** Context."; echo "  - A — one"; echo "  - B — two"; echo; echo "  Reversible: \$YMARK"; echo
   [ -n "\${YREC-B}" ] && { echo "  ➤ Recommended: \${YREC-B}"; echo; }; echo "  ➤ Answer:"; echo
   [ -n "\${YDUP:-}" ] && { echo "- **D1 — Again.** Twice."; echo; echo "  ➤ Answer:"; echo; }
   echo "---"; echo; echo "## Open feedback"; } > docs/d.md
-python3 "$KEEL" \${YCMD:-yolo} docs/d.md >> "$T/claude.calls" 2>&1; echo "memo exit \$?" >> "$T/claude.calls"
+[ -n "\${YASK:-}" ] || python3 "$KEEL" \${YCMD:-yolo} docs/d.md >> "$T/claude.calls" 2>&1; echo "memo exit \$?" >> "$T/claude.calls"
 if [ -n "\${YNODOC:-}" ]; then git rm -q --cached --ignore-unmatch docs/d.md; rm -f docs/d.md; echo x > note.txt; git add note.txt; else git add docs/d.md; fi
+[ -z "\${YSTEPS:-}" ] || { printf 'Steps: S3 of docs/course.md\n' >> docs/handoff/2026-10-02-demo.md; git add docs/handoff/2026-10-02-demo.md; }
 git -c user.email=t@t -c user.name=t commit -qm "doc" \${YDEPLOY:+-m "Deployed: \$YDEPLOY"} >/dev/null
+[ -z "\${YPUBLISH:-}" ] || [ -n "\${YNOPUBLISH:-}" ] || git send-pack "$T/origin.git" "HEAD:refs/heads/\$(git branch --show-current)" >/dev/null 2>&1
 [ -n "\${YLOWER:-}" ] && sh -c "\$YLOWER"   # S3b: the owner lowers the mode while the run builds
 # its transcript, where yolo_launch reads the last reply (\$YREPLY)
 sid=""; prev=""; for a in "\$@"; do [ "\$prev" = --session-id ] && sid="\$a"; prev="\$a"; done
@@ -2464,7 +2476,10 @@ python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": 
 EOF
 cat > "$T/afrun" <<EOF
 #!/bin/sh
-echo "afrun \$*" >> "$T/af.calls"; echo "login \${CLAUDE_CONFIG_DIR:-unset} \${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$T/af.calls"; echo "autofinish-run: started"
+[ "\$#" = 5 ] && [ -d "\$1" ] && [ "\$2" = --rule ] && [ "\$4" = --by ] || exit 2
+case "\$3" in C|L|M) ;; *) exit 2;; esac
+case "\$5" in handed|yolo|dnd|sweep) ;; *) exit 2;; esac
+echo "afrun \$*" >> "$T/af.calls"; [ -z "\${HANDOVER_OWED:-}" ] || echo "owed \$HANDOVER_OWED" >> "$T/af.calls"; echo "login \${CLAUDE_CONFIG_DIR:-unset} \${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$T/af.calls"; echo "autofinish-run: started"
 EOF
 chmod +x "$T/yclaude" "$T/afrun"
 # origin/main, which the open-items test diffs against
@@ -2560,7 +2575,7 @@ has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  a
 : > "$T/claude.calls"
 DISPATCH_CLAUDE="$T/yclaude" YMARK=yes DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-off.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 grep -q "keel yolo <the doc>" "$T/claude.calls"; check "$?" "1" "without --yolo: no gate in the prompt"
-has "$T/claude.calls" "no D-item for it — end with the WAITING line asking it" "  and the landing is asked on the WAITING line, as before"
+has "$T/claude.calls" "no D-item for it, and no WAITING line asks it" "  and the landing is never asked, on a WAITING line or a D-item (landing-no-ask)"
 grep -q "== yolo" "$HOME/yolo-off.log"; check "$?" "1" "  and no launch"
 # the launch's side: autofinish-run --by yolo asks /finish for --yolo, which follows the repo's key
 grep -q '\*\*Without `--hold`\*\* — the mode is the' "$FINISH_SKILL"; check "$?" "0" "/finish --yolo|--dnd: without --hold the mode is the yes (S3b)…"
@@ -2612,6 +2627,7 @@ has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by dnd" "a dn
 : > "$T/af.calls"
 # the follow-ups' landing review, item 1: a deployed build is the sweep's rule L unless it holds a taken doc
 DW="$T/repo/.claude/worktrees/demo"; pre=$(git -C "$DW" rev-parse HEAD)
+pre_remote=$(git --git-dir="$T/origin.git" rev-parse "refs/heads/$BR")
 YNODOC=1 YDEPLOY="the service" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" \
   DISPATCH_LOG="$HOME/mode-dnd-live.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-dnd-live.log" "== dnd: deployed (the service) with no taken doc — rule L's start, as the sweep's" \
@@ -2724,19 +2740,27 @@ unset PLANS_DIR
 DISPATCH_LOG="$HOME/mode-none.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-none.log" "== mode default" "no mode anywhere: default"
 "$B/dispatch" $BR --repo "$T/repo" --dry-run --mode ask 2>/dev/null | grep -qF ", mode ask" \
-  && echo "  ok   a dry run names the mode" || { echo "  FAIL mode dry run"; fails=$((fails+1)); }
+  && echo "  ok   a dry run names the mode" || fail "mode dry run"
 echo "the landing switch (task-shape S3): a done default build hands its landing over, --by handed"
 newest_field() { python3 -c 'import glob, json, os, sys; f = max(glob.glob(sys.argv[1] + "/*.json"), key=os.path.getmtime); print(json.load(open(f)).get(sys.argv[2]))' "$HOME/Library/Logs/claude-weekly/run-seed-runs" "$1"; }
 HL="⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)"
 DW="$T/repo/.claude/worktrees/demo"; pre=$(git -C "$DW" rev-parse HEAD)
+export YPUBLISH=1
+git -C "$DW" send-pack "$T/origin.git" "HEAD:refs/heads/$BR" >/dev/null 2>&1
+handreset() {
+  git -C "$DW" reset -q --hard "$pre"
+  git --git-dir="$T/origin.git" update-ref "refs/heads/$BR" "$pre"
+  git -C "$DW" update-ref "refs/remotes/origin/$BR" "$pre"
+}
 rm -f "$AUTOFINISH_STATE_DIR/landings"; : > "$T/claude.calls"; : > "$T/af.calls"
 YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-off.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 grep -q "The landing switch is on" "$T/claude.calls"; check "$?" "1" "switch off: no hand-over text in a default run's prompt"
-has "$T/claude.calls" "no D-item for it — end with the WAITING line asking it" "  the landing is asked on the WAITING line, as before"
+has "$T/claude.calls" "Never write or relay a landing D-item" "  a build never asks whether to land, including with the switch off"
 check "$(newest_field handed):$(wc -c < "$T/af.calls" | tr -d ' ')" "None:0" "  no handed in its record, and no launch even on the hand-over line"
-git -C "$DW" reset -q --hard "$pre"
+case "$(newest_launch)" in "no launch — no hand-over: the landing switch was off at the build's start"*"to land: run /finish on this branch") echo "  ok   its record says no hand-over ran, for helm's card (the landing review's pick B)";; *) fail "no-hand-over note: $(newest_launch)";; esac
+handreset
 echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"
 : > "$T/claude.calls"; : > "$T/af.calls"
 YREPLY="Built.
@@ -2744,48 +2768,77 @@ $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOF
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/handed-on.log" "== landings on: a done last step hands its landing to dispatch" "switch on: read at the prompt's build, logged"
 has "$T/claude.calls" "The landing switch is on on this Mac" "  the prompt hands the landing over"
-has "$T/claude.calls" "every step the brief names is done, the review loop above ended clean where one runs, nothing was relayed, no D-item is open and the work is committed, end on exactly \`$HL\`" "  and names the hand-over line for a done last step"
+has "$T/claude.calls" "the implementation is done, the review loop above ended clean where one runs, no real decision is open, nothing relayed waits unanswered and the work is committed, end on exactly \`$HL\`" "  and names the hand-over line for a done last step"
 has "$T/claude.calls" "Do not run /finish, whatever the brief says" "  and keeps it from running /finish itself"
 has "$T/claude.calls" "no WAITING line asks it — this Mac's landing switch hands a done build's landing to dispatch" "  the base text no longer asks about landing"
 check "$(newest_field handed)" "1" "  its record says handed=1, a number"
 has "$HOME/handed-on.log" "== handed: the build run ended clean — starting the launch: autofinish-run $DW --by handed" "  its mode re-read (default) passes: the launch starts"
 has "$T/af.calls" "afrun $DW --rule C --by handed" "  through autofinish-run --rule C --by handed, never rule M"
 check "$(newest_launch)" "started: autofinish-run --rule C --by handed" "  and the record says it started"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 YREPLY="Built.
 SAM, THIS SESSION IS WAITING FOR YOU — D1 of docs/d.md" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-wait.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a handed=1 run ending on a WAITING line: no launch (today's road)"
-check "$(newest_launch | grep -cF 'no launch — its last reply stops for Sam')" "1" "  the record says why"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+check "$(newest_launch | grep -cF 'no launch — its last reply stops for the owner')" "1" "  the record says why"
+handreset; : > "$T/af.calls"
 YREPLY="Built.
 ✅ SAM, THIS SESSION IS WAITING FOR NOTHING — S3 built" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-idle.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
-check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a handed=1 run ending on WAITING FOR NOTHING: no launch, only the hand-over line hands it over (review round 2)"
-check "$(newest_launch | grep -cF 'no launch — its last reply is not the hand-over line')" "1" "  the record says why"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+check "$(grep -c '^afrun' "$T/af.calls")" "1" "an idle ending launches once its committed facts are clear"
+has "$T/af.calls" "--by handed" "  the idle build is handed to the landing"
+handreset; : > "$T/af.calls"
 YREPLY="Built, all green." YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-bare.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
-check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  nor on a reply with no closing line"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+check "$(grep -c '^afrun' "$T/af.calls")" "1" "  a completed reply with no closing line also hands over"
+handreset; : > "$T/af.calls"
+YDOC_KIND=build YTITLE="Land demo" YASK=1 YREPLY="Built.
+🛑 SAM, THIS SESSION IS WAITING FOR YOU — D1 of docs/d.md" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/handed-landing.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "--by handed" "a landing-only D1 on WAITING hands over"
+handreset; : > "$T/af.calls"
+YASK=1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/handed-question.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a real non-landing D1 holds even on the hand-over line"
+has "$T/handed-question.log" "to land: answer the named non-landing question" "  refusal names what would make it land"
+handreset; : > "$T/af.calls"
+YSTEPS=1 YNODOC=1 YREPLY="Built and checked.
+⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — keel step docs/course.md S3 done --stamp — doc not on main" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/handed-stamp.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "--by handed" "a stamp-only pending ending hands over"
+has "$T/af.calls" "owed docs/course.md S3" "  the judge's waived stamp reaches the launcher (HANDOVER_OWED)"
+handreset; : > "$T/af.calls"
+YREPLY="⚠ work remains
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/handed-warning.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "a warning still holds a handed build"
+has "$T/handed-warning.log" "to land: resume the build" "  a warning refusal names the next action"
+handreset; : > "$T/af.calls"
+YNOPUBLISH=1 YNODOC=1 YREPLY="Built.
+$HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/handed-origin.log" \
+  "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "an unpublished build holds"
+has "$T/handed-origin.log" "origin does not hold this build tip" "  the origin gate vouches for this exact tip"
+handreset; : > "$T/af.calls"
 YNODOC=1 YDEPLOY="the service" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-live.log" \
   YREPLY="Built.
 $HL" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$T/af.calls" "afrun $DW --rule L --by handed" "a deployed hand-over: rule L, still --by handed (not the sweep's)"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 YLOWER="rm -f $AUTOFINISH_STATE_DIR/landings" YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-disarmed.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/handed-disarmed.log" "== handed: no launch — the landing switch is off on this Mac" "the switch turned off while it built: no launch, though armed is set"
 check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
 YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-alone.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$T/af.calls" "afrun $DW --rule C --by handed" "landings alone, the sweep disarmed (phase 1's build Mac): the hand-over launches"
 mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; : > "$T/claude.calls"
+handreset; : > "$T/af.calls"; : > "$T/claude.calls"
 echo '{"by": "t", "ts": "2026-11-01T17:00:00"}' > "$AUTOFINISH_STATE_DIR/landings"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
 YREPLY="Built.
 $HL" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/handed-dnd.log" \
@@ -2794,9 +2847,10 @@ has "$HOME/handed-dnd.log" "== dnd: no launch — autofinish is disarmed on this
 grep -q "The landing switch is on" "$T/claude.calls"; check "$?" "1" "  and its prompt is dnd's, not the hand-over's"
 check "$(newest_field handed)" "None" "  nor is it handed=1"
 mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 cat > "$T/afcap" <<EOF
 #!/bin/sh
+[ "\$#" = 5 ] && [ -d "\$1" ] && [ "\$2" = --rule ] && [ "\$3" = C ] && [ "\$4" = --by ] && [ "\$5" = handed ] || exit 2
 echo "afrun \$*" >> "$T/af.calls"
 if [ "\$(grep -c '^afrun' "$T/af.calls")" = 1 ] || [ -n "\${AFCAP_TWICE:-}" ]; then
   echo "not started: \${AFCAP_WHY:-FAILED: 3 other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS) — the next step waits for a run to end (the sweep starts this tip again)}" >&2; exit 5
@@ -2810,7 +2864,7 @@ $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOF
 check "$(grep -c "^afrun $DW --rule C --by handed" "$T/af.calls")" "2" "a cap refusal: tried once more"
 has "$HOME/handed-cap.log" "== handed: refused in the cap's waiting words — once more in 0.1 s" "  after NEXT_IDLE, logged"
 check "$(newest_launch)" "started: autofinish-run --rule C --by handed" "  the second try started it"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 AFCAP_TWICE=1 DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-cap2.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
@@ -2818,21 +2872,25 @@ check "$(grep -c '^afrun' "$T/af.calls")" "2" "refused twice: once more only, ne
 check "$(newest_launch | grep -cF 'no launch — refused twice, 0.1 s apart: ')" "1" "  then declined, the reason in the record's launch (helm's S6 card quotes it)"
 check "$(newest_launch | grep -cF 'the next step waits for a run to end')" "1" "  the cap's waiting words kept, for S4's count of declines by cause"
 check "$(newest_launch | grep -cF 'the sweep starts this tip again')" "1" "  the sweep's promise kept: armed is on too, so the sweep does start the tip again (the S3 landing review)"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
+handreset; : > "$T/af.calls"; mv "$AUTOFINISH_STATE_DIR/armed" "$T/armed.off"
 AFCAP_TWICE=1 DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-cap3.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 check "$(newest_launch | grep -cF 'no launch — refused twice, 0.1 s apart: ')/$(newest_launch | grep -cF 'the sweep starts this tip again')" "1/0" "  with only the landing switch on: declined, and no sweep's promise, for there is no sweep"
 mv "$T/armed.off" "$AUTOFINISH_STATE_DIR/armed"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"
+handreset; : > "$T/af.calls"
 AFCAP_TWICE=1 AFCAP_WHY="no account may run it now" DISPATCH_NEXT_IDLE=0.1 YREPLY="Built.
 $HL" YMARK=yes DISPATCH_MODE=default DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afcap" DISPATCH_LOG="$HOME/handed-noacct.log" \
   "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
-check "$(grep -c '^afrun' "$T/af.calls"):$(newest_launch)" "1:no launch — autofinish-run exit 5" "an exit 5 that is not the cap (no account): no retry"
-git -C "$DW" reset -q --hard "$pre"; : > "$T/af.calls"; rm -f "$AUTOFINISH_STATE_DIR/landings"
+check "$(grep -c '^afrun' "$T/af.calls"):$(newest_launch | cut -d ';' -f1)" "1:no launch — autofinish-run exit 5: not started: no account may run it now" "an exit 5 that is not the cap (no account): no retry"
+handreset; : > "$T/af.calls"; rm -f "$AUTOFINISH_STATE_DIR/landings"
+
+unset YPUBLISH
+git --git-dir="$T/origin.git" update-ref "refs/heads/$BR" "$pre_remote"
+git -C "$DW" update-ref "refs/remotes/origin/$BR" "$pre_remote"
 
 echo "help"
-"$B/dispatch" --help | tail -1 | grep -q "DISPATCH_CLAUDE" && echo "  ok   --help prints the whole header" || { echo "  FAIL --help cut short"; fails=$((fails+1)); }
+"$B/dispatch" --help | tail -1 | grep -q "DISPATCH_CLAUDE" && echo "  ok   --help prints the whole header" || fail "--help cut short"
 
 echo "old name"
 # a job scheduled as run-seed before 2026-10-05: its plist calls bin/run-seed with RUN_SEED_*
@@ -2847,12 +2905,12 @@ OP="$HOME/Library/LaunchAgents/org.example.claude.run-seed.repo.demo.20261005035
 check "$([ -f "$OP" ] && echo present || echo gone)" "gone" "--cancel finds a job scheduled under the old name"
 
 echo "dry run"
-"$B/dispatch" $BR --repo "$T/repo" --dry-run | grep -q "DRY RUN" && echo "  ok   dry run prints" || { echo "  FAIL dry run"; fails=$((fails+1)); }
+"$B/dispatch" $BR --repo "$T/repo" --dry-run | grep -q "DRY RUN" && echo "  ok   dry run prints" || fail "dry run"
 # the default repo: the overlay's checkout where one is installed, else the main checkout of this clone
 PRIM="$(cd "$(git -C "${LEGACY:-$B}" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)"
 # The primary is the live checkout: its contract may refuse the run (physical: not none, since
 # bin/domains, 2026-10-06), so the proof is that the dry run or the refusal names the primary.
-"$B/dispatch" $BR --dry-run 2>&1 | grep -qE "use $PRIM/\.claude/worktrees/demo|$PRIM's contract must say" && echo "  ok   no --repo: the primary checkout, not this script's worktree" || { echo "  FAIL default repo"; fails=$((fails+1)); }
+"$B/dispatch" $BR --dry-run 2>&1 | grep -qE "use $PRIM/\.claude/worktrees/demo|$PRIM's contract must say" && echo "  ok   no --repo: the primary checkout, not this script's worktree" || fail "default repo"
 echo "--if-room (the sounding queue: the week read at fire time)"
 # the pick passes (the stub); the week is the pool's, read through the real bin/account as yolo_launch's gate reads it
 STUB_ACCT=acct-a DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/noacct.json" ACCOUNT_CLAUDE=false \
@@ -4728,6 +4786,169 @@ DISPATCH_PIN=bound DISPATCH_MAX_RUNS=0 DISPATCH_LOG="$HA/qbound.log" DISPATCH_LA
 check "$(qget repo--demo host)" "" "  a bound run's DISPATCH_PIN=bound pins no host: the host pin is DISPATCH_HOST_PIN"
 qreset
 
+# claim-after-failed-start (2026-11-03): a claimed entry's job that fails before its run starts claims for the
+# slot its `failed` word frees (dispatch's cleanup), under the run end's own guards; a refusal, a signal, a probe
+# and a one-shot that held no slot claim nothing
+NOB=claude/laptop/2026-10-02-nobrief; QJF="$HA/Library/Logs/claude-weekly/queue.jsonl"
+check "$(sed -n '/^cleanup() {/,/^}/p' "$B/dispatch" | grep -v '^ *#' | grep -o 'drop_lock\|queue_claim' | tr '\n' ' ')" \
+  "drop_lock queue_claim " "claim-after-failed-start: the exit's claim comes after the start lock is dropped (a claim takes it)"
+python3 "$QB" enqueue --repo "$T/repo" --branch $NOB --claim "${QC[@]}" > /dev/null
+QPF=$(qplists "$HA" | head -1); QLF=$(qenv "$QPF" DISPATCH_LOG); qf0=0; [ -f "$QLF" ] && qf0=$(wc -c < "$QLF" | tr -d ' ')
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next1 "${QC[@]}" > /dev/null
+check "$(qget repo--nobrief state) $(qget repo--next1 state)" "claimed queued" "  one entry claimed here, the next queued behind it"
+DISPATCH_MAX_RUNS=5 qfire "$QPF" > /dev/null 2>&1
+tail -c +$((qf0 + 1)) "$QLF" > "$T/qlf-new"   # this fire's bytes: an earlier case wrote the same FAILED line to the day's log
+has "$T/qlf-new" "FAILED: no docs/handoff/" "  the claimed job fails before its run starts (its branch holds no brief)…"
+check "$(qget repo--nobrief state):$(qget repo--next1 state claimed_by)" ":claimed laptop" "  …its entry goes, and its exit claims the next entry for the slot it freed"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QPR=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next2 "${QC[@]}" > /dev/null
+(export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=short DISPATCH_MAX_RUNS=5; qfire "$QPR") > /dev/null 2>&1
+check "$(qget repo--demo state) $(qget repo--next2 state)" "queued queued" "  a refused start (its login short): back to queued, and nothing claimed for it"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $NOB --claim "${QC[@]}" > /dev/null
+QPF=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next3 "${QC[@]}" > /dev/null
+nrf=$(grep -c '"event": "no-room"' "$QJF")
+DISPATCH_MAX_RUNS=0 qfire "$QPF" > /dev/null 2>&1
+check "$(qget repo--nobrief state):$(qget repo--next3 state):$(( $(grep -c '"event": "no-room"' "$QJF") - nrf ))" ":queued:1" \
+  "  a failed start on a host at its cap: the entry goes, its claim takes nothing and logs no-room"
+qreset
+# a signal: bash 3.2 hands an EXIT trap the last command's status, never 128+n, so the job's trap says it (qsig).
+# The job is held in its account pick (a stand-in that sleeps, then answers as the suite's), and TERM goes to the
+# dispatch shell alone: the fire line is exec'd, so the background pid is dispatch's own
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QPT=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next6 "${QC[@]}" > /dev/null
+printf '#!/bin/sh\necho "$$" > "%s/acct-slow.pid"\nsleep 3\nexec "%s/acct" "$@"\n' "$T" "$T" > "$T/acct-slow"; chmod +x "$T/acct-slow"
+rm -f "$T/acct-slow.pid"
+python3 "$T/qfire.py" "$QPT" "$B/dispatch" | sed 's/^env /exec env /' > "$T/qfire-term.sh"
+DISPATCH_ACCOUNT="$T/acct-slow" DISPATCH_MAX_RUNS=5 bash "$T/qfire-term.sh" > /dev/null 2>&1 & qtp=$!
+for _ in $(seq 1 60); do [ -s "$T/acct-slow.pid" ] && break; sleep 0.25; done
+kill -TERM "$qtp"; wait "$qtp"; qtrc=$?
+check "$qtrc:$(qget repo--demo state):$(qget repo--next6 state)" "143::queued" \
+  "  a claimed job killed by a signal before its start: its entry goes, as before, and its exit claims nothing"
+qreset
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next4 "${QC[@]}" > /dev/null
+DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=enqueue QREAL="$QB" DISPATCH_MAX_RUNS=5 DISPATCH_LOG="$HA/qnoslot.log" DISPATCH_LABEL=$PASTL \
+  "$B/dispatch" $BR --repo "$T/repo" --headless > /dev/null 2>&1
+has "$HA/qnoslot.log" "FAILED: the queue crashed at fire time" "  a one-shot not from the queue that fails before its cap check…"
+check "$(qget repo--next4 state)" "queued" "  …held no slot, and claims nothing"
+qreset
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next5 "${QC[@]}" > /dev/null
+printf '#!/bin/sh\nexit 1\n' > "$T/claude-fails"; chmod +x "$T/claude-fails"
+DISPATCH_CLAUDE="$T/claude-fails" DISPATCH_MAX_RUNS=5 DISPATCH_LOG="$HA/qprobe.log" "$B/dispatch" $BR --repo "$T/repo" --probe --headless > /dev/null 2>&1
+has "$HA/qprobe.log" "== probe exit 1" "  a probe whose claude fails…"
+check "$(qget repo--next5 state)" "queued" "  …claims nothing (a probe neither comes from the queue nor passes a cap)"
+qreset
+
+# fix round 1 (the landing review on regatta#451): one claim per chain, and each road that claimed wrong
+# S1: two queued entries whose starts both fail: the first failure claims, the job it started carries the mark and
+# its own failure claims nothing (a host-wide failure fails one entry more, never the whole queue)
+python3 "$QB" enqueue --repo "$T/repo" --branch $NOB --claim "${QC[@]}" > /dev/null
+QPF=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-gone1 "${QC[@]}" > /dev/null
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 120 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next7 "${QC[@]}" > /dev/null
+DISPATCH_MAX_RUNS=1 qfire "$QPF" > /dev/null 2>&1
+check "$(qget repo--nobrief state):$(qget repo--gone1 state):$(qget repo--next7 state)" ":claimed:queued" \
+  "S1: a failed start claims the next entry (one slot: the cap is 1)…"
+QPG=$(ls "$HA"/Library/LaunchAgents/org.example.claude.dispatch.*gone1*.q[0-9]*.plist 2>/dev/null | head -1)
+check "$([ -n "$QPG" ] && qenv "$QPG" DISPATCH_EXIT_CLAIMED)" "1" "  …and the job it started carries the chain's mark"
+QLG=$([ -n "$QPG" ] && qenv "$QPG" DISPATCH_LOG); qg0=0; [ -f "$QLG" ] && qg0=$(wc -c < "$QLG" | tr -d ' ')
+[ -n "$QPG" ] && DISPATCH_MAX_RUNS=1 qfire "$QPG" > /dev/null 2>&1
+tail -c +$((qg0 + 1)) "$QLG" > "$T/qlg-new" 2>/dev/null
+has "$T/qlg-new" "FAILED: claude/laptop/2026-11-03-gone1 is not on origin" "  the marked job fails before its start too…"
+check "$(qget repo--gone1 state):$(qget repo--next7 state)" ":queued" "  …its entry goes, and its exit claims nothing: one claim per chain"
+has "$T/qlg-new" "one claim per chain" "  …said in its log"
+qreset
+# a refusal whose word crashed: the exit says `failed` in its place, and claims nothing still (said or not)
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
+QPR=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next12 "${QC[@]}" > /dev/null
+(export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=short DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=refused QREAL="$QB" DISPATCH_MAX_RUNS=5; qfire "$QPR") > /dev/null 2>&1
+check "$(qget repo--demo state):$(qget repo--next12 state)" ":queued" "  a refusal whose word crashed: its entry goes, and its exit claims nothing"
+qreset
+# the roads that set qnoclaim with no runtime case here: a login refused for good, and the record's own word
+check "$(grep -c 'qnoclaim="the login"' "$B/dispatch"):$(grep -c 'qnoclaim="started"; trap - TERM HUP INT' "$B/dispatch")" "2:1" \
+  "  a login refused for good, and a signal once the run's record exists, claim nothing either"
+# item 2: a said word (refused, started, stale) clears the signal trap with it: every qdone=1 is q_done's
+check "$(grep -v '^ *#' "$B/dispatch" | grep -c 'qdone=1')" "1" "item 2: qdone=1 is set in one place…"
+check "$(grep -c '^q_done() { qdone=1; trap - TERM HUP INT; }' "$B/dispatch")" "1" "  …q_done, which clears the trap"
+# item 3: a `failed` word that crashed freed nothing (its reservation stands to its lease): no claim
+python3 "$QB" enqueue --repo "$T/repo" --branch $NOB --claim "${QC[@]}" > /dev/null
+QPF=$(qplists "$HA" | head -1)
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next8 "${QC[@]}" > /dev/null
+(export DISPATCH_QUEUE_BIN="$T/qcrash.py" QCRASH=failed QREAL="$QB" DISPATCH_MAX_RUNS=5; qfire "$QPF") > /dev/null 2>&1
+check "$(qget repo--next8 state)" "queued" "item 3: a failed start whose \`failed\` word crashed claims nothing"
+qreset
+# item 4: a screen start that fails before its record (a live screen of the topic) claims once, at the exit, past the
+# `failed` word: the fire path's end claim, its reservation still counted, met a full host first (cap 1)
+printf '\t4242.run-repo-demo\t(Detached)\n' > "$T/screen.ls"
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QPS=$(qplists "$HA" | head -1); QLS=$(qenv "$QPS" DISPATCH_LOG); qs0=0; [ -f "$QLS" ] && qs0=$(wc -c < "$QLS" | tr -d ' ')
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next9 "${QC[@]}" > /dev/null
+cat > "$T/qcount.py" <<'PY2'
+import os, runpy, sys
+with open(os.environ["QCALLS"], "a") as f:
+    f.write(" ".join(x for x in sys.argv[1:] if x in ("claim", "--exit-claim", "--event-at", "failed")) + "\n")
+    if "--event-at" in sys.argv:   # the exit claim's stamp: the `failed` word's time, within this case's minute
+        ev = int(sys.argv[sys.argv.index("--event-at") + 1])
+        open(os.environ["QCALLS"] + ".ev", "w").write(str(ev))
+real = os.environ["QREAL"]
+sys.argv[0] = real
+runpy.run_path(real, run_name="__main__")
+PY2
+: > "$T/qcalls"
+(export DISPATCH_QUEUE_BIN="$T/qcount.py" QCALLS="$T/qcalls" QREAL="$QB" DISPATCH_MAX_RUNS=1; qfire "$QPS") > /dev/null 2>&1
+rm -f "$T/screen.ls"
+tail -c +$((qs0 + 1)) "$QLS" > "$T/qls-new"
+has "$T/qls-new" "FAILED: a run of demo in repo is still going" "item 4: a screen start fails before its record…"
+check "$(qget repo--demo state):$(qget repo--next9 state)" ":claimed" "  …its entry goes and the next is claimed…"
+check "$(grep -E '^(claim|failed)' "$T/qcalls" | tr '\n' ';')" "failed;claim --exit-claim --event-at;" \
+  "  …by one claim, the exit's, past the \`failed\` word (no end claim before it)"
+qev=$(cat "$T/qcalls.ev" 2>/dev/null); now=$(date +%s)
+check "$([ -n "$qev" ] && [ $((now - qev)) -ge 0 ] && [ $((now - qev)) -lt 120 ] && echo near)" "near" \
+  "  …stamped --event-at with the \`failed\` word's time, not the newest run end (G3's claim_s)"
+# cleanup clears the signal trap before its bootout, which SIGTERMs this very script (the finish review)
+check "$(awk '/^cleanup\(\) \{/{c=1} c&&/trap - TERM HUP INT/{t=NR} c&&/bootout "/{print (t?"cleared":"held"); exit}' "$B/dispatch")" "cleared" \
+  "cleanup: the signal trap goes before the bootout"
+qreset
+# item 5: take_lock gave up on a lock another process holds: no claim (a claim waits on that same lock)
+# The lock is taken after the enqueues: `enqueue --claim` waits on it too, and took it over once its holder died.
+# The holder outlives take_lock's 1 s and is killed once the job returns: a claim made at the exit would wait on it, then take the entry
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QPL=$(qplists "$HA" | head -1); QLL=$(qenv "$QPL" DISPATCH_LOG); ql0=0; [ -f "$QLL" ] && ql0=$(wc -c < "$QLL" | tr -d ' ')
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next10 "${QC[@]}" > /dev/null
+sleep 60 & LKP=$!
+mkdir -p "$HA/Library/Caches/run-seed/start.lock"; echo "$LKP" > "$HA/Library/Caches/run-seed/start.lock/pid"
+DISPATCH_LOCK_TRIES=2 DISPATCH_MAX_RUNS=5 qfire "$QPL" > /dev/null 2>&1
+kill "$LKP" 2>/dev/null; wait "$LKP" 2>/dev/null; rm -f "$HA/Library/Caches/run-seed/start.lock/pid"; rmdir "$HA/Library/Caches/run-seed/start.lock" 2>/dev/null
+tail -c +$((ql0 + 1)) "$QLL" > "$T/qll-new"
+has "$T/qll-new" "is held for 1 s (another run starting?)" "item 5: a claimed job whose take_lock gave up…"
+check "$(qget repo--demo state):$(qget repo--next10 state)" ":queued" "  …its entry goes, and its exit claims nothing"
+check "$(grep -c 'take_lock || { queue_ended; exit 1; }' "$B/dispatch"):$(grep -c 'take_lock || { queue_ended; queue_claim; exit 1; }' "$B/dispatch")" "1:0" \
+  "  the never-started retry that cannot take the lock again claims nothing either"
+qreset
+# item 6: a TERM to a claimed job held in after() (its topic's earlier run lives) ends it at once, not at after()'s end
+sleep 60 & LAP=$!
+printf '{"mode":"headless","repo":"%s","topic":"demo","pid":"%s","session":"prev6","started":"%s"}' "$T/repo" $LAP "$(date +%s)" > "$RUNS/00000000-000006-repo.demo.json"
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QPA=$(qplists "$HA" | head -1); QLA=$(qenv "$QPA" DISPATCH_LOG); qa0=0; [ -f "$QLA" ] && qa0=$(wc -c < "$QLA" | tr -d ' ')
+DISPATCH_QUEUE_NOW=$(( $(date +%s) + 60 )) python3 "$QB" enqueue --repo "$T/repo" --branch claude/laptop/2026-11-03-next11 "${QC[@]}" > /dev/null
+python3 "$T/qfire.py" "$QPA" "$B/dispatch" | sed 's/^env /exec env /' > "$T/qfire-after.sh"
+DISPATCH_PREV_WAIT=50 DISPATCH_POLL=1 DISPATCH_MAX_RUNS=5 bash "$T/qfire-after.sh" > /dev/null 2>&1 & qap=$!
+for _ in $(seq 1 120); do tail -c +$((qa0 + 1)) "$QLA" 2>/dev/null | grep -q "waiting for the run of demo" && break; sleep 0.25; done
+t6=$(date +%s); kill -TERM "$qap"; wait "$qap"; qarc=$?; t6=$(( $(date +%s) - t6 ))
+check "$qarc:$([ "$t6" -lt 15 ] && echo soon || echo "after ${t6} s")" "143:soon" "item 6: a TERM in after() ends the claimed job at once"
+check "$(qget repo--demo state):$(qget repo--next11 state)" ":queued" "  …its entry goes, and its exit claims nothing (a signal)"
+# this run's own after() only: another suite on the Mac may be in an after() of its own demo (round 1's review)
+qap6="dispatch-rc after .*$(basename "$T")/repo demo\$"
+for _ in $(seq 1 20); do pgrep -f "$qap6" > /dev/null || break; sleep 0.25; done
+check "$(pgrep -f "$qap6" | wc -l | tr -d ' ')" "0" "  …and the trap stopped after()'s own process"
+kill "$LAP" 2>/dev/null; wait "$LAP" 2>/dev/null; rm -f "$RUNS/00000000-000006-repo.demo.json"
+qreset
+
 # item 8: the caller's own branch claimed here is handed off once its run shows started, never at the job's load
 rm_own "$HO"
 (cd "$W" && CLAUDE_CODE_SESSION_ID=sess-8 env -u DISPATCH_LABEL DISPATCH_MAX_RUNS=5 DISPATCH_NEXT_WAIT=2 DISPATCH_LOG="$T/q8.log" \
@@ -5148,4 +5369,4 @@ has "$T/out" "--wait ignored — no queue home here" "  no queue home, no --on: 
 has "$T/ssh.calls" "ssh buildbox-ssh" "  …and the default host still takes the run"
 unset DISPATCH_HOST
 
-[ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }
+[ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; printf 'FAILED assertion: %s\n' "${failed[@]+"${failed[@]}"}"; exit 1; }

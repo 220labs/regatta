@@ -23,7 +23,7 @@ or a listener (AGENTS.md's Drive trap).
 
 Which roads reach a peer: its line in `wharf-runs/kick-roads` (`<host>:<road>[,<road>…]`, or `none`), else
 what exists — `orca` where `wharf-runs/orca-pairs` names this host's pair with it, `ssh` where `wharf-runs/ssh`
-or `wharf-runs/kick-ssh` has its alias. `wharf-runs/kick-ssh` (`<host>:<alias>`) is read by the kick alone: a host
+or `wharf-runs/kick-ssh` has its alias. `wharf-runs/kick-ssh` (`<host>:<alias>`) is shared by kick and message roads: a host
 this road may reach that every other reader of `wharf-runs/ssh` must not, a scope's node above all (the overlay's
 table keeps such a node off that key: berth would probe it and place one-shots there, pickup, stalls and `account
 doctor` would read it). `sheep` only where a line names it: a kicker cannot see another host's listener, and a line names it only once a
@@ -53,7 +53,7 @@ import common  # noqa: E402
 HOST_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
 ROADS = ("sheep", "orca", "ssh")
 ROADS_KEY = "wharf-runs/kick-roads"
-KICK_SSH_KEY = "wharf-runs/kick-ssh"   # the kick's own aliases: this file reads it, nothing else may
+KICK_SSH_KEY = "wharf-runs/kick-ssh"   # aliases shared with hail; placement never reads this key
 TIMEOUT = 15             # one road's call, at most: each returns well under it (the receiver only notes and kickstarts)
 ORCA_WAIT_MS = 10000     # `terminal wait --for exit`, as the component names it
 PROVE_S = float(os.environ.get("DISPATCH_KICK_PROVE_S") or 8)   # kick-listen's one bounded proving run (the suites shorten it)

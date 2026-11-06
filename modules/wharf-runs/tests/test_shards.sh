@@ -132,10 +132,10 @@ if (repo / "AGENTS.md").exists():
     assert [c for c in contract if "modules/wharf-runs/tests/" in c] == plain
 linux = json.loads((t / "linux-ids").read_text())
 # `macos` needs a Mac; `queue` failed on Linux in #500's run (its finish-queue cases read the Mac's claim floors);
-# `pickup` passed on GitHub's hosted Ubuntu and failed on the self-hosted runners, whose image lacks lsof (TODO.md [runner-lsof])
-candidates = ["wharf-runs-" + g for g in groups if g not in ("macos", "queue", "pickup")]
+# `pickup` failed on the self-hosted runners while their image lacked lsof; the image has it (runner-lsof, 2026-11-06)
+candidates = ["wharf-runs-" + g for g in groups if g not in ("macos", "queue")]
 assert [i for i in linux if i.startswith("wharf-runs")] == candidates, linux
-assert len(groups) == 10 and len(candidates) == 7
+assert len(groups) == 10 and len(candidates) == 8
 # a shard on the Linux list runs LINUX_OK's suites only off macOS: one of its suites off LINUX_OK would be a
 # green check-linux that ran nothing, so a suite joins LINUX_OK in the change that lists its shard
 import re
@@ -151,7 +151,7 @@ share = t / "share"
 (share / ".github/ci/linux-ids").write_text("\n".join(candidates) + "\n")
 (share / ".circleci/parts/check-linux.yml").write_text("id: [" + ", ".join(candidates) + "]\n")
 PY
-check "$?" 0 "the workflow and any root contract name wharf-runs once; its ids are all ten groups, seven on Linux"
+check "$?" 0 "the workflow and any root contract name wharf-runs once; its ids are all ten groups, eight on Linux"
 # Restore the script used above to demonstrate hidden errors before replaying the whole partition.
 printf '#!/bin/sh\necho ran:test_dispatch\n' > "$T/tree/tests/test_dispatch.sh"
 cp -R "$T/tree/." "$T/share/modules/wharf-runs/"
@@ -159,7 +159,7 @@ mkdir -p "$T/share/modules/extra/tests"
 printf '#!/bin/sh\necho ran:uncovered\n' > "$T/share/modules/extra/tests/check.sh"
 TEST_OS=Darwin bash "$T/share/.github/ci/share.sh" macos > "$T/out" 2>&1
 check "$?" 0 "the Mac share executes the wired remainder"
-check "$(ran)" "$(printf '%s\n' test_harness test_rc_hosts test_check_ci test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_pickup test_seed_from uncovered | sort)" "the Mac share runs macos, queue, pickup and an uncovered command, without Linux candidates"
+check "$(ran)" "$(printf '%s\n' test_harness test_rc_hosts test_check_ci test_vendor test_handover test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_lander uncovered | sort)" "the Mac share runs macos, queue and an uncovered command, without Linux candidates"
 ran > "$T/covered"
 TEST_OS=Linux bash "$T/share/.github/ci/share.sh" rest > "$T/out" 2>&1
 check "$?" 0 "the twin's rest on Linux passes: queue and macos leave their suites to a Mac"

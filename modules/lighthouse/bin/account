@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--room fable] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--overdraw [--job TEXT]] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--room fable] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--overdraw [--job TEXT]] [--for finish] [--json]   the first account with room; exit 3 if none
     account overdraw-log                                         the pick's `overdraw` object on stdin, logged once its job started: overdraw.jsonl and the logbook
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
@@ -138,6 +138,29 @@ keeps a ship's own road. Known gaps: two hosts overdrawing in the same seconds m
 issues are never closed, and the lookup needs the `overdraw` label on the issue (GitHub drops labels
 for a token without push access): TODO.md [overdraw-followups].
 
+Finish ceiling (the owner, 2026-11-05: landings may run past a login's week ceiling, to a line of its own): `lighthouse/week-max-finish`, read
+only by a pick that holds a launcher's one-use receipt (`--for finish` and the core's finish_pick_env; the flag or an
+environment word alone is a build). A login's own line stands wherever it is higher than the week ceiling that would
+judge the row; `*:` reads as week-max's `*:` does, over a row that sets no ceiling of its own, never over a reserve, a
+registry or budget week_max, an own live week-max line or a row kept out of the overdraw (may_overdraw). A line that
+does not read raises nothing, and takes `*:` with it, as it may be some login's own line mistyped. A row the finish
+ceiling judged is never lifted by the overdraw: the line is how far the owner said a landing may go, and every
+launcher's pick passes `--overdraw`. The line binds finishes alone (a high build may still overdraw that row), and a
+line at or below the ceiling that would judge the row changes nothing.
+
+The lend bar (the owner, 2026-11-05: a tenant's login at 50%, after that only its tenant's work):
+`rules.lend_max`, or budgets.json's, is a week ceiling for every repo that is not the row's own (owns_repo: its
+scope's login names it, or its tenant's repos cover it); its own work keeps `week_max`. A row under its week
+ceiling at or past the bar is refused another's repo as `week N% ≥ M% (lend bar…)`, judge's own week wording,
+so a reader of a week refusal reads it alike: dispatch's resets() requeues it, and the overdraw pass lifts it as a
+week bar, but last: a lent row only after every other row refused by its own week ceiling (lift's order, so the
+tenant's own room is spent last). pick, a pinned ship and `limits --repo`
+(dispatch's --account) all judge it; past it a pinned ship moves to another login, and `limits --repo`'s `lends`
+tells dispatch's --next to walk rather than inherit the login, so another repo's work moves on instead of
+waiting for the reset. A pick with no repo is not the row's own, so the bar judges it; `limits` with no repo
+never does. No key, no bar; a key that is present but no number from 0 to 100 lends nothing (0), said on
+stderr outside --json: it only narrows.
+
 The logins file (work-account design E1, docs/work-account-2026-10-06.md) is what the owner would
 otherwise carry in mind: per label, the e-mail, plan, who pays and which Macs carry a dir — kept
 on a shared drive, never git (it names e-mails, not secrets). {"logins": {label: {email, plan,
@@ -213,7 +236,7 @@ links and rewrites the copies; the usage tick runs it every 15 min through claud
 reaches the hooks within 15 min. doctor and setup read the links themselves: a person runs them.
 
 The budgets file (`lighthouse/budgets.json`, since 2026-10-31: the owner, "put the budget caps in a regatta
-config that I can edit myself, quickly"), `{label: {"week_max": N, "window_max": N, "free_below": N}}`,
+config that I can edit myself, quickly"), `{label: {"week_max": N, "window_max": N, "free_below": N, "lend_max": N}}`,
 overrides those rules of a registry row; a key starting `_` is a comment. Where it links into a shared
 drive (refresh makes that link, below), one edit reaches every host whose key links there within the usage tick's 15 min
 (`refresh` copies it, as it does the tenants file); a host with no drive keeps a plain file. Optional
@@ -688,7 +711,7 @@ def load_logins(local=False, keep=True):
     return p, logins
 
 
-BUDGET_KEYS = ("week_max", "window_max", "free_below")
+BUDGET_KEYS = ("week_max", "window_max", "free_below", "lend_max")
 
 
 def load_budgets(keep=True, labels=None):
@@ -736,6 +759,9 @@ def load_budgets(keep=True, labels=None):
             budget_warn(f"account: {p}: {label} is not an object; skipped")
             continue
         for k, v in rules.items():
+            if k == "lend_max":   # a narrowing key: a bad value rides through, and lend_value reads it as lending nothing
+                out.setdefault(label, {})[k] = v
+                continue
             # json reads NaN and Infinity as numbers, and a NaN ceiling never refuses (budgets review)
             if (k not in BUDGET_KEYS or isinstance(v, bool) or not isinstance(v, (int, float))
                     or not math.isfinite(v) or not 0 <= v <= 100):
@@ -2540,53 +2566,101 @@ def when(t):
 
 
 WEEK_MAX_KEY = "lighthouse/week-max"
+WEEK_MAX_FINISH_KEY = "lighthouse/week-max-finish"
 _WEEK_MAX = None
 _WEEK_MAX_SAID = set()
+_WEEK_MAX_FINISH = None
+_WEEK_MAX_FINISH_SAID = set()
+_OVERDRAW_SAID = set()
 
 
-def live_week_max(label):
+def ceiling_value(v):
+    """A week-max line's value as a number above 0 and at most 100, else None."""
+    try:
+        n = float(v)
+    except ValueError:
+        return None
+    return None if n != n or not 0 < n <= 100 else n
+
+
+def live_week_max(label, finish=False):
     """(ceiling, where from, bad line) from the config's `lighthouse/week-max` (live-limits, 2026-11-01): lines
     `<login>:<pct>`, `*:<pct>` for any login without one, a number above 0 and at most 100. `regatta limit` writes it
     in the config dir's live layer, so a ceiling changes on the next pick, with no registry edit and no landing.
     The login's own line first; none naming it is (None, None, None). A line that is no ceiling reads as none, said
     on stderr once and returned as the bad line, never a crash of every pick (AGENTS.md's optional-key trap). The
-    table is read once per run: a pick judges every row, some twice."""
-    global _WEEK_MAX
-    if _WEEK_MAX is None:
+    table is read once per run: a pick judges every row, some twice. FINISH reads `lighthouse/week-max-finish`, which
+    widens, so it fails closed: an unreadable read leaves the table empty, and a line that is no ceiling (it may be a
+    login's own, mistyped, which `*:` would then serve) takes `*:` out of it; good own lines stand."""
+    global _WEEK_MAX, _WEEK_MAX_FINISH
+    key = WEEK_MAX_FINISH_KEY if finish else WEEK_MAX_KEY
+    table = _WEEK_MAX_FINISH if finish else _WEEK_MAX
+    said = _WEEK_MAX_FINISH_SAID if finish else _WEEK_MAX_SAID
+    fallback = "the week ceiling judges" if finish else "the registry's rules.week_max judges"
+    if table is None:
         try:
             c = core()
-            lines = c.config_lines(WEEK_MAX_KEY) or []
+            if finish:
+                lines, why = c.config_read(key)
+                # config_read can return a readable layer alongside an unreadable base. Widening
+                # requires the whole read to succeed, never a fallback onto a stale base or wildcard.
+                layer = c.CONFIG / c.LIVE / key
+                # Predicates suppress permission errors on Python 3.14. Only ENOENT means absent;
+                # an inaccessible parent or a dangling layer must keep the normal ceiling.
+                try:
+                    layer.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    layer.read_text(encoding="utf-8-sig")
+                if why:
+                    raise ValueError(why)
+                lines = lines or []
+            else:
+                lines = c.config_lines(key) or []
             # the core's entry reader: an entry the overlay wrote one word per line (`acct:` then `80`) and a note
             # after it read whole, as every other reader of a `<word>:<value>` key takes them (the round-1 review)
             ents = c.config_entries(lines) if hasattr(c, "config_entries") else None
         except Exception:   # no core here: no live ceiling, the registry's as ever
             lines, ents = [], None
+            if finish and "read" not in said:
+                said.add("read")
+                print(f"account: {key} could not be read; {fallback}", file=sys.stderr)
         if ents is None:
             ents = [(w.strip().lower(), v.strip()) for w, colon, v in (l.partition(":") for l in lines)
                     if colon and w.strip()]
-        _WEEK_MAX = {}
+        table, stray = {}, False
         for w, v in ents:
             if w:
-                _WEEK_MAX.setdefault(w, v)
-    table = _WEEK_MAX
+                table.setdefault(w, v)
+                stray = stray or ceiling_value(v) is None   # config_entries folds a line with no word into the entry before
+            elif finish:
+                stray = True
+                if "line" not in said:
+                    said.add("line")
+                    print(f"account: {key} {v!r} is no login ceiling; {fallback}", file=sys.stderr)
+        if finish and stray and ceiling_value(table.get("*", "")) is not None:
+            del table["*"]
+            print(f"account: {key} holds a line that does not read; its `*:` line raises nothing", file=sys.stderr)
+        if finish:
+            _WEEK_MAX_FINISH = table
+        else:
+            _WEEK_MAX = table
     for name in (str(label).lower(), "*"):
         if name in table:
             v = table[name]
-            try:
-                n = float(v)
-            except ValueError:
-                n = None
-            if n is None or n != n or not 0 < n <= 100:
-                if name not in _WEEK_MAX_SAID:
-                    _WEEK_MAX_SAID.add(name)
-                    print(f"account: {WEEK_MAX_KEY} {name}:{v} is no ceiling (a number above 0, at most 100); "
-                          "the registry's rules.week_max judges", file=sys.stderr)
+            n = ceiling_value(v)
+            if n is None:
+                if name not in said:
+                    said.add(name)
+                    print(f"account: {key} {name}:{v} is no ceiling (a number above 0, at most 100); "
+                          f"{fallback}", file=sys.stderr)
                 return None, None, f"{name}:{v}"
-            return (int(n) if n == int(n) else n), f"{WEEK_MAX_KEY} {name}:", None
+            return (int(n) if n == int(n) else n), f"{key} {name}:", None
     return None, None, None
 
 
-def ceiling(a, lim, t):
+def week_ceiling(a, lim, t):
     """The week ceiling now, and why. `reserve.day` (D2: Saturday) is a local weekday;
     `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets. A reserve
     judges first (on a row budgets.json tightens, the row's cap — its own live line, else the budget — caps it
@@ -2635,6 +2709,28 @@ def ceiling(a, lim, t):
     return rules.get("week_max", 100), ("week ceiling, budgets.json" if budget is not None else "week ceiling")
 
 
+def fleet_finish_serves(a, why):
+    """Whether a `*:` finish line may raise this row, whose week ceiling WHY names: as week-max's `*:`, only a row
+    that sets none of its own, so a ceiling set low on purpose is never raised by a fleet-wide line (week_ceiling's
+    comment; finish-ceiling's landing review, 2026-11-06). A reserve judged, the row's week_max (the registry's or
+    budgets.json's), the login's own live line, or a row kept out of the overdraw (may_overdraw): no."""
+    live, src, _ = live_week_max(a.get("label"))
+    own_live = live is not None and not src.endswith(" *:")
+    return (why.startswith("week ceiling") and "week_max" not in a["rules"] and not own_live
+            and may_overdraw(a))
+
+
+def ceiling(a, lim, t, finish=False):
+    """The week ceiling that judges this row, and why. For a finish (header, "Finish ceiling") a line of
+    `lighthouse/week-max-finish` stands in its place where it is higher."""
+    cap, why = week_ceiling(a, lim, t)
+    if finish:
+        higher, src, _ = live_week_max(a.get("label"), finish=True)
+        if higher is not None and higher > cap and (not src.endswith(" *:") or fleet_finish_serves(a, why)):
+            return higher, "finish ceiling"
+    return cap, why
+
+
 def rule_num(a, key, default):
     """A row's optional numeric rule; anything but a number reads as the default, said once on stderr
     (AGENTS.md's optional-key trap: a TypeError in judge would fail every pick)."""
@@ -2676,7 +2772,7 @@ def no_five_hour(a, lim):
             and set(kinds) <= {"weekly_all", "weekly_scoped"})
 
 
-def judge(a, lim, t, allow_overage=False, at=None, bar=None):
+def judge(a, lim, t, allow_overage=False, at=None, bar=None, finish=False):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
     whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
     the window as it stood then (header, "Pace"). bar: a week ceiling that replaces the row's, the
@@ -2691,7 +2787,7 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None):
         return False, "limits unknown (no probe answered, none cached)"
     if overage_on(lim) and not allow_overage:
         return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
-    week_max, why = (bar, "overdraw: no login was under its bar") if bar else ceiling(a, lim, t)
+    week_max, why = (bar, "overdraw: no login was under its bar") if bar else ceiling(a, lim, t, finish)
     m = margin(a, t)
     win_max = a["rules"].get("window_max", 100) - m
     wk, fh = lim.get("seven_day"), lim.get("five_hour")
@@ -2722,10 +2818,57 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None):
     return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% ≤ {win_max}%"
 
 
+
+def lend_value(a):
+    """The row's lend bar as a number, or None with no key. `rules.lend_max` only narrows, so a value that is
+    present but does not read (no number, NaN, outside 0 to 100), in the registry or budgets.json, lends nothing: 0,
+    said on stderr outside --json at each read (AGENTS.md's narrowing trap: only a truly absent key widens)."""
+    if "lend_max" not in a["rules"]:
+        return None
+    v = a["rules"]["lend_max"]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 100:
+        if "--json" not in sys.argv:   # quiet under --json, as budget_warn: a caller may merge stderr into what it parses
+            print(f"account: {a['label']}'s rules.lend_max {v!r} is not a number from 0 to 100; it lends nothing",
+                  file=sys.stderr)
+        return 0
+    return v
+
+
+def lends_for(reg, a, repo, own=False):
+    """True when row a has a lend bar and the repo at path is not its own (its scope's login, or its tenant's
+    repos): the bar judges that repo's work there. own: the caller's scope_login_of(repo), read once
+    (AGENTS.md: a registry re-read mid-walk can find it torn); False reads it here. No repo: not its own."""
+    if "lend_max" not in a["rules"]:
+        return False
+    if not repo:
+        return True
+    own = scope_login_of(repo) if own is False else own
+    return not ((own and own[1] and own[1] == a["label"]) or own_tenant(reg, a, repo))
+
+
+def lend_bar(reg, a, lim, repo, own=False):
+    """Why row a, under its week ceiling, still may not run repo: its week is at or past its lend bar (lend_value)
+    and the repo is not its own (lends_for), else None (header, "The lend bar"). No key, no bar; a week with no
+    figure is judge's to refuse, never this one's. pick, pick_for_ship's pinned row and limits_json all ask it."""
+    wk = (lim or {}).get("seven_day")
+    if "lend_max" not in a["rules"] or isinstance(wk, bool) or not isinstance(wk, (int, float)):
+        return None
+    if not lends_for(reg, a, repo, own):
+        return None
+    bar = lend_value(a)
+    if wk < bar:
+        return None
+    t = a.get("tenant")
+    whose = f"{t}'s" if isinstance(t, str) else "its own scope's"
+    by = ", budgets.json" if "lend_max" in (a.get("budgeted") or ()) else ""
+    return (f"week {wk}% ≥ {bar}% (lend bar{by}: past it, {whose} work only); "
+            f"resets {when(lim.get('seven_day_resets'))}")
+
+
 ROOMS = ("fable",)
 
 
-def room_short(a, lim, t, room):
+def room_short(a, lim, t, room, finish=False):
     """→ None when the row has the room asked for, else (why, lasting): lasting when the plan itself
     lacks it (a ship pinned there moves), not when its week is full (it waits). Fable's room is its own
     week under the row's week ceiling (header, "Room")."""
@@ -2738,7 +2881,7 @@ def room_short(a, lim, t, room):
     fw = lim.get("fable_week")
     if fw is None:
         return "Fable room unknown (its week has no figure)", False
-    week_max, why = ceiling(a, lim, t)
+    week_max, why = ceiling(a, lim, t, finish)
     if fw >= week_max:
         return f"Fable's week {fw}% ≥ {week_max}% ({why}); resets {when(lim.get('fable_week_resets'))}", False
     return None
@@ -2778,8 +2921,10 @@ def may_overdraw(a):
         return not a.get("primary")
     if isinstance(v, bool):
         return v
-    print(f"account: {a['label']}'s rules.overdraw {v!r} is not true or false; the row is never overdrawn",
-          file=sys.stderr)
+    if a["label"] not in _OVERDRAW_SAID:   # ceiling() asks too, once per judge
+        _OVERDRAW_SAID.add(a["label"])
+        print(f"account: {a['label']}'s rules.overdraw {v!r} is not true or false; the row is never overdrawn",
+              file=sys.stderr)
     return False
 
 
@@ -2871,7 +3016,7 @@ def _overdraw_record(info):
 
 
 def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False, room=None,
-         overdraw=False):
+         overdraw=False, finish=False):
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
     repo: the path the step runs in; a row the repo is routed off (tenants) is skipped unprobed.
     room: `fable` takes only a row with Fable room (header, "Room").
@@ -2912,12 +3057,16 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
             # under --room, a plan its cached reading says lacks Fable is said first: no reset lifts it
             # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts)
-            rs = room_short(a, limits(a, cached=True)[0], t, room) if room and not a.get("same_as") else None
+            rs = room_short(a, limits(a, cached=True)[0], t, room, finish) if room and not a.get("same_as") else None
             skipped.append((a["label"], rs[0] if rs and rs[1] else judge(a, None, t)[1]))   # same_as: its own fix leads
             continue
         lim, at = limits(a, cached=cached)
-        ok, why = judge(a, lim, t, allow_overage, at)
-        rs = room_short(a, lim, t, room)
+        ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
+        if ok:
+            lent = lend_bar(reg, a, lim, repo, own)
+            if lent:   # worded as judge's week refusal, so whatever reads a week bar reads this one too
+                ok, why = False, lent
+        rs = room_short(a, lim, t, room, finish)
         if rs:   # before the fallbacks below: an unknown Fable is no room, the primary's included
             # a plan without Fable alone: no reset lifts it, so judge's reason never leads (resets())
             # judge's "limits unknown" is the same unread probe the room reads, so the room's reason stands alone
@@ -2965,9 +3114,16 @@ def lift(over, t, allow_overage, skipped):
     """The overdraw pass (header, "Overdraw"): (row, reason, skipped) for the first of OVER, in walk order, that
     may be lifted and is eligible with its week ceiling at 100, else None. OVER holds only rows that got past
     every scope, tenant, confine, room and cooldown refusal and were refused by their week ceiling first.
-    The row returned is a copy carrying `overdraw`, what the caller hands `account overdraw-log` at its start."""
-    for a, lim, at, bar_why in over:
+    A row refused by its lend bar goes last, after every other (header, "The lend bar"): lifting it spends the
+    tenant's own room on another repo's work, so it lends only when no other row can be lifted (sorted is stable:
+    the walk's order holds inside each group). The row returned is a copy carrying `overdraw`, what the caller
+    hands `account overdraw-log` at its start."""
+    for a, lim, at, bar_why in sorted(over, key=lambda o: "(lend bar" in o[3]):
         if not may_overdraw(a):
+            continue
+        if "(finish ceiling)" in bar_why:
+            # the owner's "up to 97%": every launcher's pick passes --overdraw, so a lift here would make the line
+            # no ceiling on any real road (finish-ceiling's landing review, 2026-11-06)
             continue
         live, src, _ = live_week_max(a.get("label"))
         if live is not None and not src.endswith(" *:"):
@@ -4044,7 +4200,7 @@ def load_ships():
 
 
 def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True, allow_overage=False,
-                  room=None):
+                  room=None, finish=False):
     """pick, but a ship stays on its login (module docstring). → (row, reason, skipped); Short as pick."""
     bad = room_refusal(reg, kind, provider, room)
     if bad:
@@ -4065,9 +4221,13 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             if not gone:
                 t = now()
                 lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached)
-                ok, why = judge(a, lim, t, allow_overage, at)
+                ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
+                if ok and lend_bar(reg, a, lim, repo, own):
+                    # past its lend bar the login takes its own work only, so another repo's ship moves on, as from
+                    # a plan without Fable, rather than wait for the week's reset (the lend bar's review, 2026-11-05)
+                    gone = "past its lend bar for this repo"
                 # cooling down: its cached reading still says whether its plan carries Fable
-                rs = room_short(a, limits(a, cached=True)[0] if cooldown(a, t) else lim, t, room) if room else None
+                rs = room_short(a, limits(a, cached=True)[0] if cooldown(a, t) else lim, t, room, finish) if room else None
                 unknown = rs and rs[0].startswith("Fable room unknown")
                 if rs and cooldown(a, t) and not rs[1]:
                     rs = None   # a cooldown waits as before; a plan without Fable, or a Fable room unknown, moves the ship
@@ -4084,7 +4244,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                         and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
                     # and as pick walks it: another row with room runs before an unread tenant login (tenant-unknown-last)
                     try:
-                        alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room)
+                        alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish)
                     except Short:
                         alt = None
                     if alt and alt[0]["label"] != a["label"] and not alt[1].startswith("limits unknown"):
@@ -4102,7 +4262,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             moved = f"{pinned['label']} is {gone}"
         elif pinned:
             moved = f"{pinned.get('label')} is no row any more"
-        a, why, skipped = alt or pick(reg, kind, provider, False, cached, repo, allow_overage, room)
+        a, why, skipped = alt or pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish)
         if pin:
             ships[key] = {"label": a["label"], "at": int(now())}
             write_json(SHIPS, ships)
@@ -4927,15 +5087,18 @@ def fable_word(lim):
     return "yes" if f else ("no" if f is False else "unknown")
 
 
-def limits_json(a, lim, at, t, repo=None, reg=None):
+def limits_json(a, lim, at, t, repo=None, reg=None, own=False):
+    own = scope_login_of(repo) if own is False else own   # once, for the bar and the scope check below
     ok, why = judge(a, lim, t, at=at)
+    lent = lend_bar(reg, a, lim, repo, own) if ok and repo and reg is not None else None
+    if lent:   # with a repo only: a listing with none says nothing of whose work it is (pick reads none as another's)
+        ok, why = False, lent
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)
     c = confined_out(reg, a, repo) if reg is not None else None
     if c:
         ok, why, d = False, c, d or c
-    own = scope_login_of(repo)
     if own and own[1] != a["label"]:  # in `denied` too: dispatch's --force never crosses that
         ok, why, d = False, (f"scope {own[0]} runs on {own[1]}" if own[1] else own[0]), d or f"scope {own[0]}"
     if not a["enabled"]:  # only `limits --all --parked` lists one; never a pick. judge's reason kept: why no figures
@@ -4947,13 +5110,18 @@ def limits_json(a, lim, at, t, repo=None, reg=None):
             "no_five_hour": no_five_hour(a, lim),
             # dispatch's --force is a person's yes past overage: refused when unattended (pickup open refuses any)
             "overage": overage_on(lim),
-            "same_as": a["same_as"][0] if a.get("same_as") else None}
+            "same_as": a["same_as"][0] if a.get("same_as") else None,
+            # the row has a lend bar this repo is not its own: dispatch's --next then walks rather than inherit the
+            # login, so past the bar the step moves on (the lend bar's review, 2026-11-05); with a repo only
+            "lends": bool(repo and reg is not None and lends_for(reg, a, repo, own))}
 
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="account", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pick")
+    p.add_argument("--for", dest="purpose", choices=("build", "finish"), default="build",
+                   help="finish uses its live ceiling only with the launcher's internal receipt")
     p.add_argument("--kind")
     p.add_argument("--provider")
     p.add_argument("--room", help="fable: only a row whose plan carries Fable with room in its week (header, \"Room\")")
@@ -5028,6 +5196,8 @@ def main(argv):
     sub.add_parser("overdraw-log", help="the pick's overdraw object on stdin, logged once its job started (header, \"Overdraw\")")
     p = sub.add_parser("week-max", help="a login's live week ceiling (lighthouse/week-max), or none; exit 2 on a line that is no ceiling")
     p.add_argument("label")
+    p.add_argument("--for", dest="purpose", choices=("build", "finish"), default="build",
+                   help="finish reads week-max-finish for regatta limit's trial, without granting a pick")
     p = sub.add_parser("doctor")
     p.add_argument("--local", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -5036,7 +5206,7 @@ def main(argv):
     if args.cmd == "overdraw-log":   # needs no registry: what the pick decided is on stdin
         return cmd_overdraw_log()
     if args.cmd == "week-max":   # `regatta limit`'s trial read: needs no registry
-        v, src, bad = live_week_max(args.label)
+        v, src, bad = live_week_max(args.label, finish=args.purpose == "finish")
         print("none" if v is None else f"{v} ({src})")
         return 2 if bad else 0
     if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
@@ -5250,9 +5420,10 @@ def main(argv):
         rows = [a for a in rows if a["label"] not in hide]
         t = now()
         out = []
+        own = scope_login_of(args.repo)   # once for every row (AGENTS.md: a registry re-read mid-walk can find it torn)
         for a in rows:
             lim, at = limits(a, cached=args.cached)
-            out.append(limits_json(a, lim, at, t, args.repo, reg))
+            out.append(limits_json(a, lim, at, t, args.repo, reg, own))
         if args.orca and (args.all or not args.label):
             # an Orca agent hides by its card's label or by Orca's name for it (`antigravity`, `cursor`)
             out += [hide_families(o, fams) for o in orca_reported({a["label"] for a in reg["accounts"]}, cached=args.cached)
@@ -5304,15 +5475,20 @@ def main(argv):
               "(CLAUDE_UNATTENDED) may not pass it", file=sys.stderr)
         return 2
     try:
+        receipt = core().consume_finish_pick()
+    except (ImportError, AttributeError):   # an older core grants no finish allowance
+        receipt = False
+    finish = args.purpose == "finish" and receipt
+    try:
         if args.ship and args.bound:
             sys.exit("account: --ship and --bound do not go together (bound work is the primary's, pinned already)")
         if args.ship:
             a, why, skipped = pick_for_ship(reg, args.ship, args.kind, args.provider, args.cached, args.repo,
                                             pin=not (args.cached or args.no_pin), allow_overage=args.allow_overage,
-                                            room=args.room)
+                                            room=args.room, finish=finish)
         else:
             a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo,
-                                   args.allow_overage, args.room, overdraw=args.overdraw)
+                                   args.allow_overage, args.room, overdraw=args.overdraw, finish=finish)
     except Short as s:
         if args.json:
             print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))

@@ -768,6 +768,18 @@ for shape in "bin/pickup review claude/x" "bin/pickup archive claude/x" "git com
   ok "allowed: $shape" '[ "$(tool A Bash "{\"command\":\"$shape\"}" "$P")" = allow ]'
 done
 
+echo "gh pr ready --undo is pr restack's road, never a toggle (restack-clean-overlap, 2026-11-04)"
+for shape in "gh pr ready 434 --undo" "gh pr ready --undo 434" "env GH_TOKEN=x gh pr ready 7 -R o/r --undo" \
+             "cd /tmp && /opt/homebrew/bin/gh pr ready 7 --undo=true" \
+             "gh api graphql -f query='mutation { convertPullRequestToDraft(input: {pullRequestId: 1}) { clientMutationId } }'"; do
+  ok "denied, from anywhere: $shape" '[ "$(tool A Bash "{\"command\":\"$shape\"}" "$P")" = deny ]'
+done
+ok "  the reason names pr restack" \
+  'toolreason A Bash "{\"command\":\"gh pr ready 434 --undo\"}" "$P" | grep -q "pr restack <N>"'
+for shape in "gh pr ready 434" "gh pr view 434 --json isDraft" "git commit -m 'never gh pr ready --undo'"; do
+  ok "allowed: $shape" '[ "$(tool A Bash "{\"command\":\"$shape\"}" "$P")" = allow ]'
+done
+
 echo "deleting a claude/* branch or a worktree is the owner's act, never an agent's (D1, 2026-09-25)"
 del() { tool A Bash "{\"command\":\"$1\"}" "${2:-$WA}"; }
 for shape in "git branch -D claude/test-b" "git branch -d claude/test-b" "git branch --delete claude/test-b" \

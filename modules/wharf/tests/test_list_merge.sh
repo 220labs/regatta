@@ -531,6 +531,37 @@ python3 "$LM" "$T/fo" "$T/fa" "$T/fb" TODO.md 2>"$T/err"; check "$?" 0 "a file i
 grep -q 'merged as union' "$T/err"; check "$?" 0 "  and says so"
 check "$(tr '\n' '|' < "$T/fa")" "pre A|pre B|" "  union's result"
 
+echo "== the publish gate's allowlist: merged as a set (restack-clean-overlap)"
+setmerge() { printf "$1" > "$T/so"; printf "$2" > "$T/sa"; printf "$3" > "$T/sb"
+  python3 "$LM" "$T/so" "$T/sa" "$T/sb" .helloworld/allowlist.txt; echo "rc=$?"; tr '\n' '|' < "$T/sa"; }
+check "$(setmerge 'a\nx\nz\n' 'a\nz\n' 'a\nx\ny\nz\n')" "rc=0
+a|y|z|" "a path ours took off stays off while theirs listed one beside it (union brought it back)"
+check "$(setmerge 'a\nz\n' 'a\nc\nz\n' 'a\nc\ny\nz\n')" "rc=0
+a|c|y|z|" "a path both sides listed: once"
+check "$(setmerge 'a\nz\n' 'a\nfoo\nz\n' 'a\nfoo \nz\n')" "rc=0
+a|foo|z|" "  the same path with a trailing space: once, as the gate reads it"
+check "$(setmerge '# h\na\nz\n' '# h\na\nb\nz\n' '# h\na\nz\n')" "rc=0
+# h|a|b|z|" "ours' addition kept, the header kept"
+check "$(setmerge 'a\nb\nz\n' 'a\nb\nz\n' 'a\nz\n')" "rc=0
+a|z|" "theirs' deletion holds"
+check "$(setmerge '# head\nb.txt\n' '# head 2\nb.txt\n' '# head\na.txt\nb.txt\n')" "rc=0
+# head 2|a.txt|b.txt|" "  an entry whose predecessor is gone goes below the header, never above it"
+check "$(setmerge '# p\na\n# --\nb\n# --\nz\n' '# p\na\n# --\nb\n# --\nz\nc\n' '# p\na\n# --\nb\n# --\nd\nz\n')" "rc=0
+# p|a|# --|b|# --|d|z|c|" "  a comment ours holds twice stays twice (the landing review)"
+setup "$T/s" sub.txt 'x
+'; mkdir -p "$R/.helloworld"; printf 'a\nx\nz\n' > "$R/.helloworld/allowlist.txt"
+printf '.helloworld/allowlist.txt merge=union\n' >> "$R/.gitattributes"; git -C "$R" add -A; git -C "$R" commit -qm allow
+BASE=$(git -C "$R" rev-parse HEAD)
+side main .helloworld/allowlist.txt 'a
+z
+'; side work .helloworld/allowlist.txt 'a
+x
+y
+z
+'
+g rebase -q main >/dev/null 2>&1; check "$?" 0 "a rebase through the driver: clean"
+check "$(flat .helloworld/allowlist.txt)" "a|y|z|" "  x stays off"
+
 echo "== install"
 R="$T/inst"; git init -q "$R"
 python3 "$LM" install "$R" --check --here >/dev/null; check "$?" 1 "install --check in a repo without it: 1"

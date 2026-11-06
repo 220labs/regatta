@@ -36,7 +36,12 @@ if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
 fi
 . /etc/os-release && echo "$PRETTY_NAME; /bin/sh is $(readlink -f /bin/sh); $(ls --version | head -1)"
 need=""
-for c in jq ruby sqlite3; do command -v "$c" >/dev/null || need="$need $c"; done
+# lsof: pickup's `ide_windows` finds a VS Code window by its listening port (a runner image without it failed 19
+# test_pickup cases a job in, PR 500's run, runner-lsof). On a self-hosted runner a missing tool fails the job at setup,
+# naming the package; elsewhere apt installs it below
+for c in jq ruby sqlite3 lsof; do command -v "$c" >/dev/null || need="$need $c"; done
+# ps and pgrep are procps's (the process suites, helm's `pgrep -P`, sextant's `pgrep -f`)
+{ command -v ps >/dev/null && command -v pgrep >/dev/null; } || need="$need procps"
 /usr/bin/python3 -c 'import yaml' 2>/dev/null || need="$need python3-yaml"
 if [ -n "$need" ]; then
   if [ -n "$persistent" ]; then

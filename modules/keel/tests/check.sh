@@ -13,6 +13,7 @@ if command -v claude >/dev/null 2>&1; then
   # write of this suite could then fail EAGAIN on a loaded runner (docs/runner-interference-2026-11-02.md)
   out=$(claude plugin validate --strict "$D/.." 2>&1 </dev/null) || { echo "plugin.json: claude plugin validate --strict fails"; printf '%s\n' "$out"; rc=1; }
 fi
+echo "== landing lint"; bash "$D/landing.sh" || rc=1
 echo "== keel"; bash "$D/keel.sh" || rc=1
 # the other four share nothing (each its own mktemp dir and state dirs): side by side once keel.sh
 # is done, each printed whole in this order once it ends (suite-time, 2026-10-23)

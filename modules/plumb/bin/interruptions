@@ -45,7 +45,9 @@ reached the owner (corpus `known`). The other channels are counted, not judged: 
 for a standing permission, a verb the session runs itself, or a login done once per machine.
 
 `--list predictable` prints the predictable rows, `--list all` every row, newest first, for
-Aurora's dream (question 5).
+Aurora's dream (question 5). Under `--json` the rows are in `rows` only with `--list`; without it `rows`
+is empty and `rows_note` says why. The JSON's `total` is the sum of each channel's `in_total` (its `n`
+less what is outside the total: relays and unattended repeats, counted in `outside_total`).
 
 The fence (knowledge-layers S4): a row from a confidential scope's session, doc or repo (the core's
 gather_fence, judged by the cwd, the transcript and the doc it came from) is counted and never
@@ -520,15 +522,22 @@ def _memo_rows(since):
     return rows
 
 
-def summarise(rows, days, trust):
+def in_total(r):
     # relay rows are not in the total: an answered one never reached the owner, an escalated one
-    # reaches the owner through another channel (hooks/attention.py, RELAY_KINDS)
-    out = {"days": days, "total": sum(1 for r in rows if r["channel"] != "relay" and r["kind"] != "unattended"),
-           "channels": {}}
+    # reaches the owner through another channel (hooks/attention.py, RELAY_KINDS); nor is an unattended
+    # repeat (nobody watched)
+    return r["channel"] != "relay" and r["kind"] != "unattended"
+
+
+def summarise(rows, days, trust):
+    # the total is the sum of the channels' `in_total`, so it adds up from what is printed (evolve-readers:
+    # a reader that summed the channels' `n` got 135 against a total of 133, the two unattended repeats)
+    out = {"days": days, "total": sum(1 for r in rows if in_total(r)), "channels": {}}
     for ch in QUESTION_CHANNELS + OTHER_CHANNELS + ("relay",):
         rs = [r for r in rows if r["channel"] == ch]
         kinds = collections.Counter(r["kind"] for r in rs)
-        c = out["channels"][ch] = {"n": len(rs), "kinds": dict(kinds.most_common()),
+        c = out["channels"][ch] = {"n": len(rs), "in_total": sum(1 for r in rs if in_total(r)),
+                                   "kinds": dict(kinds.most_common()),
                                    "per_week": round(len(rs) * 7 / days, 1) if days else None}
         if ch in QUESTION_CHANNELS:
             ranked = sum(n for k, n in kinds.items() if k != "unranked")
@@ -546,6 +555,8 @@ def summarise(rows, days, trust):
     ranked = [r for r in q if r["kind"] != "unranked"]  # as per channel: the ones that offered a pick
     out["predictable_pct"] = round(100 * out["predictable"] / len(ranked)) if ranked else None
     out["trust_waiting"] = trust
+    out["outside_total"] = {"relay": out["channels"]["relay"]["n"],
+                            "unattended": sum(1 for r in rows if r["channel"] != "relay" and r["kind"] == "unattended")}
     return out
 
 
@@ -573,6 +584,10 @@ def main(argv=None):
     hidden = sum(1 for r in rows if r.get("fenced"))
     if a.json:
         s["rows"] = rows if a.list == "all" else [r for r in rows if r["kind"] == "recommended"] if a.list else []
+        # `rows` is empty unless asked for: say so, so an empty list never reads as "no interruptions"
+        s["rows_note"] = ("every row, newest first; a confidential scope's blanked" if a.list == "all" else
+                          "the predictable rows only (--list all: every row)" if a.list else
+                          "not listed: --list all gives every row, --list predictable the predictable ones")
         print(json.dumps(s, indent=1))
         return 0
     if a.list:

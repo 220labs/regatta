@@ -535,9 +535,9 @@ def same(st):
         return False
     if st.get("proc_start"):
         return running(pid, st["proc_start"])
-    # before 2026-10-05: no start time recorded; and a start ps could not read (headless's, and agy's: its record
+    # before 2026-10-05: no start time recorded; and a start ps could not read (headless's, agy's and a vendor run's: its record
     # writes proc_start only when one was read, and harness_live leaves a dispatched run to this count)
-    return alive(pid) and (st.get("mode") in ("headless", "agy") or session_record(st) is not None)
+    return alive(pid) and (st.get("mode") in ("headless", "agy", "vendor") or session_record(st) is not None)
 
 
 def descendants(pid):
@@ -2705,6 +2705,9 @@ def status():
             print("    headless (claude -p): the side panel hides it; log %s" % st.get("log"))
         elif st.get("mode") == "agy":   # dispatch --harness agy: agy under harness's wrapper, no screen, no session of Claude's
             print("    agy (harness run --harness agy): record %s; log %s" % (st.get("harness_run"), st.get("log")))
+        elif st.get("mode") == "vendor":   # run-vendor: a vendor CLI's conversation, no screen, no session of Claude's
+            print("    %s (run-vendor): conversation %s, turn %s; log %s" % (
+                st.get("cli") or st.get("agent"), st.get("conversation"), st.get("turns"), st.get("log")))
         else:
             print("    vscode://anthropic.claude-code/open?session=%s" % st.get("session"))
             if running:

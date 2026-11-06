@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+"""run_vendor's launcher, called by dispatch after its slot and worktree checks.
+
+The launcher fetches/merges once, pushes after each turn, checks, reviews and
+resumes the same builder conversation for fixes. Only a clean end may --next.
+Exit 3 means pre-flight failed before a vendor ran: dispatch uses today's
+builder. Every failure after the first process starts counts against the vendor.
+"""
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import vendorlib as v
+import vendorreview
+
+
+class ForNow(v.Refused):
+    """A refusal a wait fixes: dispatch says the cap's waiting words for it (exit 4)."""
+
+
+# Refusals a later fire may not meet: a registry mid-write, a login pick that timed
+# out, a live launcher or session on this worktree. Every other refusal is for good, bar the real call's
+# fence and pre-flight refusals, which are for now as well: the next fire's pre-flight decides.
+# A builder's hold is its last line, opening WAITING FOR, or the house closing line: never a mention, and never
+# WAITING FOR NOTHING or SOMETHING, which a build that read the rules may end on.
+# The house line may carry no name (a row with no regatta/owner), or a name with a space or an accent.
+HOLD_RE = re.compile(r"[\W_]*(?:(?:[^\W\d_][^,\n]*, )?THIS SESSION IS )?WAITING FOR\b(?! NOTHING| SOMETHING)")
+
+CHECK_FOR_NOW = ("ps cannot read", "cannot make")
+CHECK_RETRY_S = int(os.environ.get("VENDOR_CHECK_RETRY_S", "30"))
+
+FOR_NOW = ("does not read", "does not walk", "did not answer", "another vendor launcher", "another session holds")
+
+
+def run(a):
+    wt = Path(a.worktree).resolve()
+    try:
+        v.fence(wt, a.cli, a.origin, paths=True)
+    except v.Refused as ex:
+        # The real call follows a pre-flight that passed seconds earlier: a refusal now is a race,
+        # so a wait (exit 4) hands the entry back and the next fire's pre-flight decides.
+        if not a.preflight:
+            raise ForNow("the vendor fence changed since the pre-flight: " + str(ex))
+        # A coin draw is optional: a fence it meets at fire sends dispatch to
+        # today's builder. Typed vendor selections keep the refusal (exit 2).
+        if not a.coin:
+            raise
+        print("vendor pre-flight fallback: " + str(ex), file=sys.stderr)
+        return 3
+    why = v.preflight(a.cli, a.model, a.effort)
+    if why:
+        if not a.preflight:
+            raise ForNow("the vendor pre-flight changed since it passed: " + why)
+        print("vendor pre-flight fallback: " + why, file=sys.stderr)
+        return 3
+    if a.preflight:
+        # The worktree's lock and owner, probed here as well as under the lock below: dispatch's pre-flight
+        # runs before its entry is marked started, where a wait still hands the entry back (exit 4).
+        gd = Path(v.git(wt, "rev-parse", "--absolute-git-dir")) / "claude"
+        lockf = gd / "vendor.lock"
+        if lockf.exists():
+            with lockf.open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise ForNow("another vendor launcher holds this worktree")
+                fcntl.flock(lock, fcntl.LOCK_UN)
+        owner = v.common.read_owner(gd) if gd.is_dir() else None
+        if (owner and not owner.get("handover")
+                and time.time() - owner.get("seen", 0) < v.common.OWNER_TTL):
+            raise ForNow("another session holds this worktree")
+        return 0
+    brief = Path(a.brief).resolve()
+    brief.relative_to(wt)
+    import blueprintlib
+    brief_text = brief.read_text()
+    # dispatch's own test on the Claude road: the check alone, the review left to /finish
+    finish_only = re.search(r"(?mi)^[ \t*>_-]*review[*_]*:[*_ \t]*finish only", brief_text)
+    if blueprintlib.principal(blueprintlib.brief_tier(brief_text)):
+        raise v.Refused("principal tiers run Claude; no vendor build")
+    branch = v.git(wt, "branch", "--show-current")
+    if not branch.startswith("claude/"):
+        raise v.Refused("vendor build needs its seeded claude/* branch")
+    primary = Path(v.git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+    try:
+        wt.relative_to(primary / ".claude" / "worktrees")
+    except ValueError:
+        raise v.Refused("vendor build needs a linked worktree under .claude/worktrees")
+    gd = Path(v.git(wt, "rev-parse", "--absolute-git-dir")) / "claude"
+    gd.mkdir(parents=True, exist_ok=True)
+    record = Path(a.record)
+    state = json.loads(record.read_text())
+    sid = state["session"]
+    # A separate advisory lock also protects direct calls between model turns.
+    with (gd / "vendor.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ForNow("another vendor launcher holds this worktree")
+        owner = v.common.read_owner(gd)
+        if (owner and owner.get("session") != sid and not owner.get("handover")
+                and time.time() - owner.get("seen", 0) < v.common.OWNER_TTL):
+            raise ForNow("another session holds this worktree")
+        v.common.write_owner(gd, sid, branch)
+        stop_owner = threading.Event()
+
+        def merge_disk():
+            # Keep keys another writer added (dispatch-rc end_run's `ending`):
+            # this launcher's in-memory state must never drop them.
+            try:
+                disk = json.loads(record.read_text())
+            except (OSError, ValueError):
+                disk = {}
+            for k, val in disk.items():
+                if k not in state:
+                    state[k] = val
+
+        def save_state():
+            merge_disk()
+            v.save(record, state)
+
+        def keep_owner():
+            while not stop_owner.wait(30):
+                try:
+                    v.common.write_owner(gd, sid, branch)
+                except OSError:
+                    return
+
+        owner_thread = threading.Thread(target=keep_owner, daemon=True)
+        owner_thread.start()
+        state.update(pid=os.getpid(), proc_start=v.codex._pstart(os.getpid()), turn_pid=None,
+                     branch=branch, wt=str(wt), model=a.model, effort=a.effort,
+                     mode="vendor", cli=v.CLIS[a.cli], agent=a.cli, turns=0, rounds=0,
+                     conversation=None, cost={"openai": {}, "anthropic": {"input_tokens": 0, "output_tokens": 0}},
+                     started=int(time.time()))
+        save_state()
+        # Keep the decision relay and ship across checks and --next, while
+        # discarding the fired job's identity, arm, pin and other launch flags.
+        routing = {"DISPATCH_SKIPPER", "DISPATCH_MANAGER", "DISPATCH_SKIPPER_ACCOUNT",
+                   "DISPATCH_MANAGER_ACCOUNT", "DISPATCH_SHIP", "DISPATCH_PLAN",
+                   "DISPATCH_PLAN_SPACE", "DISPATCH_SKIPPER_HOST", "DISPATCH_MANAGER_HOST",
+                   "DISPATCH_TASK", "DISPATCH_MODE"}
+        env = {k: val for k, val in os.environ.items() if not k.startswith("DISPATCH_") or k in routing}
+        env.update(REGATTA_UNATTENDED="vendor-build", CLAUDE_UNATTENDED="vendor-build",
+                   CLAUDE_CODE_SESSION_ID=sid, DISPATCH_DEPTH=str(state.get("depth") or 0),
+                   DISPATCH_REPO=state["repo"])
+        br = str(v.HERE / "build-review")
+        deadline = time.monotonic() + a.timeout
+
+        def remaining():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise v.Refused("vendor build exceeded its time cap")
+            return left
+
+        def br_call(*args):
+            r = subprocess.run([sys.executable, br, *args], env=env, capture_output=True, text=True)
+            if r.returncode:
+                raise v.Refused("build-review %s: %s" % (args[0], r.stderr.strip() or r.stdout.strip()))
+            return r.stdout.strip()
+
+        def pid(p):
+            state.update(turn_pid=p)
+            save_state()
+
+        def usage(cost):
+            v.add_cost(state["cost"], cost)
+            save_state()
+
+        def thread(t):
+            state["conversation"] = t
+            save_state()
+
+        def build_turn(prompt):
+            state["turns"] += 1
+            result = v.turn(a.cli, wt, prompt, model=a.model, effort=a.effort,
+                            conversation=state["conversation"], origin=a.origin, on_pid=pid,
+                            on_usage=usage, on_thread=thread, timeout=remaining)
+            state.update(conversation=result["conversation"], last_answer=result["last_answer"],
+                         turn_pid=None)
+            save_state()
+            # before push(), which refuses a dirty tree: a D-item left uncommitted is still a hold (the except pushes)
+            if HOLD_RE.match(([l for l in result["last_answer"].splitlines() if l.strip()] or [""])[-1]):
+                raise v.Held("builder held: " + result["last_answer"][-500:])
+            push()
+
+        def push():
+            # Explicit ref: pre-push judges this same branch; never force.
+            v.git(wt, "push", "origin", "HEAD:refs/heads/" + branch)
+            if v.git(wt, "status", "--porcelain"):
+                raise v.Refused("builder left uncommitted changes")
+
+        checks = []
+
+        def summary():
+            with contextlib.suppress(OSError):
+                return (checks[-1] / "summary").read_text().splitlines()
+            return []
+
+        def check_failures():
+            """The failing commands and their logs' tails, for the fix turn: the logs sit where the builder's profile
+            refuses it, and a check-only failure has no verdict text to carry."""
+            lines, k = [], 0
+            for line in summary():
+                m = re.match(r"\S+ rc=(\d+) \d+s ", line)
+                if line.startswith("INTERRUPTED"):
+                    lines.append(line)
+                if not m:
+                    continue
+                ran = " — this Mac has no " not in line   # bin/check gives that line no log
+                k += ran
+                if m.group(1) != "0":
+                    lines.append(line)
+                    for log in sorted(checks[-1].glob("%02d-*.log" % k)) if ran else []:
+                        lines += log.read_text(errors="replace").splitlines()[-30:]
+            return "\nThe check failed:\n" + ("\n".join(lines)[-12000:] or "(it left no summary)") + "\n"
+
+        def fix_turn(text):
+            v.fence(wt, a.cli, a.origin, text)
+            build_turn("Fix only the confirmed WRONG S1/S2 findings below, and any failing check shown below; "
+                       "commit the fixes. The launcher's network and review rules still hold.\n" + text)
+
+        def check():
+            exe = os.environ.get("VENDOR_CHECK") or str(v.HERE / "check")
+            checks.append(record.parent / ("%s.check-%d" % (record.stem, len(checks) + 1)))
+            for attempt in (1, 2):
+                p = subprocess.Popen([exe, str(wt), "--builder", "--out", str(checks[-1])], env=env, start_new_session=True)
+                try:
+                    rc = p.wait(timeout=remaining())
+                except BaseException:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(p.pid, signal.SIGTERM)
+                    try:
+                        p.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(p.pid, signal.SIGKILL); p.wait()
+                    raise
+                # a refusal of the load the slots exist for (ps under fork pressure, a slot folder not made) passes
+                # on a re-run a little later: one wait, then it is read as any other refusal
+                if rc == 2 and attempt == 1 and any(w in " ".join(summary()) for w in CHECK_FOR_NOW):
+                    time.sleep(CHECK_RETRY_S)
+                    continue
+                break
+            # 2: no check to run (a prose line, a usage error), which no fix turn changes. 3: all passed, and a
+            # command only this branch's line names is left for /finish to run, as the Claude road's prompt says.
+            if rc == 2:
+                raise v.Held("the check refused: " + " ".join(summary()[-1:]))
+            return rc in (0, 3)
+
+        outcome, exit_code, why = "failed", 1, "launcher failed"
+        base_tip = None
+        main = v.main_name(wt)   # the main checkout's workflow.json, as dispatch's after_merge reads it
+        try:
+            v.git(wt, "fetch", "origin", "+refs/heads/%s:refs/remotes/origin/%s" % (main, main))
+            try:
+                v.git(wt, "merge", "--no-edit", "origin/" + main)
+            except v.Refused:
+                # Never leave the tree mid-merge: every later fire's --ff-only would fail on it.
+                conflicts = v.git(wt, "diff", "--name-only", "--diff-filter=U")
+                with contextlib.suppress(v.Refused):
+                    v.git(wt, "merge", "--abort")
+                if not conflicts:
+                    raise   # a lock, an untracked file: no conflict, so the fetch's road, a wait
+                raise v.Held("held: origin/%s does not merge cleanly into %s; a person or a Claude "
+                             "build resolves it (%s)" % (main, branch, conflicts[:300].replace("\n", ", ")))
+            # Main may introduce a protected path after the initial pre-flight scan.
+            v.fence(wt, a.cli, a.origin, paths=True)
+            # Launcher housekeeping is not a builder commit. A vendor that
+            # fails before committing still gets its separate Claude retry.
+            base_tip = v.git(wt, "rev-parse", "HEAD")
+            first_brief = v.git(wt, "rev-parse", "HEAD:" + str(brief.relative_to(wt)))
+            env["DISPATCH_BRIEF"] = first_brief
+            prompt = ("Build the task in the brief at %s. Read it and AGENTS.md, including its Traps, "
+                      "with your own tools before editing. Work only here on %s. You are unattended; "
+                      "decide routine details; leave an unresolved decision as a committed D-item and make your last line "
+                      "start WAITING FOR. "
+                      "Commit small changes with clear module-prefixed messages and the trailer "
+                      "Co-Authored-By: Codex <noreply@openai.com>. The launcher runs checks and review rounds. "
+                      "Never fetch, merge, rebase, push, run /finish, pr, dispatch, or start other agents. "
+                      "Leave design step stamps to the landing. If a next step is needed, write its brief "
+                      "and name it in your final answer; the launcher schedules it after a clean end." % (brief, branch))
+            if state.get("note"):
+                prompt += "\n\n" + state["note"]
+            build_turn(prompt)
+            if v.git(wt, "rev-parse", "HEAD") == base_tip:
+                raise v.Refused("the builder committed nothing: " + (state.get("last_answer") or "")[-300:])
+            n = 0
+            # The configured cap can change while a check, review or fix turn runs.
+            while n < int(br_call("cap")):
+                n += 1
+                reviewed_green = green = check()
+                if finish_only:
+                    # no review, so no build-review record: the Claude road keeps none for this brief either
+                    if not green:
+                        state["rounds"] = n
+                        fix_turn(check_failures())
+                        green = check()
+                    if green:
+                        if v.git(wt, "status", "--porcelain"):
+                            raise v.Refused("check left uncommitted changes")
+                        outcome, why, exit_code = "clean", "check clean; the review is /finish's", 0
+                        break
+                    continue
+                cli = v.reviewer_cli(a.cli)
+                review = vendorreview.review(wt, cli, record.parent / (record.stem + ".review-%d" % n),
+                                             base="origin/" + main, origin=a.origin, on_pid=pid, on_usage=usage, timeout=remaining)
+                state["turn_pid"] = None
+                state["rounds"] = n
+                found = review["found"]
+                if review["open_s1"]:
+                    outcome, why = "held", "an S1 remains unverifiable"
+                elif found or not green:
+                    fix_turn(Path(review["verdicts"]).read_text() + ("" if green else check_failures()))
+                    green = check()
+                args = ["round", str(wt), "--fixed", str(found if outcome != "held" else 0),
+                        "--check", "green" if green and reviewed_green else "red", "--reviewers", cli]
+                notes = ["UNRUN by this check, /finish runs it: " + l[6:] for l in summary() if l.startswith("UNRUN ")]
+                if not reviewed_green and green:
+                    notes.append("check fixed; the changed tree awaits its next review")
+                if notes:
+                    args += ["--note", "; ".join(notes)]
+                args += ["--verdicts", review["verdicts"]] if review["raised"] else ["--found", "0"]
+                br_call(*args)
+                save_state()
+                if outcome == "held":
+                    break
+                if not found and green and reviewed_green:
+                    if v.git(wt, "status", "--porcelain"):
+                        raise v.Refused("check left uncommitted changes")
+                    outcome, why, exit_code = "clean", "review and check clean", 0
+                    break
+            else:
+                outcome, why = "cap", "build-review round cap"
+            if not finish_only:
+                br_call("end", str(wt), "--outcome", outcome, "--why", why)
+        except Exception as ex:   # any: a launcher bug must still reach the end handling below
+            why = str(ex)
+            outcome = "held" if isinstance(ex, v.Held) else "failed"
+            exit_code = 1   # a clean end refused after the loop set 0 is no success
+            # No vendor ran yet (the launcher's fetch failed, a blip): a wait the next fire retries, never a lost
+            # build and never a Claude retry; no review record is ended, so the next fire's loop starts clean.
+            before_turn = (outcome == "failed" and not state.get("turns")
+                           and not why.startswith("launcher stopped by signal") and not state.get("ending"))
+            if before_turn:
+                exit_code, why = 4, "refused for now: before any vendor turn: " + why
+            with contextlib.suppress(v.Refused):
+                if not before_turn and not finish_only:
+                    br_call("end", str(wt), "--outcome", "held", "--why", ("failed: " if outcome == "failed" else "") + why)
+            with contextlib.suppress(v.Refused):
+                push()
+        finally:
+            stop_owner.set(); owner_thread.join()
+            tip = None
+            with contextlib.suppress(v.Refused, OSError):
+                tip = v.git(wt, "rev-parse", "HEAD")
+            state.update(ended=int(time.time()), exit=exit_code, outcome=outcome,
+                         end_reason=why, turn_pid=None, tip=tip)
+            # dispatch queues this separate run after ending the old claim;
+            # enqueueing here would collide with our still-running entry.
+            # A stop (dispatch --end, --requeue, a signal) is a person's or the queue's: no Claude retry.
+            merge_disk()
+            stopped = why.startswith("launcher stopped by signal") or bool(state.get("ending"))
+            if state.get("ending"):
+                state["end_reason"] = state["ending"]
+            state["retry_claude"] = (outcome == "failed" and not stopped and state["turns"] > 0
+                                     and state["tip"] == base_tip)
+            save_state()
+            arm = state.get("arm")
+            # no turn, no sample (the design's failure rule; a refusal inside v.turn counts as a turn, so the size
+            # guard stays `failed`): a blip's re-fire writes the run's own row
+            if arm and state["turns"]:
+                from types import SimpleNamespace
+                row = SimpleNamespace(repo=state["repo"], branch=branch, topic=state["topic"], session=sid,
+                                      account="", queue=state.get("queue", ""), brief=state.get("brief_class", ""),
+                                      end=state)
+                try:
+                    why_row = v.buildercoin.write_row(arm, row)
+                    if why_row:
+                        print("== vendor end: the rotation row was not written: %s" % why_row)
+                except Exception as ex:   # a lost row must not lose --next or the owner's release below
+                    print("== vendor end: the rotation row was not written: %s" % ex)
+        print("== vendor end: %s — %s" % (outcome, why))
+        # Only --next, never a landing. S5 adds the finish hand-over and readers.
+        own = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-%s\.md" % re.escape(state["topic"]))
+        latest = sorted(p for p in (wt / "docs/handoff").glob("*.md") if own.fullmatch(p.name))
+        # A next brief is a new file, or this brief rewritten and named in the final answer:
+        # an edit of the builder's own brief (a typo, a status line) schedules nothing.
+        # read on a clean end only, and never fatal: a brief dropped from HEAD must not skip the owner's release below
+        next_ready = False
+        if outcome == "clean" and latest:
+            with contextlib.suppress(v.Refused):
+                next_ready = latest[-1].resolve() != brief or (
+                    v.git(wt, "rev-parse", "HEAD:" + str(latest[-1].relative_to(wt))) != env.get("DISPATCH_BRIEF")
+                    and latest[-1].name in (state.get("last_answer") or ""))
+        if outcome == "clean" and (a.next or next_ready):
+            # dispatch releases this session's owner itself. Marking a
+            # handover first would mean a tab already took the next step.
+            # The launcher lock goes first: the next step's own pre-flight probes it,
+            # and a --next claimed on this host would read this ended run as live.
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            r = subprocess.run([str(v.HERE / "dispatch"), branch, "--next", "--repo", state["repo"]], env=env)
+            if r.returncode:
+                print("== vendor end: the next step was not scheduled (dispatch --next exit %d)" % r.returncode)
+                v.common.write_owner(gd, sid, branch, handover=True)
+        elif outcome == "clean":
+            v.common.write_owner(gd, sid, branch, handover=True)
+        else:
+            # held, cap or failed: free the worktree as the Claude road's free_lock does,
+            # or a re-dispatch within OWNER_TTL is refused by this ended run's lock.
+            owner = v.common.read_owner(gd)
+            if owner and owner.get("session") == sid:
+                with contextlib.suppress(OSError):
+                    (gd / "owner.json").unlink()
+        return exit_code
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("worktree")
+    ap.add_argument("--cli", choices=v.CLIS, required=True)
+    ap.add_argument("--model", default=v.MODEL)
+    ap.add_argument("--effort", default="high")
+    ap.add_argument("--origin", default="")
+    ap.add_argument("--record", default="")
+    ap.add_argument("--brief", default="")
+    ap.add_argument("--preflight", action="store_true")
+    ap.add_argument("--coin", action="store_true", help="a coin draw's pre-flight uses the current builder on a fence refusal")
+    ap.add_argument("--next", action="store_true")
+    ap.add_argument("--timeout", type=int, default=7200)
+    def stopped(signum, frame):
+        raise v.Refused("launcher stopped by signal %d" % signum)
+    signal.signal(signal.SIGTERM, stopped)
+    try:
+        return run(ap.parse_args())
+    except (v.Refused, OSError, ValueError) as ex:
+        if isinstance(ex, ForNow) or any(w in str(ex) for w in FOR_NOW):
+            print("run_vendor: refused for now: %s" % ex, file=sys.stderr)
+            return 4
+        print("run_vendor: refused for good: %s" % ex, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

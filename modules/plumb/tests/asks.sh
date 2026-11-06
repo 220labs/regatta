@@ -46,7 +46,11 @@ if "Name each item's THEME" in p:   # the generate row evolve.theme
     print(json.dumps({"structured_output": {i: slug(t) for i, t in items.items()}, "total_cost_usd": 0.02, "is_error": False}))
     sys.exit(0)
 task = [l for l in p.splitlines() if l.startswith("Task: ")][0]
+if "owner asked for the change" in task and os.environ.get("STANDIN_MATCH_FAIL"):   # the two-pass fixture's first pass
+    sys.exit(1)
 def one(t):
+    if "owner asked for the change" in task and os.environ.get("STUB_ANTIC_VOID"):
+        return "anticipated"   # whatever was listed, none included
     if "owner asked for the change" in task:
         return "anticipated" if "MATCHWORD" in t and "FINDINGS: none" not in t else ("M2" if "MISSWORD" in t else "J")
     if "What does this prompt target" in task:
@@ -130,6 +134,62 @@ check "$(python3 -c 'import json,sys; r=[x for x in map(json.loads, open(sys.arg
   "1 anticipated F1 -3" "anticipated by F1, lead time -3: the finding's day minus the ask's (the later finding F9 is no candidate)"
 check "$("$A" numbers --json | j '(d["recall"], d["lead_days"])')" "(100, -3.0)" "numbers: recall and lead time now measured (negative: the loop was first)"
 check "$(wc -l < "$GATE_LOG" | tr -d ' ')" 9 "  one more call, for the matcher"
+rm -rf "$ASKS_STATE"; : > "$GATE_LOG"
+
+echo "recall beside what it judged: the matcher fails on one pass, works on the next (evolve-readers, the memo's regatta 2)"
+out=$(STANDIN_MATCH_FAIL=1 "$A" run --digest "$T/digest.json" --no-overrules); check $? 0 "pass 1, the matcher failing: exit 0"
+check "$(echo "$out" | grep -c '; match: evolve.match: ')" 1 "  the run's line names the matcher's failure"
+check "$("$A" numbers --json | j '(d["recall"], d["g1_E"]["eligible"], d["unmatched_eligible"])')" "(None, 0, 1)" \
+  "  recall unknown, the ask counted not yet matched (never dropped)"
+check "$("$A" numbers | grep -o 'eligible E 0, N 0; the matcher.s J 0, not yet matched 1')" \
+  "eligible E 0, N 0; the matcher's J 0, not yet matched 1" "  printed beside recall"
+out=$(STANDIN_MATCH_FAIL=1 "$A" run --digest "$T/digest.json" --no-overrules)
+check "$(echo "$out" | grep -c 'left unjudged') $(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])][-1]; print(r["match_retried"], r["matched"])' "$ASKS_STATE/runs.jsonl")" \
+  "0 0 0" "  a pass whose matcher fails again: tried, never claimed as retried (nothing reached it)"
+out=$(ASKS_FINDINGS="$T/no-findings" "$A" run --digest "$T/digest.json" --no-overrules)
+check "$(echo "$out" | grep -o 'match: [^;]*') $(python3 -c 'import json,sys; print([json.loads(l) for l in open(sys.argv[1])][-1]["match_retried"])' "$ASKS_STATE/runs.jsonl")" \
+  "match: no findings yet 0" "  a pass with no findings tries nothing: no retry claimed, in the line or the log"
+out=$("$A" run --digest "$T/digest.json" --no-overrules --no-model)
+check "$(echo "$out" | grep -c 'left unjudged') $(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])][-1]; print(r["match_retried"], r["gate_calls"])' "$ASKS_STATE/runs.jsonl")" \
+  "0 0 0" "  nor a pass with the gate off (--no-model)"
+out=$("$A" run --digest "$T/digest.json" --no-overrules)
+check "$(echo "$out" | grep -o '^asks: 0 new') $(echo "$out" | grep -o 'match: 1 matched (1 an earlier pass left unjudged)')" \
+  "asks: 0 new match: 1 matched (1 an earlier pass left unjudged)" "pass 2: no new prompt, the earlier pass's ask judged now"
+check "$("$A" numbers --json | j '(d["recall"], d["g1_E"]["eligible"], d["unmatched_eligible"], d["lead_days"])')" "(100, 1, 0, -3.0)" \
+  "  recall over the one judged ask, nothing left unjudged"
+check "$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])][-1]; print(r["match_retried"], r["matched"])' "$ASKS_STATE/runs.jsonl")" "1 1" \
+  "  the run log counts the retried ask"
+out=$("$A" run --digest "$T/digest.json" --no-overrules); check "$(echo "$out" | grep -o 'match: [^;]*')" "match: no detectable ask in this pass" \
+  "pass 3: a judged ask is not judged again"
+rm -rf "$ASKS_STATE"; : > "$GATE_LOG"
+python3 - "$T/digest.json" "$T/digest-j.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for s in d["sessions"]:
+    for p in s["prompts"]:
+        p["text"] = p["text"].replace("FEATWORD EVIDWORD", "FEATWORD EVIDWORD MISSWORD") if "FEATWORD" in p["text"] else p["text"]
+json.dump(d, open(sys.argv[2], "w"))
+PY
+rm -rf "$ASKS_FINDINGS"; mkdir -p "$ASKS_FINDINGS"
+printf '[{"id": "F2", "date": "%s", "need": "weekly digest ledger corrections", "intervention": "x", "status": "proposed"}]\n' "$(day 6)" > "$ASKS_FINDINGS/f.json"
+"$A" run --digest "$T/digest-j.json" --no-overrules > /dev/null
+check "$("$A" numbers --json | j '(d["recall"], d["g1_E"]["eligible"], d["unmatched_eligible"], d["judged_j"])')" "(0, 1, 0, 0)" "a judged miss (M2): recall 0 of 1"
+rm -rf "$ASKS_STATE"; : > "$GATE_LOG"
+"$A" run --digest "$T/digest.json" --no-overrules > /dev/null   # F2 lists no MATCHWORD: the stand-in matcher says J
+check "$("$A" numbers --json | j '(d["recall"], d["g1_E"]["eligible"], d["unmatched_eligible"], d["judged_j"])')" "(None, 0, 0, 1)" \
+  "the matcher's J: out of recall's denominator, counted beside it"
+check "$("$A" numbers | grep -o "the matcher's J 1")" "the matcher's J 1" "  and printed"
+rm -rf "$ASKS_STATE" "$ASKS_FINDINGS"; : > "$GATE_LOG"
+
+echo "an anticipated verdict with no candidate: no verdict, and never sent again"
+mkdir -p "$ASKS_FINDINGS"
+printf '[{"id": "F9", "date": "%s", "need": "weekly digest ledger corrections", "intervention": "later than the ask", "status": "proposed"}]\n' "$(day 0)" > "$ASKS_FINDINGS/f.json"
+STUB_ANTIC_VOID=1 "$A" run --digest "$T/digest.json" --no-overrules > /dev/null; n=$(wc -l < "$GATE_LOG" | tr -d ' ')
+check "$(python3 -c 'import json,sys; r=[x for x in map(json.loads, open(sys.argv[1])) if x.get("detect") == "E"]; print(len(r), r[0].get("match"), r[0].get("match_void"))' "$ASKS_STATE/asks.jsonl")" \
+  "1 None anticipated with no candidate" "  the ask keeps no match; the void answer is recorded"
+out=$(STUB_ANTIC_VOID=1 "$A" run --digest "$T/digest.json" --no-overrules)
+check "$(echo "$out" | grep -o 'match: [^;]*') $(( $(wc -l < "$GATE_LOG" | tr -d ' ') - n ))" "match: no detectable ask in this pass 0" "  the next pass sends it nowhere: no call"
+check "$("$A" numbers --json | j '(d["recall"], d["unmatched_eligible"])')" "(None, 1)" "  counted not yet matched"
 rm -rf "$ASKS_STATE" "$ASKS_FINDINGS"; : > "$GATE_LOG"
 
 echo "the gate off or failing: the sieve's week, said, never a crash"
@@ -139,6 +199,21 @@ rm -rf "$ASKS_STATE"
 out=$(CLAUDE_BIN=/usr/bin/false "$A" run --digest "$T/digest.json" --no-overrules); check $? 0 "a claude that fails: exit 0"
 check "$(echo "$out" | grep -c 'labelled by sieve (evolve.ask:')" 1 "  the sieve's labels, the error named"
 check "$("$A" numbers --json | j 'd["labelled_by_sieve"]')" 6 "  and numbers counts the sieve-labelled rows"
+out=$("$A" run --digest "$T/digest.json" --no-overrules --no-model)
+check "$(echo "$out" | grep -o '^asks: [0-9]* new owner prompts ([^)]*)')" "asks: 0 new owner prompts (1 machine, 2 confidential sessions not opened)" \
+  "an earlier pass's sieve labels: a --no-model pass leaves them"
+out=$("$A" run --digest "$T/digest.json" --no-overrules)
+check "$(echo "$out" | grep -o '^asks: [0-9]* new owner prompts ([^)]*)')" \
+  "asks: 6 new owner prompts (1 machine, 2 confidential sessions not opened, 6 of them an earlier pass's left to the sieve, tried again)" \
+  "  a pass whose gate answers labels them, never left to the sieve for good"
+check "$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; print(len(r), len({x["id"] for x in r}), sorted({x["by"] for x in r}))' "$ASKS_STATE/asks.jsonl") $("$A" numbers --json | j 'd["labelled_by_sieve"]') $(python3 -c 'import json,sys; print([json.loads(l) for l in open(sys.argv[1])][-1]["relabelled"])' "$ASKS_STATE/runs.jsonl")" \
+  "6 6 ['model'] 0 6" "  the same six ids, each once, now the model's; the run log counts them"
+check "$(python3 -c '
+import json, re, sys
+t = json.load(open(sys.argv[1])); r = [json.loads(l) for l in open(sys.argv[2])]
+held = {(x["theme"], x["session"]) for x in r if x.get("theme")}
+print([k for k in t if re.fullmatch("t[0-9a-f]{6}", k)], all((k, s) in held for k, v in t.items() for s in v["sessions"]))' "$ASKS_STATE/themes.json" "$ASKS_STATE/asks.jsonl")" \
+  "[] True" "  the sieve's hashed theme is let go: every theme's session is one a row of it holds"
 rm -rf "$ASKS_STATE"
 
 echo "a guarded repo: refused at the gate per repo, its prompts keep the sieve's labels, the rest go on"
@@ -171,6 +246,21 @@ check "$(grep -c SECRETWORD "$GATE_LOG")" 0 "  nor at the gate"
 rm -rf "$ASKS_STATE"
 out=$(CLAUDE_REPOS_JSON="$T/none.json" "$A" run --no-overrules --no-model); check "$(echo "$out" | grep -o '^asks: 2 new')" "asks: 2 new" "no registry at all: both read (as week-digest does)"
 rm -rf "$ASKS_STATE"
+
+echo "week-digest's launchers' prompts count as machine (it leaves them out; asks adds its count)"
+python3 - "$T/digest.json" "$T/digest-m.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["machine"] = {"prompts": 3, "sessions": 2, "by": {"dispatch": 2, "autofinish": 1}}
+json.dump(d, open(sys.argv[2], "w"))
+PY
+out=$("$A" run --digest "$T/digest-m.json" --no-model --no-overrules)
+check "$(echo "$out" | grep -o '^asks: 6 new owner prompts (4 machine')" "asks: 6 new owner prompts (4 machine" "the digest's three and the sieve's one"
+rm -rf "$ASKS_STATE"
+mkdir -p "$L/$(slug "$P/open")"
+printf '{"type": "user", "origin": {"kind": "human"}, "sessionId": "disp-3", "timestamp": "%s", "message": {"content": "You are an unattended session started by dispatch on host-a; ASKWORD we should add the brief thing"}}\n' "$NOW" > "$L/$(slug "$P/open")/c.jsonl"
+out=$(CLAUDE_REPOS_JSON="$T/none.json" "$A" run --no-overrules --no-model)
+check "$(echo "$out" | grep -o '^asks: 2 new owner prompts (1 machine')" "asks: 2 new owner prompts (1 machine" "through the real week-digest: a dispatch brief is machine, never an owner prompt"
+rm -rf "$ASKS_STATE" "$L/$(slug "$P/open")/c.jsonl"
 
 echo "the overrule ledger: counts and ids from interruptions, never a question"
 out=$("$A" run --digest "$T/digest.json" --no-model); check "$(echo "$out" | grep -o 'overrules: [0-9]*')" "overrules: 0" "no answers in a scratch HOME: zero rows, no error"
@@ -578,10 +668,53 @@ a = SourceFileLoader("asks", sys.argv[1]).load_module()
 cases = ["/finish --unattended", "<system-reminder> x", "status?", "yes please", "A — the first", "from now on use tabs",
          "never do that again", "rename the file", "hello"]
 print([a.sieve(c)[0] for c in cases])
+# the shared rule, the core transcript.machine_start: a dispatch brief, the autofinish-run launch, a seed pickup tab,
+# and an owner prompt that only opens alike. bash 3.2 scans this heredoc for quotes and parens: keep both paired
+cases = ["You are an unattended session started by dispatch on host-a at 2026-11-03 21:59 UTC; nobody is watching",
+         "/finish claude/h/2026-11-01-x --unattended --merge", "/pickup 'claude/h/2026-10-31-seed' --fresh",
+         "You are a great help, from now on use tabs", "You are the reviewer now: never skip the check again"]
+print([a.sieve(c)[0] for c in cases])
 sig = a.signature("the dream must remember corrections about the weekly digest ledger")
 print(len(sig) >= 5, a.pick_theme({}, sig, "KL").startswith("t"))
 PY
 )" "['machine', 'machine', 'status', 'answer', 'answer', 'ask', 'correction', 'ask', 'task']
-True True" "machine, status, answer, ask, correction, task; a signature and a theme id"
+['machine', 'machine', 'machine', 'ask', 'correction']
+True True" "machine, status, answer, ask, correction, task; the launchers' prompts machine, the owner's look-alikes not; a signature and a theme id"
+
+echo "one rule for a launcher's prompt: every launcher frame is the core's machine_start, the sieve's own list the owner's"
+# written to a file first: bash 3.2 cannot parse a quoted heredoc inside "$(...)" whose body holds an apostrophe
+cat > "$T/one-rule.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("asks", sys.argv[1]).load_module()
+from transcript import machine_start
+frames = ["/aurora dream", "/aurora dream --scope node", "/sextant", "/embark",
+          "<command-message>aurora</command-message>\n<command-name>/aurora</command-name>\n<command-args>charts</command-args>",
+          "<command-name>/finish</command-name>\n<command-message>finish</command-message>\n<command-args>claude/h/x --unattended</command-args>",
+          "Task: Answer D2 on the page", "# topic-x — sent with helm send from host-a, 2026-11-05\nTask: do it",
+          "reply with the single word ok", "HAIL report from skipper · regatta — the check is green",
+          "dispatch-rc watcher: your last turn ended on an API error (overloaded_error: 529). Nothing was sent by a person",
+          "Run this one command with the Bash tool, in the foreground, and do nothing else; then reply with the last line it printed.",
+          "Continue the work on branch claude/h/x of regatta: check it out, read its last commits and the docs they touch"]
+print(all(machine_start(t) for t in frames), all(a.sieve(t)[0] == "machine" for t in frames),
+      [t[:12] for t in frames if not machine_start(t)])
+owner = ["/autofinish now", "/finish", "dispatch the next step", "Resume the build", "Continue the review please",
+         "Read first: docs/x.md", "kind: build", "Unattended run for the brief", "This is a dispatched run"]
+print([machine_start(t) for t in owner], [a.sieve(t)[0] for t in owner])
+print([machine_start(t) for t in ["/embarkation plan", "please reply with the single word ok", "Taskbar is broken", "the HAIL storm",
+                                   "task: rename the file", "Unattended runs should never merge without asking me"]])
+PY
+check "$(python3 "$T/one-rule.py" "$A")" "True True []
+[None, None, None, None, None, None, None, None, None] ['machine', 'machine', 'machine', 'machine', 'machine', 'machine', 'machine', 'machine', 'machine']
+[None, None, None, None, None, None]" "the frames both readers drop; the owner's commands and the corpus frames stay week-digest's, the sieve's no-asks; look-alikes the owner's"
+
+echo "an older core (no transcript.machine_start): run refuses in one line, numbers still reads the ledger"
+mkdir -p "$T/old/modules"; cp -R "$D/../regatta" "$T/old/modules/regatta"; cp -R "$D" "$T/old/modules/plumb"
+printf 'TAIL_BYTES = 2_000_000\n' > "$T/old/modules/regatta/hooks/transcript.py"
+"$A" run --digest "$T/digest.json" --no-overrules --no-model > /dev/null
+out=$("$T/old/modules/plumb/bin/asks" numbers 2>&1); check "$? $(echo "$out" | grep -c '^asks, last 7 days')" "0 1" "  numbers: exit 0, the ledger read"
+out=$("$T/old/modules/plumb/bin/asks" run --digest "$T/digest.json" --no-overrules --no-model 2>&1)
+check "$? $out" "2 asks: the regatta core predates transcript.machine_start — update the regatta plugin" "  run: exit 2, the one line"
+rm -rf "$ASKS_STATE"
 
 [ "$fails" -eq 0 ] && echo "asks: all ok" || { echo "asks: $fails failed"; exit 1; }

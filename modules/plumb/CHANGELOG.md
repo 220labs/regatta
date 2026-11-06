@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Trim preserves GPT model ids and efforts as distinct builder arms and excludes pre-flight fallback rows from arm verdict streams.
+
 - trim collects a confidential scope that rotates (scope-rotation, 2026-11-04; `trimlib.collect_fence`): each row is
   redacted to an allowlist (arm, pass, cost, wall and their kin) under an id no one outside the repo can guess (a digest of
   its merge commit or session), and counts in the Scorecard's arm tallies and the verdict alone — never the Size table, the
@@ -10,6 +12,31 @@
   collect drops a named row's fenced twin (a scope open again). `--night` refuses every confidential repo, and aurora's
   night never runs one (TODO.md [trim-night-fenced]). A scope with `rotation: false` is refused as before.
 
+- `asks` reads a launcher's prompt as machine by the core's `transcript.machine_start`, the rule week-digest shares
+  (evolve-readers, the iteration-0 memo's D1): dispatch's brief ("You are an unattended session …", which the sieve's
+  `You are (a|the) ` never matched, while it took an owner's "You are a great help, …" for a launcher's), autofinish-run's
+  `/finish <branch> --unattended`, a seed's pickup tab and orientation, a skipper's brief, weekly-run's `/aurora`,
+  `/sextant` and `/embark`, a `Task:` brief or the gate's labelling prompt, hail's frame, dispatch-rc's nudge, clock's
+  head, dispatch's `--probe`; week-digest's own count of the prompts it left out joins the run's `machine`. The sieve's
+  own list keeps what the owner types that is no ask (`/autofinish`, a bare `/finish`, `dispatch …`) and the older
+  corpus frames no launcher writes (`Task:` in any case, `Read first:`, `kind: build`, `Unattended run`, `This is a
+  dispatched`), which week-digest keeps as the owner's; both readers drop a launcher's prompt by one rule. `run` and `baseline` load the rule where the sieve runs: on an older
+  core they exit 2 in one line, and `numbers`, `ship` and the rest still read the ledger. A replay of the last 7 days on the Linux node into fresh ledgers (sieve only):
+  `owner_prompts` 55 before, 1 after (54 dispatch briefs; the laptop's is replayed there into a fresh `ASKS_STATE`:
+  a plain `asks run` keeps the old ledger's machine rows, whose ids are never relabelled).
+  Recall is printed beside what it was judged over, on evolve S11's names: each class's `eligible` (judged, not J),
+  `judged_j` (the E and N asks the matcher judged J) and `unmatched_eligible` (`numbers`' line and knowledge-numbers'
+  row). A detectable ask an earlier pass left without a verdict (the matcher failed, or no findings then) is judged
+  again by a pass whose digest still holds its prompt (a re-run within the window; `match_retried` in `runs.jsonl`
+  counts those a matcher's reply came back for, never a guarded repo's or a failed call's), and otherwise stays not
+  yet matched, never silently dropped. An `anticipated` answer with no finding listed is recorded as `match_void` and
+  never sent again. A prompt an earlier pass left to the sieve (the classifier off or failing) is put to the classifier
+  again, under its own id, by every pass without `--no-model` (`relabelled` in `runs.jsonl` and the run line's "tried
+  again" count the rows tried, labelled or not: TODO.md [evolve-readers-left] (f))
+  (Ring 0: the owner merges it).
+- `interruptions --json`: each channel's `in_total` beside its `n`, so `total` is their sum, and `outside_total`
+  counts the relays and unattended repeats (a reader that summed `n` got 135 against 133); `rows_note` says why `rows`
+  is empty without `--list`.
 - `asks` (evolve S11, S1's follow-ups): `asks merge`, the theme ledger's merge pass over the model slugs, one
   `evolve.theme` call a month (`run` makes it when due and the ledger holds twenty slugs; a group of more than thirty
   is held; `theme-merges.json` keeps old → kept and `numbers`, `ship` and new runs follow it; its cost is its row in `theme-merges.jsonl`,

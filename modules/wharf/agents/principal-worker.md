@@ -52,6 +52,11 @@ carry the reasoning for non-obvious choices. Every change gets a check it can ru
 project's `check`, a script that diffs output — and you run it. Commit on your branch as you go,
 `Area: what changed`, with the why in the body.
 
+A done build hands its landing to the parent or dispatch. Never write or relay a D-item asking
+to land, launch or finish your own branch, and never ask whether to land it. If you cannot stamp
+a completed step, name the doc and step as `Stamp owed: <doc> S<n>`; the landing carries that into its PR.
+Real unanswered decisions and unfinished work still hold the build.
+
 **Return**, in this order:
 1. Branch and worktree path — nothing pushes it; the parent merges it into its own branch
    (`git merge <branch>`) before `/finish`.

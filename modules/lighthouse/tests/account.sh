@@ -114,6 +114,160 @@ has "$T/out" "week 75% ≥ 70% (week ceiling)" "…naming why the secondary was 
 reset; use "$S1" "10 75"
 check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 spare" "75% on a Saturday → the secondary (its reserve day)"
 has "$T/out" "Saturday reserve" "…and says so"
+
+echo "finish ceiling — a launcher receipt, never a build flag"
+cat > "$T/finish-pick.py" <<'PY'
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import common
+with common.finish_pick_env() as (env, fds):
+    result = subprocess.run([sys.executable, sys.argv[2], "pick", "--for", "finish", "--json"] + sys.argv[3:],
+                            env=env, pass_fds=fds)
+sys.exit(result.returncode)
+PY
+FC="$REGATTA_CONFIG/lighthouse/week-max-finish"
+F() { python3 "$T/finish-pick.py" "$B/../../regatta/hooks" "$B/account" "$@" > "$T/out" 2> "$T/finish.err"; echo $?; }
+reset; use "$S1" "10 92"; use "$P1" "10 100"
+printf 'spare:97\n' > "$FC"
+check "$(ACCOUNT_NOW=$WED F) $(field "['account']")" "0 spare" "a finish at 92% runs under its 97% ceiling"
+has "$T/out" "week 92% < 97% (finish ceiling)" "the verdict names the finish ceiling"
+check "$(ACCOUNT_NOW=$WED A pick --json)" 3 "the same reading refuses a build"
+check "$(REGATTA_UNATTENDED=dispatch ACCOUNT_NOW=$WED A pick --for finish --json)" 3 "an unattended build naming finish by hand is still a build"
+check "$(ACCOUNT_NOW=$WED A pick --for finish --json)" 3 "an attended caller naming finish also needs the launcher receipt"
+check "$(REGATTA_FINISH_PICK_FD=finish ACCOUNT_NOW=$WED A pick --for finish --json)" 3 "an environment word is no receipt"
+check "$(REGATTA_FINISH_PICK_FD=999999 ACCOUNT_NOW=$WED A pick --for finish --json)" 3 "a closed descriptor grants nothing"
+reset; use "$S1" "10 97"
+check "$(ACCOUNT_NOW=$WED F)" 3 "at the finish ceiling the login is refused"
+has "$T/out" "week 97% ≥ 97% (finish ceiling)" "the refusal names the finish ceiling"
+reset; use "$S1" "10 98"
+check "$(ACCOUNT_NOW=$WED F)" 3 "above the finish ceiling is refused too"
+# every launcher's pick passes --overdraw: the shape the cases above must also hold in
+reset; use "$S1" "10 97"
+check "$(ACCOUNT_NOW=$WED F --overdraw --job b)" 3 "the overdraw never lifts a landing at its finish ceiling"
+has "$T/out" "week 97% ≥ 97% (finish ceiling)" "…the finish ceiling refused it"
+reset; use "$S1" "10 98"
+check "$(ACCOUNT_NOW=$WED F --overdraw --job b)" 3 "…nor over it"
+reset; use "$S1" "10 92"
+check "$(ACCOUNT_NOW=$WED F --overdraw --job b) $(field "['account']")" "0 spare" "under it, the launcher's own shape picks the login"
+hasnt "$T/out" '"overdraw"' "…as a finish ceiling, no overdraw to log"
+rm -f "$FC"; reset; use "$S1" "10 98"
+check "$(ACCOUNT_NOW=$WED F --overdraw --job b) $(field "['account']")" "0 spare" "with no finish line the overdraw still lifts a landing"
+printf 'spare:97\n' > "$FC"
+# a row that sets no ceiling of its own, under a fleet-wide week-max: where a `*:` finish line may stand at all, so
+# a bad own line above it would widen if it fell through
+cat > "$T/finish-open.json" <<'EOF'
+{"accounts": [
+  {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "rules": {"window_max": 50}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}}]}
+EOF
+sed 's/"window_max": 50}/"window_max": 50, "overdraw": false}/' "$T/finish-open.json" > "$T/finish-seat.json"
+sed 's/"window_max": 50}/"window_max": 50, "overdraw": "no"}/' "$T/finish-open.json" > "$T/finish-stray.json"
+cat > "$T/finish-prim.json" <<'EOF'
+{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"window_max": 80}}]}
+EOF
+WM="$REGATTA_CONFIG/lighthouse/week-max"
+printf '*:80\n' > "$WM"
+reset; use "$S1" "10 92"; printf '*:97\n' > "$FC"
+check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F) $(field "['account']")" "0 spare" "a wildcard raises a row that sets no ceiling of its own"
+has "$T/out" "week 92% < 97% (finish ceiling)" "…named as the finish ceiling"
+reset; use "$S1" "10 92"
+check "$(ACCOUNTS_FILE=$T/finish-seat.json ACCOUNT_NOW=$WED F)" 3 "a wildcard never raises a seat kept out of the overdraw"
+reset; use "$S1" "10 92"
+check "$(ACCOUNTS_FILE=$T/finish-stray.json ACCOUNT_NOW=$WED F)" 3 "nor a row whose rules.overdraw is no boolean"
+check "$(grep -c 'is not true or false' "$T/finish.err")" 1 "…said once, though every judge asks"
+reset; use "$P1" "10 92"
+check "$(ACCOUNTS_FILE=$T/finish-prim.json ACCOUNT_NOW=$WED F)" 3 "nor a primary with no overdraw key, whose routines need its week"
+reset; use "$P1" "10 100"; use "$S1" "10 92"
+reset; use "$S1" "10 92"; printf 'spare:85\n*:80\n' > "$WM"
+check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F)" 3 "a wildcard never raises a login's own live week-max line"
+has "$T/out" "week 92% ≥ 85% (week ceiling, live)" "…which still judges"
+printf '*:80\n' > "$WM"
+for bad in bad nan inf 101 0 -1; do
+  reset; use "$S1" "10 92"; printf 'spare:%s\n*:99\n' "$bad" > "$FC"
+  check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F)" 3 "a finish line of $bad leaves the week ceiling, never the wildcard"
+  has "$T/out" "week 92% ≥ 80% (week ceiling, live)" "the normal ceiling still judges"
+  check "$(grep -c 'is no ceiling' "$T/finish.err")" 1 "the bad line is said once on stderr, outside the JSON"
+done
+for bad in 'spare 60' 'spare=60' '60'; do
+  reset; use "$S1" "10 92"; printf '%s\n*:99\n' "$bad" > "$FC"
+  check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F)" 3 "a finish line [$bad] with no login in it takes the wildcard out"
+  check "$(grep -c 'is no login ceiling' "$T/finish.err")" 1 "…said once on stderr"
+  # after a good line the core folds it into that entry, so no line has no login: the value is what shows it
+  reset; use "$S1" "10 92"; printf 'other:95\n%s\n*:99\n' "$bad" > "$FC"
+  check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F)" 3 "…and after a good line too"
+  has "$T/finish.err" "its \`*:\` line raises nothing" "…said on stderr"
+done
+reset; use "$S1" "10 92"; printf 'spare:97\nother:bad\n*:99\n' > "$FC"
+check "$(ACCOUNTS_FILE=$T/finish-open.json ACCOUNT_NOW=$WED F) $(field "['account']")" "0 spare" "another login's bad line leaves a good own line standing"
+rm -f "$WM"
+# the brief's amendment: a finish line is per login of any provider, and every pick that judges a week ceiling reads it
+CX="$T/codex-fin"; mkdir -p "$CX"
+cat > "$T/finish-codex.json" <<EOF
+{"accounts": [{"label": "codex-fin", "provider": "codex", "home": "$CX", "rules": {"week_max": 90}}]}
+EOF
+python3 -c "import json,sys;json.dump({'at': float(sys.argv[2]), 'limits': {'five_hour': 10, 'seven_day': 92}}, open(sys.argv[1] + '/usage-probe.json', 'w'))" "$CX" "$WED"
+printf 'codex-fin:97\n' > "$FC"
+check "$(ACCOUNTS_FILE=$T/finish-codex.json ACCOUNT_NOW=$WED F --provider codex --cached) $(field "['account']")" "0 codex-fin" "a Codex login's finish past its week ceiling, under its finish line"
+has "$T/out" "week 92% < 97% (finish ceiling)" "…named as the finish ceiling"
+check "$(ACCOUNTS_FILE=$T/finish-codex.json ACCOUNT_NOW=$WED A pick --provider codex --cached --json)" 3 "the same reading refuses a Codex build"
+has "$T/out" "week 92% ≥ 90% (week ceiling)" "…at its week ceiling"
+reset; use "$S1" "10 92"; printf '*:97\n' > "$FC"
+check "$(ACCOUNT_NOW=$WED F)" 3 "a wildcard never raises a row's own registry ceiling"
+has "$T/out" "week 92% ≥ 70% (week ceiling)" "…which still judges"
+printf 'spare:60\n*:99\n' > "$FC"
+check "$(ACCOUNT_NOW=$WED F)" 3 "a lower own line leaves the normal ceiling and shadows the wildcard"
+rm -f "$FC"
+check "$(ACCOUNT_NOW=$WED F)" 3 "an absent finish limit leaves the normal ceiling"
+printf 'spare:97\n' > "$FC"
+reset; use "$S1" "90 92"
+check "$(ACCOUNT_NOW=$WED F)" 3 "the finish allowance does not lift the 5-hour limit"
+reset; use "$S1" "10 92 locked"
+check "$(ACCOUNT_NOW=$WED F)" 3 "a finish ceiling does not lift a cooldown"
+reset; use "$S1" "10 92"
+mkdir -p "$REGATTA_CONFIG/live/lighthouse"
+printf '\377' > "$REGATTA_CONFIG/live/lighthouse/week-max-finish"
+check "$(ACCOUNT_NOW=$WED F)" 3 "an unreadable live layer never falls back to a widening base"
+has "$T/finish.err" "could not be read; the week ceiling judges" "the unreadable key is said once"
+rm -f "$REGATTA_CONFIG/live/lighthouse/week-max-finish"
+cat > "$T/finish-denied.py" <<'PY'
+import errno, os, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+
+tool = sys.argv.pop()
+layer = Path(os.environ["REGATTA_CONFIG"]) / "live/lighthouse/week-max-finish"
+def denied(method):
+    def call(path, *args, **kwargs):
+        if path == layer:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return method(path, *args, **kwargs)
+    return call
+def predicate(method):
+    def call(path, *args, **kwargs):
+        try:
+            return method(path, *args, **kwargs)
+        except OSError:
+            return False
+    return call
+# Python 3.14 predicates hide the inaccessible directory. Explicit status and read calls still
+# raise: simulate both on every supported Python, without depending on the test user's privileges.
+with patch.object(Path, "stat", denied(Path.stat)), patch.object(Path, "lstat", denied(Path.lstat)), \
+     patch.object(Path, "read_text", denied(Path.read_text)), \
+     patch.object(Path, "is_file", predicate(Path.is_file)), \
+     patch.object(Path, "exists", predicate(Path.exists)), \
+     patch.object(Path, "is_symlink", predicate(Path.is_symlink)):
+    sys.argv[0] = tool
+    runpy.run_path(tool, run_name="__main__")
+PY
+ACCOUNT_NOW=$WED python3 "$T/finish-pick.py" "$B/../../regatta/hooks" "$T/finish-denied.py" "$B/account" > "$T/out" 2> "$T/finish.err"
+check "$?" 3 "an inaccessible live directory never admits a finish from a readable base (Python 3.14 predicates)"
+has "$T/out" "week 92% ≥ 70% (week ceiling)" "the inaccessible layer retains the normal ceiling"
+check "$(grep -c 'could not be read; the week ceiling judges' "$T/finish.err")" 1 "the inaccessible layer is said once, outside the JSON"
+ln -s "$T/missing-finish-limit" "$REGATTA_CONFIG/live/lighthouse/week-max-finish"
+check "$(ACCOUNT_NOW=$WED F)" 3 "a dangling live layer never falls back to a widening base"
+check "$(grep -c 'could not be read; the week ceiling judges' "$T/finish.err")" 1 "the dangling layer is said once"
+rm -f "$REGATTA_CONFIG/live/lighthouse/week-max-finish" "$FC"
+reset
 reset; use "$S1" "60 10"; use "$P1" "10 10"
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a 5-hour window over 50% → the primary"
 reset; use "$S1" "10 10"
@@ -1907,6 +2061,64 @@ check "$(python3 -c "import json;print([x[0] for x in json.load(open('$T/out'))[
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A ships --pin acme/s2 lab; ACCOUNTS_FILE="$ACCOUNTS_FILE.tu" ACCOUNT_NOW=$WED A pick --ship acme/s2 --repo "$PR/acme-one" --json) $(field "['account']")" "0
 0 lab" "…and a ship pinned there stays on it when no other row has room"
 mv "$F/stub-usage.off" "$F/stub-usage"; rm -f "$F/usage-probe.json"
+# the lend bar: past rules.lend_max a tenant's login takes only its tenant's work (the owner, 2026-11-05: one at 50%)
+echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme", "rules": {"lend_max": 50}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
+ "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.tl"
+TL() { ACCOUNTS_FILE="$ACCOUNTS_FILE.tl" ACCOUNT_NOW=$WED A "$@"; }
+use "$L" "10 60"; rm -f "$L/usage-probe.json"
+check "$(TL pick --repo "$PR/app" --json) $(field "['account']")" "0 main" "lend bar: a tenant login at 60% past its lend_max 50 → another's repo goes on"
+check "$(python3 -c "import json;print(json.load(open('$T/out'))['skipped'][0][1].split('; resets')[0])")" "week 60% ≥ 50% (lend bar: past it, acme's work only)" "…naming the bar as a week refusal (the overdraw pass reads it as one)"
+check "$(TL pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "…while its own tenant's repo still runs there, under its week_max"
+check "$(TL pick --json) $(field "['account']")" "0 main" "…and a pick with no repo is not its own: the bar judges it"
+use "$L" "10 40"; rm -f "$L/usage-probe.json"
+check "$(TL pick --repo "$PR/app" --json) $(field "['account']")" "0 lab" "…under the bar (40%) another's repo runs there"
+sed 's#, "rules": {"lend_max": 50}##' "$ACCOUNTS_FILE.tl" > "$ACCOUNTS_FILE.tl2"
+echo '{"lab": {"lend_max": 30}}' > "$ACCOUNTS_FILE.tl2.budgets"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl2" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 main" "…budgets.json's lend_max sets the bar too (40% ≥ 30)"
+has "$T/out" "(lend bar, budgets.json: past it, acme's work only)" "…naming the file"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl2" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "…and its own repo still runs"
+rm -f "$ACCOUNTS_FILE.tl2.budgets" "$(dirname "$ACCOUNTS_FILE")/.$(basename "$ACCOUNTS_FILE").tl2.budgets.last"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl2" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 lab" "…and with no key there is no bar"
+use "$L" "10 40"; rm -f "$L/usage-probe.json"
+check "$(TL ships --pin acme/l1 lab; TL pick --ship acme/l1 --repo "$PR/app" --json) $(field "['account']")" "0
+0 lab" "lend bar: a ship pinned to the login under the bar stays on it"
+use "$L" "10 60"; rm -f "$L/usage-probe.json"
+check "$(TL pick --ship acme/l1 --repo "$PR/app" --json) $(field "['account']")" "0 main" "…past it, the pinned ship moves on rather than wait for the reset (the second review, 2026-11-05)"
+has "$T/out" "lab is past its lend bar for this repo" "…saying why"
+check "$(TL ships --pin acme/l2 lab; TL pick --ship acme/l2 --repo "$PR/acme-one" --json) $(field "['account']")" "0
+0 lab" "…while a ship of the tenant's own repo stays on it"
+check "$(TL limits lab --repo "$PR/app" --json) $(field "[0]['eligible']")" "0 False" "limits --repo (dispatch --account): another's repo past the bar is not eligible"
+has "$T/out" "lend bar" "…naming the bar"
+check "$(TL limits lab --repo "$PR/acme-one" --json) $(field "[0]['eligible']")" "0 True" "…its own repo is"
+check "$(TL limits lab --json) $(field "[0]['eligible']")" "0 True" "…and limits with no repo never applies the bar"
+check "$(TL limits lab --repo "$PR/app" --json) $(field "[0]['lends']") $(TL limits lab --repo "$PR/acme-one" --json) $(field "[0]['lends']") $(TL limits lab --json) $(field "[0]['lends']")" \
+  "0 True 0 False 0 False" "limits' lends (dispatch --next walks past it): another's repo yes, its own no, no repo no"
+sed 's#"lend_max": 50#"lend_max": NaN#' "$ACCOUNTS_FILE.tl" > "$ACCOUNTS_FILE.tl3"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl3" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 main" "a NaN lend_max in the registry lends nothing: the key only narrows (AGENTS.md's narrowing trap)"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl3" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 lab" "…its own work still runs there"
+sed 's#"lend_max": 50#"lend_max": "half"#' "$ACCOUNTS_FILE.tl" > "$ACCOUNTS_FILE.tl4"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl4" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 main" "…and so does a string"
+ACCOUNTS_FILE="$ACCOUNTS_FILE.tl4" ACCOUNT_NOW=$WED A pick --repo "$PR/app" >/dev/null
+has "$T/out" "rules.lend_max 'half' is not a number from 0 to 100; it lends nothing" "…said on stderr, outside --json"
+echo '{"lab": {"lend_max": "half"}}' > "$ACCOUNTS_FILE.tl2.budgets"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl2" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json) $(field "['account']")" "0 main" "…a budgets.json lend_max that does not read lends nothing too, on a row with none in the registry"
+rm -f "$ACCOUNTS_FILE.tl2.budgets" "$(dirname "$ACCOUNTS_FILE")/.$(basename "$ACCOUNTS_FILE").tl2.budgets.last"
+use "$L" "10 20"; rm -f "$L/usage-probe.json"
+check "$(TL limits lab --repo "$PR/app" --json) $(field "[0]['lends'], d[0]['eligible']")" "0 True True" "…lends says the login has a bar for the repo, under it too (eligible): a --next walks, the fire-time pick judges"
+# the overdraw lifts a lent row last: another row past its own week ceiling goes first (TODO.md's lend-bar-overdraw, 2026-11-06)
+echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme", "rules": {"lend_max": 50}},
+  {"label": "work", "provider": "claude", "home": "~/.claude-work", "rules": {"week_max": 90}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 90}}],
+ "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.tl5"
+cp "$F/stub-usage" "$T/f-usage.keep"; cp "$P1/stub-usage" "$T/p-usage.keep"
+use "$L" "10 60"; use "$F" "10 95"; use "$P1" "10 95"; rm -f "$L/usage-probe.json" "$F/usage-probe.json" "$P1/usage-probe.json"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl5" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json; field "['skipped'][0][1].split('; resets')[0]")" "3
+week 60% ≥ 50% (lend bar: past it, acme's work only)" "overdraw's walk: the lent login refused by its bar, the other past its ceiling, the primary its own"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl5" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --overdraw --json) $(field "['account']")" "0 work" "…the overdraw lifts the other row first, never the lent one ahead of it in the walk"
+sed 's#"week_max": 90#"week_max": 90, "overdraw": false#' "$ACCOUNTS_FILE.tl5" > "$ACCOUNTS_FILE.tl6"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl6" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --overdraw --json) $(field "['account']")" "0 lab" "…and lends past its bar only when no other row may be lifted"
+mv "$T/f-usage.keep" "$F/stub-usage"; mv "$T/p-usage.keep" "$P1/stub-usage"; rm -f "$F/usage-probe.json" "$P1/usage-probe.json"
 use "$L" "10 10"; rm -f "$L/usage-probe.json"
 echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
   {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "primary": true}],

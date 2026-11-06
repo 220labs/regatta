@@ -78,7 +78,7 @@ bin/autofinish-run.
 
 The run record — the contract E1's runner writes and the hooks read (hooks/common.py's readers):
   <git dir>/claude/autofinish.json, one per worktree, the last run on it:
-    {"started": iso, "session": uuid, "tip": sha, "by": "sweep|override|brief|typed|yolo|dnd|ship|chain|handed",
+    {"started": iso, "session": uuid, "tip": sha, "by": "sweep|override|brief|typed|yolo|dnd|ship|chain|handed|lander",
      "rule": "A|B|C|D|E|L|M", "window": str, "account": label|dir|"oauth-token"|null, "ended": iso|null,
      "outcome": "launched|stopped|never-started|died"|null, "pr": int|null, "gate": str|null,
      "pushed": sha|null, "base": str|null, "base_tip": sha|null}
@@ -86,7 +86,11 @@ The run record — the contract E1's runner writes and the hooks read (hooks/com
     task-shape S1), plus `"merge": true` for a run started with `--merge`, `"hold": "<why>"` for one held at a ready
     PR (S3b; autofinish-run's header), `"host": "<peer>"` for one sent to the peer and `"from":
     "<host>"` on the peer for one that host sent (autofinish-run's header, Where: its end comes from
-    there, through the waiter or dead()/bury()); each absent otherwise
+    there, through the waiter or dead()/bury()), `"land_by": "yolo|dnd"` for a lander start or a chain
+    relaunch of a mode or lander launch that carries the flag (a plain `--by yolo|dnd` start's flag is its `by`), `"road":
+    "refinish|login|limit|stand"` for a lander start, `"hold_from": <session>` for a run whose hold it carried rather
+    than judged (a chain or lander relaunch, a retry of a died or refused run), and `"automerge": {...}` for a run whose PR had an auto-merge request at its end
+    (stuck-ships S1; the lander's caps live in autofinish-run's lander.json, never here); each absent otherwise
     (`launched` was `landed` before the rename's S4, 2026-10-19; every reader takes both)
   Written before the runner's first call (owner.json then names `session`), `ended` and
   `outcome` at its end. While `ended` is null and the lock names `session`, checkpoint.py tells
@@ -213,11 +217,11 @@ D3-C), checked in this order, first veto wins:
             the --no-renames diff, so a gate moved away counts. C (the owner's override) launches a gate.
             Checked before B's and E's host and door. Gates are judged on the tip before the
             start; a run's own later edits are not re-judged (open: docs/autofinish-widen-2026-10-06.md).
-  week      the week of the login the runner would start on — `bin/account pick --repo <repo>`:
+  week      the week of the login the runner would start on — `bin/account pick --for finish --repo <repo>`:
             the work login first in the walk unless the repo is routed off it (work-account E5;
             joined early on the owner's word, 2026-10-08 — the sweep had paused all night on the primary login's
-            80 % while the work login sat at 6 %). A secondary's week is its registry ceiling, which the
-            pick applies; on the primary, that row's `limits --cached` and review-gate's threshold
+            80 % while the work login sat at 6 %). A secondary's week is its effective ceiling, a higher
+            finish ceiling included, which the pick applies; on the primary, that row's `limits --cached` and review-gate's threshold
             (10 points over pace, or 80 % used) pause A, B and E (design section 6, R6; R4 of the widen doc), as
             `skip: week tight (<label> <n>% used, pace <p>%)`. No registry (pick's exit 4), an
             unreadable answer, or a primary with no reading: tier_check's reading of the default
@@ -388,6 +392,9 @@ def runner_by(worktree, rule):
         return m if m in LAND_MODES else "sweep"
     if run and run.get("by") in ("yolo", "dnd") and run.get("outcome") == DIED:
         return run["by"]
+    # a lander or chain relaunch carries its mode in `land_by` (stuck-ships S1): its retry stays that mode launch
+    if run and run.get("land_by") in ("yolo", "dnd") and run.get("outcome") == DIED:
+        return run["land_by"]
     if rule == "C":
         # `override` — the owner's full yes — only while the worktree's own marker reads; anything else
         # (the yes at the brief, S7, a marker turned off since the verdict, a git timeout) starts `brief`,
@@ -402,7 +409,9 @@ def start_runner(worktree, rule, cfg=None):
     verdict bound (inside RUNNER_TIMEOUT; not confirmed exits 0). Rule C is the owner's /autofinish, so it is
     recorded as `override`; every other rule is the sweep's. A non-zero exit is a failed start
     (2: not a claude/* worktree, 3: refused — that tip tried, or a run already going, 5: dispatch
-    refused it, 6: origin's branch holds what the tip lacks or moved it past what was judged; nothing ran)."""
+    refused it, 6: origin's branch holds what the tip lacks or moved it past what was judged, 8: the lander's road
+    can never hold (DEAD_ROAD_RC), 9: the key is stuck or its cap spent (STUCK_RC), 3 too when the lander's store,
+    or the key's entry in it, does not read; nothing ran)."""
     by = runner_by(worktree, rule)
     # without the login variables a hook or a dispatched session passed down: the runner picks
     # its login as week() did; only a typed hand-off (cold_prompt) keeps the caller's. `cfg`: the
@@ -1180,11 +1189,15 @@ def default_week(who=""):
     return tightness(w[0], w[1] / 1000, w[2], who) if w else (False, None)
 
 
-def account(*args, timeout=PICK_TIMEOUT):
+def account(*args, timeout=PICK_TIMEOUT, finish=False):
     """(exit, parsed JSON or None) of bin/account; exit None when it could not run."""
     env = {k: v for k, v in os.environ.items() if k not in LOGIN_ENV}
     try:
-        r = common.run_group([ACCOUNT, *args], timeout, env=env)
+        if finish:
+            with common.finish_pick_env(env) as (env, fds):
+                r = common.run_group([ACCOUNT, *args, "--for", "finish"], timeout, env=env, pass_fds=fds)
+        else:
+            r = common.run_group([ACCOUNT, *args], timeout, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return None, None
     try:
@@ -1193,16 +1206,18 @@ def account(*args, timeout=PICK_TIMEOUT):
         return r.returncode, None
 
 
-def week(repo, fresh=False):
+def week(repo, fresh=False, finish=False):
     """→ (verdict, detail): ("tight", …), ("none", reasons) when no account may run, or
     (None, detail) — the row `account pick --repo` takes for this repo (header, week). `fresh`
     probes (the judging a start follows); every other judging reads the cached readings only,
-    so a dry run, the Stop hook's check and a disarmed sweep spawn no probe."""
+    so a dry run, the Stop hook's check and a disarmed sweep spawn no probe. Only landing preflights
+    ask for a finish receipt; dispatch's build --if-room check keeps the normal ceiling."""
     # --overdraw judges only (lighthouse's account header, "Overdraw"): with no login under its week bar, one
     # past it with credits left still runs, which reads as tight here (the owner, 2026-11-04: the job can still
-    # start), so rules C, D and L land and the rest wait, as on any tight week; never "none". Every landing may
-    # overdraw: a finish does from normal up, a build only from high (the owner, 2026-11-05; dispatch's pick_account)
-    rc, d = account("pick", "--repo", str(repo), "--json", *([] if fresh else ["--cached"]), "--overdraw")
+    # start), so rules C, D and L land and the rest wait, as on any tight week; never "none", bar a finish past
+    # its own week-max-finish line, which the overdraw never lifts. Every landing may overdraw: a finish does from
+    # normal up, a build only from high (the owner, 2026-11-05; dispatch's pick_account)
+    rc, d = account("pick", "--repo", str(repo), "--json", *([] if fresh else ["--cached"]), "--overdraw", finish=finish)
     if rc == 3 and isinstance(d, dict):
         return "none", "; ".join(f"{l}: {w}" for l, w in d.get("skipped") or []) or "the registry has no row"
     if rc != 0 or not isinstance(d, dict) or not d.get("account"):  # exit 4 (no registry) included
@@ -1221,7 +1236,7 @@ def week(repo, fresh=False):
     if fresh:
         _picked[str(repo)] = (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", "")
     if not d.get("primary"):
-        # a secondary's week is its own registry ceiling (week_max, its reserve), which the pick
+        # a secondary's week is its own ceiling (week_max, its reserve; a finish's line), which the pick
         # just applied: review-gate's pace rule guards the owner's own week, not a seat meant to be
         # spent — on the work login's last day the pick allows 100 % (review, 2026-10-08)
         return None, f"{label}: {d.get('reason') or 'picked'}"
@@ -1241,18 +1256,18 @@ _week = {}
 _picked = {}  # repo → the CLAUDE_CONFIG_DIR of its last fresh pick ("" the default login)
 
 
-def week_tight(repo, fresh=False):
-    """week(repo), once per repo and freshness per process: the sweep judges many branches of one
+def week_tight(repo, fresh=False, finish=False):
+    """week(repo), once per repo, freshness and purpose per process: the sweep judges many branches of one
     repo. attempt() clears it before the judging a start follows. An odd answer is no account,
     never a crashed sweep (review, 2026-10-08)."""
-    key = (str(repo), bool(fresh))
+    key = (str(repo), bool(fresh), bool(finish))
     hit = _week.get(key)  # one read: attempt() clears _week, though only after the pool has joined
     if hit is not None:
         return hit
     with _CACHE:  # one bin/account per repo, however many judging threads reach it at once
         if key not in _week:
             try:
-                _week[key] = week(repo, fresh)
+                _week[key] = week(repo, fresh, finish)
             except Exception as e:  # noqa: BLE001
                 _week[key] = ("none", f"the pick could not be read ({type(e).__name__})")
         return _week[key]
@@ -1729,7 +1744,7 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
             if binary:
                 return f"skip: binary ({binary[0]})"
             rule = "M"
-            kind, detail = week_tight(repo)
+            kind, detail = week_tight(repo, finish=True)
             if kind == "none":
                 return f"skip: no account ({detail})"
             if kind == "tight" and not live:
@@ -1785,7 +1800,7 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
                         return f"skip: {rule} waits for {E_LAUNCHES} launches ({f'{n}/{E_LAUNCHES}' if armed_on else 'disarmed'})"
             # cached: the fresh pick is attempt()'s, after the idle clock — a session end's
             # judging would otherwise probe every row only to say `wait: idle` (review, 2026-10-08)
-            kind, detail = week_tight(repo)
+            kind, detail = week_tight(repo, finish=True)
             if kind == "none":
                 return f"skip: no account ({detail})"
             if kind == "tight":
@@ -2175,7 +2190,7 @@ def attempt(name, repo, branch, ctx, own=None, reply=None, v=None):
     rule = v[len("start ("):-1]
     # no row may run it: refused before rule D's stand commits (the runner would refuse after it,
     # leaving the branch ahead of origin) — C and D included, which the week never pauses
-    kind, detail = week_tight(repo, fresh=True)
+    kind, detail = week_tight(repo, fresh=True, finish=True)
     if kind == "none":
         log_lines([(name, branch, f"skip: no account ({detail})")])
         return None

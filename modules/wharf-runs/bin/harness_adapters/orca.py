@@ -96,7 +96,9 @@ def _bin():
 # Orca up; nor is the bash launcher (`bash .../bin/orca-ide serve`), whose argv starts with bash. The
 # Mac pattern alone read every Linux yard as "Orca is not running here", so wharf apply exited 3.
 MAC_PROC = r"^[^ ]*/Orca\.app/Contents/MacOS/Orca( |$)"
-PROC = "/proc"
+# HARNESS_ORCA_PROC stands in for /proc (test_orca_runtime: a process table of the case's own, so a
+# case of bin/wharf's gate never reads the host's, where a real `orca-ide serve` may run)
+PROC = os.environ.get("HARNESS_ORCA_PROC") or "/proc"
 
 
 def _orca_argv(argv):
@@ -134,6 +136,22 @@ def _app_up():
         return subprocess.run(["pgrep", "-f", MAC_PROC], capture_output=True, timeout=5).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def not_running_hint(caller="run", machine=None):
+    """What brings Orca up here, for a refusal of CALLER (`run`, harness run; `apply`, wharf apply): on a
+    Mac the app, in each caller's words as they were; on Linux the headless server, which a node runs as
+    the systemd user unit orca-serve.service, installed by orca-serve-agent (yard-orca-serve, 2026-11-05).
+    MACHINE names the host in the Linux words: helm send streams a node's apply output to the sending Mac,
+    where `orca-serve-agent here` would set up the Mac's own serve (the landing review, 2026-11-05)."""
+    if _linux():
+        on = " on %s" % machine if machine else ""
+        return ("no orca-ide app or `orca-ide serve` process%s: start the server (`systemctl --user start "
+                "orca-serve`); installing it is the owner's, from their own terminal%s "
+                "(`modules/wharf-runs/bin/orca-serve-agent here`)" % (on, on))
+    if caller == "apply":
+        return "open the app; a session in VS Code clears ELECTRON_RUN_AS_NODE"
+    return "open the app, with ELECTRON_RUN_AS_NODE cleared from a VS Code session"
 
 
 def _env():
@@ -873,8 +891,11 @@ def run(ctx, req):
     topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", re.sub(r"[^A-Za-z0-9-]+", "-", req.get("name") or "").strip("-").lower())
     if not topic or not req.get("prompt"):
         ctx.fail("orca run needs --name TOPIC and --prompt", 2)
+    if _linux() and not _bin():
+        # its own words on Linux: a server may be up with its CLI off this PATH (a Mac's words stay as they were)
+        ctx.fail("no orca CLI here (HARNESS_ORCA, orca-ide on PATH)", 2)
     if not _bin() or not _app_up():
-        ctx.fail("Orca is not running here (open the app, with ELECTRON_RUN_AS_NODE cleared from a VS Code session)", 2)
+        ctx.fail("Orca is not running here (%s)" % not_running_hint("run", ctx.machine), 2)
     name = "%s-%s" % (req.get("date") or time.strftime("%Y-%m-%d"), topic)
     want = "claude/%s/%s" % (ctx.machine, name)
     repo = req["repo"]
@@ -1051,8 +1072,10 @@ def _hail_fence(rec, msg, agent):
         return "the regatta core is not here to judge the scopes: no hail to a %s worker without it" % agent
     if msg.get("sender_fenced"):
         return "the sender's repo, on the Mac it hails from, is confidential or guarded (or could not be judged)"
-    sides = [("the worker's", rec.get("cwd"))] + [("the sender's", p) for p in
-                                                  (msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()])]
+    sides = [("the worker's", rec.get("cwd"))]
+    if not msg.get("peer_half"):
+        sides += [("the sender's", p) for p in
+                  (msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()])]
     for i, (side, where) in enumerate(sides):   # the codex adapter's hail_fence, kept beside it: this adapter loads alone
         if not where and i == 0:   # a worker with no worktree read: as the codex adapter's thread side
             continue

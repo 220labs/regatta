@@ -5,9 +5,9 @@
 # one stays silent (held). `codex`, `orca` and `ssh` are stubs on their HARNESS_* variables; Talk and
 # file go through a stub asklib (HAIL_ASKLIB). Then the idle re-read, the frame's K13 rule, --dry-run,
 # --when idle and `hail subs --fulfil`.
-#   bash modules/wharf-runs/tests/test_hail.sh
+#   bash modules/wharf-runs/tests/test_hail.sh [--message-peers]  # discovery/routing only: no sockets or ps
 set -u
-unset CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_SESSION_ID DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_PLAN_SPACE HAIL_SPACE HAIL_FROM
+unset CLAUDE_REPOS_JSON CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_SESSION_ID DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_PLAN_SPACE HAIL_SPACE HAIL_FROM
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T=$(mktemp -d); T=$(cd "$T" && pwd -P)
 PIDS=()
@@ -23,7 +23,8 @@ for l in open(sys.argv[1]):
 jget()  { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2" 2>&1; }
 
 for v in $(env | sed -n 's/^\(HARNESS_PEER_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done   # every peer the caller named: a pull walks them all
-export REGATTA_CONFIG="${REGATTA_CONFIG:-$HOME/.config/regatta}"   # before HOME moves: the core is found there
+export REGATTA_CONFIG="$T/config"   # discovery must never read the caller's fleet or ssh config
+mkdir -p "$REGATTA_CONFIG/wharf-runs"
 export HOME="$T/home" HARNESS_HOST=laptop HARNESS_PEER_BUILDBOX=buildbox-ssh MEMO_STATE_DIR="$T/state" \
        HAIL_ASKLIB="$T/asklib.py" HAIL_FROM=tester HAIL_READBACK_S=3 \
        HARNESS_ORCA="$T/orca" STUB_ORCA_STATE="$T/orca.json" STUB_ORCA_CALLS="$T/orca.calls" \
@@ -98,6 +99,7 @@ def standing_skipper(host=None):
 PY
 cat > "$T/codex" <<'SH'
 #!/bin/sh
+[ "$#" -eq 5 ] && [ "$1" = queue ] && [ "$2" = --thread ] && [ -n "$3" ] && [ "$4" = --message ] || exit 2
 printf '%s\n' "$*" >> "$STUB_CODEX_CALLS"
 [ -n "${STUB_CODEX_FAIL:-}" ] && { echo "error: no thread $3" >&2; exit 1; }
 exit 0
@@ -137,6 +139,365 @@ cat > "$T/orca.json" <<'JSON'
 JSON
 chmod +x "$T/codex" "$T/orca"
 
+H() { python3 "$B/hail" "$@"; }
+
+echo "fleet message peers: nodes need no placement alias"
+# A real hosts ref, read by the real `dispatch-queue hosts get` over a local file road. Rows may
+# be stale or torn: only fresh, readable samples become automatic peers. No push, sampler, network or real HOME.
+NODE_CFG="$T/node-config"; mkdir -p "$NODE_CFG/wharf-runs" "$NODE_CFG/wharf"
+printf '%s\n' "$T/fleet.git" > "$NODE_CFG/wharf-runs/queue-repo"
+echo buildbox:buildbox-ssh > "$NODE_CFG/wharf-runs/ssh"
+printf '{"repos": {}, "scopes": {}}\n' > "$T/open-repos.json"
+cp "$T/open-repos.json" "$NODE_CFG/wharf/repos.json"
+git init -q --bare "$T/fleet.git"
+python3 - "$T/fleet.git" <<'PY'
+import json, subprocess, sys, time
+def git(*args, text=None):
+    return subprocess.run(["git", "--git-dir=" + sys.argv[1], "-c", "user.name=t", "-c", "user.email=t@t"] + list(args),
+                          input=text, text=True, capture_output=True, check=True).stdout.strip()
+blob = git("hash-object", "-w", "--stdin", text=json.dumps({"at": time.time()}))
+old = git("hash-object", "-w", "--stdin", text=json.dumps({"at": time.time() - 90000}))
+torn = git("hash-object", "-w", "--stdin", text="torn")
+names = ("laptop", "buildbox", "node-a", "node-b", "-option", "bad;command", "external.example", "retired", "torn")
+tree = git("mktree", text="".join("100644 blob %s\t%s.json\n" % (torn if h == "torn" else old if h == "retired" else blob, h) for h in names))
+root = git("mktree", text="040000 tree %s\thosts\n" % tree)
+sha = git("commit-tree", root, "-m", "fixture hosts")
+git("update-ref", "refs/regatta/hosts", sha)
+PY
+REGATTA_CONFIG="$NODE_CFG" python3 "$B/dispatch-queue" hosts get > /dev/null   # fetched by the sweep already
+REGATTA_CONFIG="$NODE_CFG" python3 - "$B" > "$T/node-peers.out" <<'PY'
+import importlib.machinery as m, importlib.util as u, sys
+def load(name):
+    loader = m.SourceFileLoader(name, sys.argv[1] + "/" + name)
+    mod = u.module_from_spec(u.spec_from_loader(name, loader)); loader.exec_module(mod); return mod
+h, b = load("harness"), load("berth")
+print(h.message_peers())
+print(h.peers())
+print(b.candidates("/x", "laptop")[0])
+try:
+    h.hosts_for("node-a")
+except SystemExit:
+    print("node-a is no harness placement peer")
+PY
+has "$T/node-peers.out" "{'buildbox': 'buildbox-ssh', 'node-a': 'node-a', 'node-b': 'node-b'}" "fleet names discovered, configured aliases win, self and unsafe names excluded"
+has "$T/node-peers.out" "{'buildbox': 'buildbox-ssh'}" "the harness's existing peers remain placement-only"
+has "$T/node-peers.out" "['buildbox', 'laptop']" "berth offers no fleet-only node to placement"
+has "$T/node-peers.out" "node-a is no harness placement peer" "harness --host still refuses a fleet-only node"
+
+REGATTA_CONFIG="$NODE_CFG" python3 - "$B" <<'PY'
+import argparse, importlib.machinery as m, importlib.util as u
+import sys
+loader = m.SourceFileLoader("queue_cached_test", sys.argv[1] + "/dispatch-queue")
+q = u.module_from_spec(u.spec_from_loader(loader.name, loader)); sys.modules[loader.name] = q; loader.exec_module(q)
+q.Hosts.fetch = q.Hosts.locked = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("cached get used network or lock"))
+import contextlib, io
+with contextlib.redirect_stdout(io.StringIO()) as out:
+    assert q.cmd_hosts(argparse.Namespace(hosts_verb="get", cached=True), None) == 0
+assert '"node-a"' in out.getvalue()
+PY
+check "$?" 0 "hosts get --cached reads the local ref without fetching or taking the queue lock"
+
+# Registry filtering uses one snapshot and every scope; --host keeps the owner's explicit exception.
+REGATTA_CONFIG="$NODE_CFG" python3 - "$B" "$T" > "$T/fences.out" <<'PY'
+import importlib.machinery as m, importlib.util as u, json, os, sys
+from pathlib import Path
+loader = m.SourceFileLoader("hail", sys.argv[1] + "/hail")
+hail = u.module_from_spec(u.spec_from_loader("hail", loader)); loader.exec_module(hail)
+h = hail.harness()
+reg = Path(sys.argv[2]) / "message-registry.json"
+os.environ["CLAUDE_REPOS_JSON"] = str(reg)
+reg.write_text(json.dumps({"repos": {}, "scopes": {"umbrella": {"repos": ["*"]},
+    "one": {"repos": [], "confidential": True, "yard": "node-b"},
+    "two": {"repos": [], "confidential": True, "yard": "node-a"}}}))
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}
+assert h.message_peers(target="node-a")["node-a"] == "node-a"
+# A configured placement peer stays reachable as on main, even as a confidential scope's (Mac) yard.
+reg.write_text(json.dumps({"repos": {}, "scopes": {"mac": {"repos": [], "confidential": True, "yard": "buildbox"}}}))
+assert h.message_peers() == {"buildbox": "buildbox-ssh", "node-a": "node-a", "node-b": "node-b"}
+# A confidential scope's own node is blocked by its folder's scope, whatever the scope's yard says.
+ncfg = Path(os.environ["REGATTA_CONFIG"]) / "wharf-runs" / "nodes" / "node"
+ncfg.mkdir(parents=True)
+(ncfg / "scope").write_text("own\n"); (ncfg / "ssh").write_text("node-own-ssh\n")
+reg.write_text(json.dumps({"repos": {}, "scopes": {"own": {"repos": [], "confidential": True}}}))
+assert h.message_peers() == {"buildbox": "buildbox-ssh", "node-a": "node-a", "node-b": "node-b"}, h.message_peers()
+assert h.message_peers(target="node-agent") == {"node-agent": "node-own-ssh"}
+# A held folder (the scope, no ssh) is no open node: every added name is dropped.
+(ncfg / "ssh").unlink()
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}
+(ncfg / "scope").unlink(); ncfg.rmdir()
+# A confidential scope's node with no folder here is still blocked by its fleet name, `<scope>-agent`.
+reg.write_text(json.dumps({"repos": {}, "scopes": {"node": {"repos": [], "confidential": True}}}))
+assert "node-agent" not in h.message_peers() and h.message_peers()["node-a"] == "node-a"
+# A yard that does not read narrows to nothing added, never to nothing blocked.
+reg.write_text(json.dumps({"repos": {}, "scopes": {"bad": {"repos": [], "confidential": True, "yard": ["node-a"]}}}))
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}
+reg.write_text("torn")
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}
+assert h.message_peers(target="node-a")["node-a"] == "node-a"
+reg.unlink(); reg.symlink_to(reg.parent / "missing-registry")
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}
+reg.unlink()
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}   # an explicitly missing registry is unknown too
+assert h.message_peers(target="node-a")["node-a"] == "node-a"
+# Codex and Orca keep the receiver's fence, but never reinterpret its cwd as the sender's.
+core, calls = h.common, []
+saved = core.vendor_refusal
+core.vendor_refusal = lambda where, *a, **kw: calls.append(where) or ("fenced" if where == os.getcwd() else None)
+mods = {m.NAME: m for m in h.adapters()}
+for check_fence in (lambda msg: mods["codex"].hail_fence(core, {"cwd": "/receiver"}, msg, "codex", "receiver"),
+                    lambda msg: mods["orca"]._hail_fence({"cwd": "/receiver"}, msg, "codex")):
+    calls.clear()
+    assert check_fence({"peer_half": True}) is None and calls == ["/receiver"]
+    assert check_fence({"peer_half": True, "sender_fenced": True})
+    assert check_fence({})   # a local sender still meets its cwd's fence
+core.vendor_refusal = saved
+cfg = Path(os.environ["REGATTA_CONFIG"]) / "wharf-runs"
+(cfg / "kick-ssh").write_text("node-b:node-b-ssh # a note\nnode-c:\nnode-c-ssh\n")
+assert h._MESSAGE_READER[0].configured(core) == {"buildbox": "buildbox-ssh", "node-b": "node-b-ssh", "node-c": "node-c-ssh"}
+(cfg / "kick-ssh").write_text("node-a:node-a-ssh\n")
+(cfg / "nodes" / "named").mkdir(parents=True)
+(cfg / "nodes" / "named" / "ssh").write_text("named-ssh\n")
+reader = h._MESSAGE_READER[0]
+# Round 3 of node-hail's landing review: each row, folder and flag shape the fence must read alike.
+import time as _t
+real_rows = reader.rows
+fresh = _t.time() - 1
+reg.write_text(json.dumps({"repos": {}, "scopes": {"open": {"repos": []}, "sec": {"repos": [], "confidential": True}}}))
+reader.rows = lambda c: {"node-a": {"at": 10 ** 400}, "node-b": {"at": fresh},
+                         "acmebox-agent": {"at": fresh, "scope": core.scope_marker("sec")},
+                         "openbox-agent": {"at": fresh, "scope": core.scope_marker("open")},
+                         "oddbox-agent": {"at": fresh, "scope": "confidential:unread"}}
+got = h.message_peers()
+# node-a's huge `at` drops its row alone, and with no fresh row its kick alias is no automatic peer; the named
+# folder is the core's to judge, not a row's
+assert got == {"buildbox": "buildbox-ssh", "named-agent": "named-ssh", "node-b": "node-b", "openbox-agent": "openbox-agent"}, got
+assert h.message_peers(target="acmebox-agent") == {"acmebox-agent": "acmebox-agent"}   # the explicit exception
+assert h.message_peers(target="node-a") == {"node-a": "node-a-ssh"}   # an explicit kick alias needs no row
+# Round 4: a kick alias of a scope node is blocked by its row's marker however old, torn or early the row is,
+# and a kick alias no fresh unmarked row vouches for (none, or the ref unread) is never an automatic peer.
+(cfg / "kick-ssh").write_text("argon-agent:argon-ssh\n")
+sec = core.scope_marker("sec")
+for label, row in (("fresh", {"at": fresh, "scope": sec}), ("25 h old", {"at": fresh - 90000, "scope": sec}),
+                   ("600 s ahead", {"at": fresh + 600, "scope": sec}), ("torn", None)):
+    reader.rows = lambda c, row=row: {"argon-agent": row, "node-b": {"at": fresh}}
+    got = h.message_peers()
+    assert "argon-agent" not in got and got["node-b"] == "node-b", (label, got)
+for label, rows in (("no row", {"node-b": {"at": fresh}}), ("stale unmarked", {"argon-agent": {"at": fresh - 90000}}),
+                    ("ref unread", None)):
+    reader.rows = lambda c, rows=rows: rows
+    assert "argon-agent" not in h.message_peers(), label
+reader.rows = lambda c: {"argon-agent": {"at": fresh}}
+assert h.message_peers()["argon-agent"] == "argon-ssh"   # a fresh unmarked row vouches for the kick alias
+# The same rows on a node folder here the core calls shared: the marker, not the freshness, is what blocks it.
+(cfg / "kick-ssh").unlink()
+argon = cfg / "nodes" / "argon"
+argon.mkdir(parents=True); (argon / "ssh").write_text("argon-ssh\n")
+reader.rows = lambda c: {"node-b": {"at": fresh}}
+assert h.message_peers()["argon-agent"] == "argon-ssh"   # a shared folder needs no row
+for label, row in (("25 h old", {"at": fresh - 90000, "scope": sec}), ("600 s ahead", {"at": fresh + 600, "scope": sec}),
+                   ("torn", None), ("unread", {"at": fresh - 90000, "scope": "confidential:unread"})):
+    reader.rows = lambda c, row=row: {"argon-agent": row, "node-b": {"at": fresh}}
+    got = h.message_peers()
+    assert "argon-agent" not in got and got["node-b"] == "node-b", ("folder", label, got)
+# A folder whose scope this registry lacks (not yet synced) is no shared node; one naming an open scope is.
+reader.rows = lambda c: {"node-b": {"at": fresh}}
+(argon / "scope").write_text("ghost\n")
+assert "argon-agent" not in h.message_peers(), h.message_peers()
+(argon / "scope").write_text("open\n")
+assert h.message_peers()["argon-agent"] == "argon-ssh"
+(argon / "scope").unlink()
+(argon / "ssh").unlink(); argon.rmdir()
+# A builder user's row names no ssh host: never an automatic peer, unless a configured alias names it.
+reader.rows = lambda c: {"node-b": {"at": fresh}, "node-b-argon": {"at": fresh, "builder": True}}
+got = h.message_peers()
+assert "node-b-argon" not in got and got["node-b"] == "node-b", got
+assert h.message_peers(target="node-b-argon") == {}
+(cfg / "kick-ssh").write_text("node-b-argon:argon@node-b\n")
+assert h.message_peers()["node-b-argon"] == "argon@node-b"
+(cfg / "kick-ssh").unlink()
+# A marker that is no string blocks its own host alone, never the walk.
+for odd in (["x"], {"a": 1}, 5):
+    reader.rows = lambda c, odd=odd: {"node-odd": {"at": fresh, "scope": odd}, "node-b": {"at": fresh}}
+    got = h.message_peers()
+    assert "node-odd" not in got and got["node-b"] == "node-b", (odd, got)
+# A sampler's clock a little ahead still reads fresh, explicit --host included; hours ahead does not.
+reader.rows = lambda c: {"node-q": {"at": _t.time() + 120}, "node-r": {"at": _t.time() + 7200}}
+got = h.message_peers()
+assert got.get("node-q") == "node-q" and "node-r" not in got, got
+assert h.message_peers(target="node-q") == {"node-q": "node-q"} and h.message_peers(target="node-r") == {}
+(cfg / "kick-ssh").write_text("node-a:node-a-ssh\n")
+reader.rows = lambda c: {"node-a": {"at": 10 ** 400}, "node-b": {"at": fresh}}
+dot = cfg / "nodes" / ".box"
+dot.mkdir(parents=True); (dot / "scope").write_text("sec\n"); (dot / "ssh").write_text("box-ssh\n")
+assert ".box-agent" not in reader.configured(core) and ".box-agent" not in h.message_peers()
+(dot / "scope").unlink(); (dot / "ssh").unlink(); dot.rmdir()
+reg.write_text(json.dumps({"repos": {}, "scopes": {"sec": {"repos": [], "confidential": "true"}}}))
+assert h.message_peers() == {"buildbox": "buildbox-ssh"}, h.message_peers()   # a flag that is no bool narrows to nothing added
+assert reader.pairs(["stray", "node-x-ssh", "node-y:", "node-y-ssh", "node-z: z-ssh extra"]) == [("node-y", "node-y-ssh"), ("node-z", "z-ssh")]
+reader.rows = real_rows
+reader.rows = lambda c: (_ for _ in ()).throw(AssertionError("discovery on alias hit"))
+assert h.message_peers(target="node-a") == {"node-a": "node-a-ssh"}
+assert h.message_peers(target="named-agent") == {"named-agent": "named-ssh"}
+(cfg / "kick-ssh").unlink(); (cfg / "nodes" / "named" / "ssh").unlink()
+os.environ.pop("HARNESS_HOST")
+h.common.host_name = lambda: "node-a"
+assert h.machine() == "node-a"
+hail.poll_left = lambda: 0
+h.message_peers = lambda: (_ for _ in ()).throw(AssertionError("late discovery"))
+assert hail.mail_pull(dry=True) == ([], 0)
+h.message_peers = lambda: {"node-a": "node-a", "node-b": "node-b"}
+clock = iter([300, 300, 0])
+hail.poll_left = lambda: next(clock)
+calls = []
+hail.on_peer = lambda host, *a, **kw: (calls.append(host) or [], None, True)
+assert hail.mail_pull(dry=True) == ([], 0) and calls == ["node-a"]
+print("registry, aliases, canonical host and mail budget: passed")
+PY
+check "$?" 0 "discovered confidential yards and nodes skipped, configured peers kept; torn and dangling registries fail closed; explicit host honoured"
+has "$T/fences.out" "passed" "aliases avoid discovery; canonical identity and each mail deadline checked"
+
+# One stub handles each direction, checking ssh's actual arguments and alias before it runs the
+# shipped source. A separate install holds the real core; ssh gets no PYTHONPATH or sender cwd.
+# The peer has an open registry, so only --sender-fenced can carry a sender's fence.
+mkdir -p "$T/peer-install/modules/regatta/hooks" "$T/peer-config" "$T/peer-empty-config"
+cp "$B/../../regatta/hooks/common.py" "$T/peer-install/modules/regatta/hooks/common.py"
+printf '%s\n' "$T/peer-install" > "$T/peer-config/home"
+cat > "$T/node-ssh" <<'PY'
+#!/usr/bin/env python3
+import json, os, subprocess, sys
+base = os.path.dirname(__file__)
+assert sys.argv[1:5] == ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6"]
+assert len(sys.argv) == 7
+alias, command = sys.argv[5:]
+host = {"node-a": "node-a", "node-b": "node-b", "laptop": "laptop", "buildbox-ssh": "buildbox"}[alias]
+with open(base + "/node-ssh.calls", "a") as f:
+    f.write(json.dumps({"alias": alias, "command": command}) + "\n")
+if alias == os.environ.get("NODE_SSH_DOWN"):
+    sys.exit(255)
+home = base + ("/home" if host == "laptop" else "/peer")
+state = base + ("/state" if host == "laptop" else "/" + host + "-state")
+env = dict(os.environ, HOME=home, HARNESS_HOST=host, MEMO_STATE_DIR=state,
+           CLAUDE_REPOS_JSON=base + ("/peer-repos.json" if os.environ.get("NODE_FENCED_HOME") else "/open-repos.json"), REGATTA_CONFIG=base + "/peer-config")
+for key in ("PYTHONPATH", "REGATTA_HOME", "CLAUDE_CONFIG_DIR"):
+    env.pop(key, None)
+mode = os.environ.get("NODE_CORE_SOURCE", "home")
+if mode != "home":
+    env["REGATTA_CONFIG"] = base + "/peer-empty-config"
+if mode == "env":
+    env["REGATTA_HOME"] = base + "/peer-install"
+if mode == "plugin":
+    env["CLAUDE_CONFIG_DIR"] = base + "/peer-plugin"
+if mode == "missing":
+    env["CLAUDE_CONFIG_DIR"] = base + "/no-plugin"
+sys.exit(subprocess.run(["sh", "-c", command], input=sys.stdin.buffer.read(), env=env, cwd=home).returncode)
+PY
+chmod +x "$T/node-ssh"
+NODE() { REGATTA_CONFIG="$NODE_CFG" HARNESS_SSH="$T/node-ssh" H "$@"; }
+NODE codex-label --thread th-node --host node-a --text "the doc moved" --json > "$T/r.json"; check "$?" 0 "Mac to fleet-only node: exit 0"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["host"]')" "('codex', 'queued', 'node-a')" "the node's own Codex queue answers"
+NODE codex-label --thread th-node --host node-a --text "look" --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "a dry hail reports the node's road"
+git init -q "$T/peer"
+printf '{"repos": {}, "scopes": {"private": {"repos": ["%s"], "confidential": true}}}\n' "$T/peer" > "$T/peer-repos.json"
+CLAUDE_REPOS_JSON="$T/peer-repos.json" python3 - "$B/../../regatta/hooks" "$T/peer" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import common
+assert common.vendor_refusal(sys.argv[2], "codex"), "fixture home must really be fenced"
+PY
+check "$?" 0 "the peer home fixture is confidential before testing the sender verdict"
+NODE_FENCED_HOME=1 NODE codex-label --thread th-node --host node-a --text look --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "the receiving login cwd is never judged as the sender's repo"
+NODE_CORE_SOURCE=env NODE codex-label --thread th-node --host node-a --text look --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "a peer discovers the core through REGATTA_HOME"
+mkdir -p "$T/peer-plugin/plugins"
+printf '{"plugins":{"regatta@regatta":[{"installPath":"%s"}]}}\n' "$T/peer-install/modules/regatta" > "$T/peer-plugin/plugins/installed_plugins.json"
+NODE_CORE_SOURCE=plugin NODE codex-label --thread th-node --host node-a --text look --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "a peer discovers the core through its plugin registry"
+STUB_CODEX_FAIL=1 HAIL_SPACE=sp-node NODE codex-label --thread th-node --host node-a --text look --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["tried"][0][0]')" "('talk', 'queued', 'codex')" "a peer queue failure still falls back to Talk"
+before=$(wc -l < "$T/codex.calls")
+NODE_CORE_SOURCE=missing HAIL_SPACE=sp-node NODE codex-label --thread th-node --host node-a --text look --dry-run --json > "$T/r.json"
+check "$?" 2 "a peer with no installed core still refuses, even with Talk available"
+has "$T/r.json" "the regatta core is not here" "the missing core is named, never bypassed"
+check "$(wc -l < "$T/codex.calls")" "$before" "a missing peer core never calls the queue"
+HARNESS_HOST=node-a NODE codex-label --thread th-node --host laptop --text "look back" --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["host"]')" "('codex', 'queued', 'laptop')" "a node hails a Mac by its fleet name"
+HARNESS_HOST=node-a NODE codex-label --thread th-node --host node-b --text "look across" --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["host"]')" "('codex', 'queued', 'node-b')" "a node hails another node by its fresh sample"
+git init -q -b main "$T/node-conf"
+git -C "$T/node-conf" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$T/node-conf" worktree add -q -b claude/laptop/node-conf "$T/node-conf-wt"
+printf '{"repos": {}, "scopes": {"conf": {"confidential": true, "repos": ["%s"]}}}\n' "$T/node-conf" > "$T/node-repos.json"
+before=$(wc -l < "$T/codex.calls")
+(cd "$T/node-conf-wt" && CLAUDE_REPOS_JSON="$T/node-repos.json" HARNESS_HOST=node-a \
+  NODE codex-label --thread th-node --host node-b --text look --json > "$T/r.json")
+check "$?" 2 "a confidential node sender is refused by the peer's Codex road"
+has "$T/node-ssh.calls" "--sender-fenced" "the new road carries sender_fenced across ssh"
+hasnt "$T/node-ssh.calls" "$T/node-conf" "the sender's confidential paths stay on the sender"
+has "$T/r.json" "on the Mac it hails from" "the peer honours the sender's fence despite its own open registry"
+check "$(wc -l < "$T/codex.calls")" "$before" "no Codex queue called for the fenced sender"
+
+echo "the public peer-half flag keeps the local sender fence"
+(cd "$T/node-conf-wt" && CLAUDE_REPOS_JSON="$T/node-repos.json" \
+  NODE --peer-half codex-label --thread th-node --frame "HAIL event from x — look" --dry-run > "$T/r.json")
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["why"].split(":")[0]')" "('codex', 'refused', \"the sender's repo\")" \
+  "a direct peer-half from a confidential cwd cannot bypass the Codex sender fence"
+check "$(wc -l < "$T/codex.calls")" "$before" "the direct peer-half never queues to Codex"
+mkdir -p "$HARNESS_RUNS_DIR"
+printf '[{"dispatch":"dsp_chat01","agent":"codex","started":0}]\n' > "$HARNESS_RUNS_DIR/orca-workers.json"
+: >> "$T/orca.calls"
+before=$(grep -c 'orchestration send' "$T/orca.calls")
+(cd "$T/node-conf-wt" && CLAUDE_REPOS_JSON="$T/node-repos.json" \
+  NODE --peer-half dsp_chat01 --frame "HAIL event from x — look" > "$T/r.json")
+check "$(jget "$T/r.json" 'd["road"], d["verdict"], d["why"].split(":")[0]')" "('orca', 'refused', \"the sender's repo\")" \
+  "a direct peer-half also keeps the Orca worker sender fence"
+check "$(grep -c 'orchestration send' "$T/orca.calls")" "$before" "no message reaches the Orca Codex worker"
+rm -f "$HARNESS_RUNS_DIR/orca-workers.json"
+NODE --peer-half codex-label --thread th-node --frame "HAIL event from x — look" --dry-run > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "a direct peer-half from an open cwd still works"
+NODE codex-label --thread th-node --host node-a --text "➤ Answer: yes" --json > "$T/r.json"
+check "$?" 2 "a hail into a node still refuses answer content"
+
+echo "fleet mailbox: a Mac pulls from a node with no ssh back"
+NODE mail --pull > /dev/null   # the node sees this Mac's heartbeat; a dry pull writes none
+HOME="$T/peer" MEMO_STATE_DIR="$T/node-a-state" HARNESS_HOST=node-a NODE_SSH_DOWN=laptop \
+  NODE s-node-mail --host laptop --text "a node pointer" --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('mailbox', 'queued')" "a node with no ssh back queues on its own mailbox"
+NODE mail --pull --json > "$T/f.json"
+check "$(jget "$T/f.json" '[(r["from"], r["target"], r["verdict"]) for r in d if r.get("mail")]')" \
+  "[('node-a', 's-node-mail', 'kept')]" "the Mac pulls the fleet-only node's row; the unknown session waits"
+before=$(wc -l < "$T/node-ssh.calls")
+ASK_POLL_DEADLINE=$(( $(date +%s) + 5 )) NODE mail --pull --json > "$T/f.json"
+check "$(cat "$T/f.json")" "[]" "a bell near its deadline takes no node mailbox rows"
+check "$(wc -l < "$T/node-ssh.calls")" "$before" "the deadline is checked before any discovery or ssh"
+check "$(jget "$T/node-a-state/hail-mailbox.jsonl" 'd["state"], d.get("token")')" "('waiting', None)" "the untaken row waits on the sender without a token"
+NODE mail --pull --json > "$T/f.json"
+check "$(jget "$T/f.json" '[(r["target"], r["verdict"]) for r in d if r.get("mail")]')" \
+  "[('s-node-mail', 'kept')]" "the next bell can take the waiting node row"
+
+printf '{"repos": {}, "scopes": {"private": {"repos": [], "yard": "node-a", "confidential": true}}}\n' > "$T/mail-registry.json"
+printf 'node-a:node-a\n' > "$NODE_CFG/wharf-runs/kick-ssh"
+: > "$T/node-ssh.calls"
+CLAUDE_REPOS_JSON="$T/mail-registry.json" NODE mail --pull --dry-run --json > "$T/f.json"
+hasnt "$T/node-ssh.calls" '"alias": "node-a"' "mail pulls never visit a confidential yard, even with a kick alias"
+CLAUDE_REPOS_JSON="$T/mail-registry.json" NODE codex-label --thread th-node --host node-a --text look --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "an explicit --host still reaches the confidential yard"
+rm -f "$NODE_CFG/wharf-runs/kick-ssh"
+
+echo "fleet discovery offline: the last fetched ref still names the node"
+mv "$T/fleet.git" "$T/fleet-away.git"
+NODE codex-label --thread th-node --host node-a --text "still known" --dry-run --json > "$T/r.json"
+check "$(jget "$T/r.json" 'd["road"], d["verdict"]')" "('codex', 'dry-run')" "cached hosts survive an offline queue home"
+mv "$T/fleet-away.git" "$T/fleet.git"
+
+if [ "${1:-}" = --message-peers ]; then
+  if [ "$fails" -eq 0 ]; then echo "test_hail (message peers): all passed"; else echo "test_hail (message peers): $fails failed"; fi
+  [ "$fails" -eq 0 ]; exit $?
+fi
+: > "$T/codex.calls"
+rm -f "$MEMO_STATE_DIR/hail.jsonl"
+
 # ---- the registry ----------------------------------------------------------------------------
 sleeper() { sleep 600 & PIDS+=($!); disown $!; }
 for i in 1 2 3 4 5 6 7 8; do sleeper; done
@@ -171,7 +532,6 @@ entry 3 s-fresh-004 idle 10 ack
 entry 4 s-pipe-0005 idle 300 -
 entry 5 s-shell-006 shell 90 shell
 entry 6 s-perm-0007 waiting 300 ack
-H() { python3 "$B/hail" "$@"; }
 
 echo "socket: an idle session takes it, read back from its transcript"
 H s-idle-0001 --text "the doc moved" --about "notes:claude/laptop/2026-10-21-x:docs/a.md#D2" --json > "$T/r.json"; check "$?" 0 "exit 0"
@@ -644,8 +1004,11 @@ HAIL_MAIL_TAKE_S=0 PULL --json > "$T/f.json"; check "$(jget "$T/f.json" '[(r["ve
   "a row whose pull died after its provisional mark: settled held from the ledger"
 check "$(wc -c < "$T/ack.log" | tr -d ' ')" "0" "  never posted again"
 SEND s-idle-0001 --host laptop --text "near the deadline" --json > /dev/null
+before=$(wc -l < "$T/ssh.calls")
 ASK_POLL_DEADLINE=$(( $(date +%s) + 5 )) PULL --json > "$T/f.json"
-check "$(jget "$T/f.json" '[(r["verdict"], "deadline" in r["why"]) for r in d if r.get("mail")]')" "[('kept', True)]" "the bell's deadline near: no post started, kept"
+check "$(cat "$T/f.json")" "[]" "the bell's deadline near: no take or post started"
+check "$(wc -l < "$T/ssh.calls")" "$before" "  no ssh before the next bell"
+check "$(rows '[(r["state"], r.get("token")) for r in rows]')" "[('waiting', None)]" "  the row remains untaken on the sender"
 check "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$MEMO_STATE_DIR/hail-mailbox-done.json")" "1" "  and no ledger mark left for it"
 PULL --json > "$T/f.json"; check "$(jget "$T/f.json" '[r["verdict"] for r in d if r.get("mail")]')" "['delivered']" "  posted at the next bell"
 echo "  a row older than its time ages out on the sender's own bell, with no take"
