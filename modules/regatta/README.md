@@ -86,7 +86,7 @@ would read as anything else is refused, and a host the verb cannot reach is name
 
   | File | What it holds | Without it |
   | --- | --- | --- |
-  | `regatta/fleet-ssh` | the peers `regatta limit` writes over ssh, `<host>:<alias>` a line; read by the verb alone (a node's alias here reaches no other reader) | the peers `wharf-runs/ssh` names |
+  | `regatta/fleet-ssh` | the peers `regatta limit` writes over ssh, `<host>:<alias>` a line; wharf-runs also uses `<host>:<user>@localhost` to select a local builder user's peer cap row | for limits, the peers `wharf-runs/ssh` names; for peer caps, `<owner-host>-<user>` |
 
 Every change carries its history (limit-history, 2026-11-02). A set or unset takes `--why`, one line kept in its row
 of `limits.jsonl` with the value before and after and the session id; before it writes it prints each host's last

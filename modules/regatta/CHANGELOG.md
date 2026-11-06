@@ -10,6 +10,7 @@
   `rotation: false`, a `rotation` that is no bool, no scope or a registry it cannot walk fences. `confidential` alone no
   longer fences. `rotation_problem` names a `rotation` that does not read, and `regatta check` lists it as a finding.
 
+- `launchd_session_keys()` supplies Background session keys beside `launchd_domain()` for jobs bootstrapped into a user domain.
 - `host_name()` reads `wharf-runs/host` first (a builder host's row; absent everywhere else). `launchd_domain()`: `gui/<uid>`, or `user/<uid>` where `DISPATCH_LAUNCHD_DOMAIN` (else
   `wharf-runs/launchd-domain`) says `user` — a builder user's jobs (the Argon arm's S2). fence.py's builder keychain:
   `builder_signin_put` / `builder_signin_read` (a keychain file in a builder's home holding agy's item, its random

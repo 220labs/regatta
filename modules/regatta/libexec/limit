@@ -52,7 +52,8 @@ for the trial; they still win on a host that sets them (`get` cannot see a host'
 --cap` there is the cap's last word).
 
 The fleet: this host and the peers `regatta/fleet-ssh` names (`<host>:<ssh alias>` lines, read by this verb
-alone, as `wharf-runs/kick-ssh` is the kick's: a scope's node may be named here and nowhere a placer reads),
+and by wharf-runs' `peer_cap` for a local user's row, as `wharf-runs/kick-ssh` is the kick's: a scope's node may be named
+here and nowhere a placer reads),
 else those `wharf-runs/ssh` names. Whoever installs the modules writes it; until the owner's overlay does,
 `--all` reaches what `wharf-runs/ssh` names, and every `--all` prints the hosts it reached and names each host
 `lighthouse/hosts` knows with no road here. A host is reached with `ssh -o BatchMode=yes -o ConnectTimeout=10 <alias>` (REGATTA_SSH stands in

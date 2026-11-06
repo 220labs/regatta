@@ -211,6 +211,11 @@ def launchd_domain(uid=None):
     return "%s/%d" % ("user" if word == "user" else "gui", uid)
 
 
+def launchd_session_keys(domain=None):
+    """Extra plist keys for jobs without a GUI login session."""
+    return {"LimitLoadToSessionType": "Background"} if (domain or launchd_domain()).startswith("user/") else {}
+
+
 # ---- the core's private values (B2b; README, "Private values") --------------------------------
 # Each is one file under <config>/regatta/, which the overlay writes; the core carries only a
 # neutral default. Where the overlay is installed (the `regatta/overlay` marker), a key it
