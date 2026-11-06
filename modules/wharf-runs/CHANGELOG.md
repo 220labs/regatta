@@ -19,8 +19,6 @@
   `-finish-queue` cannot disappear on a failed read. Host samples advertise grants with negations applied,
   keeping the host row valid when finishes are disabled; unreadable features are reported as unknown.
 - `builder-host check` uses enforcement's run-cap parser, so comments cannot hide an invalid live row or misreport a narrowed cap; normalized host names and live precedence agree with dispatch.
-- `check --ci` marks a checkpoint draft's body before readying it, keeping later CI checks able
-  to merge a newer main without mistaking the build PR for a curated landing.
 - The Engine room's S4 (docs/engine-room-2026-11-02.md), the page's queue verbs: `dispatch-queue repin QID HOST|any
   [--dry-run]` pins a queued fleet entry to a host (a typed pin, as `--pin` writes) or unpins it, refused to an
   unattended caller, for a scope's store, an entry not queued (a finish's tombstone included) or held for a live run
