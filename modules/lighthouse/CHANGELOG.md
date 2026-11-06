@@ -29,7 +29,8 @@
 
 - `hosts sample`: a named node's row carries its scope as the core's `scope_marker` (`scope`, never the name;
   `confidential:unread` where `wharf-runs/node/scope` does not read, through the core's node reader, so a link whose target moved is unread), so hail's message discovery skips a confidential
-  scope's node whatever it is named (node-hail). A builder user's row (`wharf-runs/host` set) carries `builder: true`.
+  scope's node whatever it is named (node-hail); a named node rendered before that key takes the core's own verdict
+  from its `wharf-runs/node/clones` (`nodes_here`). A builder user's row (`wharf-runs/host` set) carries `builder: true`.
 - reef grows a host back once its median and newest load are under 0.6× load-max, with at most one sample at or over
   that and none over load-max (2026-11-04; it was every sample under half). A hold now names what kept it from cold:
   the laptop, at its floor all day, is held by memory (free never over 2× headroom's avail), not by load.
