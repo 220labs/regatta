@@ -64,6 +64,10 @@
 /* the words row is the group's last child; while it is hidden (not focused, not hovered, not opened) the row above is the bottom */
 .dq:not(.focus):not(:hover) .opts:not(.grid) > .opt.lit:has(+ .opt.free:not(.pick):not(.open):not(.kfocus):not(:focus-within))::after { border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }
 .dq .opts:not(.grid) > .opt:last-child.lit::after { border-bottom-left-radius: 21px; border-bottom-right-radius: 21px; }
+/* the keys' rings are inset too: round the outer rows to the group's 23 px inner clip so a ring follows it */
+.dq .opts:not(.grid) > .opt:first-child { border-top-left-radius: 23px; border-top-right-radius: 23px; }
+.dq .opts:not(.grid) > .opt:last-child { border-bottom-left-radius: 23px; border-bottom-right-radius: 23px; }
+.dq:not(.focus):not(:hover) .opts:not(.grid) > .opt:has(+ .opt.free:not(.pick):not(.open):not(.kfocus):not(:focus-within)) { border-bottom-left-radius: 23px; border-bottom-right-radius: 23px; }
 .dq .opt.kfocus { box-shadow: inset 0 0 0 2px var(--ink); z-index: 1; }
 .dq .opt.pick.kfocus { box-shadow: inset 0 0 0 2px var(--flag-ink), inset 0 0 0 4px var(--flag); }
 

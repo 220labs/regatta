@@ -67,8 +67,8 @@
   --glass: rgba(255, 255, 255, .86);
   --scrim: rgba(21, 23, 28, .32);
 
-  /* round 7 (Porthole, the owner's pick, 2026-11-06): rounded system type, no download — ui-rounded where the OS has it
-     (SF Pro Rounded on Apple), else the system faces as before */
+  /* round 7 (Porthole, the owner's pick, 2026-11-06): rounded system type, no download — ui-rounded where the browser has it
+     (Safari 13.1+, iOS); Chrome, VS Code's webview and Firefox fall to the named family, else the system faces as before */
   --sans: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "SF Pro Display", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
