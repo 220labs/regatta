@@ -223,6 +223,36 @@ out=$(CLAUDE_REPOS_JSON="$T/sc.json" "$RG" check 2>&1)
 echo "$out" | grep -q -- "--  registry: scope s2's berths name h9, which no repo is cloned on"; check $? 0 "regatta check: a berth no repo is cloned on is named"
 echo "$out" | grep -q -- "--  registry: scope s3's berths is a list of host names"; check $? 0 "  and berths that are no list"
 echo "$out" | grep -q -- "scope s1's berths"; check $? 1 "  a scope whose berths are all known hosts is not (its yard row is another line)"
+echo "the coins' scope rule (scope-rotation): scope_rotates, one rule both rotation fences ask"
+cat > "$T/rot.py" <<'PY2'
+import json, sys
+sys.path.insert(0, sys.argv[1]); import common
+for case in sys.argv[2:]:
+    reg = json.loads(case)
+    ok, why, f = common.scope_rotates("acme", reg)
+    print("%s|%s|%s" % (ok, why, json.dumps(f, sort_keys=True)))
+PY2
+rot() { python3 -I "$T/rot.py" "$M/hooks" "$@"; }
+check "$(rot '{"repos": {}, "scopes": {"ap": {"repos": ["acme"], "confidential": true}}}')" \
+  'True|rotates|{"confidential": true, "scope": "ap"}' "a confidential scope with no rotation key rotates, and says it is confidential"
+check "$(rot '{"repos": {}, "scopes": {"open": {"repos": ["*"]}, "ap": {"repos": ["acme"], "confidential": true, "rotation": true}}}')" \
+  'True|rotates|{"confidential": true, "scope": "ap"}' "  rotation: true too, under an open umbrella listed first: the confidential scope is named"
+check "$(rot '{"repos": {}, "scopes": {"open": {"repos": ["*"]}}}')" 'True|rotates|{"confidential": false, "scope": "open"}' "  an open scope rotates"
+check "$(rot '{"repos": {}, "scopes": {"gs": {"repos": ["acme"], "confidential": true, "rotation": false}}}')" \
+  'False|scope gs does not rotate (rotation: false)|{}' "rotation: false fences (the opted-out shape)"
+check "$(rot '{"repos": {}, "scopes": {"open": {"repos": ["*"]}, "gs": {"repos": ["acme"], "rotation": false}}}')" \
+  'False|scope gs does not rotate (rotation: false)|{}' "  a repo in two scopes, one rotation: false: fenced, not only the first scope judged"
+check "$(rot '{"repos": {}, "scopes": {"gs": {"repos": ["acme"], "confidential": true, "rotation": "no"}}}')" \
+  "False|scope gs's rotation is 'no', not true or false|{}" "a rotation that is no bool fences (a narrowing key that does not read)"
+check "$(rot '{"repos": {}, "scopes": {"other": {"repos": ["elsewhere"]}}}')" 'False|acme is in no scope|{}' "a repo in no scope: fenced"
+check "$(rot '{"repos": {}, "scopes": {"other": {"repos": 5}}}')" 'False|the scope registry does not walk (TypeError)|{}' "a scope whose repos is no list: fenced"
+check "$(rot 'null')" 'False|no scope registry|{}' "no registry: fenced"
+check "$(rot '{"repos": {}, "scopes": {"gs": {"repos": ["other"], "rotation": false}, "ap": {"repos": ["acme"]}}}')" \
+  'True|rotates|{"confidential": false, "scope": "ap"}' "  another repo's rotation: false fences only its own"
+printf '{"repos": {}, "scopes": {"gs": {"repos": ["acme"], "confidential": true, "rotation": "off"}, "ok": {"repos": ["b"], "rotation": false}}}\n' > "$T/rot.json"
+out=$(CLAUDE_REPOS_JSON="$T/rot.json" "$RG" check 2>&1)
+echo "$out" | grep -q -- "--  registry: scope gs's rotation is 'off', not true or false — fenced from the coins"; check $? 0 "regatta check: a rotation that is no bool is named"
+echo "$out" | grep -q -- "scope ok's rotation"; check $? 1 "  rotation: false is not"
 check "$(py 'print(common.LAPTOP)')" "laptop" "LAPTOP without config: a word, no host name"
 mkdir -p "$T/config/regatta"; echo mybook > "$T/config/regatta/laptop"
 check "$(py 'print(common.LAPTOP)')" "mybook" "  the config file names it"
@@ -234,7 +264,7 @@ check "$(py 'print(common.tool("nope"))')" "None" "  an absent tool is None"
 check "$(py 'print(common.tool("c*"), common.tool(""), common.tool("../bin"))')" "None None None" "  a pattern, an empty name or a path: None"
 
 echo "the private values (one file each; neutral without the overlay, refused when it left one out)"
-J="$M/bin/jev"; G="$M/bin/gate"; H="$HOME"; KEYS="owner guarded orca-deny log-dir projects"
+J="$M/bin/jev"; G="$M/bin/gate"; H="$HOME"; KEYS="owner guarded log-dir projects"
 jp() { python3 -I -c "from importlib.machinery import SourceFileLoader as L; j = L('jev', '$J').load_module()
 $1"; }
 gp() { python3 -I -c "from importlib.machinery import SourceFileLoader as L; g = L('gate', '$G').load_module()
@@ -263,22 +293,23 @@ check "$(py 'A = common.ADDRESS; print(common.bare("\U0001F6D1" + common.WAITING
 check "$(py 'P = common.PENDING_PREFIX; print(common.closing_kind(common.HANDOVER_LINE), common.closing_kind(P + "dispatch\x27s yolo launch (autofinish-run --by yolo), which starts once this run ends"), common.closing_kind(P + "dispatch to start the yolo launch of B14b ([x#1](https://example.com/x/pull/1)) now"), common.closing_kind(P + "the two reviewers, then dispatch\x27s launch"), common.closing_kind(P + "dispatch\x27s tidier"), common.unrelayed_ask("x\n\n" + common.HANDOVER_LINE))')" \
   "handed handed handed pending pending None" \
   "  the hand-over reads as handed (the fixed line and the two free forms of 2026-10-24); a line naming something else first stays pending"
-check "$(py 'print(common.OVERRIDE_BY, common.ORCA_ROW["repos"]["deny"])')" "owner []" "  the override marker is owner's, no repo denied an Orca login"
+check "$(py 'print(common.OVERRIDE_BY, common.ORCA_ROW["repos"]["deny"])')" "owner []" "  the override marker is owner's; an Orca login's deny list is empty, an alias read by nothing (deny-drift)"
 check "$(py 'print(common.orca_row("x")["rules"]["free_below"], common.orca_row("x")["rules"]["window_max"])')" "70 50" "  an unnamed Orca login runs freely under 70% of its 5-hour window, as every registry row (pace-window)"
 check "$(py 'print(common.orca_row("x")["rules"]["week_max"])')" "90" "  an unnamed Orca login takes work up to 90% of its week (the owner, 2026-10-31)"
+check "$(py 'print("reserve" in common.orca_row("x")["rules"])')" "False" "  …with no reserve that lifts it to 100: past 90 only by an overdraw (the owner, 2026-11-04)"
 check "$(jp 'print(j.GUARDED, j.WHO)')" "() the owner" "  jev guards nothing and asks the owner"
 check "$(jp 'print(j.log_dir())')" "$H/.local/state/regatta" "  the logs go to .local/state/regatta in the home folder"
 check "$(sp 'print(s.PROJECTS)') $(py 'print(common.PROJECTS)')" "$H/projects $H/projects" "  secrets and cloned_repos() read repos under projects in the home folder"
 
 mkdir -p "$T/config/regatta"; echo "$T/legacy" > "$T/config/regatta/overlay"   # the overlay installed: the keys are its to write
-missing="regatta/owner missing; regatta/guarded missing; regatta/orca-deny missing; regatta/log-dir missing; regatta/projects missing"
+missing="regatta/owner missing; regatta/guarded missing; regatta/log-dir missing; regatta/projects missing"
 check "$(refusal py 'pass')" "ImportError: regatta: config incomplete in $T/config: $missing — run your overlay's bootstrap.sh --config" \
   "the overlay installed, its keys not written: the core refuses to load, naming each"
 check "$(refusal jp 'pass')" "ImportError: regatta: config incomplete in $T/config: $missing — run your overlay's bootstrap.sh --config" "  jev too, by the same rule"
 out=$("$RG" check 2>&1); check "$?" 1 "  regatta check still runs, exit 1"
-check "$(echo "$out" | grep -c -- "^  --  regatta/[a-z-]* missing (your overlay's bootstrap.sh --config)$")" 5 "  one line per missing key"
+check "$(echo "$out" | grep -c -- "^  --  regatta/[a-z-]* missing (your overlay's bootstrap.sh --config)$")" 4 "  one line per missing key (regatta/orca-deny owed no more, deny-drift)"
 for k in $KEYS; do : > "$T/config/regatta/$k"; done
-check "$(py 'print(common.CONFIG_PROBLEMS, repr(common.ADDRESS), common.ORCA_ROW["repos"]["deny"])')" "[] '' []" "every key written empty: the core loads, each value empty"
+check "$(py 'print(common.CONFIG_PROBLEMS, repr(common.ADDRESS))')" "[] ''" "every key written empty: the core loads, each value empty"
 chmod 000 "$T/config/regatta/guarded"
 check "$(refusal jp 'pass')" "ImportError: regatta: config incomplete in $T/config: regatta/guarded unreadable (Permission denied) — run your overlay's bootstrap.sh --config" \
   "an unreadable key is refused, never read as absent"
@@ -314,7 +345,13 @@ mkdir -p "$T/af"; printf '{"by": "kapitän"}' > "$T/af/autofinish"
 check "$(py 'print(common.autofinish_override("'"$T/af"'"))')" "{'by': 'kapitän'}" "  /autofinish's marker by it, lower-cased: an override"
 printf '{"by": "owner"}' > "$T/af/autofinish"
 check "$(py 'print(common.autofinish_override("'"$T/af"'"))')" "None" "  by anyone else: none"
-check "$(py 'print(common.ORCA_ROW["repos"]["deny"], common.orca_row("x")["repos"]["deny"])')" "['logbook'] ['logbook']" "regatta/orca-deny: an unnamed Orca login's deny list"
+check "$(py 'print(common.ORCA_ROW["repos"]["deny"], common.orca_row("x")["repos"]["deny"], common.CONFIG_PROBLEMS)')" "[] [] []" "regatta/orca-deny written: read by nothing since deny-drift, an unnamed Orca login's list stays empty"
+check "$("$RG" check 2>&1 | grep -c '^  \.\.  regatta/orca-deny names repos, read by nothing since 2026-11-03')" 1 "  regatta check notes the key naming a repo, never ok and never a failure"
+: > "$T/config/regatta/orca-deny"
+check "$("$RG" check 2>&1 | grep -c '^  ok  regatta/orca-deny$')" 1 "  …and written empty, as the overlay keeps it, an ok line (deny-drift's landing review)"
+printf '\377\376' > "$T/config/regatta/orca-deny"
+check "$("$RG" check 2>&1 | grep -c -E 'Traceback|^  \.\.  regatta/orca-deny .*read by nothing')" 1 "  …and a file that will not read is a note, never a traceback (the landing's round 2)"
+printf 'logbook\n' > "$T/config/regatta/orca-deny"
 check "$(jp 'print(j.GUARDED, j.WHO)')" "('notes', 'logbook') Kapitän" "regatta/guarded: jev's guarded sources, blank lines skipped"
 check "$(jref)" 'refused: data from notes goes to TypeSafe only with Kapitän'"'"'s say-so — ask, then pass approved="Kapitän, <date>: <what>"' "  jev refuses one without a quote, naming the owner"
 check "$(gref)" "example.classify: refused: data from notes goes to typesafe only with Kapitän's say-so — approved has no 'typesafe' quote (it has: anthropic)" "  and so does the gate"
@@ -1225,8 +1262,8 @@ mkdir -p "$GD/_secrets" "$GC/regatta" "$GC/lighthouse" "$GHM/.claude" "$GHM/.cla
   "$GHM/orca/pz"
 echo Owner > "$GC/regatta/owner"
 for r in acme-one app privy; do git init -q "$GHM/projects/$r"; done
-printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}\n' > "$GC/lighthouse/accounts.json"
-printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}\n' > "$GD/tenants.json"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work"},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}\n' > "$GC/lighthouse/accounts.json"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]},"own":{"repos":["privy"],"logins":["main"]}}\n' > "$GD/tenants.json"
 printf '{"logins":{"work":{"email":"z@example.com"}},"share":{"design":[{"email":"pat@example.com"}]}}\n' > "$GD/logins.json"
 printf '{"lab":{"week_max":95},"acct-ghost":{"week_max":50}}\n' > "$GD/budgets.json"   # a label no row has: KnownLabels reads the logins key
 for f in tenants logins budgets; do ln -s "$GD/$f.json" "$GC/lighthouse/$f.json"; cp "$GD/$f.json" "$GC/lighthouse/.$f.json.last"; done
@@ -1247,7 +1284,7 @@ if [ -f "$LH/hooks/account_guard.py" ]; then
   check "$(echo "$out" | grep -c "acme-one is off main: it is acme's") $(opened)" "1 " "  account_guard, the default dir in a tenant's repo: blocked from the copies, no open"
   g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
   out=$(echo "{\"cwd\":\"$GHM/projects/privy\"}" | CLAUDE_CONFIG_DIR="$GHM/orca/pz" g4 0 python3 "$LH/hooks/account_guard.py")
-  check "$(echo "$out" | grep -c "privy is off work, whose login this Orca dir is") $(opened)" "1 " "  account_guard on an Orca dir (allowed reads the logins file): work's list from the copy, no open"
+  check "$(echo "$out" | grep -c "privy is off work: it is own's") $(opened)" "1 " "  account_guard on an Orca dir (allowed reads the logins file): work's tenancy from the copy, no open"
   g4n=$((g4n+1)); [ -s "$GL" ] && g4c=$((g4c+1))
   mv "$GC/lighthouse/.budgets.json.last" "$G4/budgets.held"   # the budgets file with no copy yet: the hook never seeds it
   out=$(echo "{\"cwd\":\"$GHM/projects/acme-one\"}" | g4 0 python3 "$LH/hooks/account_guard.py")

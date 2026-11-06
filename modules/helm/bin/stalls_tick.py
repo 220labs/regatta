@@ -127,12 +127,12 @@ DISPATCH_KEYS = {"manager": helmlib.ENV_NAMES["skipper"], "manager_host": helmli
                  "plan_space": ("DISPATCH_PLAN_SPACE",)}
 # a caller's chain and skipper must never become the retry's: launchd's tick has none, a session
 # typing `helm tick` has its own (dispatch would name that session the retry's skipper)
-# DISPATCH_ARM and DISPATCH_COIN too: a retry sets its own arm below, and an inherited word or forced coin
+# DISPATCH_ARM, DISPATCH_COIN and DISPATCH_COIN_ROADS too: a retry sets its own arm below, and an inherited word or forced coin
 # must never reach a re-dispatch (trim S6's landing review)
 STRIP_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE") + tuple(
     "DISPATCH_" + v for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF", "MANAGER", "MANAGER_ACCOUNT",
                               "MANAGER_HOST", "PLAN", "SKIPPER", "SKIPPER_ACCOUNT", "SKIPPER_HOST", "SHIP",
-                              "PLAN_SPACE", "TASK", "REPO", "PIN", "ARM", "COIN")) + tuple(
+                              "PLAN_SPACE", "TASK", "REPO", "PIN", "ARM", "COIN", "COIN_ROADS")) + tuple(
     "RUN_SEED_" + v for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF"))
 LOGIN_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")   # autofinish-run picks its own, as start_runner lets it
 CLASSIFY_ASK = "Should this stalled run be started again, fresh from its brief, by an unattended agent?"
@@ -515,7 +515,7 @@ def skipper_road(s):
     return {k: d[k] for k in DISPATCH_KEYS if d.get(k)}
 
 
-ARM_WORD = re.compile(r"(opus-high|sonnet-high):[01]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # dispatch-queue's
+ARM_WORD = re.compile(r"(opus-high|sonnet-high|argon-high):[0-2]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # buildercoin's WORD_GRAMMAR (wharf-runs' test_builder_coin.sh holds it)
 
 
 def arm_word(d):

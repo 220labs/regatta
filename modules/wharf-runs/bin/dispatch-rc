@@ -74,6 +74,12 @@
                                the button in a running listener's --on-dir instead (no new process). install is
                                refused under CLAUDE_UNATTENDED. The sweep's watchdog boots out a listener whose log
                                shows the server refusing its key.
+    dispatch-rc settle --stale [--older-than H] [--dry-run]
+                               end this host's records of /finish runs sent to a peer that show "sent, no end here
+                               yet" past H hours (24; never under 9) with no waiter alive here and no answer from the
+                               peer within H: the Engine room's Settle (S4 of docs/engine-room-2026-11-02.md). The peer
+                               road that made them is gone (finish-as-task), so nothing else ends them. A record, never
+                               a run; read from the files (status reaps)
     dispatch-rc status         every run of the last 7 days: running/ended, last activity, session id,
                                the VS Code link (what `dispatch --status` prints); ends an orphan
                                (its watcher gone, claude still there) that is idle
@@ -269,7 +275,8 @@ def proc_start_settled(pid, budget=4.0):
 def running(pid, start):
     """bin/pickup's running(pid, procStart) — alive, and the start time is the recorded one — with
     one difference: a `ps` that prints nothing for a live pid is no evidence either way, and counts
-    as the same process. pickup's reads it as another process; here that would end a live run as
+    as the same process. pickup's does too since sandboxed-seed, bar a blank with ps's exit 1 (no such
+    process), which it reads as gone; reading a live run as another process here would end it as
     an orphan, or let its watcher close it as exited (a test run of 2026-10-05 lost its first run
     that way once in five)."""
     try:
@@ -528,8 +535,9 @@ def same(st):
         return False
     if st.get("proc_start"):
         return running(pid, st["proc_start"])
-    # before 2026-10-05: no start time recorded
-    return alive(pid) and (st.get("mode") == "headless" or session_record(st) is not None)
+    # before 2026-10-05: no start time recorded; and a start ps could not read (headless's, and agy's: its record
+    # writes proc_start only when one was read, and harness_live leaves a dispatched run to this count)
+    return alive(pid) and (st.get("mode") in ("headless", "agy") or session_record(st) is not None)
 
 
 def descendants(pid):
@@ -937,7 +945,8 @@ BUSY_STATES = ("submitted", "working")   # a vendor run that waits (input-requir
 
 def vendor_slots():
     """The slots the runs of other CLIs hold here (vendor-fence, F6 of docs/codex-agy-gaps-2026-10-29.md): the
-    harness's own Codex runs (the codex adapter's harness_live) and Orca's non-Claude workers that the orca
+    harness's own Codex and agy runs (each adapter's harness_live; an agy run dispatch started is its own run
+    record's, agy.py's `dispatched`) and Orca's non-Claude workers that the orca
     adapter started (its ledger, vendor_live: no Orca call while it is empty), each busy one a slot. The
     adapters are bin/harness's, loaded through it. DISPATCH_RC_VENDORS=0 counts none (a suite's switch). A
     read that fails counts none, said on stderr: the cap is against load, and a count that cannot read
@@ -952,12 +961,15 @@ def vendor_slots():
         loader.exec_module(h)
         ctx = h.Ctx()
         n = 0
-        for name, verb in (("codex", "harness_live"), ("orca", "vendor_live")):
-            mod = ctx.adapter(name)
-            if mod is not None and hasattr(mod, verb):
-                # a research-mode run is counted() already, by research_live (round 1: each was counted twice)
-                n += len([r for r in getattr(mod, verb)(ctx) if r.get("state") in BUSY_STATES
-                          and ((r.get("native") or {}).get("mode") or r.get("mode")) != "research"])
+        for name, verb in (("codex", "harness_live"), ("agy", "harness_live"), ("orca", "vendor_live")):
+            try:   # each adapter on its own: one that fails drops its own count, never the others' (the finish review)
+                mod = ctx.adapter(name)
+                if mod is not None and hasattr(mod, verb):
+                    # a research-mode run is counted() already, by research_live (round 1: each was counted twice)
+                    n += len([r for r in getattr(mod, verb)(ctx) if r.get("state") in BUSY_STATES
+                              and ((r.get("native") or {}).get("mode") or r.get("mode")) != "research"])
+            except Exception as e:   # noqa: BLE001
+                print("dispatch-rc: %s's runs were not counted (%s: %s)" % (name, type(e).__name__, str(e)[:120]), file=sys.stderr)
         return n
     except Exception as e:   # noqa: BLE001
         print("dispatch-rc: the other CLIs' runs were not counted (%s: %s)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
@@ -2548,6 +2560,8 @@ def status():
                                                (", page " + st["plan_space"]) if st.get("plan_space") else ""))
         if st.get("mode") == "headless":
             print("    headless (claude -p): the side panel hides it; log %s" % st.get("log"))
+        elif st.get("mode") == "agy":   # dispatch --harness agy: agy under harness's wrapper, no screen, no session of Claude's
+            print("    agy (harness run --harness agy): record %s; log %s" % (st.get("harness_run"), st.get("log")))
         else:
             print("    vscode://anthropic.claude-code/open?session=%s" % st.get("session"))
             if running:
@@ -2579,6 +2593,163 @@ def status():
     if not shown:
         print("no dispatch runs in the last 7 days")
     return 0
+
+
+SETTLE_AGE_H = 24.0    # hours: a /finish sent to the peer lived DISPATCH_MAX_H (8) there at most, and the old peer road
+                       # buried one silent PEER_WAIT_S (9 h); a record this old with no end is no run's
+SETTLE_FLOOR_H = 9.0   # the old PEER_WAIT_S: younger, a run sent just before finish-as-task reached this host may still go
+WAITER_FILE = "autofinish-waiter.json"   # autofinish-run's WAITER, beside its state (common.AUTOFINISH_RUN)
+
+
+def iso_ts(v):
+    try:
+        return datetime.datetime.fromisoformat(str(v)).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def landing_state(rec):
+    """({state}, {waiter}) of the landing REC names, as autofinish-run keeps them in the worktree's git dir
+    (<git dir>/claude/: its state_dir), read from the files with no git; ({}, {}) where the worktree, its git dir or
+    a file is gone — a worktree removed after its landing has none."""
+    wt = rec.get("worktree")
+    if not isinstance(wt, str) or not wt:
+        return {}, {}
+    dot = os.path.join(wt, ".git")
+    bad = {"unreadable": True}
+    try:
+        if os.path.isdir(dot):
+            gd = dot
+        else:
+            with open(dot, errors="replace") as f:
+                first = f.readline().strip()
+            if not first.startswith("gitdir:"):
+                return bad, bad   # a pointer there but torn or empty: unknown, never "no state"
+            gd = first[len("gitdir:"):].strip()
+            gd = gd if os.path.isabs(gd) else os.path.normpath(os.path.join(wt, gd))
+    except (FileNotFoundError, NotADirectoryError):
+        return {}, {}   # the worktree gone (removed after its landing): no state here
+    except (OSError, ValueError):
+        return bad, bad
+    out = []
+    for name in (getattr(common, "AUTOFINISH_RUN", None) or "autofinish.json", WAITER_FILE):
+        path = os.path.join(gd, "claude", name)
+        try:
+            with open(path) as f:
+                v = json.load(f)
+        except FileNotFoundError:
+            v = {}
+        except (OSError, ValueError):
+            # there but unreadable (torn, no JSON, no UTF-8, no access): unknown, never "no state" (AGENTS.md: no
+            # record is unknown) — peer_records keeps the record
+            v = {"unreadable": True}
+        out.append(v if isinstance(v, dict) else {"unreadable": True})
+    return out[0], out[1]
+
+
+def peer_records(older_h=SETTLE_AGE_H, now=None):
+    """[(path, rec, why)]: this host's record of each /finish it sent to a peer (run-seed-runs/peer/, the old peer road's
+    save_peer_record) with no end recorded, WHY None for a stale one `settle --stale` ends, else why it stays: younger
+    than OLDER_H by its start or the peer's last answer (the peer may still run it); this host's landing state or waiter
+    file there but unreadable (unknown); its waiter here alive. A landing state of that session with no end keeps it no
+    more: the sweep that asked the peer and buried it went with the peer road (finish-as-task), and main's autofinish-run
+    never ends a state the peer road left (its end is that host's), so such a record would stay "sent, no end" for good
+    (engine-room-s4's fix round). Main makes no new peer records; these are the old road's leftovers. Read from the files:
+    never status(), which reaps (lighthouse's `hosts` counts the stale ones for its row)."""
+    now = time.time() if now is None else now
+    out = []
+    for path in sorted(glob.glob(os.path.join(RUNS, "peer", "*.json"))):
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict) or rec.get("ended"):
+            continue
+        started = iso_ts(rec.get("started"))
+        if started is None:
+            out.append((path, rec, "its start does not read"))
+            continue
+        last = max(started, iso_ts(rec.get("answered")) or 0)
+        sid = rec.get("session")
+        # the age first: a young record needs no file of its worktree read
+        st, w = ({}, {}) if now - last < older_h * 3600 else landing_state(rec)
+        start = w.get("start")
+        if now - last < older_h * 3600:
+            why = "sent %s, %s: younger than %g h" % (time.strftime("%m-%d %H:%M", time.localtime(started)),
+                                                       "the peer last answered %s" % ago(last) if last > started else "unanswered",
+                                                       older_h)
+        elif st.get("unreadable") or w.get("unreadable"):
+            why = "this host's landing state of it is there but does not read: unknown, kept"
+        elif sid and w.get("session") == sid and isinstance(w.get("pid"), int) and not isinstance(w.get("pid"), bool) and 0 < w["pid"] < 2 ** 31 \
+                and running(w["pid"], start if isinstance(start, str) else None):
+            why = "its waiter here still runs"
+        else:
+            why = None
+        out.append((path, rec, why))
+    return out
+
+
+def settle(older_h=SETTLE_AGE_H, dry=False):
+    """`settle --stale [--older-than H] [--dry-run]`: end the stale peer records (peer_records' WHY None) — the runs
+    `status` lists as "sent, no end here yet" days after they could have ended — never a run: the record is this
+    host's copy, and one a process may still end (a waiter alive, a peer that answered within H, a landing state that
+    does not read) is left. The end is the landing state's when it has one of that session (its outcome, PR and gate), else
+    `settled`. Ends no work, so any caller may (the Engine room's Settle, D2-A's `one` kind). Exit 0; 2 for an age
+    under SETTLE_FLOOR_H (or none: nan); 3 when a record would not write (a receipt never reads it as done)."""
+    # `not >=`: NaN compares false both ways, and `--older-than nan` passed `<` and every age test (the build review)
+    if not older_h >= SETTLE_FLOOR_H:
+        print("dispatch-rc settle: --older-than %g h is under %g h, while the peer may still run it (the old "
+              "PEER_WAIT_S)" % (older_h, SETTLE_FLOOR_H), file=sys.stderr)
+        return 2
+    t0 = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    n = kept = failed = 0
+    for path, rec, why in peer_records(older_h):
+        name = "finish-%s on %s" % (rec.get("topic", "?"), rec.get("host", "?"))
+        if why:
+            kept += 1
+            print("  kept     %s — %s" % (name, why))
+            continue
+        st, _ = landing_state(rec)
+        own = st if st.get("session") == rec.get("session") and st.get("ended") else {}
+        end = {"ended": t0, "outcome": own.get("outcome") or "settled", "pr": own.get("pr") or rec.get("pr"),
+               "settled": "stale: no end recorded here %d d after its start (dispatch-rc settle)"
+               % ((time.time() - iso_ts(rec["started"])) // 86400)}
+        if own.get("gate") is not None:
+            end["gate"] = own["gate"]   # else the record's own gate stays: an end never blanks what it held
+        if dry:
+            n += 1
+            print("  would end %s — %s" % (name, end["outcome"] if own else "settled: no end here"))
+            continue
+        try:
+            with open(path) as f:   # read again: an old waiter, or a second settle, may have written its end meanwhile
+                cur = json.load(f)
+            if not isinstance(cur, dict) or cur.get("ended"):
+                print("  kept     %s — its end was written meanwhile" % name)
+                kept += 1
+                continue
+            # the peer answered meanwhile (the old sweep saved `answered`), or this host's landing state moved:
+            # judged on an old read, so kept for the next settle (the finish review)
+            st2, _ = landing_state(cur)
+            if cur.get("answered") != rec.get("answered") or st2 != st:
+                print("  kept     %s — the peer answered or its landing state changed meanwhile" % name)
+                kept += 1
+                continue
+            cur.update(end)
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with open(tmp, "w") as f:
+                json.dump(cur, f, indent=1, ensure_ascii=False)
+                f.write("\n")
+            os.replace(tmp, path)
+            n += 1
+            print("  ended    %s — %s" % (name, end["outcome"] if own else "settled: no end here"))
+        except (OSError, ValueError) as e:
+            failed += 1
+            print("  could not write %s: %s" % (os.path.basename(path), e))
+    print("dispatch-rc settle: %d stale peer record(s) %s, %d kept%s%s" % (n, "to end" if dry else "ended", kept,
+                                                                        ", %d not written" % failed if failed else "",
+                                                                        " (--dry-run: nothing written)" if dry else ""))
+    return 3 if failed else 0
 
 
 def end(topic, repo=None):
@@ -2706,4 +2877,17 @@ if __name__ == "__main__":
         sys.exit(arrange())
     if verb == "status":
         sys.exit(status())
+    if verb == "settle" and "--stale" in sys.argv[2:]:
+        rest, older, dry = sys.argv[2:], SETTLE_AGE_H, False
+        try:
+            if "--older-than" in rest:
+                i = rest.index("--older-than")
+                older = float(rest[i + 1])
+                del rest[i:i + 2]
+            dry = "--dry-run" in rest
+            rest = [x for x in rest if x not in ("--stale", "--dry-run")]
+        except (IndexError, ValueError):
+            rest = ["?"]
+        if not rest:
+            sys.exit(settle(older, dry))
     sys.exit(__doc__)

@@ -7,7 +7,7 @@
 #   bash modules/lighthouse/tests/hosts.sh
 set -u
 for v in $(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p; s/^\(DISPATCH[A-Za-z0-9_]*\)=.*/\1/p; s/^\(HOSTS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-unset REGATTA_HOME REGATTA_UNATTENDED HEADROOM_HOST HEADROOM_OS HEADROOM_PROC
+unset REGATTA_HOME REGATTA_UNATTENDED HEADROOM_HOST HEADROOM_OS HEADROOM_PROC CHECK_SLOTS CHECK_SLOT_DIR CHECK_HOST
 C="$(cd "$(dirname "$0")/.." && pwd)"; R="$(cd "$C/../.." && pwd -P)"
 H="$C/bin/hosts"; Q="$R/modules/wharf-runs/bin/dispatch-queue"
 T=$(mktemp -d); trap 'kill $RUNS 2>/dev/null; rm -rf "$T"' EXIT
@@ -79,6 +79,23 @@ run_rec r7 "$T/projects/open" spawned "" "" '{"queue": "local=_spawn:k1", "origi
 run_rec r8 "$T/projects/open" nodeq "" "" '{"queue": "local=vault:k2"}'
 printf '{"started": "%s", "topic": "gone", "repo": "%s"}\n' "$(python3 -c 'import datetime; print((datetime.datetime.now().astimezone() - datetime.timedelta(days=3, hours=2)).isoformat())')" "$T/projects/open" > "$RR/peer/p1.json"
 printf '{"started": "%s", "ended": "2026-11-01T10:00:00", "topic": "done"}\n' "$(python3 -c 'import datetime; print(datetime.datetime.now().isoformat())')" > "$RR/peer/p2.json"
+# S4: two records with no end that one Settle leaves, so the row never counts them stale — one sent two hours ago,
+# one whose landing state here (its worktree's git dir) is there but does not read (unknown). One whose landing state
+# has no end is stale since finish-as-task: no sweep asks the peer any more (engine-room-s4's fix round)
+ago_iso() { python3 -c 'import datetime, sys; print((datetime.datetime.now().astimezone() - datetime.timedelta(hours=float(sys.argv[1]))).isoformat())' "$1"; }
+printf '{"started": "%s", "topic": "young", "session": "s-young"}\n' "$(ago_iso 2)" > "$RR/peer/p3.json"
+LS="$T/wt4/.git/claude"; mkdir -p "$LS"; echo '{"session": "s-live", "ended": nu' > "$LS/autofinish.json"
+LS5="$T/wt5/.git/claude"; mkdir -p "$LS5"; echo '{"session": "s-left", "ended": null}' > "$LS5/autofinish.json"
+printf '{"started": "%s", "topic": "left", "session": "s-left", "worktree": "%s"}\n' "$(ago_iso 26)" "$T/wt5" > "$RR/peer/p5.json"
+printf '{"started": "%s", "topic": "live", "session": "s-live", "worktree": "%s"}\n' "$(ago_iso 50)" "$T/wt4" > "$RR/peer/p4.json"
+# S4: the check slots (one live holder, one dead, one live ticket, one dead) and the hosts' feature lines
+CS="$T/check-slots"; mkdir -p "$CS/slot-1" "$CS/slot-2" "$CS/queue"
+cpid=$(sleep 600 > /dev/null 2>&1 & echo $!); RUNS="$RUNS $cpid"
+echo "$cpid" > "$CS/slot-1/pid"; echo 999999 > "$CS/slot-2/pid"; : > "$CS/queue/t.$cpid"; : > "$CS/queue/t.999998"
+mkdir -p "$CS/slot-3"; echo 0 > "$CS/slot-3/pid"; : > "$CS/queue/.t.$cpid"   # pid 0 (kill's process group) and a ticket being written
+export CHECK_SLOT_DIR="$CS"
+printf 'beta: 4\nalpha: 3\n*: 1\n' > "$REGATTA_CONFIG/wharf-runs/check-slots"
+printf 'alpha: macos, gpu\nbeta: linux\n' > "$REGATTA_CONFIG/wharf-runs/features"
 
 echo "hosts sample: the row"
 row=$(python3 "$H" sample); echo "$row" > "$T/row.json"
@@ -87,7 +104,23 @@ check "$(echo "$row" | j 'sorted(r["topic"] for r in d["runs"])')" "['addressed'
 check "$(echo "$row" | j 'd["fence"]')" "{'confined': 4, 'unreadable': False}" "a confidential run is a count, never a row (the umbrella scope listed first hides nothing); so is an open repo's worktree inside a confidential folder, a spawn out of a scope and a run from a node's queue"
 check "$(echo "$row" | j 'sorted((r["topic"], r["login"]) for r in d["runs"] if r["login"]), sorted(r["topic"] for r in d["runs"] if r["login"] is None)')" "([('picked', 'acct-default'), ('plain', 'acct-work')], ['addressed', 'nologin'])" "the recorded login first (the default login's too), else config_dir's label; neither, or an address, reads login null"
 check "$(echo "$row" | j '[(r["repo"], r["state"], r["session"]) for r in d["runs"]][0]')" "('open', 'busy', '0123abcd')" "a run's repo is its registry key, its session the first 8"
-check "$(echo "$row" | j 'd["records"]["stale"], d["records"]["oldest_days"]')" "(1, 3)" "the stale peer records: one with no end, three days old"
+check "$(echo "$row" | j 'd["records"]["stale"], d["records"]["oldest_days"]')" "(2, 3)" "the stale peer records: one with no end, three days old, and one the peer road left whose landing state here has no end; one sent two hours ago and one whose state does not read are not stale (what one Settle ends)"
+check "$(echo "$row" | j 'd["checks"]')" "{'busy': 1, 'cap': 3, 'waiting': 1}" "checks: a slot whose pid runs, this host's cap line, a ticket of a running pid (a dead holder, a pid of 0, a dead ticket and one being written not counted)"
+# an odd record never costs the row: a worktree .git that is no UTF-8, a waiter whose start is a number
+mkdir -p "$T/wt6"; printf 'gitdir: \377\376\n' > "$T/wt6/.git"
+printf '{"started": "%s", "topic": "odd", "session": "s-odd", "worktree": "%s"}\n' "$(ago_iso 50)" "$T/wt6" > "$RR/peer/p6.json"
+mkdir -p "$T/wt7/.git/claude"; printf '{"session": "s-w7", "pid": %s, "start": 5}' "$cpid" > "$T/wt7/.git/claude/autofinish-waiter.json"
+printf '{"started": "%s", "topic": "w7", "session": "s-w7", "worktree": "%s"}\n' "$(ago_iso 50)" "$T/wt7" > "$RR/peer/p7.json"
+check "$(python3 "$H" sample | j 'd["records"]["stale"], d["records"]["oldest_days"]')" "(3, 3)" "an odd record reads (the .git that is no UTF-8 is no state: stale; the waiter alive whatever its start: kept), the row stands"
+rm -f "$RR/peer/p6.json" "$RR/peer/p7.json"
+check "$(echo "$row" | j 'd["features"]')" "['gpu', 'macos']" "features: this host's line, as the claim reads it"
+check "$(DISPATCH_HOST=gamma python3 "$H" sample --host gamma | j 'd["features"], d["checks"]["cap"]')" "([], 1)" "a host with no feature line meets no need ([]); with no cap line, the * line's"
+check "$(CHECK_SLOT_DIR="$T/no-checks" CHECK_SLOTS=5 python3 "$H" sample | j 'd["checks"]')" "{'busy': 0, 'cap': 5, 'waiting': 0}" "no slot folder is no check yet: zeros, CHECK_SLOTS the cap"
+check "$(CHECK_HOST=beta python3 "$H" sample | j 'd["checks"]["cap"]')" "4" "CHECK_HOST, check's own name for this host, picks the cap line as check does"
+check "$(CHECK_HOST=Beta python3 "$H" sample | j 'd["checks"]["cap"]')" "1" "  taken as given, as check's slots_here does: Beta is no line's name, so the * line"
+check "$(CHECK_SLOTS=$'\xc2\xb2' python3 "$H" sample | j 'd["checks"]["cap"]')" "None" "a cap that is no ASCII number (a superscript two) reads null, never a crash"
+check "$(CHECK_SLOTS=03 python3 "$H" sample | j 'd["checks"]["cap"]')" "None" "a cap with a leading 0 reads null, as check refuses it (never room no check can use)"
+check "$(HOSTS_TOOL_DISPATCH_QUEUE="$T/none" python3 "$H" sample | j 'd["features"]')" "None" "no dispatch-queue to ask: features unknown (null), never none"
 hasnt "$row" "$T" "the row names no path of this host"
 hasnt "$row" "session's own words" "the row carries no session text"
 hasnt "$row" "hidden" "the confidential run's topic is nowhere in the row"
@@ -124,6 +157,10 @@ d["runs"][0]["started"] += 5
 json.dump(d, open(sys.argv[2], "w"))
 PY2
 check "$(python3 "$Q" hosts put --file "$T/row-fine.json" | j 'd["result"]')" "unchanged" "fine gauges, headroom's words and a start time moved, nothing the page acts on: not pushed"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['checks'] = {'busy': 2, 'cap': 3, 'waiting': 4}; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-cks.json"
+check "$(python3 "$Q" hosts put --file "$T/row-cks.json" | j 'd["result"]')" "unchanged" "a check started or ended is a gauge too: not pushed alone"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['checks'] = None; d['features'] = None; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-null.json"
+python3 "$Q" hosts put --file "$T/row-null.json" > /dev/null 2>&1; check "$?" 0 "checks and features null (unread) are accepted"
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['runs'][0]['state'] = 'waiting'; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-changed.json"
 check "$(python3 "$Q" hosts put --file "$T/row-changed.json" | j 'd["result"]')" "pushed" "a changed row (a run now waiting) is pushed"
 check "$(DISPATCH_QUEUE_NOW=$(( $(date +%s) + 16 * 60 )) python3 "$Q" hosts put --file "$T/row-changed.json" | j 'd["result"]')" "pushed" "an unchanged row whose copy is a sweep old is put again (it never reads stale)"
@@ -144,6 +181,17 @@ python3 "$Q" hosts put --file "$T/row-at.json" > /dev/null 2>&1; check "$?" 2 "a
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['headroom']['reason'] = 'vm_stat:/usr/bin/vm_stat failed'; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-colon.json"
 python3 "$Q" hosts put --file "$T/row-colon.json" > /dev/null 2>&1; check "$?" 2 "a path after a colon is a path too"
 python3 "$Q" hosts put --host alpha --file "$T/row.json" > /dev/null 2> "$T/err"; check "$?" 2 "hosts put takes no --host: a host puts its own row"
+echo "hosts put: S4's checks and features"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['checks'] = {'busy': 'x', 'cap': 3, 'waiting': 0}; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-ck.json"
+python3 "$Q" hosts put --file "$T/row-ck.json" > /dev/null 2> "$T/err"; check "$?" 2 "a check count that is no whole number is refused"
+has "$(cat "$T/err")" "checks is {busy, cap, waiting}" "  and says why"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['checks'] = {'busy': 1, 'slots': 2}; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-ck2.json"
+python3 "$Q" hosts put --file "$T/row-ck2.json" > /dev/null 2>&1; check "$?" 2 "a check key the schema lacks is refused"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['features'] = ['Mac OS']; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-ft.json"
+python3 "$Q" hosts put --file "$T/row-ft.json" > /dev/null 2> "$T/err"; check "$?" 2 "a feature that is no feature name is refused"
+has "$(cat "$T/err")" "features is a list of feature names" "  and says why"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['features'] = 'macos'; json.dump(d, open(sys.argv[2], 'w'))" "$T/row.json" "$T/row-ft2.json"
+python3 "$Q" hosts put --file "$T/row-ft2.json" > /dev/null 2>&1; check "$?" 2 "features as a string, not a list, is refused"
 echo off > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 check "$(python3 "$Q" hosts put --file "$T/row.json" >/dev/null 2>&1; echo $?)" 6 "no queue home: exit 6, nothing written"
 echo "$T/home.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
@@ -212,22 +260,46 @@ ld = importlib.machinery.SourceFileLoader("hosts", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hosts", ld)); ld.exec_module(m)
 q = {"entries": [
     {"qid": "fleet:open--a", "key": "open--a", "topic": "a", "repo": "open", "state": "queued", "priority": "normal",
-     "args": ["--note", "the session's words"], "env": {"DISPATCH_SKIPPER": "x"}, "by": "0123abcd", "cwd": sys.argv[2],
+     "args": ["--note", "the session's words"], "env": {"DISPATCH_SKIPPER": "x"}, "by": "0123abcd-ffff-4444", "cwd": sys.argv[2],
+     "host": "alpha", "pin_kind": "typed",
      "after": [{"branch": "claude/alpha/2026-11-01-b"}], "last_refusal": "no room in " + sys.argv[2]},
     {"qid": "fleet:open--c", "key": "open--c", "topic": "c", "repo": "open", "state": "queued", "confined": True},
     {"qid": "local=vault:secret--d", "key": "secret--d", "topic": "d", "repo": "secret", "state": "queued"},
     {"qid": "local=_spawn:open--e", "key": "open--e", "topic": "e", "repo": "open", "state": "queued"},
     {"qid": "fleet:open--f", "key": "open--f", "topic": "f", "repo": "open", "state": "queued", "kind": "finish"},
     {"qid": "fleet:secret--g", "key": "secret--g", "topic": "g", "repo": "secret", "state": "queued", "kind": "finish", "confined": False},
-    {"qid": "local=_land:open--h", "key": "open--h", "topic": "h", "repo": "open", "state": "queued", "kind": "landing"}],
+    {"qid": "local=_land:open--k", "key": "open--k", "topic": "k", "repo": "open", "state": "queued", "kind": "landing"},
+    {"qid": "fleet:open--h", "key": "open--h", "topic": "h", "repo": "open", "state": "queued", "host": "beta", "pin_kind": "",
+     "args": ["--account", "acct-hidden"],
+     "pinned_why": "commits origin lacks in its worktree here (abc1234567)", "by": "someone@example.invalid"},
+    {"qid": "fleet:open--i", "key": "open--i", "topic": "i", "repo": "open", "state": "queued", "host": "beta",
+     "pinned_why": "uncommitted work in " + sys.argv[2] + "/wt on claude/alpha/2026-11-01-i", "pin_kind": "weird"},
+    {"qid": "fleet:open--j", "key": "open--j", "topic": "j", "repo": "open", "state": "queued", "host": "beta",
+     "pinned_why": "a reason no held_here writes yet"},
+    {"qid": "fleet:open--l", "key": "open--l", "topic": "l", "repo": "open", "state": "queued", "kind": "finish", "host": "beta",
+     "pin_kind": "typed", "pinned_why": "moved from this host's landing queue (finish-as-task)", "by": "4567cdef-0000-1111",
+     "finish": {"by": "sweep", "rule": "C", "merge": False, "hold": False, "from": "beta"}, "tip": "f" * 40}],
     "unreadable": False}
 print(json.dumps(m.queue_view(q), sort_keys=True))
 PY
 v=$(python3 "$T/drive.py" "$H" "$T/projects/open")
-check "$(echo "$v" | j '[e["qid"] for e in d["entries"]], d["dropped"]')" "(['fleet:open--a', 'fleet:open--f'], 5)" "the fleet store kept, a finish among it; a confined entry, a scope's, _spawn's, the old local=_land and a confidential repo's finish dropped"
+check "$(echo "$v" | j '[e["qid"] for e in d["entries"]][:2], d["dropped"]')" "(['fleet:open--a', 'fleet:open--f'], 5)" "the fleet store kept, a finish among it; a confined entry, a scope's, _spawn's, the old local=_land and a confidential repo's finish dropped"
 hasnt "$v" '"g"' "  the confidential finish's topic is nowhere"
 check "$(CLAUDE_REPOS_JSON="$T/repos-torn.json" python3 "$T/drive.py" "$H" "$T/projects/open" | j 'len(d["entries"]), d["fence_unreadable"]')" "(0, True)" "a registry that does not read drops every entry"
-check "$(echo "$v" | j 'd["entries"][0]["after"], sorted(set(d["entries"][0]) & {"args", "env", "by", "cwd"})')" "(['b'], [])" "an entry passes its names and numbers: after by topic, no args, env, caller or cwd"
+check "$(echo "$v" | j 'd["entries"][0]["after"], sorted(set(d["entries"][0]) & {"args", "env", "cwd"})')" "(['b'], [])" "an entry passes its names and numbers: after by topic, no args, env or cwd"
+echo "the queue's S4 fields: the pin's kind, a held pin's why in fixed words, the waiting session"
+qe() { echo "$v" | python3 -c "import json,sys; e={x['qid']: x for x in json.load(sys.stdin)['entries']}[sys.argv[1]]; print(eval(sys.argv[2]))" "$1" "$2"; }
+check "$(qe fleet:open--a 'e["host"], e["pin_kind"], e["by"], e["pin_login"]')" "('alpha', 'typed', '0123abcd', False)" "a typed pin: its host, its kind, the session's first 8; its run names no login"
+check "$(qe fleet:open--h 'e["pin_login"]')" "True" "a run that names a login: pin_login true (repin never moves it), the label never passed"
+hasnt "$v" "acct-hidden" "  the login's label is nowhere in the page's queue"
+check "$(qe fleet:open--h 'e["pin_kind"], e["pinned_why"], e["by"]')" "('', 'commits origin lacks in its worktree there', None)" "a held pin: no kind, its why in fixed words (no commit), and a by that is no id dropped"
+check "$(qe fleet:open--i 'e["pin_kind"], e["pinned_why"]')" "(None, 'uncommitted work in its worktree there')" "a kind the page does not know reads null; a why naming a path and a branch is the fixed words alone"
+check "$(qe fleet:open--j 'e["pinned_why"], "pin_kind" in e')" "('its worktree there holds what the step needs', False)" "a reason no list names: the general words; no pin_kind on the entry, none invented"
+check "$(qe fleet:open--l 'e["kind"], e["host"], e["pin_kind"], e["pinned_why"], e["by"], e["pin_login"]')" "('finish', 'beta', 'typed', 'its worktree there holds what the step needs', '4567cdef', False)" "a finish entry carries the page's queue fields as a build does: its pin, kind, why in fixed words, by cut to 8"
+hasnt "$v" '"finish": {' "  a finish's rights stay off the page"
+hasnt "$v" "claude/alpha" "no branch text in the page's queue"
+hasnt "$v" "abc1234567" "  nor a commit"
+hasnt "$v" "@" "  nor an address"
 hasnt "$v" "$T" "an entry's refusal text is cut of its path"
 
 echo "the history: one point a step, a missing reading kept null"

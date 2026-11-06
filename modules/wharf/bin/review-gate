@@ -272,7 +272,9 @@ def principal_route(repo):
         return None
     try:
         # its own process group: a timeout kills account's in-flight `claude -p` probe too (common.run_group)
-        r = common.run_group([sys.executable, str(acct), "pick", "--repo", repo, "--json"], 120)
+        # --overdraw, no --job: the route must name the login a landing started on past its week bar (autofinish-run's
+        # own pick), or the gate says no login has room for a run that is on one; nothing is logged here
+        r = common.run_group([sys.executable, str(acct), "pick", "--repo", repo, "--json", "--overdraw"], 120)
     except (OSError, subprocess.TimeoutExpired) as e:
         print("review-gate: account pick did not run (%s)" % e, file=sys.stderr)
         return None

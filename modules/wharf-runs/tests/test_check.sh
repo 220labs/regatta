@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Tests for bin/check — scratch checkouts whose check lines run tiny scripts, a scratch slot folder;
 # never the real ~/Library/Caches/check-slots.   bash modules/wharf-runs/tests/test_check.sh
+# --ci (by hand; wharf-runs' check.sh passes no flag) runs only the CI scope and workflow cases, without the
+# local slot/process tests.
 set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/ (B7: the suites moved to tests/)
 T=$(cd "$(mktemp -d)" && pwd -P); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
@@ -8,6 +10,8 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 # this suite runs inside unattended /finish runs too; its cases set CLAUDE_UNATTENDED themselves
 unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
+# The outer macOS share sets this flag; nested fixtures select their own share.
+unset WHARF_RUNS_SKIP_LINUX_OK
 export CHECK_SLOT_DIR="$T/slots" CHECK_LOGS="$T/logs" CHECK_SLOT_POLL=0.2 CHECK_SLOTS=1 CHECK_PASS_TTL=0   # the memory off; its own cases turn it on
 # wait up to 10 s for a condition
 until_() { local i; for i in $(seq 1 50); do eval "$1" && return 0; sleep 0.2; done; return 1; }
@@ -34,6 +38,8 @@ EOF
   echo "$d"
 }
 
+case "${1:-}" in --ci|"") ;; *) echo "usage: $0 [--ci]" >&2; exit 2 ;; esac
+if [ "${1:-}" != --ci ]; then
 echo "summary form and exit codes"
 A=$(mk a 'bash ok.sh && bash fail.sh && ./third.sh --flag')
 o=$("$B/check" "$A" --out "$T/r1"); rc=$?
@@ -358,12 +364,16 @@ check "$(grep -c '^PASSED' "$T/m10/summary")" "0" "CHECK_PASS_TTL=0: the memory 
 CHECK_PASS_TTL=x "$B/check" "$S" > /dev/null 2>&1; check "$?" "2" "CHECK_PASS_TTL that is not a number: exit 2"
 export CHECK_PASS_TTL=0
 
+fi
+
 echo "the Linux PR trigger asks the same scope: .github/ci/share.sh scope (check_scope.py)"
 # The repo's own share.sh over a clone of this checkout, the base its tip, so only the case's commit
 # counts. Public since free CI's S2 (.github/ci/); a copy without it says skip.
 ROOT="$(cd "$B/../../.." && pwd)"
 if [ -f "$ROOT/.github/ci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HEAD > /dev/null 2>&1; then
-  git clone -q --local "$ROOT" "$T/sc" > /dev/null 2>&1
+  # --shared: alternates to ROOT's objects, no hard links (--local fails across devices or where a sandbox
+  # refuses links, and its output is discarded) and no copy of the object store.
+  git clone -q --shared "$ROOT" "$T/sc" > /dev/null 2>&1
   mkdir -p "$T/sc/.github/ci"; cp "$ROOT/.github/ci/share.sh" "$ROOT/.github/ci/linux-ids" "$T/sc/.github/ci/"; cp "$B/check_scope.py" "$T/sc/modules/wharf-runs/bin/check_scope.py"
   ( cd "$T/sc" && git add -A && git -c user.name=t -c user.email=t@t commit -qm here --allow-empty ) > /dev/null 2>&1
   at=$(git -C "$T/sc" rev-parse HEAD)
@@ -424,7 +434,7 @@ if [ -f "$ROOT/.github/ci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HE
   check "$(mac --scoped | grep -c '^SKIP [bc]:')" "2" "a docs-only head: both macOS suites say SKIP"
   check "$(ranof)" "" "a docs-only head: no suite ran"
   check "$(mac --scoped | grep -E '^(SKIP|PASS|FAIL|===)' | sed -E 's/ [0-9]+s//' | grep 'SKIP b')" "SKIP b: no change under modules/b or what it uses since the pull request's base" "…the line names the suite and why"
-  check "$(cd "$T/mac" && bash .github/ci/share.sh macos-scope | grep -v '^SCOPE' | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" "a SKIP,b SKIP,c SKIP," "macos-scope says it, runs nothing (a, on Linux, is judged too)"
+  check "$(cd "$T/mac" && bash .github/ci/share.sh macos-scope 2>/dev/null | grep -v '^SCOPE' | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" "a SKIP,b SKIP,c SKIP," "macos-scope says it, runs nothing (a, on Linux, is judged too)"
   check "$(ranof)" "" "…and ran nothing"
   mk; pr modules/c/bin/tool
   mac --scoped > "$T/mac.out"
@@ -468,6 +478,100 @@ if [ -f "$ROOT/.github/ci/share.sh" ] && git -C "$ROOT" rev-parse -q --verify HE
   ( cd "$T/mac" && git -c user.name=t -c user.email=t@t commit -qam two ) > /dev/null 2>&1
   pr modules/wharf-runs/bin/check_scope.py modules/a/bin/tool
   check "$(cd "$T/mac" && bash .github/ci/share.sh linux-ids HEAD^1)" '["a", "b"]' "linux-ids: an edited check_scope.py does not cut the Linux matrix"
+  echo "the whole-line PR check while the Linux share is off"
+  # Read the real workflow's four check-step conditions, with stubbed GitHub contexts. Only
+  # their suite commands run, in the fixture above; no setup, credentials, network or live HOME.
+  cat > "$T/event.py" <<'PYEVENT'
+import json, re, subprocess, sys
+workflow, fixture, payload = sys.argv[1:]
+context = json.load(open(payload))
+carry = context["steps"]["carry"]["outputs"]["carry"]
+def value(match):
+    v = context
+    for key in match[0].split("."): v = v[key]
+    return repr(v)
+selected = []
+for block in re.split(r"(?m)^      - name: ", open(workflow).read())[1:]:
+    name = block.splitlines()[0]
+    if name not in ("check", "check, the rest", "check, the macOS share", "check, the scoped whole line"): continue
+    cond = re.search(r"(?m)^        if: (.*)$", block)[1].replace("${{", "").replace("}}", "")
+    cond = re.sub(r"\b(?:github|vars|steps)\.[\w.]+", value, cond)
+    cond = re.sub(r"!(?!=)", " not ", cond).replace("&&", " and ").replace("||", " or ")
+    if not eval(cond, {"__builtins__": {}}): continue
+    cmd = re.search(r"(?m)^        run: (.*)$", block)[1]
+    if cmd == "|":
+        # The canonical whole line is fixture suites, read by the real parser.
+        cmd = subprocess.check_output(["bash", ".github/ci/share.sh", "line", fixture], cwd=fixture, text=True)
+        cmd = " && ".join(cmd.splitlines())
+    selected.append((name, cmd))
+# main's nightly run (schedule, a runner variable) runs its `nightly <id>` steps instead of these four
+nightly = context["github"]["event_name"] == "schedule" and (context["vars"]["CI_RUNS_ON"] or context["vars"]["CI_RUNS_ON_FULL"])
+assert len(selected) == (0 if carry == "true" or nightly else 1), selected
+for name, cmd in selected:
+    print("selected: " + name, flush=True)
+    subprocess.run(["bash", "-e", "-c", cmd], cwd=fixture, check=True)
+PYEVENT
+  event() {
+    printf '{"github":{"event_name":"%s","event":{"pull_request":{"draft":false}}},"vars":{"CI_LINUX_ELSEWHERE":"%s","CI_RUNS_ON":"%s","CI_RUNS_ON_FULL":""},"steps":{"carry":{"outputs":{"carry":"%s"}}}}\n' \
+      "$1" "${2-false}" "${4-mac}" "${3-}" > "$T/event.json"
+    python3 "$T/event.py" "$ROOT/.github/workflows/check.yml" "$T/mac" "$T/event.json" > "$T/mac.out" 2>&1
+  }
+  mk; pr docs/note.md
+  event pull_request; check "$?" "0" "share off, docs-only PR: the workflow step succeeds"
+  check "$(ranof):$(grep -c '^SKIP [abc]:' "$T/mac.out")" ":3" "…every module suite, including the Linux list, says SKIP"
+  mk; pr modules/a/bin/tool
+  event pull_request
+  check "$(ranof):$(grep -c '^SKIP [bc]:' "$T/mac.out")" "a:2" "share off, one Linux module: it runs on the Mac, the other suites skip"
+  mk; pr modules/c/bin/tool
+  printf 'raise RuntimeError("unreadable")\n' > "$T/mac/modules/wharf-runs/bin/check_scope.py"
+  event pull_request
+  check "$(ranof):$(grep -c 'the whole line: check_scope.py could not judge' "$T/mac.out")" "a b c:1" "share off, unreadable scope: every suite runs, Linux included"
+  for path in .github/ISSUE_TEMPLATE/bug.yml .github/ci/share.sh modules/wharf-runs/bin/check_scope.py; do
+    mk; pr "$path"
+    event pull_request
+    check "$(ranof)" "a b c" "share off, $path changed: the whole line runs"
+  done
+  mk; pr docs/note.md
+  event schedule
+  check "$?:$(ranof):$(grep -c '^selected:' "$T/mac.out")" "0::0" "schedule with a runner variable: none of the four, the nightly steps stand in"
+  for event_name in push workflow_dispatch; do
+    mk; pr docs/note.md
+    event "$event_name"
+    check "$(ranof):$(grep -c '^SKIP ' "$T/mac.out")" "a b c:0" "$event_name keeps the whole line even for docs only"
+  done
+  mk; pr modules/a/bin/tool
+  event pull_request ''
+  check "$(ranof)" "a" "an unset share variable also scopes the whole-line PR"
+  mk; pr modules/c/bin/tool
+  event pull_request true
+  check "$(ranof)" "c" "share on: the workflow keeps the scoped macOS share"
+  mk; pr docs/note.md
+  event pull_request false true
+  check "$(ranof):$(grep -c '^selected:' "$T/mac.out")" ":0" "a carried green skips every check step"
+  event pull_request false '' ''
+  check "$(ranof):$(grep -c '^selected: check, the rest$' "$T/mac.out")" "b c:1" "without runner variables, the twin keeps its rest job"
+  # wharf-runs spans both shares; whole must run all its scripts, without the share-only flag.
+  mk
+  mkdir -p "$T/mac/modules/wharf-runs/tests" "$T/mac/modules/wharf-runs/.claude-plugin"
+  echo '{}' > "$T/mac/modules/wharf-runs/.claude-plugin/plugin.json"
+  printf 'printf "%%s\\n" "${WHARF_RUNS_SKIP_LINUX_OK-unset}" > ran-wharf-runs\n' > "$T/mac/modules/wharf-runs/tests/check.sh"
+  printf 'a\nwharf-runs\n' > "$T/mac/.github/ci/linux-ids"
+  printf '          id: [a, wharf-runs]\n' > "$T/mac/.circleci/parts/check-linux.yml"
+  python3 - "$T/mac/.github/workflows/check.yml" <<'PYLINE'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace("bash modules/c/tests/check.sh", "bash modules/c/tests/check.sh && bash modules/wharf-runs/tests/check.sh"))
+PYLINE
+  ( cd "$T/mac" && git add -A && git -c user.name=t -c user.email=t@t commit -qm spanning ) > /dev/null 2>&1
+  pr modules/wharf-runs/tests/check.sh
+  event pull_request false
+  check "$(cat "$T/mac/ran-wharf-runs")" "unset" "whole runs wharf-runs without WHARF_RUNS_SKIP_LINUX_OK"
+  event pull_request true
+  check "$(cat "$T/mac/ran-wharf-runs")" "1" "the scoped macOS share keeps wharf-runs' split flag"
+  mk; pr docs/note.md
+  ( cd "$T/mac" && bash .github/ci/share.sh macos-scope ) > "$T/local.scope" 2>&1
+  check "$(grep -c 'scope input: HEAD\^1 (.*)\.\.HEAD (.*); a local merge reads its first-parent delta' "$T/local.scope")" "1" "macos-scope names its input on a local merge HEAD"
   # The real tree: a suite that runs a peer by name is reached by that peer's change (the landing review:
   # check_scope.py reads paths, and a SKIP here is run by nothing on the pull request).
   verdict_of() {   # <path> <id>: RUN or SKIP for the real line

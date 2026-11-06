@@ -65,15 +65,34 @@ arm runs with every hook off).
 
 Fails closed: stdin that is not a JSON object sends nothing, nor does any event while the
 confidential scopes cannot be read, or the overlay's `regatta/guarded` cannot. Exit code always 0.
-Tests: hooks/test_hooks.sh, "sheep".
+Codex activity (sessionpipe 0.5.0): a `codex exec` build is one turn, so a receiver that
+counts a session's activity from its last turn.started reads it as idle while its tools run
+(the brief's 38-minute case; spacesheep is a tier-2 sink, bin/sheep's SINK, so its tool events
+were delivered: what the receiver makes of them is not read). Before a tool runs, send a
+prompt-free UserPromptSubmit too: the adapter accepts it and emits tier-0 turn.started under the
+event's own session and turn_id. At most one a minute per session (a stamp in keel's state
+folder, like hook.js's beats), only with a turn_id (none would read as a new prompt), and never
+on PostToolUse (its job can lose the session lock to Stop's and land a turn.started after
+turn.ended). A workaround whose effect on the receiver is unverified; upstream needs a native
+session.heartbeat (docs/sheep-codex-activity-upstream-2026-11-04.md). The original tool event
+stays intact. No extra event is made until every privacy check has passed.
+PermissionRequest is dropped for PLAN_HARNESS=codex: wharf-runs sets that marker on the Codex
+runs it starts, its exec runs (codex.child_env; _argv always uses --approve-for-me, resume and
+fork too) and the Orca terminal worker (orca.py's _codex_terminal, `codex --approve-for-me`).
+This is telemetry only, never an approval answer (sessionpipe answers no Codex permission).
+Unattended alone says nothing about who approves; every other harness and a hand-started
+Codex keep theirs.
+Tests: tests/sheep_gate.sh; the overlay's hooks/test_hooks.sh, "sheep".
 """
 import functools
+import hashlib
 import json
 import os
 import stat
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -335,6 +354,38 @@ def council_arm(folders):
     return False
 
 
+ACTIVITY_EVERY = 60   # seconds; hook.js throttles a tier-0 tool beat the same
+
+
+def codex_activity(event):
+    """The minimal payload for the UserPromptSubmit activity signal, or None when none is due.
+
+    No prompt, tool input/output or transcript: the synthetic event must neither disclose tool
+    text at another tier nor trigger a transcript read. Only an event with a session and a turn id;
+    at most one per session per ACTIVITY_EVERY, by a stamp's mtime (a stamp that will not write
+    sends nothing: an unthrottled signal is the cost the stamp exists to stop).
+    """
+    sid, turn = event.get("session_id"), event.get("turn_id")
+    if not isinstance(sid, str) or not sid or not isinstance(turn, str) or not turn:
+        return None
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    stamp = state / "keel" / "sheep-beats" / hashlib.sha256(sid.encode("utf-8")).hexdigest()[:32]
+    try:
+        if time.time() - stamp.stat().st_mtime < ACTIVITY_EVERY:
+            return None
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:
+        return None
+    return json.dumps({k: event[k] for k in ("session_id", "cwd", "turn_id", "model")
+                       if isinstance(event.get(k), str)}).encode("utf-8")
+
+
 def main(argv, data):
     try:
         event = json.loads(data or b"null")
@@ -352,12 +403,19 @@ def main(argv, data):
             or private_reason(None, transcript, os.environ.get("CLAUDE_PROJECT_DIR")) \
             or _text_reason(data):
         return
+    if name == "codex" and argv[-1] == "PermissionRequest" and os.environ.get("PLAN_HARNESS") == "codex":
+        return   # the run's own approver answers; no owner attention, no approval decision here
     # communicate() feeds stdin without the 64 KB pipe-buffer deadlock. Claude Code and Codex:
     # stdout and stderr are inherited (a PermissionRequest answer goes straight back).
     # Antigravity: the answer was written before anything else, and sessionpipe 0.5.0's own is `{}`
     # on every path (antigravity.ts fromHook), so its stdout goes nowhere: a second answer is noise.
     out = subprocess.DEVNULL if name == "antigravity" else None
     subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out).communicate(data)
+    if name == "codex" and argv[-1] == "PreToolUse":
+        activity = codex_activity(event)
+        if activity is not None:
+            subprocess.Popen([*argv[:-1], "UserPromptSubmit"], stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL).communicate(activity)
 
 
 if __name__ == "__main__":

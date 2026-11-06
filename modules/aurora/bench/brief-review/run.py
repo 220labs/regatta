@@ -4,22 +4,25 @@ with a planted leak, and how often it refuses a clean one. Stdlib, 3.9.
 
     python3 modules/aurora/bench/brief-review/run.py [--model M] [--only ID,…] [--json]
 
-corpus.json holds 20 seed briefs — 10 clean, 10 with one planted leak each that the scan cannot see — and
+corpus.json holds 27 seed briefs — 12 clean, 15 with one planted leak each that the scan cannot see — and
 a made-up confidential scope (its repos and word list), plus s01, which names the scope itself: the scan's
-to refuse under --judge, counted apart from the 20 (S5's landing review). This builds that scope in a
+to refuse under --judge, counted apart from the 27 (S5's landing review). This builds that scope in a
 scratch config dir and projects folder, then runs aurora's scope-pass on each brief exactly as `pickup
 seed --from` does: on the bundle it sends, the brief and then its Branch and Seeded-By lines (pickup's
 outbound_tail(); the Seeded-By carries the core's scope_marker(), never the name), judged through the
 core's gate on a table of its own whose `scope.brief` row is provider claude and model M (default sonnet,
 the row the design names). HOME and the login stay the caller's, so `claude -p` runs
-on the session's own login: real model calls, about $0.01 ($0.0002 effective) each (probe 4's price). Not part of any check
+on the session's own login: real model calls, about $0.025 ($0.00041 effective) each (the 2026-11-04 run's price). Not part of any check
 line: it costs money and reads a model. A scan hit on any brief is a corpus error (the leaks must be
 ones the scan misses), reported apart from the judge's verdicts.
 
-The result, per run: misses (leaks judged clean) out of 10, false refusals (clean briefs judged leak)
-out of 10, judge errors, whether the scan refused s01, and the cost as list and effective (the core's
-cost_text). The design's bar (outward D4): 0 misses of 10. The leaks were planted by a model of the
-judge's family, so 0 of 10 is a floor test, not a bound.
+The result, per run: misses (leaks judged clean) out of 15, false refusals (clean briefs judged leak)
+out of 12, judge errors, whether the scan refused s01, and the cost as list and effective (the core's
+cost_text). The design's bar (outward D4): 0 misses. The leaks were planted by a model of the judge's family,
+so 0 misses is a floor test, not a bound. Since 2026-11-04 the corpus also holds result briefs made of
+the work's own counts and timings (c11, c12), which must pass, and one that hides a client's user count
+among them (l11); since 2026-11-05 four that hide a client's figure under the work's own nouns
+(l12-l15).
 """
 import argparse
 import datetime
@@ -110,7 +113,7 @@ def main():
                 print(f"{r['id']} {r['label']:5} scan {r['scan']:5} judge {r['judge'] or '-':5} {common.cost_text(r['cost_usd'])}"
                       + (f"  ({r['planted']})" if r["planted"] else "") + (f"  ERROR {r['error']}" if r["error"] else ""),
                       flush=True)
-    scanned = [r for r in rows if r["by"] == "scan"]   # s01: the scan's to refuse, outside the judge's 20
+    scanned = [r for r in rows if r["by"] == "scan"]   # s01: the scan's to refuse, outside the judge's 27
     leaks = [r for r in rows if r["label"] == "leak" and r["by"] != "scan"]
     clean = [r for r in rows if r["label"] == "clean"]
     out = {"model": a.model,

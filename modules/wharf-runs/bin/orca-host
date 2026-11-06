@@ -76,7 +76,7 @@ v1.4.227) on 2026-10-17, checked again against the installed 1.4.229 bundle on 2
 - **Left out of Orca**: a twin only (it is published from its source by helloworld, never worked
   in). A private repo is in like every other: which login works where is not Orca's to keep — Orca
   picks one login per app, not per repo — but the account guard's, on every prompt, before any
-  model call (the core's `orca-deny`). A repo sits in one scope's group only: an Orca repo is in
+  model call (tenancy: an Orca login no row names is no tenant's). A repo sits in one scope's group only: an Orca repo is in
   one group, where a VS Code scope file lists it in every window.
 - **Pairing goes one way**: the Mac at the keyboard drives the always-on one's Orca, never the
   reverse — work flows to the server, and a link back would fail whenever the laptop sleeps.

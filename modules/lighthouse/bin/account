@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """account — which login a session runs on: an ordered registry of accounts, walked by one pick.
 
-    account pick [--kind K] [--provider P] [--room fable] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--json]   the first account with room; exit 3 if none
+    account pick [--kind K] [--provider P] [--room fable] [--bound] [--repo PATH|KEY] [--ship KEY] [--allow-overage] [--overdraw [--job TEXT]] [--json]   the first account with room; exit 3 if none
+    account overdraw-log                                         the pick's `overdraw` object on stdin, logged once its job started: overdraw.jsonl and the logbook
     account ships [--release KEY]                               the ships pinned to a login here; --release unpins one
     account orca-sync [--off]                                   every Claude login in Orca → a row in the walk (on by default; --off records new ones off), its dir wired, its VS Code profile; every Codex login Orca uses → a codex row
     account orca on|off LABEL | orca default on|off             an Orca login in or out of the walk, on this Mac, at once (an agent --orca reports: its card); the default for new ones
     account vscode LABEL                                        a VS Code profile LABEL whose Claude Code panel runs on that login
     account limits [LABEL | --all [--parked] [--orca]] [--hide LABELS] [--repo PATH|KEY] [--json] [--cached]  an account's windows, plan, Fable; --parked: the registry's parked rows too; --orca: every other agent Orca reads limits for; --hide: rows left out, never probed
-    account allowed PATH                                        exit 1 if this dir's row denies the repo at PATH (an Orca dir no row names: its login's row, else ORCA_ROW's list), or PATH is another tenant's
+    account allowed PATH                                        exit 1 if the repo at PATH is a tenant's this dir's row is not (an Orca dir no row names: its login's row's tenancy), or PATH holds the vault's tenant's
     account refresh [--force]                                   the Drive-backed files' local copies, re-read, and the budgets key linked beside the tenants file's target where it is missing (the usage tick's, through claude-host; exit 3 outside it)
     account tenant set NAME --repos KEY… --logins LABEL… [--confine LABEL=KEY[,KEY…]…]   one tenant into the tenants file (a login in one tenant only; a confined routing login, named by --confine and never in --logins, owns only those of its repos; a bare --confine drops them), then its copy refreshed; a person's (exit 2 unattended)
     account tenant drop NAME                                    one tenant out of the tenants file, then its copy refreshed; a person's too
@@ -101,14 +102,41 @@ spend is under the window's elapsed share, `pace = 100 * (1 - (five_hour_resets 
 limit alone. Pace is read at the reading's own sample time, not now: a cached 60% with 3 h left
 stays refused however old it grows (else a failed probe's stale reading, which pick falls back
 to, would turn eligible on the clock alone; the landing review, 2026-10-30). A non-number in
-either rule is off, with one stderr line, so a hand-edited registry never stops every pick. Pace lifts only that limit: the week ceiling, a cooldown, paid overage and the deny
-list judge as before, and every caller (pick, limits, dispatch, pickup, tier_check, helm) takes
+either rule is off, with one stderr line, so a hand-edited registry never stops every pick. Pace lifts only that limit: the week ceiling, a cooldown, paid overage, tenancy
+and a scope's login judge as before, and every caller (pick, limits, dispatch, pickup, tier_check, helm) takes
 judge's verdict, so none keeps a 5-hour rule of its own.
 
 Free below (the owner, 2026-10-30: "if the window is under 70% then the pace rule doesn't apply. Under 70% we can run anything."):
 a 5-hour spend under a row's `rules.free_below` (FREE_BELOW, 0: off unless a row sets it; the owner's
 registry is to set 70) runs whatever window_max, the margin or the pace
 say; the flat limit, the margin and pace judge only from there up. The week ceiling still judges below it.
+
+Overdraw (the owner, 2026-11-04: every login's dispatch bar at 90% or lower, "but when there are no accounts
+on the node, it can be overridden so that the job can still start, so long as there is scope-applicable account
+with credits left. Each incident like this should be logged in logbook"): `pick --overdraw`, which dispatch's
+fire-time pick, autofinish-run's pick and autofinish's week() pass, for a job that ranks high enough (the owner,
+2026-11-05: "only … priority high or higher, and finishes at normal"): a build at `--priority` high or force, a
+finish at any of its ranks, which start at normal (the callers judge it; this verb takes no priority), judges the walk as ever; only when no row
+is eligible does it take, in walk order, the first row whose refusal was its week ceiling (judge's `week N% ≥
+M%`) and judge it again with the ceiling at 100 (lift). Every refusal before the ceiling still stands, so a
+scope, a tenant, a confine, a room (Fable's own week included: it is judged at the row's ceiling),
+a cooldown or paid overage is never crossed, and nor are the 5-hour rules after it: a week under 100% and a
+5-hour window within its rules are the credits left. A primary or tenant login whose limits are unknown,
+which the walk would take on a guess, waits for the pass: a row before it with credits left goes first.
+`rules.overdraw` narrows and fails closed: `false` (a seat kept low on purpose) is never lifted, `true` may
+be, and with no key every row may be but the primary, whose routines break when its week runs out, so a host's
+registry without the key never lifts it; any other value lifts nothing, said on stderr (may_overdraw). A
+login's own live `lighthouse/week-max` line holds too (the owner's newest word on that seat); a `*:` line
+does not. The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
+the other rows, the repo and `--job`): the caller hands that object to `account overdraw-log` once its job
+has started (dispatch once its session began, in the foreground, on both roads), so a job refused after the pick, a dry
+run or a second pick for a room is never an incident, and no pick waits on GitHub. overdraw-log writes one
+line in the log dir's overdraw.jsonl and a note in the logbook through helm's ask (`issue_note`: one issue
+per login and week, titled by the week's UTC reset date and led by helm/mention, then a comment per
+incident, from any host); a logbook that does not answer is said in its output, never raised. `--ship`
+keeps a ship's own road. Known gaps: two hosts overdrawing in the same seconds may open two issues, the
+issues are never closed, and the lookup needs the `overdraw` label on the issue (GitHub drops labels
+for a token without push access): TODO.md [overdraw-followups].
 
 The logins file (work-account design E1, docs/work-account-2026-10-06.md) is what the owner would
 otherwise carry in mind: per label, the e-mail, plan, who pays and which Macs carry a dir — kept
@@ -121,15 +149,19 @@ fallback was parked 2026-10-07 and back, after the primary, since 2026-10-16). O
 writes it: two Macs writing one Drive file within seconds lose one write (the core's bin/secrets
 header), so the always-on Mac's leg runs with --no-record.
 
-A row may carry `"repos": {"deny": [key, …]}` (work-account D3: a work login denies the vault and
-the CV repo): keys of repos.json — a path under the projects folder — matched against the repo a
-path resolves to through `git rev-parse --git-common-dir` (a worktree of the vault is the vault),
-or by path prefix for a folder that is no repo. `pick --repo` and `limits --repo` skip a row that
-denies the repo; `allowed` is the guard hook's question (E4). A path in no repo — the projects
-folder itself, the home folder — is allowed: the list says where sessions start, it is no data
-boundary (section 2 of the doc) — bar, for `allowed`, a path that holds a denied repo
-(holds_denied, since 2026-10-18): Claude Code loads the default dir's CLAUDE.md as such a folder's
-project memory, imports included.
+No row carries a list of repos it is banned from (deny-drift, 2026-11-03; the owner, 2026-11-02: "I want
+to remove this denylist cruft and rely on confidential scopes only"). Two things keep a repo off a login,
+and both route rather than ban: a scope whose `login` names a label (below), which routes pick alone, and the
+tenants (below), the only one that binds a session started by hand. Which login takes free work first is the walk's order, never a refusal. A row that still carries the old
+`"repos": {"deny": [key, …]}` (work-account D3's, 2026-10-06 to 2026-11-03) is read by nothing, bar an entry
+naming a vault no tenant holds, which keeps the vault off that row until one does (routes_for): doctor names it,
+a fix that deletes the key. A repo is the key of repos.json — a path under the projects folder — that a
+path resolves to through `git rev-parse --git-common-dir` (a worktree of the vault is the vault), or by path
+prefix for a folder that is no repo. `pick --repo` and `limits --repo` skip a row the repo is routed off;
+`allowed` is the guard hook's question (E4). A path in no repo — the projects folder itself, the home
+folder — is allowed: it is no data boundary (section 2 of the doc) — bar, for `allowed`, a path that holds
+the vault's tenant's repo (holds_denied, since 2026-10-18): Claude Code loads the default dir's CLAUDE.md as
+such a folder's project memory, imports included.
 A repo in a scope whose `login` names a label (repos.json's scopes, read through the core's
 `scope_login`; knowledge-layers D3, 2026-10-20) is picked onto that row alone: `pick --repo` skips
 every other row, waits (exit 3) when that one cannot run rather than move a confidential node's
@@ -138,12 +170,11 @@ run to another seat, and a ship pinned elsewhere moves to it.
 Tenants (multi-tenancy, the owner 2026-10-20: "instead of banning [an employer's] projects from
 [another employer's login], send their sessions to a separate account"). The registry may say
 `"tenants": {name: {"repos": [key or glob, …]}}` and a row `"tenant": name`: a tenant's repos run on
-its own rows only. Every other row is refused them, as if they were on its deny list. That includes
-the default dir, which otherwise denies nothing. Only rows refuse, never the tenant's own, so pick
+its own rows only. Every other row is refused them. That includes the default dir. Only rows refuse, never the tenant's own, so pick
 routes rather than bans: `pick --repo` (dispatch, pickup, autofinish, a ship) walks past every
 other row to the tenant's login and waits (exit 3) when that one has no room, never falling back to
-another seat. A tenant's own row is not confined to its repos: its own deny list says where else it
-may run (an organisation's seat wants the vault on it). Entries are repo keys as in a deny list,
+another seat. A tenant's own row is not confined to its repos: every repo no other tenant holds is
+open to it (a vault tenant of your own logins is what keeps the vault off an organisation's seat), bar a routing login's `confine`. Entries are repo keys,
 or a glob (`acme-*`; `*` spans `/`) matched against the key and, when git cannot answer, the path,
 so a repo cloned later is the tenant's the day it lands. With no reading of the tenant login's
 limits, pick runs it there rather than nothing, as no other row may; a tenant of several logins runs the first unread
@@ -151,8 +182,8 @@ one only once every row was tried, so a later login of the tenant with room runs
 primary's rule still runs at once. `holds_denied` ignores tenancy, a folder
 holding a tenant's repo loads nothing of it, bar one tenant: the one holding the vault (`lighthouse/vault`), whose files the
 default dir's CLAUDE.md imports. A folder holding any of that tenant's repos is off every row but the tenant's, the default dir's
-included (confidential-reach S7, 2026-10-26: the vault is a tenant like any other, and its tenant replaces the work seats' deny
-lists and ORCA_ROW's). A row refused the vault by tenancy is an employer's, as one refused it by its deny list is. The guard (account_guard) asks `allowed` on the default dir too
+included (confidential-reach S7, 2026-10-26: the vault is a tenant like any other, and its tenant replaced the work seats' deny
+lists and ORCA_ROW's, which deny-drift removed). A row refused the vault by tenancy is an employer's. The guard (account_guard) asks `allowed` on the default dir too
 while any tenant exists, and the refusal names the way in: the login's VS Code profile (`vscode
 LABEL`), or `cc X` in a Terminal. `doctor` checks that VS Code ties each tenant repo's folder, and
 each workspace that opens one, to a profile of the tenant's login.
@@ -165,8 +196,8 @@ employer's included, into a tenant's repos. With no copy either, tenancy is clos
 S7b, 2026-10-27): every repo is refused to every row, the default dir's included, as if one tenant with
 no login held `*`, said on stderr (not under --json), in each refusal and in doctor, until the link reads
 (the usage tick's refresh, setup, or any reader that may open it seeds the copy). Without that, a new
-host or a drive away before its first read let the work seats into the vault once their deny lists
-went. Only `{}` ends tenancy, or no key at all; a deleted file or link leaves the copy holding.
+host or a drive away before its first read let the work seats into the vault, which no deny list
+keeps off them since S7. Only `{}` ends tenancy, or no key at all; a deleted file or link leaves the copy holding.
 `tenant set` and `tenant drop` are its one writer (S7): a person's, refused under CLAUDE_UNATTENDED; they write through the
 link, read the file back and refresh the copy, and refuse rather than drop what they cannot read or give a login a second tenant.
 
@@ -227,10 +258,10 @@ refresh its token beside the desktop app (safe by Codex's guarded re-read, read 
 never seen); a home re-signed to another account keeps the old login's cache and exhaustion log; a
 managed Codex home is Orca's source path, unseen (a wrong one fails loudly: "no dir");
 wharf-runs' bin/pickup's refusal of a Codex pick has no test (only a seed with `provider: codex`
-reaches it). An Orca login no registry row names gets ORCA_ROW's deny list, the core's
-`regatta/orca-deny`; the other repos an employer login is refused are refused by their registry
-rows (the owner, 2026-10-18). A new employer login added through Orca needs its row in the
-registry first when its deny list is longer than ORCA_ROW's.
+reaches it). An Orca login no registry row names is a secondary seat (the core's ORCA_ROW) and no
+tenant's, so every tenant's repos are off it, the vault's tenant's included; the core's
+`regatta/orca-deny`, its deny list until deny-drift (2026-11-03), is read by nothing. A new employer
+login added through Orca that must reach an employer's repos needs its row and its tenant first.
 A plan has the windows it has (prolite: the week alone), and a window a plan lacks is no limit.
 `pick --provider codex` answers with a Codex row; `run` and bin/pickup start claude only and refuse a
 Codex pick. With --repo, pick's JSON adds `owns`: whether the repo is the row's own (its scope's
@@ -279,7 +310,7 @@ ORCA_DATA whose `.claude.json` is signed in as that entry's e-mail, read back, n
 The dir is this Mac's fact, so it lives in ORCA_FILE beside the default dir, never in the shared
 registry; the other Mac has none and walks past the row. Until a sync the row has no home here and
 pick, env and run refuse it ("not in Orca here"). Everything else — the probe, limits, the walk,
-deny lists — is the same for it: a login Orca holds is still a config dir.
+tenancy — is the same for it: a login Orca holds is still a config dir.
 
 A ship stays on one login (same doc): `pick --ship KEY` returns the login KEY was pinned to while
 that row is enabled, here, on its own login and allowed in the repo — waiting (exit 3) rather than
@@ -369,8 +400,8 @@ LINKS = ("projects", "sessions", "skills", "plugins", "agents", "rules", "CLAUDE
 # the one the owner edits (code review 2026-10-03).
 # An employer login's CLAUDE.md links the work file instead (the owner, 2026-10-18, answering
 # docs/orca-hosts-2026-10-17.md F5: "work files only"): the owner's working-style files, never the
-# private ones. "Employer" is any row refused the vault — by its own deny list, by tenancy (the vault's
-# tenant is another's, S7), an Orca login by ORCA_ROW's — so the rule follows the refusals, never a list of names.
+# private ones. "Employer" is any row refused the vault by tenancy (the vault's tenant is another's, S7; an
+# Orca login no row names is no tenant's) — so the rule follows the refusals, never a list of names.
 # The overlay's bootstrap.sh writes the work file. Orca rewrites a profile's CLAUDE.md from its own one-line stub
 # at each setup but leaves a symlink alone ("user-owned", claude-profile-sharing.ts), so a link is
 # what survives there.
@@ -387,8 +418,8 @@ def overlay_key_missing(rel, env=None):
 
 
 def employer(a):
-    """True when the row is refused the vault (`lighthouse/vault`), by its deny list or by tenancy (the
-    vault's tenant is another's, S7): its CLAUDE.md gets the work file. No vault named, no employer row —
+    """True when the row is refused the vault (`lighthouse/vault`) by tenancy (the vault's tenant is
+    another's, S7): its CLAUDE.md gets the work file. No vault named, no employer row —
     bar where the overlay is installed: there it is an error."""
     if not VAULT:
         overlay_key_missing("lighthouse/vault")
@@ -976,7 +1007,7 @@ def read_tenants_file(quiet=False):
 
 # A tenants key that reads nothing, with no last good copy, stands for this one tenant: `*` on no login, so
 # every row is refused every repo (header, S7b). Not a name `tenant set` takes (TENANT_NAME), so a written
-# tenant never is it; doctor, tenant_ties and the deny-list roster skip it, the refusal lines name it.
+# tenant never is it; doctor, tenant_ties and the tenancy roster skip it, the refusal lines name it.
 CLOSED = "(tenancy unread)"
 CLOSED_WHY = None   # why the tenants file did not read, once read_tenants_file closed tenancy
 
@@ -1415,10 +1446,10 @@ def cmd_tenant(reg, what, name, repos=(), logins=(), confine=None):
 
     held = vault_in(raw.get(name))
     if VAULT and holds(held) and not any(holds(vault_in(t)) for t in new.values()):
-        # the work seats' deny lists went when the vault became a tenant (S7): a drop, or a set that leaves it
-        # out, is what opens it (S7 review; `set` and the restore line's quoting, the S7b landing review)
-        print(f"account tenant: warning — {name} held the vault ({VAULT}): no tenant holds it now, so every login whose "
-              f"deny list does not name it may open it, the work seats' included. Set it again: "
+        # the work seats' deny lists went when the vault became a tenant (S7), and every deny list with deny-drift: a
+        # drop, or a set that leaves it out, is what opens it (S7 review; `set` and the restore line's quoting, the S7b landing review)
+        print(f"account tenant: warning — {name} held the vault ({VAULT}): no tenant holds it now, so every login "
+              f"may open it, the work seats' included. Set it again: "
               f"{shlex.join([str(BIN / 'account'), 'tenant', 'set', name, '--repos', *held] + restore_args(raw.get(name), {a.get('label'): a for a in reg['accounts']}))}",
               file=sys.stderr)
     print(f"tenant {name}: " + ("dropped" if what == "drop" else
@@ -1549,7 +1580,38 @@ def routes_for(reg, a):
         default = next((r["label"] for r in rows if r.get("home") == DEFAULT_DIR.absolute()), None)
         for e in repos:
             out.setdefault(e, dict(routing, tenant=name, logins=logins, default=default))
+    # Fail closed on the one wall a deny list may have been (deny-drift's landing review, 2026-11-05): a row whose
+    # ignored `repos.deny` names the vault, on a host where no tenant holds it, keeps the vault off until a tenant
+    # does. Without this the landing itself would open the vault to that login and flip employer() (the yard node's
+    # hand-kept rows). Every other entry of such a list routes nothing; doctor names the row and the tenant to write.
+    if VAULT and stale_vault_deny(a) and not vault_tenanted(reg):
+        keep = [r["label"] for r in reg.get("accounts") or [] if r.get("enabled", True)
+                and r.get("provider", "claude") == "claude" and not stale_vault_deny(r)
+                and not r.get("tenant") and not r.get("implicit")]   # never another tenant's seat, or an unnamed one
+        out.setdefault(VAULT, dict({p: [] for p in ROUTING_PROVIDERS}, tenant=UNHELD, logins=keep,
+                                   default=next((r["label"] for r in reg.get("accounts") or []
+                                                 if r["label"] in keep and r.get("home") == DEFAULT_DIR.absolute()), None)))
     return out
+
+
+# The route a stale deny list naming the vault keeps (routes_for): not a name `tenant set` takes (TENANT_NAME).
+UNHELD = "(the vault, held by no tenant)"
+
+
+def stale_vault_deny(a):
+    """True when row `a` still carries the old `"repos": {"deny": […]}` and an entry of it names the vault: as a
+    key in any spelling the list took ("./x", "x/"), a folder above it, or a glob."""
+    repos = a.get("repos")
+    deny = repos.get("deny") if isinstance(repos, dict) else None
+    return bool(VAULT) and isinstance(deny, list) and any(
+        n == VAULT or VAULT.startswith(n + "/") or (is_glob(n) and fnmatch.fnmatchcase(VAULT, n))
+        for n in map(tenant_entry, deny) if n)
+
+
+def vault_tenanted(reg):
+    """True when a tenant's entry holds the vault (CLOSED counts: it holds everything)."""
+    return any(e == VAULT or (is_glob(e) and fnmatch.fnmatchcase(VAULT, e))
+               for es in (reg.get("tenants") or {}).values() for e in es)
 
 
 def is_glob(e):
@@ -1722,9 +1784,11 @@ def repo_of(path):
 
 
 def denied(a, path, routes=True):
-    """→ the repo key if this row's deny list names the repo at path — or, with `routes`, a tenant's
-    repo the row is not the tenant of (header) — else None. A glob entry matches repo keys only."""
-    deny = list(((a.get("repos") or {}).get("deny")) or []) + (list(a.get("routed") or {}) if routes else [])
+    """→ the repo key if the repo at path is a tenant's the row is not the tenant of (its `routed`, header),
+    else None. A glob entry matches repo keys only. A row's old `"repos": {"deny": […]}` is read by nothing, bar
+    an entry naming a vault no tenant holds (routes_for; deny-drift, 2026-11-03; doctor names it), so `routes=False`, which asked that list alone, is always None:
+    kept for a caller still passing it."""
+    deny = list(a.get("routed") or {}) if routes else []
     if not deny or not path:
         return None
     key = repo_of(path)
@@ -1751,8 +1815,8 @@ def denied(a, path, routes=True):
 
 def known_key(key, reg):
     """True when `key` names a repo this machine's registries know: a folder under the projects folder,
-    a key of the core's repos.json (or a scope's member), or an entry a deny list or a tenant's route
-    names (a clone this Mac lacks is still its key: the deny list must bind on it)."""
+    a key of the core's repos.json (or a scope's member), or an entry a tenant's route names (a clone this
+    Mac lacks is still its key: the route must bind on it)."""
     if (projects_dir() / key).is_dir():
         return True
     try:
@@ -1764,7 +1828,7 @@ def known_key(key, reg):
         pass
     named = set()  # a tenant's entry is on every other row's `routed`
     for a in reg["accounts"]:
-        named |= set(((a.get("repos") or {}).get("deny")) or []) | set(a.get("routed") or {})
+        named |= set(a.get("routed") or {})
     return key in named or any(is_glob(e) and fnmatch.fnmatchcase(key, e) for e in named)
 
 
@@ -1773,7 +1837,7 @@ def resolve_repo_arg(arg, reg):
     A path (absolute, ~, ./, ../, or an existing relative one) stays itself — one in no repo is allowed,
     as the header says. A registry key (`privy`, `studio/pipeline`) is that folder under the
     projects folder, though its clone is absent here. Anything else is refused: a bare name read as a
-    path in the cwd matched no deny list and picked as if none applied (found 2026-10-24)."""
+    path in the cwd matched no refusal and picked as if none applied (found 2026-10-24)."""
     if not arg or not arg.strip():
         return None, "--repo is empty: name a repo's key or its path"
     if arg.startswith(("/", "~", "./", "../")) or arg in (".", ".."):
@@ -1800,8 +1864,8 @@ def route_of(a, key):
 
 
 def routed_off(a, path):
-    """→ (key, {tenant, logins}) when path is a tenant's repo row `a` may not run, else None: the one
-    refusal the default dir has (its own deny list binds pick only, as before)."""
+    """→ (key, {tenant, logins}) when path is a tenant's repo row `a` may not run, else None: since deny-drift
+    the one refusal any row has by repo (a scope's `login` routes pick, never the guard)."""
     d = denied({"routed": a.get("routed")}, path)
     t = d and route_of(a, d)
     return (d, t) if t else None
@@ -1811,6 +1875,8 @@ def use_line(t):
     """How to start a tenant repo's session on its own login: what the guard and run print."""
     if t["tenant"] == CLOSED:
         return closed_fix()
+    if t["tenant"] == UNHELD and not t["logins"]:
+        return f"write the owner's tenant: {BIN / 'account'} tenant set <name> --repos {VAULT} … --logins <the owner's logins>"
     if not t["logins"]:
         return no_login(t["tenant"])[0]
     prefix = (config_lines("lighthouse/cc-prefix") or [""])[0]
@@ -1828,6 +1894,9 @@ def off_line(a, key):
     t = route_of(a, key)
     if t and t["tenant"] == CLOSED:
         return f"{key} is off {a['label']}: {closed_text()} — {closed_fix()}"
+    if t and t["tenant"] == UNHELD:
+        return (f"{key} is off {a['label']}: no tenant holds the vault here, and this row's ignored \"repos\": "
+                f"{{\"deny\": …}} names it, so it stays off until one does (account doctor) — {use_line(t)}")
     if t:
         return (f"{key} is off {a['label']}: it is {t['tenant']}'s, which runs on "
                 f"{', '.join(t['logins']) or 'no login'} only ({tenants_source()}) — {use_line(t)}")
@@ -1835,16 +1904,18 @@ def off_line(a, key):
 
 
 def off_reason(a, key):
-    """Why row `a` may not run repo `key`: its tenant's route, else its deny list (pick's skip line)."""
+    """Why row `a` may not run repo `key`: its tenant's route (pick's skip line)."""
     t = route_of(a, key)
     if t and t["tenant"] == CLOSED:
         return f"{key}: tenancy does not read and has no last good copy (closed until it reads)"
+    if t and t["tenant"] == UNHELD:
+        return f"{key}: the vault, held by no tenant here, and named by this row's ignored deny list (account doctor)"
     if t:
         p = a.get("provider")   # each vendor's pick is told its own vendor's rows
         vendor = p in ROUTING_PROVIDERS
         on = list(t.get(p) or []) if vendor else list(t["logins"])
         return f"{key} is {t['tenant']}'s: it runs on {', '.join(on) or (f'no {p} login' if vendor else 'no login')} only (tenants)"
-    return f"{key} is on its deny list"
+    return f"{key} is routed off it (tenants)"
 
 
 def path_keys(path):
@@ -1909,14 +1980,15 @@ def scope_login_of(path):
 
 
 def holds_denied(a, path, deny_list=True):
-    """→ the key of a denied repo that lies inside `path` (path is the home or the projects folder,
-    say), else None. Claude Code reads every ancestor's .claude/CLAUDE.md — the default dir's is the
+    """→ the key of the vault's tenant's repo that lies inside `path` (path is the home or the projects folder,
+    say), when row `a` is not that tenant's, else None. Claude Code reads every ancestor's .claude/CLAUDE.md — the default dir's is the
     home folder's — and follows its imports when they sit inside the cwd (2.1.302's memory loader,
     read in its source 2026-10-18), so a session started there on an employer login would load the
     private imports after all. Tenancy counts for the vault's tenant alone (header, S7): its repos are
-    denied here to every row but the tenant's, as a deny list's are; another tenant's repo loads nothing
-    at the start. deny_list=False asks that rule alone: the default dir's own deny list binds pick only."""
-    deny = list(((a.get("repos") or {}).get("deny")) or []) if deny_list else []
+    denied here to every row but the tenant's; another tenant's repo loads nothing at the start.
+    `deny_list` is ignored since deny-drift (2026-11-03: no row's deny list is read), kept for a caller still
+    passing it: every row, the default dir's included, gets the one rule."""
+    deny = []
     if not VAULT:
         overlay_key_missing("lighthouse/vault")   # as employer() does: an installed overlay without it fails closed
     t = route_of(a, VAULT) if VAULT else None
@@ -1942,11 +2014,12 @@ def holds_denied(a, path, deny_list=True):
 
 def holds_line(a, path, h, whose):
     """The refusal of a start in `path`, which holds repo `h`: ' is off ' is what account_guard blocks on,
-    and ' holds ' what it lets pass after a `cd`. A tenant's entry names its tenant, a deny list's `whose`."""
+    and ' holds ' what it lets pass after a `cd`. A tenant's entry names its tenant, else `whose`."""
     t = route_of(a, h)
     if t and t["tenant"] == CLOSED:   # `*` holds everything under the projects folder: no repo to start in either
         return f"{path} is off {a['label']}: it holds repos, and {closed_text()} — {closed_fix()}"
-    why = f"{t['tenant']}'s, {tenants_source()}" if t else whose
+    why = ("the vault, held by no tenant here, named by this row's ignored deny list" if t and t["tenant"] == UNHELD
+           else f"{t['tenant']}'s, {tenants_source()}" if t else whose)
     return f"{path} is off {a['label']}: it holds {h} ({why}); start the session inside a repo"
 
 
@@ -2603,10 +2676,11 @@ def no_five_hour(a, lim):
             and set(kinds) <= {"weekly_all", "weekly_scoped"})
 
 
-def judge(a, lim, t, allow_overage=False, at=None):
+def judge(a, lim, t, allow_overage=False, at=None, bar=None):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
     whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
-    the window as it stood then (header, "Pace")."""
+    the window as it stood then (header, "Pace"). bar: a week ceiling that replaces the row's, the
+    overdraw pass's 100 (header, "Overdraw")."""
     if a.get("same_as"):
         other, email = a["same_as"]
         return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
@@ -2617,7 +2691,7 @@ def judge(a, lim, t, allow_overage=False, at=None):
         return False, "limits unknown (no probe answered, none cached)"
     if overage_on(lim) and not allow_overage:
         return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
-    week_max, why = ceiling(a, lim, t)
+    week_max, why = (bar, "overdraw: no login was under its bar") if bar else ceiling(a, lim, t)
     m = margin(a, t)
     win_max = a["rules"].get("window_max", 100) - m
     wk, fh = lim.get("seven_day"), lim.get("five_hour")
@@ -2691,10 +2765,118 @@ def provider_for(reg, kind, provider):
     return "claude"
 
 
-def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False, room=None):
+OVER_BAR_RE = re.compile(r"week [\d.]+% ≥ ")   # judge's refusal by the week ceiling, and by nothing before it
+
+
+def may_overdraw(a):
+    """Whether the overdraw pass may lift this row past its week bar (header, "Overdraw"). `rules.overdraw`
+    only narrows, so it fails closed: `false` never; `true` always; absent, any row but the primary, which a
+    host's registry without the key must not lift (its routines break when its week runs out; the landing
+    review, 2026-11-04). Any other value lifts nothing, said once on stderr (AGENTS.md's narrowing trap)."""
+    v = a["rules"].get("overdraw", None)
+    if v is None and "overdraw" not in a["rules"]:
+        return not a.get("primary")
+    if isinstance(v, bool):
+        return v
+    print(f"account: {a['label']}'s rules.overdraw {v!r} is not true or false; the row is never overdrawn",
+          file=sys.stderr)
+    return False
+
+
+def helm_ask():
+    """(helm's bin/ask as a module, None) or (None, why): the logbook road is its (issue_note), never a copy
+    of its config keys here (AGENTS.md: a key copied into a peer goes stale); ops loads it the same way."""
+    try:
+        path = core().tool("ask")
+    except Exception as e:   # noqa: BLE001 — no core: no road, said
+        return None, f"no core ({type(e).__name__})"
+    if not path:
+        return None, "helm's ask is not installed: no logbook road"
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+    try:
+        loader = SourceFileLoader("ask_for_account", str(path))
+        mod = module_from_spec(spec_from_loader(loader.name, loader))
+        loader.exec_module(mod)
+    except Exception as e:   # noqa: BLE001 — a broken peer is no road, said, never the pick's end
+        return None, f"helm's ask did not load ({type(e).__name__})"
+    return mod, None
+
+
+def overdraw_record(info):
+    """Log one overdraw that started (header, "Overdraw"): INFO is the pick's `overdraw` object, which the
+    caller hands to `account overdraw-log` once its job began, never before (a refusal after the pick would
+    log a job that never ran, and a landing's 15 s pick would wait on GitHub). A line in the log dir's
+    overdraw.jsonl, then the logbook through helm's ask, one issue per login and week and a comment per
+    incident. → what was logged, one line; a failure is said there, never raised."""
+    try:
+        return _overdraw_record(info)
+    except Exception as e:   # noqa: BLE001 — the job runs already: the log says what went wrong, nothing more
+        return f"overdraw: not logged ({type(e).__name__}: {str(e)[:120]})"
+
+
+def _overdraw_record(info):
+    label, repo, job = info["account"], info.get("repo"), info.get("job")
+    skipped = [s for s in info.get("skipped") or [] if isinstance(s, (list, tuple)) and len(s) == 2]
+    try:
+        c = core()
+        host, logdir = c.host_name(), Path(c.LOG_DIR)
+    except Exception:   # noqa: BLE001 — no core: the node name, no local trail
+        host, logdir = os.uname().nodename.split(".")[0], None
+    rec = {"at": int(now()), "host": host, "account": label, "repo": repo, "job": job, "bar": info.get("bar"),
+           "week": info.get("week"), "resets": info.get("resets"), "reason": info.get("reason"), "skipped": skipped}
+    info = rec
+    said = []
+    try:
+        if logdir is None:
+            raise OSError("no log dir")
+        logdir.mkdir(parents=True, exist_ok=True)
+        with open(logdir / "overdraw.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        said.append(f"no local record ({e})")
+    # the logbook is GitHub: a repo in a confidential or guarded scope, or one that cannot be told (no core, a
+    # torn registry), is named there by neither its job nor its path; overdraw.jsonl, on this host, keeps both
+    # (the core's fenced_scopes walks every scope; the re-review of overdraw, 2026-11-04)
+    try:
+        reg, torn = core().read_registry()
+        fenced = bool(torn) or (bool(repo) and bool(core().fenced_scopes(repo, reg or {})))
+    except Exception:   # noqa: BLE001 — never known open
+        fenced = True
+    if fenced:
+        job, repo = "a job in a fenced scope", "(not named here)"
+    # the week by its UTC reset date, so every host (some keep UTC, the Macs local time) names the same issue
+    wk_end = dt.datetime.fromtimestamp(info["resets"], dt.timezone.utc).strftime("%Y-%m-%d") if info["resets"] else "unknown"
+    title = f"Overdraw: {label} past its week bar, the week to {wk_end}"
+    # a skip reason names the repo key or the scope (off_reason, pick's "scope X runs on Y"), so a fenced note
+    # gives the labels alone; overdraw.jsonl keeps the reasons (regatta#476's code review, 2026-11-05)
+    others = ("; ".join(l for l, _ in skipped) if fenced else "; ".join(f"{l}: {w}" for l, w in skipped)) or "none"
+    # the host's own time, its zone named: one issue gathers comments from hosts in different zones
+    note = (f"{dt.datetime.fromtimestamp(rec['at']).astimezone().strftime('%Y-%m-%d %H:%M %Z')} on {host}: "
+            f"{job or 'a job'} in {repo or '(no repo given)'} started on {label} at week {info['week']}%, "
+            f"past its bar ({info['bar']}). The other logins: {others}.")
+    body = (f"No login with room was under its week bar for a job, so `account pick --overdraw` started it on "
+            f"{label}, whose week is under 100%.\n\nFirst: {note}\n\nEach later job started past {label}'s bar "
+            f"this week is a comment here. The bars are each row's `rules.week_max` and `lighthouse/budgets.json`; "
+            f"a row with `rules.overdraw: false` is never lifted. Filed by lighthouse's `account overdraw-log` on {host}.")
+    ask, why_not = helm_ask()
+    if ask and not hasattr(ask, "issue_note"):   # a helm older than this lighthouse (AGENTS.md: guard a peer's function)
+        ask, why_not = None, "helm's ask has no issue_note: update helm"
+    n, opened, err = ask.issue_note(title, body, note, labels=("overdraw", "budget")) if ask else (None, False, why_not)
+    if n:
+        said.insert(0, f"logbook issue #{n}{' opened' if opened else ', a comment'}")
+    else:
+        said.insert(0, f"not in the logbook ({err})")
+    return "overdraw on " + label + ": " + "; ".join(said)
+
+
+def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False, room=None,
+         overdraw=False):
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
-    repo: the path the step runs in; a row whose deny list names its repo is skipped unprobed.
-    room: `fable` takes only a row with Fable room (header, "Room")."""
+    repo: the path the step runs in; a row the repo is routed off (tenants) is skipped unprobed.
+    room: `fable` takes only a row with Fable room (header, "Room").
+    overdraw: with no row eligible, the first one refused by its week ceiling alone runs it past that
+    ceiling while its week is under 100%; the row returned is a copy carrying `overdraw` (header, "Overdraw")."""
     t = now()
     bad = room_refusal(reg, kind, provider, room)
     if bad:
@@ -2705,7 +2887,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         rows = [a for a in rows if a.get("primary")]
     if not rows:
         raise Short([(prov, f"no enabled {prov} account{' marked primary' if bound else ''} in {REGISTRY}")])
-    skipped, unread_own = [], None
+    skipped, over, unread_own = [], [], None
     own = scope_login_of(repo)
     if own and not own[1]:
         raise Short([("registry", f"{own[0]}: no run picks a seat until it does")])
@@ -2743,7 +2925,14 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             continue
         if ok:
             return a, (f"{why}; Fable's week {lim['fable_week']}%" if room else why), skipped
-        if a.get("primary") and (lim is None or why.startswith("limits unknown")):
+        unknown = lim is None or why.startswith("limits unknown")
+        if unknown and overdraw and a.get("primary"):
+            # a row before it known to have credits left goes first: the primary's guess may be its own last
+            # point of the week, which the overdraw exists to spare (code review of overdraw, 2026-11-04)
+            lifted = lift(over, t, allow_overage, skipped + [(a["label"], why)])
+            if lifted:
+                return lifted
+        if a.get("primary") and unknown:
             # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
             # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
             # and a blocked start costs more than a guess (review 2026-10-03). A row after the
@@ -2759,11 +2948,39 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
                 unread_own = (a, len(skipped))
             skipped.append((a["label"], why))
             continue
+        if OVER_BAR_RE.match(why):
+            over.append((a, lim, at, why))
         skipped.append((a["label"], why))
+    # a row known to have credits left, overdrawn, goes before an unread tenant login that may be its own last point
+    lifted = lift(over, t, allow_overage, skipped) if overdraw else None
+    if lifted:
+        return lifted
     if unread_own:
         held, at = unread_own
         return held, "limits unknown — the tenant's own login runs it rather than nothing", skipped[:at] + skipped[at + 1:]
     raise Short(skipped)
+
+
+def lift(over, t, allow_overage, skipped):
+    """The overdraw pass (header, "Overdraw"): (row, reason, skipped) for the first of OVER, in walk order, that
+    may be lifted and is eligible with its week ceiling at 100, else None. OVER holds only rows that got past
+    every scope, tenant, confine, room and cooldown refusal and were refused by their week ceiling first.
+    The row returned is a copy carrying `overdraw`, what the caller hands `account overdraw-log` at its start."""
+    for a, lim, at, bar_why in over:
+        if not may_overdraw(a):
+            continue
+        live, src, _ = live_week_max(a.get("label"))
+        if live is not None and not src.endswith(" *:"):
+            # a login's own live line is the owner's newest word on that seat (ceiling()'s "set low on purpose"),
+            # so it holds; a fleet-wide `*:` line does not (both reviews of overdraw, 2026-11-04)
+            continue
+        ok, why = judge(a, lim, t, allow_overage, at, bar=100)
+        if ok:
+            rest = [s for s in skipped if s[0] != a["label"]]
+            info = {"account": a["label"], "bar": bar_why, "week": lim.get("seven_day"),
+                    "resets": lim.get("seven_day_resets"), "reason": f"{why}; past its own bar: {bar_why}", "skipped": rest}
+            return {**a, "overdraw": info}, info["reason"], rest
+    return None
 
 
 # ---------------------------------------------------------------------------- check / add
@@ -4043,24 +4260,6 @@ def workspace_folders(ws):
     return [(ws.parent / m).resolve() for m in re.findall(r'"path"\s*:\s*"([^"]+)"', text)]
 
 
-def denied_workspaces(rows):
-    """→ [(workspace, [denied keys], profile name)] for every .code-workspace under the projects folder
-    (three levels) with a folder a row's deny list names."""
-    profiles, assoc = vscode_state()
-    by_loc = {v: k for k, v in (profiles or {}).items()}
-    out = []
-    projects = projects_dir()
-    for pattern in ("*.code-workspace", "*/*.code-workspace", "*/*/*.code-workspace"):
-        for ws in sorted(projects.glob(pattern)):
-            if ".claude" in ws.parts:
-                continue
-            keys = sorted({d for f in workspace_folders(ws) for a in rows for d in [denied(a, f, routes=False)] if d})
-            if keys:
-                loc = assoc.get(ws.resolve().as_uri())
-                out.append((ws, keys, "default" if loc in (None, "__default__profile__") else by_loc.get(loc, loc)))
-    return out
-
-
 def tenant_ties(reg):
     """→ [(label, level, text, fix)]: each tenant repo cloned here, and each workspace that opens one,
     against the VS Code profile VS Code ties it to. An untied one opens in the default profile, whose
@@ -4362,13 +4561,16 @@ def tenancy_state(reg, peer=None):
     return out
 
 
+DENY_GONE = "2026-11-03"   # deny-drift: the day no row's `repos.deny` and no `regatta/orca-deny` was read any more
+
+
 def tenancy_roster(reg):
     """→ [(label, level, text, fix)] for doctor, from the rows apply_tenants assigned, in either form tenancy
-    was written in: each tenant, its repos and the logins it runs on (ok); each deny-list entry a tenant
-    already refuses that row (a fix: a hand-kept line tenancy derives, G3 of confidential-reach S7, ORCA_ROW's
-    once); and the vault refused no login while more than one runs here (a fix: every seat may open it, and
-    none is an employer's, so none links the work memory — the state a deny list taken off before the vault's
-    tenant was written leaves)."""
+    was written in: each tenant, its repos and the logins it runs on (ok); each row still carrying a
+    `repos.deny` and a `regatta/orca-deny` that names a repo (a fix: read by nothing since deny-drift, bar a row's
+    entry naming a vault no tenant holds, so the line only misleads and never widens past tenancy or a scope); and the vault refused no login
+    while more than one runs here (a fix: every seat may open it, and none is an employer's, so none links the
+    work memory)."""
     rows = [a for a in reg["accounts"] if a["provider"] == "claude"]
     out = []
     for n, entries in (reg.get("tenants") or {}).items():
@@ -4379,31 +4581,37 @@ def tenancy_roster(reg):
         if entries and logins:
             out.append(("-", "ok", f"tenant {n}: {', '.join(entries)} — runs on {', '.join(logins)} only ({tenants_source()})"
                         + "".join(f"; {p}: {', '.join(ls)} (routing only)" for p, ls in routing.items() if ls)))
-    implicit = set()
-    for a in rows:
-        for d in ((a.get("repos") or {}).get("deny")) or []:
-            t = route_of(a, d)
-            if not t or t["tenant"] == CLOSED or (a.get("implicit") and d in implicit):
-                continue
-            if a.get("implicit"):
-                implicit.add(d)
-            where = "the overlay's regatta/orca-deny" if a.get("implicit") else f"{a['label']}'s deny list in {REGISTRY.name}"
-            out.append(("-" if a.get("implicit") else a["label"], "fix",
-                        f"{d} on {where} is {t['tenant']}'s already: tenancy refuses it there, the line is kept by hand",
-                        f"take {d} off {where}"))
+    for a in reg["accounts"]:   # every provider's row: none is read
+        repos = a.get("repos")
+        if a.get("implicit") or not (isinstance(repos, dict) and "deny" in repos):
+            continue
+        out.append((a["label"], "fix", f"{a['label']}'s \"repos\": {{\"deny\": …}} in {REGISTRY.name} is ignored since {DENY_GONE}: "
+                    "a confidential scope's login routes its repos to that login, the tenants file keeps a tenant's repos on its logins, and the walk's order says "
+                    "which login goes first"
+                    + (f"; it names the vault ({VAULT}), which no tenant holds here, so the vault stays off {a['label']} until one does"
+                       if stale_vault_deny(a) and not vault_tenanted(reg) else ""),
+                    (f"first {BIN / 'account'} tenant set <name> --repos {VAULT} … --logins <the owner's logins>, then "
+                     if stale_vault_deny(a) and not vault_tenanted(reg) else "")
+                    + f"delete the \"deny\" key from {a['label']}'s row in {REGISTRY}"))
+    orca = config_lines("regatta/orca-deny")
+    if orca:
+        # Unlike a row's list, this key keeps no vault off (ORCA_ROW's list is empty): say so where it matters
+        open_vault = stale_vault_deny({"repos": {"deny": orca}}) and not vault_tenanted(reg)
+        out.append(("-", "fix", f"regatta/orca-deny names {', '.join(orca)} and is ignored since {DENY_GONE}: an Orca login no "
+                    "row names is no tenant's, so tenancy alone keeps a tenant's repos off it"
+                    + (f", and no tenant holds the vault ({VAULT}) here, so it is open to such a login" if open_vault else ""),
+                    (f"first {BIN / 'account'} tenant set <name> --repos {VAULT} … --logins <the owner's logins>, then " if open_vault else "")
+                    + f"write it empty (never delete it: a core from before {DENY_GONE} still requires it): "
+                    f"{CONFIG / 'regatta' / 'orca-deny'} (the overlay's bootstrap.sh --config)"))
     if VAULT and sum(1 for a in rows if a["enabled"]) > 1:
-        try:
-            orca = core().ORCA_ROW["repos"]["deny"]
-        except Exception:
-            orca = []
         d = next((a for a in rows if is_default(a)), None)
         t = route_of(d, VAULT) if d else None
-        if t and t["tenant"] != CLOSED:
+        if t and t["tenant"] not in (CLOSED, UNHELD):
             # the guard asks `allowed` at the home and the projects folder for it (S7b), and both hold the vault
             out.append((d["label"], "info", f"the default dir ({d['label']}) is not {t['tenant']}'s login, which holds the vault: "
                         f"a session it starts in the home or the projects folder is refused, as both hold {VAULT}"))
-        if VAULT not in orca and not any(denied(a, projects_dir() / VAULT) for a in rows):
-            out.append(("-", "fix", f"the vault ({VAULT}) is refused no login: no tenant holds it and no deny list names it — "
+        if not any(denied(a, projects_dir() / VAULT) for a in rows):
+            out.append(("-", "fix", f"the vault ({VAULT}) is refused no login: no tenant holds it — "
                         "every seat may open it, and none links the work memory",
                         f"{BIN / 'account'} tenant set <name> --repos {VAULT} … --logins <the owner's logins>"))
     return out
@@ -4583,7 +4791,7 @@ def doctor_local(reg, logins, peer=None, record=True):
               + ("" if is_default(a) else f"; guard {guard_state(a)}"))
     # the VS Code profile per enabled secondary (D2-C), on a Mac with VS Code
     profiles, _ = vscode_state()
-    # A dir signed in to another row's account is a second way into that seat which its deny list
+    # A dir signed in to another row's account is a second way into that seat which its tenancy
     # and the guard do not cover: the Pro fallback's dir, parked, signed in to a work seat while
     # pickup still started sessions on it (review 2026-10-06). Every dir that exists, enabled or not.
     owner = {(e.get("email") or "").lower(): lab for lab, e in logins.items() if e and e.get("email")}
@@ -4596,14 +4804,12 @@ def doctor_local(reg, logins, peer=None, record=True):
             continue
         _, email = login_of(a)
         other = owner.get((email or "").lower())
-        # what the seat is refused that this dir is not: its deny list, and since S7b its tenancy routes too
-        # (with the work seats' deny lists gone, a deny list alone never fired for them; the S7 review)
-        # The default dir's own deny list binds pick only, never allowed or run (routed_off): it covers no seat (S7b review)
-        refused = lambda r: (set() if is_default(r) else set((r.get("repos") or {}).get("deny") or [])) | set(r.get("routed") or {})
+        # what the seat is refused that this dir is not: its tenancy routes (S7b; the only refusal since deny-drift)
+        refused = lambda r: set(r.get("routed") or {})
         gap = next((refused(r) - refused(a) for r in claude_rows if r["label"] == other), set())
         if email and other and other != a["label"] and gap:  # a dir no less refused bypasses nothing
             f(a["label"], "fix", f"{a['home']} is signed in as {email}, which the logins file gives to {other} — "
-              f"a second way into {other}'s seat that its deny list and tenancy do not cover ({', '.join(sorted(gap))})",
+              f"a second way into {other}'s seat that its tenancy does not cover ({', '.join(sorted(gap))})",
               wrap_peer(f"CLAUDE_CONFIG_DIR={a['home']} claude auth logout   (after its sessions end)", peer)
               if not is_default(a) else "sign the default dir back in as its own account")
     if profiles is not None:
@@ -4618,12 +4824,6 @@ def doctor_local(reg, logins, peer=None, record=True):
                 f(a["label"], "info", f"profile {a['label']} has no CLAUDE_CONFIG_DIR={a['home']}", f"{BIN / 'account'} vscode {a['label']}")
             else:
                 f(a["label"], "ok", f"VS Code profile {a['label']} runs its panel on {a['home']}")
-        deny_rows = [a for a in claude_rows if a["enabled"] and (a.get("repos") or {}).get("deny")]
-        for ws, keys, prof in denied_workspaces(deny_rows):
-            on = [a["label"] for a in deny_rows if a["label"] == prof]
-            f(on[0] if on else "-", "fix" if on else "info",
-              f"{ws} opens {', '.join(keys)} — profile {prof}" + (": a denied repo on that account" if on else ""),
-              "open it with the default profile" if on else None)
         for t in tenant_ties(reg):
             f(*t)
     for t in tenancy_state(reg, peer):   # VS Code or not: the tenants file is the guard's, not the panel's
@@ -4657,7 +4857,8 @@ def cmd_doctor(reg, local=False, as_json=False, peer=None):
     if not logins:
         print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
         # the tenants link points into the same drive, so this is when its state matters most (review 2026-10-23)
-        for label, level, text, fix in tenancy_state(reg, peer):
+        # and the roster: a stale deny row is named on a host with no logins file too (the yard node; landing review)
+        for label, level, text, fix in tenancy_state(reg, peer) + [r for r in tenancy_roster(reg) if r[1] == "fix"]:
             print(f"  {'⚠  ' if level == 'fix' else '-- '} {label}: {text}" + (f"\n      {fix}" if fix else ""))
         return 1
     found = doctor_local(reg, logins, peer=peer, record=not local)
@@ -4741,7 +4942,7 @@ def limits_json(a, lim, at, t, repo=None, reg=None):
         ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
             "here": a["home"].is_dir(), "home": str(a["home"]), "env": env_of(a), "limits": lim, "sampled": at, "eligible": ok, "why": why,
-            "denied": d or None,  # --force never crosses a deny list (review 2026-10-06)
+            "denied": d or None,  # --force never crosses tenancy, a confinement or a scope's login (review 2026-10-06)
             # the plan has no 5-hour window (no_five_hour): the widget and the tier check say so, never "unknown"
             "no_five_hour": no_five_hour(a, lim),
             # dispatch's --force is a person's yes past overage: refused when unattended (pickup open refuses any)
@@ -4763,6 +4964,11 @@ def main(argv):
     p.add_argument("--cached", action="store_true")
     p.add_argument("--allow-overage", action="store_true",
                    help="a row whose paid extra usage is on may run it: a person's yes, refused under CLAUDE_UNATTENDED")
+    p.add_argument("--overdraw", action="store_true",
+                   help="with no row under its week bar, the first refused by that bar alone runs it while its week "
+                        "is under 100%% (header, \"Overdraw\"); the pick only decides: its caller logs it at the job's "
+                        "start with overdraw-log")
+    p.add_argument("--job", help="what the pick starts (a branch), for the overdraw's logbook line")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("ships")
     p.add_argument("--release")
@@ -4819,6 +5025,7 @@ def main(argv):
     p.add_argument("--host", choices=sorted(PEERS))
     p.add_argument("--no-record", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)  # set by --host: login lines in the ssh -t form
+    sub.add_parser("overdraw-log", help="the pick's overdraw object on stdin, logged once its job started (header, \"Overdraw\")")
     p = sub.add_parser("week-max", help="a login's live week ceiling (lighthouse/week-max), or none; exit 2 on a line that is no ceiling")
     p.add_argument("label")
     p = sub.add_parser("doctor")
@@ -4826,6 +5033,8 @@ def main(argv):
     p.add_argument("--json", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.cmd == "overdraw-log":   # needs no registry: what the pick decided is on stdin
+        return cmd_overdraw_log()
     if args.cmd == "week-max":   # `regatta limit`'s trial read: needs no registry
         v, src, bad = live_week_max(args.label)
         print("none" if v is None else f"{v} ({src})")
@@ -4877,11 +5086,10 @@ def main(argv):
             return 1
         cwd = os.getcwd()
         r = routed_off(a, cwd)  # a tenant's repo is off every other row, the default dir's too
-        d = r[0] if r else None if is_default(a) else denied(a, cwd)
-        h = None if d else holds_denied(a, cwd, deny_list=not is_default(a))   # the vault's tenant: the default dir's too
+        d = r[0] if r else None
+        h = None if d else holds_denied(a, cwd)   # the vault's tenant: the default dir's too
         if d or h:
-            why = (off_line(a, d) or f"{d} is off {a['label']} (accounts.json deny list)") if d \
-                else holds_line(a, cwd, h, "accounts.json deny list")
+            why = (off_line(a, d) or f"{d} is off {a['label']} (tenants)") if d else holds_line(a, cwd, h, "tenants")
             print(f"account: {why}", file=sys.stderr)
             return 1
         # An inherited token outranks the config dir's login (autofinish-run's KEEP_CLAUDE), so a
@@ -4907,24 +5115,15 @@ def main(argv):
     if args.cmd == "allowed":  # the guard's question: this process's dir, the path's repo
         here = current_home()
         for a in reg["accounts"]:
-            if a["provider"] == "claude" and a["home"] == here and is_default(a):
-                r = routed_off(a, args.path)   # the default dir denies nothing but another tenant's repo…
+            # every row alike since deny-drift (2026-11-03: no deny list): another tenant's repo is off it…
+            if a["provider"] == "claude" and a["home"] == here:
+                r = routed_off(a, args.path)
                 if r:
-                    print(off_line(a, r[0]))
+                    print(off_line(a, r[0]) or f"{r[0]} is off {a['label']} (tenants)")
                     return 1
-                h = holds_denied(a, args.path, deny_list=False)   # …and a folder holding the vault's tenant's (S7)
-                if h:
-                    print(holds_line(a, args.path, h, ""))
-                    return 1
-            if a["provider"] == "claude" and a["home"] == here and not is_default(a):
-                d = denied(a, args.path)
-                whose = "ORCA_ROW's deny list" if a.get("implicit") else "accounts.json deny list"
-                if d:
-                    print(off_line(a, d) or f"{d} is off {a['label']} ({whose})")
-                    return 1
-                h = holds_denied(a, args.path)
-                if h:   # a folder holding a denied repo: its sessions would load what the list keeps out
-                    print(holds_line(a, args.path, h, whose))
+                h = holds_denied(a, args.path)   # …and a folder holding the vault's tenant's (S7)
+                if h:   # its sessions would load what tenancy keeps out
+                    print(holds_line(a, args.path, h, "tenants"))
                     return 1
         if any(a["provider"] == "claude" and a["home"] == here for a in reg["accounts"]):
             return 0
@@ -4932,8 +5131,8 @@ def main(argv):
         # employer login … [the primary and the Pro fallback] only"; reviews of docs/orca-hosts-2026-10-17.md).
         # Two kinds, told apart by the e-mail its .claude.json is signed in as, the way orca-sync
         # tells them: a registry row's own login added to Orca (orca-sync never records it — "that
-        # row decides"), which gets that row's deny list; and anything else — a fresh `orca account
-        # add`, a sync that failed — which gets ORCA_ROW's, as a synced Orca login does, so an
+        # row decides"), which gets that row's tenancy; and anything else — a fresh `orca account
+        # add`, a sync that failed — which is no tenant's, as a synced Orca login no row names is, so an
         # employer seat never reaches the vault through a missed sync. The whole of ORCA_DATA,
         # since orca_home_of looks there, not only today's claude-profiles/ layout.
         try:
@@ -4969,11 +5168,11 @@ def main(argv):
                     owner = a
         if owner is not None:
             d, h = denied(owner, args.path), holds_denied(owner, args.path)
-            if d:
-                print(off_line(owner, d) or f"{d} is off {owner['label']}, whose login this Orca dir is (accounts.json deny list)")
+            if d:   # off_line as it stands: the overlay's contact-book hook reads the label up to the colon
+                print(off_line(owner, d) or f"{d} is off {owner['label']}: tenants")
                 return 1
             if h:
-                print(holds_line(owner, args.path, h, "accounts.json deny list").replace(
+                print(holds_line(owner, args.path, h, "tenants").replace(
                     f" is off {owner['label']}:", f" is off {owner['label']}, whose login this Orca dir is:", 1))
                 return 1
             return 0
@@ -4981,13 +5180,13 @@ def main(argv):
         unsynced = common.orca_row("unsynced")
         unsynced["routed"] = routes_for(reg, unsynced)   # no row names it, so no tenant either
         d = denied(unsynced, args.path)
-        if d:
-            print(off_line(unsynced, d) or f"{d} is off this Orca login, which no row names yet (ORCA_ROW's deny list; "
-                  f"`account orca-sync` records it)")
+        if d:   # named as the login no row names yet, never by its stand-in label
+            print((off_line(unsynced, d) or f"{d} is off unsynced: tenants").replace(
+                " is off unsynced:", " is off this Orca login, which no row names yet (`account orca-sync` records it):", 1))
             return 1
         h = holds_denied(unsynced, args.path)
         if h:   # its own line, with ' holds ', so a `cd` there is not refused (account_guard)
-            print(holds_line(unsynced, args.path, h, "ORCA_ROW's deny list"))
+            print(holds_line(unsynced, args.path, h, "tenants"))
             return 1
         return 0
     if args.cmd == "add":
@@ -5113,7 +5312,7 @@ def main(argv):
                                             room=args.room)
         else:
             a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo,
-                                   args.allow_overage, args.room)
+                                   args.allow_overage, args.room, overdraw=args.overdraw)
     except Short as s:
         if args.json:
             print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))
@@ -5122,16 +5321,39 @@ def main(argv):
             for label, w in s.args[0]:
                 print(f"  {label}: {w}", file=sys.stderr)
         return 3
+    # the pick only decides: the caller logs an overdraw once its job began (`account overdraw-log`), so a
+    # job refused after the pick, a dry run or a pick repeated for a room is never an incident
+    od = {**a["overdraw"], "repo": args.repo, "job": args.job} if a.get("overdraw") else None
     if args.json:
         out = {"account": a["label"], "primary": bool(a.get("primary")), "provider": a["provider"],
                "env": env_of(a), "reason": why, "skipped": skipped}
         if args.repo:
             out["owns"] = owns_repo(reg, a, args.repo)
+        if od:
+            out["overdraw"] = od
         print(json.dumps(out, ensure_ascii=False))
     else:
         print(f"{a['label']}: {why}")
         for label, w in skipped:
             print(f"  skipped {label}: {w}")
+        if od:
+            print(f"  overdraw: the caller logs it once the job starts (account overdraw-log)")
+    return 0
+
+
+def cmd_overdraw_log():
+    """`account overdraw-log`: the pick's `overdraw` object (or its whole --json answer) on stdin, logged
+    (header, "Overdraw"). Exit 0 whatever the logbook says, 1 on input that names no overdraw."""
+    try:
+        d = json.loads(sys.stdin.read())
+    except ValueError:
+        d = None
+    # the object, or a whole answer that carries one; a plain pick's answer (no overdraw) is no incident
+    info = (d.get("overdraw") if "overdraw" in d else (d if "bar" in d else None)) if isinstance(d, dict) else None
+    if not isinstance(info, dict) or not info.get("account"):
+        print("account overdraw-log: stdin holds no overdraw (the pick's `overdraw` object)", file=sys.stderr)
+        return 1
+    print(overdraw_record(info))
     return 0
 
 

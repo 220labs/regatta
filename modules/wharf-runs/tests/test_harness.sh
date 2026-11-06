@@ -165,7 +165,7 @@ if [ -n "${STUB_CODEX_RATE:-}" ]; then
   echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again in 3 hours."}}'; exit 1
 fi
 # a TERM waits for the sleep in hand before its trap runs: 0.2 s steps, not 1 s, as test_dispatch's stub
-if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; while :; do sleep 0.2; done; fi
+if [ -n "${STUB_CODEX_HOLD:-}" ]; then trap 'exit 143' TERM; i=0; while [ $i -lt 4500 ]; do sleep 0.2; i=$((i+1)); done; fi   # 4500 steps, about 15 min: a counter, as dash has no SECONDS
 [ -n "${STUB_CODEX_CMD:-}" ] && echo '{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","exit_code":0}}'
 echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"DONE"}}'
 echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
@@ -1000,7 +1000,7 @@ STUB_ACCOUNT_SHORT=1 H run --harness orca --repo "$T/scratch" --name acct5 --pro
 check "$?" 1 "no login may run it (the ship's waits): exit 1"
 has "$T/err" "ship s stays on acct-b and waits" "  saying why"
 check "$(grep -c 'worktree create' "$STUB_ORCA_CALLS")" 0 "  nothing made in Orca first"
-H run --harness orca --repo "$T/scratch" --name acct6 --prompt x --account acct-c > /dev/null 2>"$T/err"; check "$?" 2 "a login whose deny list names the repo: refused"
+H run --harness orca --repo "$T/scratch" --name acct6 --prompt x --account acct-c > /dev/null 2>"$T/err"; check "$?" 2 "a login the repo is routed off (tenancy): refused"
 H run --harness orca --repo "$T/scratch" --name acct7 --prompt x --account acct-gone > /dev/null 2>"$T/err"; check "$?" 2 "a login not on this Mac: refused"
 H run --harness orca --repo "$T/scratch" --name acct9 --prompt x --account codex-x > /dev/null 2>"$T/err"; check "$?" 2 "a Codex login named: refused (claude would run on the default login)"
 STUB_ACCOUNT_CODEX=1 H run --harness orca --repo "$T/scratch" --name acct10 --prompt x --account auto > /dev/null 2>"$T/err"; check "$?" 2 "a pick that answers a Codex login: refused"

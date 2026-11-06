@@ -2948,7 +2948,7 @@ S=$(status none)
 check "$(field "$S" verdict)" "stands-at" "before the deadline: stands-at"
 check "$(field "$S" deadline)" "2026-10-02T09:00:00+00:00" "…the deadline is the link commit + 24 h"
 check "$(python3 -c 'import json,sys; print(sorted(json.loads(sys.argv[1])))' "$S")" \
-      "['branch', 'deadline', 'doc', 'items', 'reason', 'repo', 'review', 'standable', 'unanswered', 'unstandable', 'verdict']" "--json carries the lander's contract, E14's review and S3's standable items beside it"
+      "['branch', 'deadline', 'doc', 'held', 'items', 'picks', 'reason', 'repo', 'review', 'standable', 'unanswered', 'unstandable', 'verdict']" "--json carries the lander's contract, E14's review, S3's standable items and rabbit-holes S3's picks and held items beside it"
 mrun stand --apply "$ST/none/docs/d.md" > "$T/sa0.out" 2>&1; rc=$?
 check "$rc" "1" "--apply refuses before the deadline"
 export MEMO_NOW=2026-10-02T09:00:01Z
@@ -4988,16 +4988,19 @@ D3 Taken in chat (Sam, 2026-10-16 07:57Z): Other — Actually, an iMessage from 
   "…the pick, another option and Other, each with its letter and the label as tapped"
 check "$(sed -n 6p "$LT/three.md")" "Gate: light — Sam in chat (terminal); asked 2026-10-16T07:52:58Z, answered 07:57:14Z (4 min 16 s); why: Sam: --light; review: light-ok" \
   "…one Gate line under the Written by paragraph: surface, asked, answered, how long, why, the review"
-check "$("$B/keel" parse "$LT/three.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["gate"]["mode"], [(i["answered"], i["settled"]) for i in d["items"]])')" \
-  "light [(True, True), (True, True), (True, True)]" "…parse reports the gate; every item answered and settled"
+# rabbit-holes S3 (D3-A): a tap typed in Other picks no listed option — written with intake's reopen, so D3 reads open
+check "$("$B/keel" parse "$LT/three.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["gate"]["mode"], [(i["answered"], i["settled"], i["pick"]) for i in d["items"]])')" \
+  "light [(True, True, 'letter'), (True, True, 'letter'), (False, False, 'none')]" "…parse reports the gate; D1 and D2 answered and settled, D3 a no-pick, reopened"
+has "$LT/three.md" "> **Reopened.** no listed option picked" "…the reopen under D3"
+has "$LT/w.out" "reopened: D3" "…and --write says so"
 lacks "$LT/three.md" "**Sam, 2026-10-16:**" "…Open feedback's \"No\" is never written as feedback"
 check "$("$B/keel" lint "$LT/three.md")" "$LT/three.md: no findings" "…and the doc lints clean"
 lwrite "$LT/three.md" --write --why x > "$LT/w2.out"; rc=$?
-check "$rc" "0" "a second --write: nothing open, exit 0"
-has "$LT/w2.out" "no open decision" "…and says so"
+check "$rc" "0" "a second --write: the reopened D3 taken again from the same taps, exit 0"
+check "$(grep -c 'no listed option picked —' "$LT/three.md")" "1" "…with no second reopen"
 "$B/keel" light "$LT/three.md" --check --record > "$LT/c.out"; rc=$?
-check "$rc $(sed -n 6p "$LT/three.md" | cut -c1-11)" "0 Gate: light" "--check --record on a doc answered in chat: nothing to ask, exit 0, its Gate: light line kept"
-has "$LT/c.out" "nothing open" "…and says so"
+check "$rc $(sed -n 6p "$LT/three.md" | cut -c1-11)" "1 Gate: light" "--check --record on a doc answered in chat with a no-pick: not light, its Gate: light line kept"
+has "$LT/c.out" "D3 picks no listed option — Sam answers it again on the page" "…naming who releases it"
 
 lmiss() {  # NAME SPEC EXPECT DESC — a result that is no answer: exit 3 and the doc as it was
   cp "$LT/three.orig" "$LT/$1.md"; lplan "$LT/$1.md"; ltrans "$LT/plan.json" "$LT/tr/proj/lsess.jsonl" "$2"

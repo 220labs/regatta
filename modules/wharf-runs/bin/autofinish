@@ -214,7 +214,7 @@ D3-C), checked in this order, first veto wins:
             Checked before B's and E's host and door. Gates are judged on the tip before the
             start; a run's own later edits are not re-judged (open: docs/autofinish-widen-2026-10-06.md).
   week      the week of the login the runner would start on — `bin/account pick --repo <repo>`:
-            the work login first in the walk unless the repo is on its deny list (work-account E5;
+            the work login first in the walk unless the repo is routed off it (work-account E5;
             joined early on the owner's word, 2026-10-08 — the sweep had paused all night on the primary login's
             80 % while the work login sat at 6 %). A secondary's week is its registry ceiling, which the
             pick applies; on the primary, that row's `limits --cached` and review-gate's threshold
@@ -1198,13 +1198,26 @@ def week(repo, fresh=False):
     (None, detail) — the row `account pick --repo` takes for this repo (header, week). `fresh`
     probes (the judging a start follows); every other judging reads the cached readings only,
     so a dry run, the Stop hook's check and a disarmed sweep spawn no probe."""
-    rc, d = account("pick", "--repo", str(repo), "--json", *([] if fresh else ["--cached"]))
+    # --overdraw judges only (lighthouse's account header, "Overdraw"): with no login under its week bar, one
+    # past it with credits left still runs, which reads as tight here (the owner, 2026-11-04: the job can still
+    # start), so rules C, D and L land and the rest wait, as on any tight week; never "none". Every landing may
+    # overdraw: a finish does from normal up, a build only from high (the owner, 2026-11-05; dispatch's pick_account)
+    rc, d = account("pick", "--repo", str(repo), "--json", *([] if fresh else ["--cached"]), "--overdraw")
     if rc == 3 and isinstance(d, dict):
         return "none", "; ".join(f"{l}: {w}" for l, w in d.get("skipped") or []) or "the registry has no row"
     if rc != 0 or not isinstance(d, dict) or not d.get("account"):  # exit 4 (no registry) included
         tight, detail = default_week()
         return ("tight" if tight else None), detail
     label = d["account"]
+    if isinstance(d.get("overdraw"), dict):
+        if not fresh and any(str(w).startswith("limits unknown") for _, w in d["overdraw"].get("skipped") or []):
+            # a cached read lifts the overdraw ahead of a login it has no reading for (the primary's or a
+            # tenant's), which a fresh probe may find with room: not tight yet, attempt()'s fresh pick decides
+            # (round 2 of overdraw's build review, 2026-11-05)
+            return None, f"{label}: an overdraw ahead of a login with no cached reading; the fresh pick decides"
+        # no _picked: a landing handed a login keeps it and picks nothing, so its overdraw would go unlogged;
+        # autofinish-run's own --overdraw pick hands the object to its dispatch --start (the re-review)
+        return "tight", f"{label}: {d.get('reason') or 'past its week bar'} (an overdraw)"
     if fresh:
         _picked[str(repo)] = (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", "")
     if not d.get("primary"):

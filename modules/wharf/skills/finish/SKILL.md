@@ -8,7 +8,7 @@ Finish the current `claude/*` branch — rule: git-workflow. $ARGUMENTS
 
 **Where the tools are.** A bare tool name in a command below (`pickup`, `keel`, `check`,
 `autofinish-run`, `rc-hosts`, `paste-paths`, `owed`, `knowledge-commit`, `pr`, `review-gate`,
-`build-review`, `carried.py`) is a path: the peer module's file in the regatta checkout, which `regatta which
+`build-review`, `carried.py`, `dispatch`) is a path: the peer module's file in the regatta checkout, which `regatta which
 <name>` prints (`regatta` is the core's `bin/regatta`: `<home>/modules/regatta/bin/regatta`,
 where `<home>` is the first line of the regatta config dir's `home` file; on PATH in a plugin
 install) — the paths the allow and deny rules name (an unattended launch's, autofinish-run's),
@@ -84,7 +84,9 @@ and step 4's asks come from it and the commit bodies. **First act, before step 0
 the text word for word — the sessions open on this branch learn it is taken and by which run
 (The owner, 2026-10-18). Nothing to send is fine; a send that fails is no stop. A live but idle session on this branch is
 expected: its commits are the work to finish, as in step 3 above, not another session's to pause
-on. Every ask is a stop — wherever this skill asks, warns or pauses (steps 0, 1, 4, 10, 11.4):
+on. Every ask is a stop — wherever this skill asks, warns or pauses (steps 0, 1, 4, 10, 11.4) —
+bar the review's real findings, which this run fixes itself, taking a reversible recommended pick
+where a fix needs a choice (step 1, "Unattended, the landing fixes what it can"):
 end with the ⚠ block, its first line naming the step (`⚠ step 4 — …`), never a DONE line; the
 launcher posts it on the PR, and nothing retries on this tip. The report is the PR body (step
 11.3). The owner may be watching from the phone or the window `finish · <topic>` and may type: answer
@@ -204,7 +206,8 @@ is not one of these, or when anything but links follows a closing line; the tabl
 
 **A ⚠ stop hands over its external finish** (the owner, 2026-10-11: "when blocking a finish, don't
 forget to give me a line to run in a fresh window to do external finish"). Every ⚠ stop that
-ends on the WAITING line opens with a **Do this now** block holding one line: the launcher on this
+ends on the WAITING line opens with a **Do this now** block holding one line (a review stop with
+real findings left puts its fix round's dispatch above it: step 1): the launcher on this
 worktree, for the owner to run in a fresh Terminal window once the WAITING item is settled —
 `<autofinish-run's absolute path> <this worktree's absolute path>`; on the other Mac
 `ssh <its alias, wharf-runs/ssh> <its autofinish-run> <the worktree's path there>`.
@@ -340,6 +343,71 @@ session's work sharing the branch — note them; they're reported separately.
      judge (D5). A `/code-review` finding carries no evidence line, and the skill raised about
      2.4 false findings a run on the bench. Fix every real S1, S2 and `WRONG` now; the rest go
      into the step 10 report, and anything left unresolved is an open item for step 4.
+   - **Unattended, the landing fixes what it can, and lands** (`--unattended`; landing-fixes-in-run,
+     the owner, 2026-11-03: "why isn't the fix round part of the build?"). Until then a stop here left
+     every finding for a fix round queued as a new `normal` build, hours behind the fleet, though one S1's
+     fix was a reversible pick the reviewer had recommended and five S2s were mechanical. Now, when the
+     merged list holds an S1, S2, S? or `WRONG` item, this run loops in itself — the build's loop
+     (dispatch's build prompt), its verifier and its cap, `build-review cap` — as round 1, then each
+     round again:
+     1. **Verify** before fixing anything: spawn one fresh `reviewer-high` with `model: "opus"` (neither of
+        this round's reviewers, never this session), briefed with the worktree, the base `origin/<main>`,
+        the branch's brief or the bundle's intent (what it asks for is intended) and those items alone,
+        verbatim (an S? goes as S2), asking for one block per item in its own format, a refuted item
+        included (never a cleared list), headed `file:line — [S1|S2|S3] <claim>`, the severity kept or
+        lowered: `verdict: WRONG` only for a defect this branch's diff brings in, shown on its `evidence:`
+        line by a concrete input or state traced through the code or reproduced by a scratch probe;
+        `OK-BUT` for intended behaviour, a hardening or style wish, or a defect main already has;
+        `UNVERIFIABLE` when no concrete failure can be shown. And for a `WRONG` whose fix needs a choice
+        (two or more fixes that behave differently), in this shape: the `fix:` line names the options as
+        `A) …; B) …`, then a line `➤ Recommended: <one of them>` and a line `Reversible: yes|no`, plain
+        text. Its report goes to a file in the scratchpad. Its `WRONG` blocks with evidence are the real
+        findings; an `UNVERIFIABLE` S1 is neither fixed nor landed past (no later review reads it): it holds
+        the loop, below; the rest (`OK-BUT`, an `UNVERIFIABLE` S2) go into the step 10 report as not real,
+        and nothing changes for them (an S3 may be fixed in passing, never counted).
+     2. **Fix** each real finding and commit (step 8 curates the commits), as `build-review picks <the
+        verifier's file> <this worktree>` reads them, one line each: `fix` — no choice, fix it; `take` — a
+        choice whose `➤ Recommended:` pick this run takes: marked `Reversible: yes`, no conditional pick,
+        none of keel's held classes in its fix (`DND_HOLDS`: money, a deletion, a public publish, a third
+        party's answer) and the contract's `physical:` is `none` (keel's `yolo --dnd` rule, `dnd_held`);
+        `stop` (exit 5) — `Reversible: no` or unmarked, no pick, a conditional pick, a held class, a
+        physical repo: the stop below, once the rest is fixed. Write each pick taken as `Taken unattended
+        (the landing by <the launch's by>, <date>): <pick> — <file:line>: <the claim>` (the `by` in
+        `autofinish.json`; e.g. `the landing by handed`) under a **Taken unattended** heading at the top of
+        the step 10 report, which step 11.3 makes the PR body, and fix by it.
+     3. **Check** again as step 1's check above (`--fresh` when the fix left the tree as it was), and fix
+        what fails.
+     4. **Record**: `build-review round <this worktree> --phase finish --verdicts <the verifier's file>
+        --fixed <n> --left <n> --check green|red --reviewers <both agents, comma-separated> --note '<S3s
+        and refuted, counted; each pick taken>'` — `--phase finish` right after the worktree, once (the
+        landing's allow rule names it so; the record is `build-review-finish.json`, never the build's,
+        which `covers` reads); `--found 0` in place of `--verdicts` when the list held no S1, S2, S? or
+        `WRONG` item.
+     5. **Again**, the review as above (plan, both agents, `merge --phase finish`) then 1–4, while
+        `build-review` grants a round: it refuses one (exit 4) once a round confirmed nothing with the check
+        green and its review read the tip, and one past the cap (exit 3). A fix committed after a round's
+        review is reviewed by one more round before a clean end, as in the build; at the cap only a tests-only move
+        (a check fix) still ends clean.
+     Clean — a round found nothing real, the check green — `build-review end <this worktree> --phase
+     finish --outcome clean`, and go on to step 2: this run lands, its picks named in the report. A choice it
+     may not take: finish the round (the rest fixed, the check, the round recorded with `--left` counting
+     it), then `build-review end <this worktree> --phase finish --outcome held --why '<the item>'` (an
+     `UNVERIFIABLE` S1 left in the last round holds it the same way: `build-review` refuses that clean end); the cap
+     with real findings left: `… --outcome cap`; either way, the stop below. Attended, nothing here changes:
+     the owner is there to answer a choice.
+   - **A review stop hands on its fix round, never a plain build** (unattended, the same step): before
+     the ⚠ block, commit the fix round's brief on the branch — `docs/handoff/<today>-<topic>.md`, the
+     topic the branch's own (dispatch finds the brief by it), a `## Fix round <date>` section appended
+     when that file is the seed brief itself — holding each real finding left, verbatim from the
+     verifier's report, each choice left as a D-item (`Reversible:`, `➤ Recommended:`, an empty
+     `➤ Answer:`) and the picks this run took. Then the first **Do this now** block holds one line, that round's
+     dispatch, at the landing's own priority (`priority` in `autofinish.json`), else `high`:
+     `<dispatch's path> <branch> --repo <the primary checkout> --priority <it>` — a finish ranks ahead of
+     a build of the same priority, and its fix round is the finish's tail, so never a plain `normal`
+     dispatch that waits behind the fleet's builds. The launcher's line, for a fix made by hand instead, goes
+     in a second **Do this now** block of its own, headed as the alternative: a block is pasted whole, so never
+     both lines in one (the landing review: pasting one block ran the fix round and a second landing at once). `autofinish-run` puts the same dispatch line on the PR (`fix_round_line`),
+     and helm's G1r card names it.
 
    Skip the review only when the diff changes no code or config (prose only), and say so —
    never in a repo whose `.claude/workflow.json` has `in_place` (the vault): every gated

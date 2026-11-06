@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The Engine room's S4 (docs/engine-room-2026-11-02.md): `hosts sample`'s row carries `checks` (this login's wharf-runs
+  check slots: busy, cap, waiting) and `features` (`dispatch-queue features`), and its `records.stale` counts what
+  `dispatch-rc settle --stale` would end, so one Settle clears it. `hosts --json`'s queue entries, finish entries
+  among them, carry `pin_kind`
+  (`typed`, `login`, empty for none or held; an unknown kind null), `pinned_why` in fixed words (never the reason's
+  text: no commit, path or branch) `by`, the waiting session's first 8, and `pin_login` (its run names a login, so repin never moves it; never the
+  label). `ops`' check count skips a pid of 0 and check's ticket being written, as `hosts` does. Cases in `tests/hosts.sh`.
+
+- reef grows a host back once its median and newest load are under 0.6× load-max, with at most one sample at or over
+  that and none over load-max (2026-11-04; it was every sample under half). A hold now names what kept it from cold:
+  the laptop, at its floor all day, is held by memory (free never over 2× headroom's avail), not by load.
+- overdraw (2026-11-04): `account pick --overdraw [--job TEXT]` — with no login under its week bar, the first in
+  the walk refused by that bar alone runs the job while its week is under 100% (its callers ask for a build of priority
+  high or force and for every finish); every earlier refusal and the
+  5-hour rules still judge, a row with `rules.overdraw: false` is never lifted, a primary only with
+  `rules.overdraw: true`, a login's own live week-max line holds, and a primary of unknown limits waits for the
+  pass. The pick only decides; `account overdraw-log` logs it once the job started: a line in the log dir's
+  overdraw.jsonl and a note in the logbook (helm's `issue_note`: one issue per login and week, then comments).
+  The core's Orca row loses its 100% last-day reserve.
 - tenant-unknown-last (2026-11-04): `pick --repo` of a tenant's repo runs an unreadable own login (one not
   signed in yet) only once every row was tried, so it no longer shadows a later login of the tenant that is
   eligible; `pick --ship` moves a ship pinned to such a login there too.
@@ -31,12 +50,26 @@
   names the registry's rule where the reserve judges; the core's G4 fixture names a label no row has. From the
   `/finish` review: a link whose file is gone while a budgets.json reads beside the tenants link's target (the vault
   moved) keeps its copy, so a tightening cap holds until a person relinks; refresh's line says so.
+- `reef seed` (2026-11-04): a host with no `lighthouse/reef` line (nor `*:`) gets
+  `mode=on,run=1-<cap>,check=1-<slots>` from its own limits; a new node's clone unit asks for it once as it joins the
+  fleet, and its first sweep seeds (`reef apply --seed`). A hand set outside the bounds holds while its range stands.
 - reef (2026-11-04): each host tunes its own check slots and run cap from its measured load, within the owner's
   `lighthouse/reef` bounds (a live limit); the sweep's `hosts sample --put --refresh` starts `reef apply` on a host
   with a line. Hosts at 2-6× their load limit while a new node idled was the cause (the owner, 2026-11-04).
 
 - finish-as-task (2026-11-02): `hosts` keeps the fleet store alone, a finish being a fleet entry now; `local=_land`
   is gone with the Mac-local landing queue, and a run claimed from any `local=` store counts as confined.
+
+- deny-drift (2026-11-03; the owner, 2026-11-02: "remove this denylist cruft and rely on confidential scopes only"):
+  `account` reads no row's `"repos": {"deny": […]}` any more, in `pick`, `limits --repo`, `allowed`, `run` or
+  `holds_denied`; tenancy (the vault's tenant included) and a scope's `login` route, and the walk's order says which
+  login goes first. `doctor` names a row still carrying the key, and a `regatta/orca-deny` that names a repo, as a fix
+  (`ignored since 2026-11-03`); the deny-list workspace roster (`denied_workspaces`) and the G3 line about deny entries
+  tenancy derives are gone, `tenant_ties` covering a workspace that opens a git repo. `denied(…, routes=False)` and
+  `holds_denied(…, deny_list=…)` keep their signatures for any caller. An Orca dir no row names is named so in a tenancy
+  refusal; one signed in as a row's login keeps that row's label (the contact-book hook reads it). One wall a list
+  may have been fails closed: a row whose ignored list names the vault, on a host where no tenant holds the vault,
+  stays off it until one does, a shell moved into it included, and `doctor` (with or without a logins file) says to write the tenant first. account_guard's header says the same. A `regatta/orca-deny` naming the vault does not hold it: where no tenant does, doctor says so.
 
 - An account's cooldown and margin count only its own exhaustion records (cooldown-account, 2026-11-02): the primary's
   week lock, in an Orca login's profile log, held that login a day past its own reset. A record whose `account` (or,

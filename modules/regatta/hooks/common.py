@@ -215,12 +215,13 @@ def launchd_domain(uid=None):
 # Each is one file under <config>/regatta/, which the overlay writes; the core carries only a
 # neutral default. Where the overlay is installed (the `regatta/overlay` marker), a key it
 # must write and did not — or one that cannot be read — is an ImportError naming the keys: a
-# guarded source sent unrefused, an Orca login let into a denied repo, every closing line and relay
-# missed would each be silent. Hooks already fail closed (the deny hooks) or quiet (the rest) on an
+# guarded source sent unrefused, every closing line and relay missed would each be silent.
+# `regatta/orca-deny` left the list with deny-drift (2026-11-03): read by nothing, as ORCA_ROW has no deny
+# list; an overlay that still writes it is harmless, and `regatta check` notes it. Hooks already fail closed (the deny hooks) or quiet (the rest) on an
 # import error of the core, the no-core path. Without the overlay (a stranger's install) an absent
 # key is its default. A path key must be absolute after `~`: relative, it would resolve against
 # whatever the cwd happens to be.
-OVERLAY_KEYS = ("owner", "guarded", "orca-deny", "log-dir", "projects")
+OVERLAY_KEYS = ("owner", "guarded", "log-dir", "projects")
 PATH_KEYS = ("log-dir", "projects")
 
 
@@ -1480,6 +1481,49 @@ def scope_of_repo(repo, path=None, reg=None):
     return None, {}
 
 
+def rotation_problem(name, sc):
+    """What is wrong with scope NAME's `rotation` key, or None: absent, true and false read; anything else is a
+    narrowing key that does not read, which fences (scope_rotates) and `regatta check` names (AGENTS.md's Traps)."""
+    if not isinstance(sc, dict) or "rotation" not in sc or isinstance(sc["rotation"], bool):
+        return None
+    return "scope %s's rotation is %r, not true or false" % (name, sc["rotation"])
+
+
+def scope_rotates(primary, reg):
+    """(rotates, why, fields) for a build or a landing of PRIMARY on the coins (the builder rotation, the finisher's):
+    one rule, which buildercoin.py's and autofinish-run's rotation_fence both ask. REG is read_registry()'s dict,
+    the caller having judged the tear on the same parse (None: no registry, which fences). A repo rotates when
+    some scope lists it and every scope that lists it — each walked and judged alone, by scope_of_repo with that
+    scope only, so neither the first-listed nor an umbrella hides one — has no `rotation` key or `rotation: true`.
+    `rotation: false` fences, and so does a key that is not a bool (rotation_problem). `confidential` alone no
+    longer fences (the owner, 2026-11-04: one confidential scope opts out, the others draw). A scope whose
+    `repos` is there but no list is a registry this cannot walk: fenced. FIELDS, when it rotates: {"scope": the first confidential scope that lists it, else the first scope, "confidential": bool},
+    which each row carries so a reader can tell. Never raises."""
+    if not isinstance(reg, dict):
+        return False, "no scope registry", {}
+    try:
+        scopes = reg.get("scopes") or {}
+        if not isinstance(scopes, dict):
+            raise TypeError("`scopes` is no object")
+        for n, sc in scopes.items():
+            if isinstance(sc, dict) and sc.get("repos") is not None and not isinstance(sc.get("repos"), list):
+                raise TypeError("scope %r: `repos` is no list" % n)
+        mine = [(n, sc) for n, sc in scopes.items()
+                if isinstance(sc, dict) and scope_of_repo(primary, reg={"scopes": {n: sc}})[0]]
+    except Exception as e:  # noqa: BLE001 — a registry it cannot walk is never known open
+        return False, "the scope registry does not walk (%s)" % type(e).__name__, {}
+    if not mine:
+        return False, "%s is in no scope" % os.path.basename(str(primary).rstrip("/")), {}
+    for n, sc in mine:
+        bad = rotation_problem(n, sc)
+        if bad:
+            return False, bad, {}
+        if sc.get("rotation") is False:
+            return False, "scope %s does not rotate (rotation: false)" % n, {}
+    conf = [n for n, sc in mine if sc.get("confidential") is True]
+    return True, "rotates", {"scope": (conf or [mine[0][0]])[0], "confidential": bool(conf)}
+
+
 # ---- the unattended marker and the vendor fence (vendor-fence, docs/codex-agy-gaps-2026-10-29.md) ----
 # One marker for every CLI's unattended run (the owner on that doc: "let's rename this to vendor-neutral"),
 # staged: every launcher sets both names (unattended_env), every reader asks unattended(), which takes
@@ -1626,11 +1670,16 @@ def account_home(a, home=None):
 
 # A secondary seat's rules, as the registry's secondary rows carry them (free_below: the owner,
 # 2026-10-30, "Under 70% we can run anything", set on every row; week_max 90: the owner,
-# 2026-10-31, "bump the ceiling for not taking work to 90% for all accounts"). The repos it may
-# never open are the overlay's (`regatta/orca-deny`, one per line); none without the key.
-ORCA_ROW = {"rules": {"week_max": 90, "window_max": 50, "free_below": 70,
-                      "reserve": {"last_hours": 24, "week_max": 100}},
-            "repos": {"deny": config_lines("regatta/orca-deny") or []}}
+# 2026-10-31, "bump the ceiling for not taking work to 90% for all accounts"), with no reserve that
+# lifts it to 100 (the owner, 2026-11-04: every login's bar at 90% or lower; past it a job starts only
+# by lighthouse's `account pick --overdraw`). No deny list since deny-drift (2026-11-03; the owner: "rely
+# on confidential scopes only"): such a login is no tenant's, so lighthouse's tenancy keeps every tenant's
+# repos off it, the vault's tenant's included, and a scope's `login` routes a confidential repo's runs to
+# their own seat. `regatta/orca-deny` is read by nothing. `repos.deny` stays, always empty and read by
+# nothing, while the overlay's suite still prints it from this checkout (AGENTS.md, the alias trap): drop
+# it once that read is gone.
+ORCA_ROW = {"rules": {"week_max": 90, "window_max": 50, "free_below": 70},
+            "repos": {"deny": []}}
 
 
 def orca_file(home=None):
@@ -1648,7 +1697,7 @@ def account_rows(accounts, home=None):
     """The registry's rows, plus one row per Orca login orca-sync read back that no row names
     (the owner, 2026-10-16: "auto-picker gets all Orca accounts enabled by default, but there's a way to
     override during set up, or change it later at any point"). Such a row is `via: orca`, a
-    secondary (ORCA_ROW's rules and deny list), placed just before the primary, and in the walk
+    secondary (ORCA_ROW's rules), placed just before the primary, and in the walk
     unless its entry in orca_file() says `"enabled": false` (`account orca off LABEL`; orca-sync
     writes it for a login it finds while `_default` is off, or with --off). `_default` is orca-sync's
     input only, so turning it off never moves a login already synced. An entry's `false` also turns
@@ -1974,6 +2023,9 @@ def landed_pr(slug, branch, tok=None, base=None, timeout=5):
 HOLD_NOTE = ("GitHub refused this pull request as a draft (HTTP 422), so it was opened ready and "
              "labelled `hold` instead: automerge must not land a branch nobody curated. "
              "`bin/pr ready` takes the label off.")
+CI_HOLD_NOTE = ("Build CI labelled this pull request `hold` to keep automerge off. "
+                "`bin/pr ready` takes this label off after curation.")
+HOLD_NOTES = (HOLD_NOTE, CI_HOLD_NOTE)
 
 
 def open_pr(slug, branch, base, title, body, tok=None):
@@ -2009,17 +2061,20 @@ def open_pr(slug, branch, base, title, body, tok=None):
 
 def ready_pr(pr, tok=None):
     """Take a draft PR out of draft. REST has no field for it; this is the one GraphQL call.
-    Returns True when the PR is no longer a draft. A PR open_pr had to open ready and hold (its
-    `_held` mark, or HOLD_NOTE in its body) loses that `hold` here, best effort: ready is the
+    Returns True when the PR is no longer a draft. A PR held by open_pr or build CI (its
+    `_held` mark, or a HOLD_NOTES entry in its body) loses that `hold` here, best effort: ready is the
     curated signal the draft would have given, and automerge arms on `unlabeled`. The mark is
-    one-shot: HOLD_NOTE leaves the body with the label, so a later ready — after the owner labelled
+    one-shot: the note leaves the body with the label, so a later ready — after the owner labelled
     the PR `hold` themselves — finds no mark and leaves their brake on."""
     slug = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
     body = pr.get("body") or ""
-    if slug and (pr.get("_held") or HOLD_NOTE in body):
+    notes = [note for note in HOLD_NOTES if note in body]
+    if slug and (pr.get("_held") or notes):
         st, _ = api("DELETE", f"/repos/{slug}/issues/{pr['number']}/labels/{HOLD['name']}", tok=tok)
-        if st in (200, 404) and HOLD_NOTE in body:  # 404: the label never stuck; the mark is spent
-            edited = edit_pr(slug, pr["number"], tok, body=body.replace(f"\n\n{HOLD_NOTE}", "").replace(HOLD_NOTE, ""))
+        if st in (200, 404) and notes:  # 404: the label never stuck; the mark is spent
+            for note in notes:
+                body = body.replace(f"\n\n{note}", "").replace(note, "")
+            edited = edit_pr(slug, pr["number"], tok, body=body)
             if edited:
                 pr["body"] = edited.get("body")
         if st in (200, 404):  # a failed DELETE keeps the mark: the PR stays held, which is safe

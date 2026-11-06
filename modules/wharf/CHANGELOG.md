@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- A Linux runner's berth parts (free CI S6, docs/free-ci-2026-11-03.md, 2026-11-04): the image is ubuntu:26.04, hosted
+  ubuntu-latest's release, by its index digest, its packages upgraded at each build, procps added and the base's own login
+  gone (the runner keeps uid 1001); the container is capped by the new live limit `wharf/ci-runner-limits` (modules/wharf/limits,
+  `cpus=3,memory=12g` unless set; `--runner limits` is its trial reader), fitted to the host's cores; a user timer rebuilds
+  the image weekly with no cache, its kept tarball checked against the pin first, and remove takes it away;
+  `--runner check` runs the isolation cases in a container of the image with the unit's options: no /home, no mount but the
+  state volume, no socket, no gh or claude config, no capability, cpu.max and memory.max at the cap, none of the host's TCP
+  listeners on any of its addresses and not 169.254.169.254:80 reached, github.com:443 reached.
+- A dedicated Linux runner host may hold more than one runner (2026-11-05): `<ssh alias>:<N>` in
+  `wharf/linux-runner-slots` lets `ci-provider --runner install --instance 2..N` add one beside the first, each its own
+  name (`<name>-<instance>`), unit, image and state volume; the host's script counts the other runner names (units,
+  registrations and reservations as one set) against N. One stays the rule wherever no line names the host, as beside a
+  node's sessions. Install and remove refuse a name another registration holds (a unit or volume alone included), and
+  install refuses a second name from a repo whose directory registered one, each before minting a token and again on
+  the host; a first install reserves the repo and name before registering, so its owner can retry or remove a failed one.
+- `pr ready` carries build CI's hold ownership through curation and releases the label, while
+  an explicit `--hold` replaces it with a hold the landing keeps.
+
 - Every scope has its VS Code workspace with nobody running `scopes write` (2026-11-03): `sync.py` runs
   `scopes write --from <the session's primary>` detached at each session start, so a scope added to repos.json gets its
   file at the next start on each Mac and a scope's file follows its repos (one had missed three).
@@ -49,7 +67,7 @@
 - `ci-provider` on a Linux host (linux-runner, 2026-11-04; the owner: "can the node help with linux checks as
   well?"): `--runner install|status|remove --host H --name N --labels self-hosted,Linux` installs actions/runner's
   linux-x64 or linux-arm64 build (v2.338.0, size and SHA-256 pinned as the osx ones are) in a rootless Podman
-  container (D1-C, the owner: "container"): an image built on the host over a digest-pinned `ubuntu:24.04` with
+  container (D1-C, the owner: "container"): an image built on the host over a digest-pinned Ubuntu (`ubuntu:26.04` since free CI S6) with
   the suites' packages and no sudo, a quadlet user unit that runs one job a container (the listener's `--once`) and a fresh
   container for the next, no host mount, socket, credential or capability, the registration alone in a named
   volume mounted read-only (and judged there, so a lost volume registers again), at `CPUWeight=20` beside the
@@ -74,6 +92,16 @@
   goes off. A move back waits an hour, as between CircleCI orgs. A public repo, or one running fork PRs' workflows,
   is never given the lane, nor a check-linux.yml that reads no `CI_LINUX_RUNS_ON`; a value no `suite` job can read
   (a bare word) stands on no lane, so the pick rewrites it. The lane is never check.yml's: the runs-on pick skips it.
+- The finish skill's unattended loop (landing-fixes-in-run, the owner, 2026-11-03: "why isn't the fix round part of
+  the build?"): when step 1's review finds S1, S2, S? or WRONG items, an unattended `/finish` has them verified by a
+  fresh `reviewer-high`, fixes the real ones in the run — a choice by the verifier's `➤ Recommended:` pick when
+  `build-review picks` says `take` (Reversible: yes, no conditional pick, none of keel's held classes, a
+  `physical: none` repo), written `Taken unattended (the landing by <by>, <date>): <pick>` in the report and the PR
+  body — checks, records each round with `build-review round --phase finish` (the build's verifier and cap) and
+  lands. It stops only on a `Reversible: no`, unmarked or held choice, or the cap; then it commits the fix round's
+  brief and its Do this now dispatches that round at the landing's own priority or `high`, never a plain `normal`
+  build. test_review_gate.sh checks that every `build-review` command the skill names is one the landing's allow
+  rules let it run.
 - `council fences` (the isolation design's S5): the monthly re-probe. One research turn per arm runs the H probes'
   nine commands and one request for a tool its start took away, each judged from the CLI's own log and printed as a
   table, a column per arm; `codex features list` diffed against the pinned list; each stream's step names judged

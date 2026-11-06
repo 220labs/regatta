@@ -597,11 +597,15 @@ def read_check():
 
     def alive(pid):
         try:
+            if int(pid) <= 0:   # kill(0) is the process group, never a holder (hosts' checks(), the same rule)
+                return False
             os.kill(int(pid), 0)
-        except (ValueError, ProcessLookupError):
+        except (ValueError, ProcessLookupError, OverflowError):
             return False
         except PermissionError:
             return True
+        except OSError:
+            return False
         return True
     try:
         if not d.is_dir():
@@ -613,7 +617,8 @@ def read_check():
             except OSError:
                 pass
         q = d / "queue"
-        waiting = sum(1 for t in (q.iterdir() if q.is_dir() else []) if alive(t.name.rsplit(".", 1)[-1]))
+        # `.t.<pid>` is check's ticket being written, a moment before its rename
+        waiting = sum(1 for t in (q.iterdir() if q.is_dir() else []) if not t.name.startswith(".") and alive(t.name.rsplit(".", 1)[-1]))
     except OSError as e:
         return None, "the check slots at %s are unreadable (%s)" % (d, e.strerror or type(e).__name__)
     return {"slots_busy": busy, "waiting": waiting}, None

@@ -17,6 +17,7 @@ M="$(cd "$(dirname "$0")/.." && pwd)"
 H="$M/hooks"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
+. "$M/tests/config_fixture.sh"; fixture_gitconfig "$T/gitconfig"
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 has()   { case "$1" in *"$2"*) echo "  ok   $3";; *) echo "  FAIL $3: [$2] not in [${1:0:400}]"; fails=$((fails+1));; esac; }
 

@@ -15,8 +15,8 @@ from the secrets folders, the live settings file and the repos a login may not o
 | `bin/trust-projects` | accept Claude Code's folder-trust dialog for every repo under the projects folder |
 | `bin/tiling` | yabai's window layout, applied at every yabai start |
 | `bin/ops` | the operations desk's own verbs: `usage` reads CI minutes and credits per budgeted account with the owner's token, in the desk's job only; `pick` runs wharf's `ci-provider --pick` over the repos (lighthouse-ops S1); `sample` appends the desk's metrics row to the log dir's `ops.jsonl` — queue, run and check slots, load, memory, budgets, the token's standing (`token.plan`, `token.project`), token weeks (each reading's age, Orca's agents as report rows; a login here read over 30 minutes before is read again after the row by `account`'s probe, at most once a half hour, no tokens), cost — every 15 minutes on the ops host (`install.sh --schedule`), and `status` prints the last row, which helm's board shows as its ops row (S2); `ingest` appends every fleet repo's new issues and comments, and the configured Projects' items, to the log dir's `intake.jsonl` — a row an event, metadata and the body's hash, never a body — every 10 minutes on the ops host, a confidential scope's repos only on its own yard and nothing on a torn registry, and `intake` lists the open issues, a card each on helm's board (S4); `classify`, in the same job, takes each new open issue through four gate rows (`lighthouse.*`), the ladder and every cap of `lighthouse/ops.json` into the log dir's `ops-verdicts.jsonl`, laying nothing (S5: log-only), and `digest` counts the logged week (S5); after each sample the job files one logbook issue (label `budget`, through helm's `ask`, led by `helm/mention`) per account each time it crosses its week share or into its month reserve, closing it when the account is back under (the log dir's `ci-budget-alarms.json`), and picks `ops.json`'s `pick_repos` (ci-budgets, 2026-10-31) |
-| `bin/hosts` | the fleet's hosts for the Engine room page (docs/fleet-page-2026-11-01.md, S2): `sample` builds this host's row — load, memory and headroom's verdict, its limits and slots, its live runs with their login, its stale peer records — fenced (a torn registry drops every run; a run in a confidential scope is a count), and `--put` hands it to wharf-runs' `dispatch-queue hosts put` for `refs/regatta/hosts`, only when it changed; every claim starts it, and the queue's sweep after its claims with `--refresh`, which puts the row whatever it says. `hosts --json` merges every host's row with the fleet queue (the fleet store, no `confined` entry) and the logins: the page's state |
-| `bin/reef` | each host reefs its own sails: the queue's sweep hands `hosts`' row to `reef apply`, which moves this host's `wharf-runs/check-slots`, then its `wharf-runs/run-cap`, one step a turn and at most one change per host every 19 min, judged on at least 3 samples taken since the last change, through `regatta limit set`: down while their median load per core is above `wharf-runs/load-max` (or free memory or swapping crosses headroom's line), up while every sample is under half of it — check slots while checks fill them, the run cap while every run slot is busy. A limit set by hand is the owner's word: reef records it and holds a cooldown. Within the owner's bounds, `lighthouse/reef` (`regatta limit set reef <host>:mode=on,run=1-3,check=1-3`; no line is advise, never a write); `reef plan` says what it would do, `reef log` what it did. CI runners on a host count in its load, so a host gives its room to CI before its runs |
+| `bin/hosts` | the fleet's hosts for the Engine room page (docs/fleet-page-2026-11-01.md, S2): `sample` builds this host's row — load, memory and headroom's verdict, its limits and slots, its live runs with their login, its stale peer records (what `dispatch-rc settle --stale` ends), its check slots and feature names (S4 of docs/engine-room-2026-11-02.md) — fenced (a torn registry drops every run; a run in a confidential scope is a count), and `--put` hands it to wharf-runs' `dispatch-queue hosts put` for `refs/regatta/hosts`, only when it changed; every claim starts it, and the queue's sweep after its claims with `--refresh`, which puts the row whatever it says. `hosts --json` merges every host's row with the fleet queue (the fleet store, a finish among it, no `confined` entry; a pin's kind, a held pin's why in fixed words and the waiting session's first 8 since S4) and the logins: the page's state |
+| `bin/reef` | each host reefs its own sails: the queue's sweep hands `hosts`' row to `reef apply`, which moves this host's `wharf-runs/check-slots`, then its `wharf-runs/run-cap`, one step a turn and at most one change per host every 19 min, judged on at least 3 samples taken since the last change, through `regatta limit set`: down while their median load per core is above `wharf-runs/load-max` (or free memory or swapping crosses headroom's line), up while their median and newest are under 0.6× of it, at most one sample over that and none over it, with free memory over twice headroom's line — check slots while checks fill them, the run cap while every run slot is busy. A limit set by hand is the owner's word: reef records it and holds a cooldown. Within the owner's bounds, `lighthouse/reef` (`regatta limit set reef <host>:mode=on,run=1-3,check=1-3`; no line is advise, never a write); `reef plan` says what it would do, `reef log` what it did, and `reef seed` writes a host's first line from its own cap and slots (a new node's clone unit asks once; its first sweep seeds through `reef apply --seed`). CI runners on a host count in its load, so a host gives its room to CI before its runs |
 | `hooks/account_guard.py` | refuses a prompt in a repo the session's login may not open |
 | `hooks/secrets_guard.py` | closes the secrets folders, the coding CLIs' own logins and the live settings file to agents, and a confidential scope's paths to a session outside it (the fence) |
 | `hooks/vendor_hook.py` | runs the Claude PreToolUse guards unchanged, at once, inside Codex's or Antigravity's own hooks (`<cli> guards`): their payload in, one answer out; and adds the CLI's `Co-Authored-By` to its commits |
@@ -32,9 +32,9 @@ Work for several organisations from one Mac without mixing their seats. Name eac
 repos as a tenant in the registry and mark its login's row:
 
 ```json
-{"accounts": [{"label": "acme", "home": "<its config dir>", "tenant": "acme",
-               "repos": {"deny": ["<your private vault>"]}}, …],
- "tenants": {"acme": {"repos": ["acme-*"]}}}
+{"accounts": [{"label": "acme", "home": "<its config dir>", "tenant": "acme"},
+              {"label": "me", "home": "<your config dir>", "tenant": "me"}, …],
+ "tenants": {"acme": {"repos": ["acme-*"]}, "me": {"repos": ["<your private vault>"]}}}
 ```
 
 A tenant's repos then run on its own login, and only there. `account pick --repo` takes every
@@ -43,8 +43,11 @@ borrowing another seat. A session started by hand on any other login, the defaul
 stopped at its first prompt by `account_guard`, which names the way in: that login's VS Code
 profile (`account vscode acme`) or `cc <letter>`. `account doctor` checks that VS Code opens each
 tenant folder, and each workspace holding one, in that profile. A tenant's login may still open
-other repos unless its own deny list says otherwise — so give an organisation's seat the deny list
-that keeps your private repos off it, as above. An entry is a repo key or a glob (`*` spans `/`).
+any repo no other tenant holds — so make your private repos a tenant of your own logins, as above,
+and they are off an organisation's seat. Nothing bans a repo from a login: there is no deny list
+(a row's old `"repos": {"deny": …}` is read by nothing since 2026-11-03, bar an entry naming a vault no tenant holds, which keeps
+the vault off that row until one does, and `account doctor` names it), and which login takes free work first is the registry's order. An entry is a repo key or a
+glob (`*` spans `/`).
 
 To keep the list apart from the registry (in a private drive, say), write the tenants file
 instead, naming each tenant's logins there; once written it is the whole of tenancy, and the
@@ -82,13 +85,11 @@ there and is refused the tenant's repos. It only narrows; a malformed value conf
 Claude row is never confined. A bare `--confine` drops every confine.
 
 Your own private repos can be a tenant too: name your vault and its siblings, on your own logins, and
-every other seat — an organisation's, one Orca holds that no row names — is refused them without a deny
-list. The vault's tenant is the one tenancy also binds where a session starts *above* a repo: your
+every other seat — an organisation's, one Orca holds that no row names — is refused them. The vault's tenant is the one tenancy also binds where a session starts *above* a repo: your
 default config dir's `CLAUDE.md` imports from the vault, so a folder holding the vault's tenant's repos
-(the projects folder, the home folder) is off every login but the tenant's, as a deny list's repo makes it,
-and a row refused the vault links the work memory. `account doctor` lists each tenant, flags a deny-list
-entry a tenant already refuses (kept by hand, derived by tenancy), and flags a vault no tenant and no deny
-list holds. Write the tenant before taking the deny lists off.
+(the projects folder, the home folder) is off every login but the tenant's, and a row refused the vault
+links the work memory. `account doctor` lists each tenant, flags a row still carrying a deny list and a
+`regatta/orca-deny` that names a repo (neither widens anything), and flags a vault no tenant holds.
 
 Each good read is copied beside the key (`.tenants.json.last`), and while the link reads nothing or
 is gone (the drive behind it away) that copy holds: tenancy never fails open onto another seat. A Mac
@@ -128,7 +129,7 @@ an override is never exported.
 
 | Key | What | Read by | Override | Absent |
 | --- | --- | --- | --- | --- |
-| `lighthouse/accounts.json` | the login registry: labels, config dirs, rules (a link): per row `week_max` (a live `lighthouse/week-max`, `<login>:<pct>` or `*:<pct>`, stands over it, a `*:` line only over a row that sets none: `regatta limit set week-max <login>:<pct> --all --why '…'`; a reserve still judges first, except on a row budgets.json tightens, where a tighter own line caps it), `window_max` (the flat 5-hour limit, less 10 points per exhaustion in 7 days), `pace_headroom` (default 10: a row over that limit still runs while its 5-hour spend is under the window's elapsed share and this many points are left), `free_below` (default 0, off: a 5-hour spend under it runs whatever the limit, margin or pace; the owner's rows are to set 70); either, not a number, reads as its default, `reserve` | `account`, `account_guard`, `design_route` | `ACCOUNTS_FILE` | one login, the default config dir; where the overlay is installed, an error: `account` stops, the two guards block |
+| `lighthouse/accounts.json` | the login registry: labels, config dirs, rules (a link): per row `week_max` (a live `lighthouse/week-max`, `<login>:<pct>` or `*:<pct>`, stands over it, a `*:` line only over a row that sets none: `regatta limit set week-max <login>:<pct> --all --why '…'`; a reserve still judges first, except on a row budgets.json tightens, where a tighter own line caps it), `window_max` (the flat 5-hour limit, less 10 points per exhaustion in 7 days), `pace_headroom` (default 10: a row over that limit still runs while its 5-hour spend is under the window's elapsed share and this many points are left), `free_below` (default 0, off: a 5-hour spend under it runs whatever the limit, margin or pace; the owner's rows are to set 70); either, not a number, reads as its default, `reserve`, `overdraw` (true or false: whether `pick --overdraw` may lift the row past its week ceiling when no row is under its own; absent, every row but the primary; any other value, never) | `account`, `account_guard`, `design_route` | `ACCOUNTS_FILE` | one login, the default config dir; where the overlay is installed, an error: `account` stops, the two guards block |
 | `lighthouse/tenants.json` | the tenants: `{name: {repos, logins}}` (a link, kept off git) | `account`, `account_guard` | `TENANTS_FILE`; an `ACCOUNTS_FILE` other than the live key reads `<it>.tenants` | its last good copy, else the registry's own `tenants`, else none |
 | `lighthouse/budgets.json` | the owner's per-login ceilings, over the registry row's rules: `{label: {week_max, window_max, free_below}}`, each a number from 0 to 100; a key starting `_` is a comment (a link `account refresh` makes beside the tenants link's target, where one sits there; a plain `{}` keeps a host on the registry's rules, as refresh never replaces a file); a `week_max` that tightens the row also caps its `reserve` window where it is lower (the login's own live line, where one stands, in the budget's place), and a label no row has is named by doctor | `account`, `account_guard` | `ACCOUNT_BUDGETS`; an `ACCOUNTS_FILE` other than the live key reads `<it>.budgets` | the registry's own rules; torn, its last good copy, else those; a bad value is skipped, said on stderr |
 | `lighthouse/logins.json` | the logins file: per label the e-mail, plan, payer, Macs; `share.design` (a link, kept off git) | `account setup`/`doctor`/`allowed`/`refresh`, `design_route` | `ACCOUNT_LOGINS` | setup and doctor refuse; no share line |
@@ -157,7 +158,7 @@ an override is never exported.
 | `wharf-runs/serve-label` | the Orca serve agent's launchd label (wharf-runs' key, read here) | `health` | — | `org.regatta.orca-serve`; no such LaunchAgent on the Mac: the line is skipped |
 
 The core's own keys are read as the core reads them: `regatta/owner` (the name in a refusal),
-`regatta/projects`, `regatta/orca-deny` (ORCA_ROW's list), `regatta/log-dir` (where the fence
+`regatta/projects`, `regatta/log-dir` (where the fence
 writes `fence.log`); and wharf's `wharf/repos.json` (`CLAUDE_REPOS_JSON`), whose scopes' `confidential`
 flag the fence reads. `install.sh --check` lists each key
 found or not.

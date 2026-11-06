@@ -1757,6 +1757,27 @@ def issue_open(title, body, labels=("stall",)):
     return n, None
 
 
+def issue_note(title, body, note, labels=("budget",)):
+    """(number, opened, None) or (None, False, why): one logbook issue per TITLE while it is open. The open
+    issue that carries labels[0] and this exact title gets NOTE as a comment; with none, one opens with BODY,
+    led by the mention as issue_open's is. A recurring incident (lighthouse's overdraw: each job started past
+    a login's week bar) is then one push to the owner's phone and a comment each time after, never an issue
+    each (overdraw, 2026-11-04). The lookup reads the first 100 open issues of that label."""
+    repo, why = logbook()
+    if not repo:
+        return None, False, why
+    st, data, why = gh_api("GET", "/repos/%s/issues?state=open&per_page=100&labels=%s" % (repo, labels[0]))
+    if why:
+        return None, False, "the lookup: %s" % why
+    for it in data if isinstance(data, list) else []:
+        if (isinstance(it, dict) and it.get("title") == title[:200] and isinstance(it.get("number"), int)
+                and "pull_request" not in it):
+            st, _, why = gh_api("POST", "/repos/%s/issues/%d/comments" % (repo, it["number"]), {"body": note})
+            return (None, False, "the comment: %s" % why) if why else (it["number"], False, None)
+    n, why = issue_open(title, body, labels)
+    return (n, True, None) if n else (None, False, why)
+
+
 def issue_state(number, state, comment):
     """(True, None) or (False, why): COMMENT on issue NUMBER of the logbook repo, then its state set to
     STATE (closed | open) — the comment first, so a closed issue always says what cleared it."""
@@ -1792,6 +1813,8 @@ def cmd_poll(a):
         seen = set()
     found, failed, ended = [], [], []
     repos = poll_repos(a.repos)
+    if not (a.dry_run or a.repos) and surfaces.host() == laptop_name():
+        poll_main_check(repos, deadline)
     helmlib.prefetch_prs(repos)   # every repo's PRs read in parallel: each scan below then reads the cache
     for repo in repos:
         try:
@@ -1939,6 +1962,15 @@ def carry_forward(failed, field="asks"):
     srcs, names = {str(r) for r in failed}, {r.name for r in failed}
     return [dict(r, carried=True) for r in rows if isinstance(r, dict) and (r.get("key") or field != "asks")
             and (r["src"] in srcs if r.get("src") else r.get("repo") in names)]
+
+
+def poll_main_check(repos, deadline=None):
+    try:
+        import main_check
+        for line in main_check.poll(repos, sys.modules[__name__], deadline):
+            print(line, file=sys.stderr)
+    except Exception as e:  # one reader must never cost the asks, tick or board their pass
+        print("ask poll: main check unread (%s: %s)" % (type(e).__name__, str(e)[:160]), file=sys.stderr)
 
 
 def poll_board(deadline=None):

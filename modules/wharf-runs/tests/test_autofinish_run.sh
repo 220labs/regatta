@@ -33,6 +33,7 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 has()   { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" 2>/dev/null | tail -20; fails=$((fails+1)); fi; }
 hasnt() { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  FAIL $3: found [$2]"; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
+require_process_probe test_autofinish_run || exit $?
 # a pinned blueprint is read by PyYAML, installed per user on these Macs: keep its site when HOME moves (--by ship, S6)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export HOME="$T/home"; mkdir -p "$HOME"
@@ -70,6 +71,7 @@ sid=; prev=; for a in "\$@"; do [ "\$prev" = --session-id ] && sid=\$a; prev=\$a
 gd=\$(git rev-parse --absolute-git-dir)
 cp "\$gd/claude/owner.json" "$T/at-start.\$sid.lock" 2>/dev/null
 [ -n "\${STUB_MARK:-}" ] && touch "\$gd/claude/finishing"
+[ -n "\${STUB_FINISH:-}" ] && printf '{"session": "%s", "phase": "finish", "outcome": "%s", "ended": 1}' "\$sid" "\$STUB_FINISH" > "\$gd/claude/build-review-finish.json"
 cp "\$gd/claude/autofinish.json" "$T/at-start.\$sid.state" 2>/dev/null
 [ -s "\$gd/claude/autofinish-bundle.md" ] && cp "\$gd/claude/autofinish-bundle.md" "$T/at-start.\$sid.bundle"
 rec="\$HOME/.claude/sessions/\$\$.json"; mkdir -p "\$HOME/.claude/sessions" "\$HOME/.claude/projects/x"
@@ -83,7 +85,7 @@ case "\${STUB_RUN:-reply}" in
          echo '{"type":"user","message":{"content":"/finish"},"timestamp":"2026-10-15T00:00:00Z"}' > "\$HOME/.claude/projects/x/\$sid.jsonl"
          trap 'printf "{\\"session\\": \\"%s\\"}" "\$sid" > "\$gd/claude/owner.json"; rm -f "\$rec"; exit 0' TERM;;
 esac
-while :; do sleep 0.2; done
+while [ -d "$T" ] && [ \$SECONDS -lt 900 ]; do sleep 0.2; done   # ends with its suite's \$T, or at 15 min: an endless loop outlived every killed suite run (99 on one Mac, 2026-11-05)
 EOF
 cat > "$T/screen" <<EOF
 #!/bin/bash
@@ -180,7 +182,11 @@ for r in "~/rg/modules/wharf/libexec/pr*" "python3 ~/rg/modules/keel/bin/keel*" 
          "~/rg/modules/wharf-runs/bin/build-review covers*"; do
   has "$T/rules" "- --allow Bash($r)" "  allowed in the regatta main checkout: $r"
 done
-check "$(grep -c -F -- 'build-review*' "$T/rules")" "0" "  build-review by its covers verb only: round and end are the build's (TODO.md [second-review] D1-B)"
+check "$(grep -c -F -- 'build-review*' "$T/rules") $(grep -c -E -- 'build-review (round|end)\*' "$T/rules")" "0 0" "  build-review by its covers verb, never a build's round or end (TODO.md [second-review] D1-B)"
+for r in "~/rg/modules/wharf-runs/bin/build-review round * --phase finish*" "$HOME/rg/modules/wharf-runs/bin/build-review end * --phase finish*" \
+         "~/rg/modules/wharf-runs/bin/build-review picks*"; do
+  has "$T/rules" "- --allow Bash($r)" "  the landing's own loop by its finish phase alone (landing-fixes-in-run): $r"
+done
 check "$(grep -c -- '--allow Bash(.*modules/\*' "$T/rules")" "0" "  no wholesale modules/*/bin/* rule (it pre-approved clock, scope-pass, regatta pr merge)"
 check "$(grep -c -F -- '- --undeny Bash(*regatta pr merge*)' "$T/rules") $(grep -c -F -- 'ask --undeny Bash(*regatta pr merge*)' "$T/rules")" "1 0" \
   "  a held launch keeps the core's regatta pr merge denied; any other lifts it"
@@ -251,6 +257,39 @@ STUB_REPLY="$T/stop57.txt" af > /dev/null 2>&1; ended
 check "$(field outcome)/$(field gate)/$(field pr)" "stopped/G11/7" "a stop naming 'merged #57' and a rollback line: stopped at G11, on the branch's own PR"
 check "$(tail -1 "$CD/claude/autofinished" | cut -d' ' -f2-4)" "stopped $BR G11" "  the autofinished line says stopped, never launched #57"
 has "$T/api.log" "merged #57 touched hooks/x.py" "  and the stop is on the PR"
+hasnt "$T/api.log" "**Do this now** — the fix round" "  a stop past the review (G11) carries no fix-round line"
+
+echo "a review stop (G1r) hands its fix round on at the landing's priority, never a plain normal build (landing-fixes-in-run)"
+next_tip "review stop"; : > "$T/api.log"
+printf 'Ran the check: all pass.\n\n⚠ step 1 — the review found 2 real items, one a Reversible: no choice (D1 in the fix round brief)\n\nSAM, THIS SESSION IS WAITING FOR YOU — the choice, above\n' > "$T/g1r.txt"
+STUB_REPLY="$T/g1r.txt" af > /dev/null 2>&1; ended
+check "$(field outcome)/$(field gate)" "stopped/G1r" "a G1r stop whose run kept no review loop of its own (a plan refused, a principal route)"
+hasnt "$T/api.log" "**Do this now** — the fix round" "  carries no fix-round line: there is no fix round to hand on"
+next_tip "review stop, held"; : > "$T/api.log"
+STUB_FINISH=held STUB_REPLY="$T/g1r.txt" af > /dev/null 2>&1; ended
+check "$(field outcome)/$(field gate)/$(field priority)" "stopped/G1r/null" "a landing with no --priority whose own loop ended held stops at G1r; its state keeps no priority"
+has "$T/api.log" "**Do this now** — the fix round, at the landing's priority (\`high\`" "  the PR comment's Do this now: the fix round at high, a finish's fix ahead of the builds"
+# the line names the repo by its real path: a runner's TMPDIR is a link (/var -> /private/var), and the tool prints what pwd -P does
+has "$T/api.log" "dispatch $BR --repo $(cd "$R" && pwd -P) --priority high" "  as one dispatch line naming the branch, the repo and the priority"
+has "$T/api.log" "never a plain \`normal\` dispatch" "  saying why not normal"
+next_tip "review stop, high"; : > "$T/api.log"
+STUB_FINISH=cap STUB_REPLY="$T/g1r.txt" af --priority high > /dev/null 2>&1; ended
+check "$(field gate)/$(field priority)" "G1r/high" "a landing started --priority high keeps it in its state"
+has "$T/api.log" "--priority high" "  and its fix round goes at it"
+python3 - "$B/autofinish-run" "$W" <<'EOF' > "$T/out"
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+for p in ("force", "high", None, "low"):
+    print(m.fix_round_line(t, {"priority": p}).split("--priority ")[-1].split("`")[0])
+EOF
+check "$(tr '\n' ' ' < "$T/out")" "force high high high " "  fix_round_line: the landing's own force or high, else high"
+next_tip "review stop, worded as the check"; : > "$T/api.log"
+printf '⚠ step 1 — 2 real findings left at the round cap (3 rounds); the check is green\n\nSAM, THIS SESSION IS WAITING FOR YOU — the findings, above\n' > "$T/g1.txt"
+STUB_FINISH=cap STUB_REPLY="$T/g1.txt" af > /dev/null 2>&1; ended
+check "$(field gate)" "G1" "a capped loop whose stop names the check first reads G1"
+has "$T/api.log" "**Do this now** — the fix round" "  and still hands its fix round on: its own loop ended cap (round 2's verifier)"
 
 echo "a launch whose number nobody read: no #None"
 next_tip "launch, no number"; : > "$T/api.log"
@@ -401,7 +440,7 @@ af > "$T/out" 2>&1; check "$?" "3" "a start lock another start holds: refused"
 has "$T/out" "another start on this worktree is under way" "  saying so"
 check "$(cmp -s "$STATE" "$T/state.before" && echo same || echo changed):$(wc -c < "$T/claude.calls" | tr -d ' ')" "same:0" "  nothing written, nothing started"
 check "$([ -f "$SL" ] && echo kept || echo gone)" "kept" "  and the holder's lock left alone"
-touch -t "$(date -v-3M +%Y%m%d%H%M.%S)" "$SL"
+python3 -c 'import os,sys,time; t=time.time()-180; os.utime(sys.argv[1], (t,t))' "$SL"
 STUB_REPLY="$T/stop.txt" af > /dev/null 2>&1; check "$?" "0" "a start lock older than 2 min is a start that died: taken over"
 ended
 check "$([ -f "$SL" ] && echo kept || echo gone)" "gone" "  and freed once the start returned"
@@ -521,14 +560,19 @@ has "$T/gone.log" "TypeError" "  and its traceback is in the run's log"
 echo "the login: picked at start from the account pool (work-account E5, 2026-10-08)"
 ln -s "$T" "$HOME/projects"   # bin/account names a repo by its path under ~/projects: $T/repo is "repo"
 mkdir -p "$HOME/.acct-c"
-# pool <acct-c deny list> <acct-c 5h> <acct-a 5h>: both rows read just now, so no probe runs
+# pool <repos acct-a's tenant holds, off acct-c> <acct-c 5h> <acct-a 5h>: both rows read just now, so no probe runs
+# (a deny list on acct-c until deny-drift, 2026-11-03: tenancy routes, nothing bans)
 pool() {
   python3 - "$T/accounts.json" "$HOME" "$@" <<'EOF'
 import json, sys, time
-f, home, deny, i5, d5 = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
-json.dump({"accounts": [
-    {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50}, "repos": {"deny": deny}},
-    {"label": "acct-a", "home": home + "/.claude", "primary": True, "rules": {"window_max": 50}}]}, open(f, "w"))
+f, home, held, i5, d5 = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+reg = {"accounts": [
+    {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50}},
+    {"label": "acct-a", "home": home + "/.claude", "primary": True, "rules": {"window_max": 50}}]}
+if held:
+    reg["accounts"][1]["tenant"] = "own"
+    reg["tenants"] = {"own": {"repos": held}}
+json.dump(reg, open(f, "w"))
 now = time.time()
 for d, fh in ((home + "/.acct-c", i5), (home + "/.claude", d5)):
     json.dump({"at": now, "limits": {"five_hour": fh, "seven_day": 6, "five_hour_resets": now + 3600,
@@ -549,7 +593,7 @@ has "$AFLOG" " run repo $BR started session=$(field session | cut -c1-8) tip=$(g
 has "$AFLOG" "by=sweep account=acct-c — ⚠ step 4" "  and the end's"
 has "$T/out" ", account acct-c;" "  and the caller's line"
 next_tip "pool: denied"; pool '["repo"]' 10 10
-STUB_REPLY="$T/stop.txt" afp --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a repo on acct-c's deny list starts too"
+STUB_REPLY="$T/stop.txt" afp --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a repo acct-a's tenant holds starts too"
 ended
 check "$(field account)" "acct-a" "  on the next row, acct-a"
 grep -q '^CLAUDE_CONFIG_DIR=' "$T/claude.env"; check "$?" "1" "  the default dir: CLAUDE_CONFIG_DIR unset (bin/account's header)"
@@ -606,7 +650,12 @@ printf '#!/bin/sh\necho "$*" >> "%s"\necho "{}"\nexit 1\n' "$T/acct.calls" > "$T
 next_tip "pool: typed"; : > "$T/acct.calls"
 STUB_REPLY="$T/stop.txt" AUTOFINISH_ACCOUNT="$T/acct-log" afp --rule C --by typed > "$T/out" 2>&1; check "$?" "0" "a typed hand-off starts"
 ended
-check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --repo R --json --cached" "  its pick was --cached"
+check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --repo R --json --cached --overdraw --job $BR" "  its pick was --cached (an overdraw judged too: the pick only decides)"
+next_tip "pool: overdraw"; : > "$T/acct.calls"
+STUB_REPLY="$T/stop.txt" AUTOFINISH_ACCOUNT="$T/acct-log" afp --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a sweep's landing starts"
+ended
+check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --repo R --json --overdraw --job $BR" \
+  "  its fresh pick asks for an overdraw, naming the branch (the owner, 2026-11-04: a landing is a job too)"
 unset ACCOUNT_CLAUDE; export ACCOUNTS_FILE="$T/no-accounts.json"; rm "$HOME/projects"
 
 echo "refusals"
@@ -1231,9 +1280,15 @@ has "$T/out" "--model claude-opus-5-5 --effort medium" "  with the same flags as
 printf 'until\n2099-12-31\n' > "$ROT"   # bootstrap.sh's config_values: one word per line
 AUTOFINISH_COIN=1 af --dry > "$T/out" 2>&1
 has "$T/out" "rotation on until 2099-12-31; coin 1: sonnet-medium" "the key as bootstrap.sh writes it, a word per line: on"
-printf '{"repos": {}, "scopes": {"home": {"repos": ["*/repo"]}, "work": {"repos": ["*/repo"], "confidential": true}}}\n' > "$T/repos.json"
+printf '{"repos": {}, "scopes": {"home": {"repos": ["*/repo"]}, "work": {"repos": ["*/repo"], "confidential": true, "rotation": false}}}\n' > "$T/repos.json"
 af --dry > "$T/out" 2>&1
-has "$T/out" "rotation fenced: scope work is confidential" "a repo in an open scope and a confidential one: fenced, not only the first scope judged"
+has "$T/out" "rotation fenced: scope work does not rotate (rotation: false)" "a repo in an open scope and one with rotation: false: fenced, not only the first scope judged"
+printf '{"repos": {}, "scopes": {"work": {"repos": ["*/repo"], "confidential": true, "rotation": "no"}}}\n' > "$T/repos.json"
+af --dry > "$T/out" 2>&1
+has "$T/out" "rotation fenced: scope work's rotation is 'no', not true or false" "a rotation that is no bool: fenced (a narrowing key that does not read)"
+printf '{"repos": {}, "scopes": {"home": {"repos": ["*/repo"]}, "work": {"repos": ["*/repo"], "confidential": true}}}\n' > "$T/repos.json"
+AUTOFINISH_COIN=1 af --dry > "$T/out" 2>&1
+has "$T/out" "finisher sonnet-medium (claude-sonnet-5-5, medium): rotation on until 2099-12-31; coin 1: sonnet-medium" "a confidential scope with no rotation key draws (the drawing shape)"
 printf '{"repos": {}, "scopes": {"work": {"repos": 5}}}\n' > "$T/repos.json"
 af --dry > "$T/out" 2>&1
 has "$T/out" "rotation fenced: the scope registry does not walk (TypeError)" "a scope whose repos is no list: fenced, never a crashed start"
@@ -1261,13 +1316,20 @@ print(r["arm"], r["coin"], r["forced"], r["model"], r["effort"], r["outcome"], r
   "sonnet-medium 1 True claude-sonnet-5-5 medium stopped G4 7 buildbox repo True no-reply None" "  the row: coin, arm, model, outcome, gate, PR, host; the stub returns no model (no-reply); the fix read later"
 
 reg ', "confidential": true'
+next_tip "rotation: confidential, drawing"; : > "$T/claude.calls"; N0=$(rows)
+AUTOFINISH_COIN=1 STUB_REPLY="$T/stop.txt" af --rule A --by sweep > /dev/null 2>&1; ended
+has "$T/claude.calls" "--model claude-sonnet-5-5 --effort medium" "a confidential scope with no rotation key: claude ran the drawn arm"
+check "$(rows)" "$((N0 + 1))" "  one row at the end"
+check "$(tail -1 "$ROWS" | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["arm"], r["scope"], r["confidential"])')" "sonnet-medium work True" \
+  "  the row carries its scope and confidential: true, so trim can tell"
+reg ', "confidential": true, "rotation": false'
 next_tip "rotation: confidential"; : > "$T/claude.calls"; N0=$(rows)
 af --dry > "$T/out" 2>&1
-has "$T/out" "finisher today's: rotation fenced: scope work is confidential — today's finisher, no row" "a confidential scope: today's finisher"
+has "$T/out" "finisher today's: rotation fenced: scope work does not rotate (rotation: false) — today's finisher, no row" "a confidential scope with rotation: false: today's finisher (the opted-out shape)"
 AUTOFINISH_COIN=1 STUB_REPLY="$T/stop.txt" af --rule A --by sweep > /dev/null 2>&1; ended
 hasnt "$T/claude.calls" "--model claude-" "  no arm passed, whatever the coin"
 check "$(armof)" "none" "  no arm in the state"
-has "$AFLOG" "arm=off (rotation fenced: scope work is confidential" "  the key there, no arm: the start line says why"
+has "$AFLOG" "arm=off (rotation fenced: scope work does not rotate (rotation: false)" "  the key there, no arm: the start line says why"
 check "$(rows)" "$N0" "  and no row"
 next_tip "rotation: fenced dry runs"
 printf '{"repos": {}, "scopes": {"work": {"repos": ["*/other"]}}}\n' > "$T/repos.json"
@@ -1283,10 +1345,10 @@ next_tip "rotation: fenced mid-run"; N0=$(rows)
 AUTOFINISH_COIN=0 STUB_RUN=busy af --rule A --by sweep > /dev/null 2>&1
 for _ in $(seq 1 50); do CP=$(pgrep -f "$T/claude /finish" | head -1); [ -n "$CP" ] && break; sleep 0.2; done
 check "$(armof)" "opus-medium 0 True" "a run that drew its arm in an open scope…"
-reg ', "confidential": true'
+reg ', "confidential": true, "rotation": false'
 sleep 1; kill -TERM "$CP"; ended
-check "$(rows)" "$N0" "  …writes no row once the scope turned confidential"
-has "$AFLOG" "no rotation row: scope work is confidential" "  and its end line says so"
+check "$(rows)" "$N0" "  …writes no row once the scope opted out of the coins"
+has "$AFLOG" "no rotation row: scope work does not rotate (rotation: false)" "  and its end line says so"
 
 reg ""
 mkdir -p "$CLAUDE_CONFIG_DIR/projects/cost/s1/subagents"
@@ -1367,9 +1429,12 @@ check "$(grep '"b44"' "$ROWS" | python3 -c 'import json, sys; print(json.load(sy
 "$B/autofinish-run" rotation --json > "$T/out" 2>&1
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["hosts"].get("laptop"), d["arms"]["opus-medium"]["fix_48h"], d["arms"]["opus-medium"]["settled"], d["fenced_now"], d["forced"] > 0, "sonnet-medium" in d["arms"])' "$T/out")" \
   "2 1 1 0 True False" "rotation --json: each host's runs (its share of the landings), the arm's fixes of its settled launches; forced rows in no arm"
+reg ', "confidential": true, "rotation": false'
+"$B/autofinish-run" rotation --json > "$T/out" 2>&1
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"], d["fenced_now"] > 0)' "$T/out")" "0 True" "  a repo whose scope opted out now: its rows are passed over"
 reg ', "confidential": true'
 "$B/autofinish-run" rotation --json > "$T/out" 2>&1
-check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"], d["fenced_now"] > 0)' "$T/out")" "0 True" "  a repo confidential now: its rows are passed over"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["rows"] > 0, d["fenced_now"])' "$T/out")" "True 0" "  a confidential scope that rotates: its rows are counted"
 rm -f "$ROT"; unset CLAUDE_REPOS_JSON
 
 echo "the ledger reads a landing: the pushed head, a row for every run, --settle's nine conditions (task-shape S1)"
@@ -1875,5 +1940,19 @@ has "$T/out" "dispatch: --start takes no BRANCH" "  …saying --start, the word 
 CLAUDE_UNATTENDED=dispatch "$B/dispatch" --start p "$W" n --priority force --dry-run > "$T/out" 2>&1; check "$?" "2" "--start --priority force, unattended: refused"
 CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-nomark "$B/dispatch" --start p "$W" n --priority force --dry-run > "$T/out" 2>&1; check "$?" "2" "--start --priority force from a session without its mark: refused"
 has "$T/out" "use the force" "  with force-ok's words"
+
+echo "the review stop's dispatch line preserves every shell argument"
+cat > "$T/fix-command.py" <<'PY'
+import shlex, sys
+from importlib.machinery import SourceFileLoader
+from types import SimpleNamespace
+m = SourceFileLoader("afr", sys.argv[1]).load_module()
+m.HERE = "/tmp/tool's directory"
+t = SimpleNamespace(primary="/tmp/shop's project", branch="claude/test/fix;$value")
+command = m.fix_round_line(t, {"priority": "force"}).split("dispatch): `", 1)[1].split("`.", 1)[0]
+print(shlex.split(command) == [m.HERE + "/dispatch", t.branch, "--repo", t.primary, "--priority", "force"])
+PY
+check "$(python3 "$T/fix-command.py" "$B/autofinish-run")" "True" \
+  "the PR comment quotes the tool and repo paths with spaces and apostrophes, and a branch with shell syntax"
 
 [ "$fails" = 0 ] && echo "all ok" || { echo "$fails FAILED"; exit 1; }

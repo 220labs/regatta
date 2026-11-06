@@ -113,7 +113,7 @@ session; Claude Code then re-enters the worktree by itself (restoreWorktreeForRe
 
 Handoff (`open`), first match wins:
   running now      ~/.claude/sessions/<pid>.json with the pid alive and procStart matching
-                   (UTC) → say where it runs and touch nothing: two processes on one transcript
+                   (UTC), or its start unreadable (ps refused or blank: read as running) → say where it runs and touch nothing: two processes on one transcript
                    interleave their writes
   large (≥ 100k tokens) and not running → stop with the two exits, exit 3, nothing changed;
                    --reopen picks it up as below, --fresh adopts here or opens a tab/window
@@ -452,6 +452,18 @@ def run(args, timeout=30, env=None, input=None, exec_raises=False):
         return subprocess.CompletedProcess(args, 127 if isinstance(e, FileNotFoundError) else 126, "", f"{args[0]}: {e}")
 
 
+def ps(args, env=None):
+    """`ps ARGS`'s stdout ("" when it timed out), or None when ps cannot be run at all: a sandboxed session on a Mac is refused
+    the exec (PermissionError: [Errno 1] Operation not permitted: 'ps'; /bin/ps is setuid root, likely the reason, not probed), and the
+    error killed `pickup seed` and every verb that reads the live registry (sandboxed-seed, 2026-11-04).
+    Each caller reads None as unknown, on the side its readers refuse on (docs/sandboxed-seed-2026-11-04.md).
+    One answer feeds a fence: running()'s, which the session lock's release and next's hold read, so a
+    refusal there reads as running and the lock stays held; the VS Code walks only find a window. The seed
+    path's fences (confined_refusal, from_scope_refusal) read the registry and the env, never ps."""
+    r = run(["ps", *args], env=env)
+    return None if r.returncode in (126, 127) else r.stdout   # run() never raises on an exec it is refused (126) or a ps it lacks (127)
+
+
 def git(where, *args, timeout=30):
     return run(["git", "-C", str(where), *args], timeout=timeout, exec_raises=True)
 
@@ -688,7 +700,11 @@ def slug_dirs(root, worktree_paths):
 
 def running(pid, proc_start):
     """Alive, and the same process: the registry's procStart is `ps -o lstart` in UTC
-    (checked 2026-09-25 on five live sessions), which catches a pid reused after a crash."""
+    (checked 2026-09-25 on five live sessions), which catches a pid reused after a crash. A live pid
+    whose start cannot be read (ps refused, timed out, or blank with exit 0) reads as running: no proof
+    of the same process, the side the lock and next's hold refuse on (sandboxed-seed); a blank with exit 1
+    is ps finding no such process, not running. On macOS only: on Linux the registry's procStart is
+    /proc/<pid>/stat's start in clock ticks, which never matches lstart (TODO.md [linux-procstart])."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -700,9 +716,17 @@ def running(pid, proc_start):
     if not proc_start:
         return True
     r = run(["ps", "-o", "lstart=", "-p", str(pid)], env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
-    if r.returncode in (126, 127):   # ps cannot run here (a sandbox): kill(0) said alive, and a live
-        return True                  # session read as dead would lose its worktree to a stranger
-    return " ".join(r.stdout.split()) == " ".join(proc_start.split())
+    start = r.stdout
+    if not start.strip():
+        if r.returncode == 1:
+            # ps ran and found no such process: gone since kill(0), or (Linux) a pid number now another
+            # process's thread id, which kill(0) passes and ps -p does not list — not running, as on main
+            return False
+        # alive by kill(0), its start unreadable (ps refused, 126/127; a ps that timed out, 124; or one that
+        # printed nothing and exited 0, as a loaded Mac's may for a live pid): as an entry with no procStart,
+        # running — the side every reader refuses on (a held lock stays held, a running session is not reopened)
+        return True
+    return " ".join(start.split()) == " ".join(proc_start.split())
 
 
 LIVE_RANK = {"busy": 2, "waiting": 1}  # which of two processes on one session speaks for it
@@ -1860,7 +1884,7 @@ def code_cli():
     cli = ""
     vpid = os.environ.get("VSCODE_PID")
     if vpid and vpid.isdigit():  # .../Code.app/Contents/MacOS/Code → .../Contents/Resources/app/bin/code
-        exe = run(["ps", "-o", "comm=", "-p", vpid]).stdout.strip()
+        exe = (ps(["-o", "comm=", "-p", vpid]) or "").strip()   # ps refused: the PATH's code, or the app's
         cli = str(Path(exe).parent.parent / "Resources" / "app" / "bin" / "code") if exe else ""
     if not (cli and Path(cli).exists()):
         cli = shutil.which("code") or (str(APP_CLI) if APP_CLI.exists() else "")
@@ -1915,7 +1939,9 @@ def _vscode_window():
     vpid = os.environ.get("VSCODE_PID")
     if not (vpid and vpid.isdigit()):
         return None
-    table = run(["ps", "-A", "-o", "pid=,ppid="]).stdout  # one table, walked here: no ps per hop
+    table = ps(["-A", "-o", "pid=,ppid="])  # one table, walked here: no ps per hop
+    if table is None:
+        return None   # ps refused: this window unknown, as when no extension host is found
     parent = dict(l.split() for l in table.splitlines() if len(l.split()) == 2)
     pid, host = str(os.getpid()), None
     for _ in range(30):
@@ -2266,7 +2292,7 @@ def seed_needs(root, b):
 
 def named_account(want, force, dry, root=None):
     """`--account LABEL`: that row, refused unless it can run here — a Claude account, set up on
-    this Mac, enabled, and inside its own rules and deny list unless --force (the owner's override,
+    this Mac, enabled, not routed off the repo, and inside its own rules unless --force (the owner's override,
     never a skill's)."""
     if not ACCOUNT:
         raise Stop(f"--account {want}: no account tool here (lighthouse is not installed) — nothing was opened")
@@ -2280,8 +2306,8 @@ def named_account(want, force, dry, root=None):
         raise Stop(f"--account {want} is a {a['provider']} account; pickup starts claude only (design E7)")
     if not a["here"]:
         raise Stop(f"--account {want} is not set up on this machine — {ACCOUNT} add {want}")
-    if a.get("denied"):  # the guard would block every prompt: --force never crosses a deny list
-        raise Stop(f"--account {want}: {a['why']} — open it on the default login (no --account)", code=3)
+    if a.get("denied"):  # the guard would block every prompt: --force never crosses tenancy
+        raise Stop(f"--account {want}: {a['why']} — open it on a login named there, or with no --account (pick walks to one)", code=3)
     if not a["eligible"] and not force and not (a["limits"] is None and (dry or a["primary"])):
         raise Stop(f"--account {want}: {a['why']} — --force runs it there anyway", code=3)
     return a
@@ -2298,8 +2324,8 @@ def account_for(root, b, args, fresh_window):
     if not ACCOUNT:   # G12: no lighthouse, no pick — the default login, as with no registry
         return None, {}, None
     task = seed_task(root, b)
-    # --repo: a row whose deny list names this repo is skipped (work-account E2: a second login never
-    # starts in a guarded repo)
+    # --repo: a row the repo is routed off (tenancy, a scope's login) is skipped (work-account E2: a second
+    # login never starts in another tenant's repo)
     argv = [sys.executable, str(ACCOUNT), "pick", "--json", "--repo", str(root)] + (["--cached"] if dry else [])
     for key in ("kind", "provider"):
         if task.get(key):
@@ -4202,6 +4228,34 @@ def route_docs(root, base, name, brief, check=False, drop=False, routing=(), dry
             list(res.get("notes") or []))
 
 
+def keel_held(root, ref, brief):
+    """rabbit-holes S3 (D3-A): keel's `held` over the steps the brief names, read at `ref` — a Stop on its exit 3,
+    a step that waits on an answer picking no listed option (the owner's new Answer or a fresh architect's design
+    pass releases it, never a builder's reply), and on its exit 4, a named step keel could not judge (its doc another
+    repo's, absent, not parsing, or without the step: the landing review's second fix round, items 11 and 14). Any
+    other failure is a note, never a refusal: a probe that crashed passes, and no keel here judges nothing
+    (route_docs says so). A seed out of a confidential scope never calls this (the caller's `if scope:` road): the
+    dispatch fire path judges its brief instead, as it fires. Returns the notes."""
+    keel = os.environ.get("PICKUP_KEEL")
+    if keel is None:
+        keel = str(common.tool("keel") or "")
+    if not keel:
+        return []   # route_docs has said "no keel here" already
+    r = run([keel, "held", "--repo", str(root), "--ref", ref, "--brief", "-"], timeout=120, input=brief)
+    held = [l[len("held: "):] for l in (r.stdout or "").splitlines() if l.startswith("held: ")]
+    if r.returncode == 3 and held:   # a 3 with no `held:` line is not the hold answering: could not tell
+        raise Stop("keel's hold refused: " + " | ".join(held))
+    if r.returncode == 4:
+        why = short(((r.stdout or "").strip().splitlines() or ["exit 4"])[-1], 200)
+        raise Stop(f"keel's hold could not judge a step the brief names ({why}): the next step waits for a run to end "
+                   "and for its doc to read — renumber a D-id the doc has twice, name the doc by this repo's path, or "
+                   "name a step it has, then seed or brief it anew")
+    if r.returncode:
+        why = short(((r.stderr or r.stdout or "").strip().splitlines() or [f"exit {r.returncode}"])[-1], 160)
+        return [f"keel held could not tell ({why}): no no-pick hold judged"]
+    return []
+
+
 def with_last_step(text, last, notes):
     """The brief with keel's last step under it, when it fits the caps; else as it was, with a note."""
     if not last:
@@ -4479,7 +4533,9 @@ def cmd_seed(data, me, args):
     if scope:
         routed, rnotes = [], ["a seed out of a confidential scope routes nothing: keel would read the brief before its review"]
     else:
+        held = keel_held(root, base, text)   # a step held on a no-pick answer is no new work (rabbit-holes D3-A),
         routed, last, rnotes = route_docs(root, base, name, text, check=True, routing=args.routing, dry=args.dry_run)
+        rnotes += held                       # judged before the routing gate logs a row for a seed it refuses
         text = with_last_step(text, last, rnotes)
     # out of a confidential scope the cwd's repo and the scope's name are both the node's: Seeded-By
     # carries the scope's marker, which only this host's registry reads back (S5's landing review)
@@ -4698,9 +4754,14 @@ def cmd_brief(root, me, args):
                        f"(seen {ago(int(lock.get('seen', 0)))}): it must end, or idle 2 h, before a brief goes there")
 
     # the docs the brief names that have a page get their `Routed:` line in this commit, before dispatch
-    # (routed comments S2, finding D); --unroute (a released start) takes it out. Never gated: answer and
-    # talk runs pass through here with talking threads (cutover's table)
+    # (routed comments S2, finding D); --unroute (a released start) takes it out. Never gated by the page:
+    # answer and talk runs pass through here with talking threads (cutover's table); only keel_held's
+    # no-pick hold, below, refuses a brief here
+    # the next step waits while a no-pick answer holds it (rabbit-holes D3-A). Not on --unroute (round 3): a
+    # released start takes its `Routed:` line out, which a held step must be able to do too
+    held = [] if args.unroute else keel_held(root, base, text)
     routed, last, rnotes = route_docs(root, base, name, text, drop=args.unroute, dry=args.dry_run)
+    rnotes += held
     text = with_last_step(text, last, rnotes)
     by = f"{me['repo'].name if me.get('repo') else '?'}/{me['id'][:8] or 'shell'} on {common.host_name()}"
     first = next((l for l in text.splitlines() if l.strip()), "")

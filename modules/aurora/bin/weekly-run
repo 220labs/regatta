@@ -467,6 +467,21 @@ if verb == "repos":
             print(r)
 elif verb == "torn":
     sys.exit(0 if common.registry_unreadable() else 1)
+elif verb == "confidential":
+    # exit 0 when any confidential scope lists the repo (each scope judged alone), 4 when none does: never 1, which
+    # python exits with on any crash (the probe trap in AGENTS.md); the caller collects on 4 alone, and fails the step on
+    # any code but 0, 3 and 4. A torn registry is never known open: 3, which the step reads as torn. The path is
+    # judged as trim judges it, resolved (a link keeps its own key otherwise)
+    reg, bad = common.read_registry()
+    if bad:
+        sys.exit(3)
+    try:
+        hit = any(isinstance(sc, dict) and sc.get("confidential") is True
+                  and common.scope_of_repo(str(Path(sys.argv[3]).resolve()), reg={"scopes": {n: sc}})[0]
+                  for n, sc in ((reg or {}).get("scopes") or {}).items())
+    except Exception:
+        sys.exit(0)
+    sys.exit(0 if hit else 4)
 elif verb == "retire":
     # each verdict.json of this host night ledger whose repo and vertical the night no longer tunes, renamed
     # verdict.retired.json: the night host daily report reads verdict.json alone (trimlib.night_verdicts; a Mac
@@ -898,15 +913,17 @@ classify_step() {
 # of the week's last day (TRIM_PY's `wait`), and notes a host still short then (asleep, or its push failed);
 # no section reads trim's report, so nothing after it waits on it. Its calls share one cap, WEEKLY_CAP, as a
 # section's session does, counted from after the wait: a GitHub page that stalls is killed with the call,
-# and the step fails. A refusal (exit 3) on a confidential scope's repo is the fence working: one REFUSED
-# line, nothing collected, reported or posted, and the next repo runs. On a torn registry (the core's
+# and the step fails. A confidential scope's repo is never collected by the night (the TRIM_PY verb
+# `confidential`, asked first: a scope that rotates is one trim collects nameless, but this log names the
+# repo), and a refusal (exit 3) is trim's fence working: either way one REFUSED line, nothing collected,
+# reported or posted, and the next repo runs. On a torn registry (the core's
 # registry_unreadable, or trim saying so) every repo would refuse: the step fails, saying so, and stops. The
 # verdict's own exit 3 (a floor breach, too few joins) is its state, filed like any other. Any other exit
 # fails the step (exit 4: GitHub did not answer). After a run that read the registry, a verdict of a repo or
 # vertical the night no longer tunes is retired (TRIM_PY's `retire`). WEEKLY_TRIM replaces the command and
 # WEEKLY_SLEEP the wait's sleep, for the suite.
 trim_step() {
-  local r f vt name out rc cmd=() pairs=() w target wait short t0 left n list
+  local r f vt name out rc c cmd=() pairs=() w target wait short t0 left n list
   echo "== trim at $(date)"
   if [ -z "${WEEKLY_TRIM:-}${TRIM}" ]; then step_failed trim "plumb's trim is not installed (regatta which trim)"; return; fi
   if [ -n "${WEEKLY_TRIM:-}" ]; then read -ra cmd <<<"$WEEKLY_TRIM"; else cmd=("$TRIM"); fi
@@ -930,9 +947,23 @@ trim_step() {
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     name=$(basename "$r")
+    python3 -c "$TRIM_PY" "$HOOKS" confidential "$r"; c=$?   # once per repo: the fence asks nothing of a vertical
+    if [ "$c" = 3 ]; then
+      step_failed trim "the repo registry cannot be read (a torn write?): trim refused, the step stopped here (regatta check)"; return
+    fi
+    if [ "$c" != 0 ] && [ "$c" != 4 ]; then   # a crash or a core that does not load: could not tell, never a fence line
+      step_failed trim "the night's fence check in $name exited $c (could not tell; the core's hooks load? regatta check)"; return
+    fi
     for f in "$r"/trim/*.json; do
       [ -f "$f" ] || continue
       vt=$(basename "$f" .json); pairs+=("$r"$'\t'"$f")
+      # a confidential scope's repo is never collected at night, even one whose scope rotates and which trim would
+      # collect nameless: this log names the repo and the night folder, and embark-memo quotes it into a pushed
+      # memo (scope-rotation's build review; TODO.md [trim-night-fenced]). Only 4 reads as open (a crash, a torn
+      # registry stopped the step above); trim --night refuses one too (bin/trim: fence), the night's refusal resting on both
+      if [ "$c" != 4 ]; then
+        echo "REFUSED trim $vt $day: trim's fence, asked by the night (a confidential scope's repo)"; continue
+      fi
       tcall collect --repo "$r" --vertical "$vt" --night
       if [ $rc = 3 ]; then  # neither trim's words nor the repo's name: embark-memo quotes this log into a pushed memo
         if printf '%s\n' "$out" | grep -q "registry cannot be read" || python3 -c "$TRIM_PY" "$HOOKS" torn; then

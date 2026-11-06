@@ -299,6 +299,24 @@ def berth_problems():
     return out
 
 
+def rotation_problems():
+    """The registry's `scopes.<name>.rotation` (scope-rotation, 2026-11-04): absent, true or false. Any other
+    value fences every build and landing of the scope from the coins (common.scope_rotates: a narrowing key
+    that does not read narrows to nothing), so it is named here, where a typo would otherwise pass unseen."""
+    p = common.repos_json()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p else {}
+    except (OSError, ValueError):
+        return []
+    scopes = d.get("scopes") if isinstance(d, dict) else None
+    out = []
+    for name, sc in (scopes or {}).items() if isinstance(scopes, dict) else ():
+        bad = common.rotation_problem(name, sc)
+        if bad:
+            out.append("registry: %s — fenced from the coins until it reads true or false" % bad)
+    return out
+
+
 def queue_rows():
     """The queue's rows: the home and its sweep (sweep_rows), and the kick listener (listener_row)."""
     return sweep_rows() + listener_row()
@@ -433,7 +451,7 @@ def check():
     # config dir from before the step is tidied by the overlay's bootstrap.sh --config
     if (common.CONFIG / "legacy").exists() and not old:
         # an overlay from before B14a: it now reads as a stranger's install, so its keys fail open
-        # (guarded, orca-deny, the schedules' refusals) — a failure, not a note (B14b landing review)
+        # (guarded, the schedules' refusals) — a failure, not a note (B14b landing review)
         print("  --  legacy without regatta/overlay: the overlay reads as absent and its keys fail open"
               " (run the overlay's bootstrap.sh --config)")
         bad += 1
@@ -454,6 +472,12 @@ def check():
                 ok = p.exists()
                 print("  %s  %s → %s%s" % ("ok" if ok else "--", p.relative_to(common.CONFIG), t, "" if ok else " (missing)"))
                 bad += 0 if ok else 1
+            elif str(p.relative_to(common.CONFIG)) == "regatta/orca-deny" and p.is_file() and any(common._config_file(p)):
+                # deny-drift, 2026-11-03: written empty, as the overlay keeps it, it is an ok line (landing review);
+                # out of OVERLAY_KEYS, so a file that will not read is said here, never a traceback
+                why = common._config_file(p)[1]
+                print("  ..  regatta/orca-deny %s, read by nothing since 2026-11-03 (an unnamed Orca login is no tenant's);"
+                      " write it empty, never delete it, until no core from before then runs here" % (why or "names repos"))
             elif p.is_file():
                 print("  ok  %s" % p.relative_to(common.CONFIG))
         # the live layer (`regatta limit`, live-limits 2026-11-01): a note per key, never a finding — each one
@@ -481,7 +505,7 @@ def check():
             Path(pin["root"]).name if pin.get("root") else "the primary", str(pin["to"])[:12], pin.get("why") or "a hook fault",
             "; revert PR %s" % pin["pr"] if pin.get("pr") else ""))
         bad += 1
-    for problem in berth_problems():
+    for problem in berth_problems() + rotation_problems():
         print("  --  %s" % problem)
         bad += 1
     bad += queue_rows()

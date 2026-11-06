@@ -39,9 +39,7 @@ exit 0
 echo Owner > "$REGATTA_CONFIG/regatta/owner"; printf 'cv
 privy
 ' > "$REGATTA_CONFIG/regatta/guarded"
-printf 'privy
-cv
-' > "$REGATTA_CONFIG/regatta/orca-deny"; echo '~/usage' > "$REGATTA_CONFIG/regatta/log-dir"
+: > "$REGATTA_CONFIG/regatta/orca-deny"; echo '~/usage' > "$REGATTA_CONFIG/regatta/log-dir"   # orca-deny: written empty, as the overlay does, read by nothing since deny-drift
 echo '~/projects' > "$REGATTA_CONFIG/regatta/projects"; echo privy > "$REGATTA_CONFIG/lighthouse/vault"
 echo server:server-claude > "$REGATTA_CONFIG/wharf-runs/ssh"
 unset CLAUDE_CONFIG_DIR
@@ -226,6 +224,116 @@ fix accounts.json.budgets names acct-gone, which no login row has | add acct-gon
 info accounts.json.budgets names acct-gone, which no login row here has; the logins file lists it for 1, 2 | None" \
   "doctor names it as a fix, or as info where the logins file lists that login for another Mac"
 rm -f "$BF" "$(dirname "$BF")/.$(basename "$BF").last"
+
+echo "overdraw — no login under its bar: the first past that bar alone runs, noted in the logbook (2026-11-04)"
+# helm's real ask files the note; a stand-in GitHub, called as \`gh api\` is (ASK_GH_API), records each call,
+# answers a GET with the issues it opened, numbers them from 41 and fails while $T/odfail exists
+mkdir -p "$REGATTA_CONFIG/helm"; printf '%s\n' acme/logbook > "$REGATTA_CONFIG/helm/logbook-repo"
+printf '%s\n' '@acme-owner' > "$REGATTA_CONFIG/helm/mention"
+cat > "$T/odgh" <<'EOF'
+#!/usr/bin/env python3
+import json, os, sys
+T = os.environ["OD_T"]
+a = sys.argv[1:]
+m, path = a[a.index("--method") + 1], a[a.index("--method") + 2]
+body = sys.stdin.read()
+with open(T + "/od.calls", "a") as f:
+    f.write("%s %s %s\n" % (m, path, body))
+if os.path.exists(T + "/odfail"):
+    print("HTTP 502", file=sys.stderr)
+    sys.exit(1)
+op = T + "/od-open"
+issues = json.load(open(op)) if os.path.exists(op) else []
+if m == "GET":
+    print(json.dumps(issues))
+elif path.endswith("/issues"):
+    n = 41 + len(issues)
+    issues.append({"number": n, "title": json.loads(body)["title"]})
+    json.dump(issues, open(op, "w"))
+    print(json.dumps({"number": n}))
+else:
+    print(json.dumps({"id": 1}))
+EOF
+chmod +x "$T/odgh"
+OD() { OD_T="$T" ASK_GH_API="$T/odgh" A "$@"; }
+ODL="$(dirname "$P1")"; ODL="$ODL/usage/overdraw.jsonl"; calls() { test -e "$T/od.calls" && echo called || echo quiet; }
+# the pick only decides; the caller hands its overdraw object to overdraw-log once the job began
+ODLOG() { OD_T="$T" ASK_GH_API="$T/odgh" python3 "$B/account" overdraw-log < "$T/out" > "$T/olog" 2>&1; echo $?; }
+reset; use "$S1" "10 75"; use "$P1" "10 97"; rm -f "$T/od.calls" "$T/od-open" "$ODL"
+check "$(ACCOUNT_NOW=$WED OD pick --json) $(calls)" "3 quiet" "both rows past their week bars, no --overdraw: none may run, nothing filed"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNT_NOW=$WED OD pick --overdraw --job claude/x/2026-10-07-demo --json) $(field "['account']") $(calls)" "0 spare quiet" \
+  "--overdraw: the first row in the walk refused by its bar alone runs it, its week under 100%; the pick logs nothing"
+has "$T/out" "week 75% < 100% (overdraw: no login was under its bar)" "…judged with the bar at 100"
+has "$T/out" "past its own bar: week 75% ≥ 70% (week ceiling)" "…naming the bar it crossed"
+check "$(field "['overdraw']['account']") $(field "['overdraw']['job']") $(field "['overdraw']['week']")" "spare claude/x/2026-10-07-demo 75" \
+  "…its answer carries the overdraw object the caller logs"
+check "$(ACCOUNT_NOW=$WED ODLOG) $(cat "$T/olog")" "0 overdraw on spare: logbook issue #41 opened" "overdraw-log: a logbook issue opened"
+has "$T/od.calls" "POST /repos/acme/logbook/issues {" "…in helm/logbook-repo"
+has "$T/od.calls" '"title": "Overdraw: spare past its week bar, the week to 2026-10-10"' "…titled by the login and the week's UTC reset date"
+has "$T/od.calls" '"labels": ["overdraw", "budget"]' "…labelled overdraw and budget"
+has "$T/od.calls" '"body": "@acme-owner' "…led by helm/mention: the owner's phone hears the first one"
+has "$T/od.calls" "claude/x/2026-10-07-demo in (no repo given) started on spare at week 75%" "…naming the job"
+check "$(wc -l < "$ODL" | tr -d ' ') $(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(r["account"], r["job"], r["week"])' "$ODL")" \
+  "1 spare claude/x/2026-10-07-demo 75" "…and a line in the log dir's overdraw.jsonl"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+ACCOUNT_NOW=$WED OD pick --overdraw --job claude/x/2026-10-07-two --json > /dev/null
+check "$(ACCOUNT_NOW=$WED ODLOG) $(cat "$T/olog")" "0 overdraw on spare: logbook issue #41, a comment" "a second overdraw that week: a comment on the open issue"
+check "$(grep -c '^POST /repos/acme/logbook/issues {' "$T/od.calls") $(grep -c '^POST /repos/acme/logbook/issues/41/comments' "$T/od.calls")" \
+  "1 1" "…one issue opened in all, one comment"
+echo '{"account": null}' > "$T/out"
+check "$(ODLOG)" 1 "overdraw-log: input that names no overdraw is refused"
+echo '{"account": "spare", "reason": "week 10% < 70%", "skipped": []}' > "$T/out"
+check "$(ODLOG)" 1 "…and so is a plain pick's answer, which carries none: no incident"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+ACCOUNT_NOW=$WED OD pick --overdraw --job claude/x/2026-10-07-secret --json > /dev/null
+echo '{"scopes": {' > "$T/torn-repos.json"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" ACCOUNT_NOW=$WED ODLOG)" 0 "a registry that will not read: the note still goes…"
+hasnt "$T/od.calls" "claude/x/2026-10-07-secret" "…naming neither the job nor the repo on GitHub (fenced, as a confidential scope's)"
+check "$(tail -1 "$ODL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["job"])')" "claude/x/2026-10-07-secret" "…while this host's overdraw.jsonl keeps it"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["overdraw"]["skipped"]=[["acct-q", "zz-secret-repo is on its deny list"], ["acct-r", "scope zz-scope runs on acct-s"]]; json.dump(d, open(sys.argv[1], "w"))' "$T/out"
+check "$(CLAUDE_REPOS_JSON="$T/torn-repos.json" ACCOUNT_NOW=$WED ODLOG)" 0 "a fenced note whose skipped reasons name a repo key and a scope: still goes…"
+hasnt "$T/od.calls" "zz-secret-repo" "…with the other logins' labels alone: no repo key reaches GitHub"
+hasnt "$T/od.calls" "zz-scope" "…and no scope name"
+has "$T/od.calls" "acct-q; acct-r" "…the labels themselves still named"
+check "$(tail -1 "$ODL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["skipped"][0][1])')" "zz-secret-repo is on its deny list" "…while overdraw.jsonl keeps the reasons"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNT_NOW=$WED A pick --json; ACCOUNT_NOW=$WED OD pick --overdraw --cached --json) $(field "['account']")" "3
+0 spare" "--cached (a dry run, a typed landing): the overdraw is judged on the cached readings"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["accounts"][0]["rules"]["overdraw"]=False; json.dump(d,open(sys.argv[2],"w"))' "$ACCOUNTS_FILE" "$ACCOUNTS_FILE.od"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.od" ACCOUNT_NOW=$WED OD pick --overdraw --json)" 3 \
+  "a row whose rules say overdraw: false is never lifted, nor a primary whose rules say nothing: none may run"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["accounts"][0]["rules"]["overdraw"]="no"; json.dump(d,open(sys.argv[2],"w"))' "$ACCOUNTS_FILE" "$ACCOUNTS_FILE.odx"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odx" ACCOUNT_NOW=$WED OD pick --overdraw)" 3 "an overdraw value that is not true or false lifts nothing (it only narrows)…"
+has "$T/out" "spare's rules.overdraw 'no' is not true or false; the row is never overdrawn" "…said on stderr"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["accounts"][1]["rules"]["overdraw"]=True; json.dump(d,open(sys.argv[1],"w"))' "$ACCOUNTS_FILE.od"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.od" ACCOUNT_NOW=$WED OD pick --overdraw --json) $(field "['account']")" "0 main" \
+  "a primary whose rules say overdraw: true is lifted: the next row past its bar runs it"
+reset; use "$S1" "10 75"; use "$P1" "10 100"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.od" ACCOUNT_NOW=$WED OD pick --overdraw --json)" 3 "…and a row whose week is at 100% has no credits left: none may run"
+reset; use "$S1" "60 75"; use "$P1" "10 100"
+check "$(ACCOUNT_NOW=$WED OD pick --overdraw --json)" 3 "past its bar with its 5-hour window over its rules: the 5-hour rules still judge"
+printf 'spare:70\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNT_NOW=$WED OD pick --overdraw --json)" 3 "a login's own live week-max line holds: the owner's newest word on that seat"
+printf '*:70\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+reset; use "$S1" "10 75"; use "$P1" "10 97"
+check "$(ACCOUNT_NOW=$WED OD pick --overdraw --json) $(field "['account']")" "0 spare" "…a fleet-wide * line does not"
+rm -f "$REGATTA_CONFIG/lighthouse/week-max"
+reset; use "$S1" "10 75"; rm -f "$P1/stub-usage"
+check "$(ACCOUNT_NOW=$WED OD pick --overdraw --json) $(field "['account']")" "0 spare" \
+  "with --overdraw a primary of unknown limits waits for the pass: a row with credits left goes first"
+reset; use "$S1" "10 75"; rm -f "$P1/stub-usage"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "…without it, the primary's guess as ever"
+reset; use "$S1" "10 75"; use "$P1" "10 97"; rm -f "$REGATTA_CONFIG/helm/logbook-repo"
+ACCOUNT_NOW=$WED OD pick --overdraw --json > /dev/null
+check "$(ACCOUNT_NOW=$WED ODLOG) $(cat "$T/olog")" \
+  "0 overdraw on spare: not in the logbook (no helm/logbook-repo value in the config dir)" "no logbook: said, never raised"
+check "$(wc -l < "$ODL" | tr -d ' ')" 5 "…its line in overdraw.jsonl kept all the same (five logged so far)"
+rm -f "$T/od.calls" "$T/od-open" "$ODL" "$ACCOUNTS_FILE.od" "$ACCOUNTS_FILE.odx" "$REGATTA_CONFIG/helm/mention"
 
 echo "exhaustion — cooldown and margin (D6)"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
@@ -700,12 +808,15 @@ check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "an u
 
 echo "setup — a Mac built from the logins file (work-account E1)"
 export ACCOUNT_LOGINS="$T/logins.json" ACCOUNT_HOST=laptop
+# privy (the vault) and cv are the owner tenant's: work, no tenant's, is refused them (deny-drift, 2026-11-03:
+# what its deny list said until then)
 cat > "$ACCOUNTS_FILE.f" <<'J'
 {"accounts": [
   {"label": "work", "provider": "claude", "home": "~/.claude-work", "enabled": false,
-   "rules": {"week_max": 90, "window_max": 80}, "repos": {"deny": ["privy", "cv"]}},
-  {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "enabled": false},
-  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}]}
+   "rules": {"week_max": 90, "window_max": 80}},
+  {"label": "spare", "provider": "claude", "home": "~/.claude-spare", "enabled": false, "tenant": "owner"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "tenant": "owner"}],
+ "tenants": {"owner": {"repos": ["privy", "cv"]}}}
 J
 cat > "$ACCOUNT_LOGINS" <<'J'
 {"logins": {"main": {"email": "p@example.com", "plan": "max", "macs": ["laptop", "server"]},
@@ -807,7 +918,7 @@ wait $sp
 has "$T/out" "work: first-start keys owed — a Claude Code save took the keys twice from $F/.claude.json — run setup again" "…saying so"
 login "$F/.claude.json" u-other x@example.com
 
-echo "the deny list and Fable (work-account E2)"
+echo "tenancy in pick, limits and allowed, and Fable (work-account E2; a deny list until deny-drift)"
 PR="$HOME/projects"; mkdir -p "$PR/cv" "$PR/studio"
 for r in privy overlay app app2 studio/pipeline; do git init -q "$PR/$r"; git -C "$PR/$r" commit -q --allow-empty -m init; done
 git -C "$PR/privy" worktree add -q "$PR/privy/.claude/worktrees/x" -b x 2>/dev/null
@@ -822,18 +933,18 @@ DA() { ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUNT_NOW=$WED A "$@"; }
 login "$F/.claude.json" u-f f@example.com
 rm -f "$F/usage-probe.json" "$P1/usage-probe.json" "$T/probes"; use "$F" "10 10"; use "$P1" "10 10"
 for r in overlay app app2 studio/pipeline; do
-  check "$(DA pick --repo "$PR/$r" --json) $(field "['account']")" "0 work" "pick --repo $r → work (not on the deny list)"
+  check "$(DA pick --repo "$PR/$r" --json) $(field "['account']")" "0 work" "pick --repo $r → work (no tenant's)"
 done
 check "$(DA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "pick --repo privy → main"
-has "$T/out" "privy is on its deny list" "…naming why work was skipped"
+has "$T/out" "privy is owner's: it runs on main only (tenants)" "…naming why work was skipped"
 check "$(DA pick --repo "$PR/privy/memory" --json) $(field "['account']")" "0 main" "…a folder inside it too"
 check "$(DA pick --repo "$PR/privy/.claude/worktrees/x" --json) $(field "['account']")" "0 main" "…a worktree of it (git-common-dir)"
 check "$(DA pick --repo "$PR/cv" --json) $(field "['account']")" "0 main" "cv, a folder in no git repo → main (by path)"
 check "$(DA pick --repo "$PR" --json) $(field "['account']")" "0 work" "~/projects itself is no repo → allowed (fails open, by design)"
 check "$(DA pick --json) $(field "['account']")" "0 work" "no --repo → the walk as before"
-# --repo takes a registry key as well as a path (found 2026-10-24: a key read as a path in the cwd matched no deny list)
-check "$(DA pick --repo privy --json) $(field "['account']")" "0 main" "pick --repo <key>: the key's deny list binds, as the path's does"
-has "$T/out" "privy is on its deny list" "…naming why work was skipped"
+# --repo takes a registry key as well as a path (found 2026-10-24: a key read as a path in the cwd matched no refusal)
+check "$(DA pick --repo privy --json) $(field "['account']")" "0 main" "pick --repo <key>: the key's tenancy binds, as the path's does"
+has "$T/out" "privy is owner's: it runs on main only (tenants)" "…naming why work was skipped"
 check "$(cd "$T" && DA pick --repo privy --json) $(field "['account']")" "0 main" "…from any cwd (the key is no path in it)"
 check "$(DA pick --repo cv --json) $(field "['account']")" "0 main" "…a key that is a folder in no git repo"
 check "$(DA pick --repo studio/pipeline --json) $(field "['account']")" "0 work" "…a nested key, not on the list → work"
@@ -872,41 +983,43 @@ has "$T/out" "the registry does not read" "…saying so"
 check "$(DA limits --all --cached --repo "$PR/privy" --json; field "[0]['eligible']")" "0
 False" "limits --repo privy: work not eligible"
 check "$(CLAUDE_CONFIG_DIR="$F" DA allowed "$PR/privy")" 1 "allowed: privy under work's dir → exit 1"
-has "$T/out" "privy is off work (accounts.json deny list)" "…with the line the guard prints"
+has "$T/out" "privy is off work: it is owner's, which runs on main only" "…with the line the guard prints"
 check "$(CLAUDE_CONFIG_DIR="$F" DA allowed "$PR/app2")" 0 "allowed: app2 → exit 0"
 check "$(CLAUDE_CONFIG_DIR="$F" DA allowed "$PR")" 1 "allowed: ~/projects, which holds privy, is off work (its ~/.claude/CLAUDE.md imports would load there, 2026-10-18)"
 has "$T/out" "is off work: it holds privy" "…with the guard's ' is off ' line"
 check "$(CLAUDE_CONFIG_DIR="$F" DA allowed "$HOME")" 1 "…and ~ too"
 check "$(DA allowed "$PR")" 0 "…while the default dir may start there, as before"
-check "$(DA allowed "$PR/privy")" 0 "allowed: the default dir denies nothing"
+check "$(DA allowed "$PR/privy")" 0 "allowed: the default dir, the owner tenant's login, may open the vault"
 UO="$T/unsynced-orca"; mkdir -p "$UO/claude-profiles/p1/home"
 UA() { CLAUDE_CONFIG_DIR="$UO/claude-profiles/p1/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA "$@"; }
-check "$(UA allowed "$PR/privy")" 1 "allowed: an Orca login orca-sync has not recorded is refused privy, by ORCA_ROW's list (2026-10-17)"
+check "$(UA allowed "$PR/privy")" 1 "allowed: an Orca login orca-sync has not recorded is refused privy, no tenant's (ORCA_ROW's list until deny-drift)"
 has "$T/out" "privy is off this Orca login, which no row names yet" "…with a line the guard reads (' is off ')"
+check "$(UA allowed "$PR/cv")" 1 "…and cv, the other repo the old regatta/orca-deny named: every repo it refused is still refused, by tenancy"
 check "$(UA allowed "$PR/app")" 0 "…and allowed in any other repo"
-check "$(CLAUDE_CONFIG_DIR="$T/elsewhere" DA allowed "$PR/privy")" 0 "allowed: a dir no row names outside Orca's profiles fails open, as before"
+check "$(CLAUDE_CONFIG_DIR="$T/elsewhere" DA allowed "$PR/app")" 0 "allowed: a dir no row names outside Orca's profiles fails open in a repo no tenant holds, as before"
+check "$(CLAUDE_CONFIG_DIR="$T/elsewhere" DA allowed "$PR/privy")" 1 "…and is refused a tenant's, being no tenant's (review 2026-10-20)"
 mkdir -p "$UO/claude-profiles/p4/home" "$UO/claude-profiles/pi/home"
 login "$UO/claude-profiles/p4/home/.claude.json" u-primary p@example.com
 login "$UO/claude-profiles/pi/home/.claude.json" u-f f@example.com
 UB() { CLAUDE_CONFIG_DIR="$UO/claude-profiles/$1/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" ACCOUNT_LOGINS="$T/no-logins.json" DA "${@:2}"; }
 check "$(UB p4 allowed "$PR/privy")" 0 "allowed: an Orca dir signed in as main's own login is main's, so privy is open (orca-sync never records it)"
-check "$(UB pi allowed "$PR/privy")" 1 "allowed: an Orca dir signed in as work's login gets work's deny list"
-has "$T/out" "privy is off work, whose login this Orca dir is" "…named as work's"
+check "$(UB pi allowed "$PR/privy")" 1 "allowed: an Orca dir signed in as work's login gets work's tenancy"
+has "$T/out" "privy is off work: it is owner's" "…named as work's, the label then a colon (the overlay's contact-book hook reads it so)"
 mkdir -p "$UO/claude-profiles/pz/home" "$UO/claude-profiles/pu/home"
 login "$UO/claude-profiles/pz/home/.claude.json" u-z z@example.com
 login "$UO/claude-profiles/pu/home/.claude.json" u-u nobody@example.com
 echo '{"logins": {"work": {"email": "Z@example.com"}}}' > "$T/logins-z.json"
 check "$(ACCOUNT_LOGINS="$T/logins-z.json" CLAUDE_CONFIG_DIR="$UO/claude-profiles/pz/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA allowed "$PR/privy")" 1 \
-  "allowed: an Orca dir signed in as an e-mail only the logins file gives a row (work) gets that row's list"
-check "$(UB pu allowed "$PR/privy")" 1 "allowed: an Orca dir signed in as an e-mail no row owns gets ORCA_ROW's list"
-has "$T/out" "privy is off this Orca login, which no row names yet" "…said as ORCA_ROW's"
+  "allowed: an Orca dir signed in as an e-mail only the logins file gives a row (work) gets that row's tenancy"
+check "$(UB pu allowed "$PR/privy")" 1 "allowed: an Orca dir signed in as an e-mail no row owns is no tenant's"
+has "$T/out" "privy is off this Orca login, which no row names yet (\`account orca-sync\` records it): it is owner's" "…said as the login no row names"
 echo '{not json' > "$T/logins-bad.json"
 check "$(ACCOUNT_LOGINS="$T/logins-bad.json" CLAUDE_CONFIG_DIR="$UO/claude-profiles/p4/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA allowed "$PR/privy")" 0 \
   "allowed: an unreadable logins file is no traceback; main's own login still answers"
 echo "allowed: the logins file read from its local copy outside claude-host (S4)"
 mkdir -p "$T/ldrive"; echo '{"logins": {"work": {"email": "Z@example.com"}}}' > "$T/ldrive/logins.json"; ln -s "$T/ldrive/logins.json" "$T/logins-link.json"
 LZ() { ACCOUNT_LOGINS="$T/logins-link.json" CLAUDE_CONFIG_DIR="$UO/claude-profiles/pz/home" ACCOUNT_ORCA_DATA="$UO" ACCOUNT_ORCA_FILE="$T/no-orca.json" DA allowed "$PR/privy"; }
-check "$(LZ)" 1 "no copy yet: the link is read once, to seed it (work's list)"
+check "$(LZ)" 1 "no copy yet: the link is read once, to seed it (work's tenancy)"
 check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["logins"]["work"]["email"])' "$T/.logins-link.json.last" 2>&1)" "Z@example.com" "…and the copy is written beside the link"
 echo '{"logins": {"main": {"email": "Z@example.com"}}}' > "$T/ldrive/logins.json"
 check "$(LZ)" 1 "the drive's file changed: outside claude-host the copy answers, the link unopened (still work's)"
@@ -919,7 +1032,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 m = SourceFileLoader("acct_mem", sys.argv[1]).load_module()
 base = Path(sys.argv[2]); base.mkdir(parents=True, exist_ok=True)
-emp = {"label": "x", "provider": "claude", "repos": {"deny": ["privy"]}}
+emp = {"label": "x", "provider": "claude", "routed": {"privy": {"tenant": "owner", "logins": ["y"]}}}   # refused the vault by tenancy
 mine = {"label": "y", "provider": "claude"}
 work, full = str(m.DEFAULT_DIR / m.WORK_MEMORY), str(m.DEFAULT_DIR / "CLAUDE.md")
 z = base / "z"; z.mkdir()   # the work file missing: never a link to nothing
@@ -1078,8 +1191,8 @@ d["profileAssociations"]["workspaces"][pathlib.Path(ws).resolve().as_uri()] = "p
 json.dump(d, open(v + "/globalStorage/storage.json", "w"))
 PY2
 check "$(DR --local)" 1 "a workspace with privy opened with the work profile → a problem"
-has "$T/out" "atlas.code-workspace opens privy — profile work: a denied repo on that account" "…naming the workspace and the profile"
-has "$T/out" "open it with the default profile" "…and the way out"
+has "$T/out" "atlas.code-workspace opens on VS Code profile work, which is refused owner's repos" "…naming the workspace and the profile (tenant_ties since deny-drift)"
+has "$T/out" "switch its window to the Default profile" "…and the way out"
 rm "$HOME/projects/atlas.code-workspace"
 login "$F/.claude.json" u-x x@example.com
 check "$(DR --local)" 1 "a dir signed in as another account than the file says"
@@ -1088,7 +1201,7 @@ has "$T/out" "CLAUDE_CONFIG_DIR=$F claude auth login" "…with the login line"
 login "$F/.claude.json" u-f f@example.com; CLAUDE_CONFIG_DIR="$F" "$B/trust-projects" --no-external-imports > /dev/null 2>&1  # the helper rewrote the file, trust with it
 login "$S1/.claude.json" u-f f@example.com
 check "$(DR --local)" 1 "a parked dir signed in to work's seat → a problem (review 2026-10-06)"
-has "$T/out" "a second way into work's seat that its deny list and tenancy do not cover (cv, privy)" "…naming the seat and what it would bypass"
+has "$T/out" "a second way into work's seat that its tenancy does not cover (cv, privy)" "…naming the seat and what it would bypass"
 has "$T/out" "CLAUDE_CONFIG_DIR=$S1 claude auth logout" "…with the logout line"
 login "$S1/.claude.json" u-primary p@example.com
 mkdir -p "$HOME/.claude-stray"; touch "$F/remote-settings.json"
@@ -1314,8 +1427,9 @@ echo '{"oauthAccount": {"accountUuid": "u-h", "emailAddress": "h@example.com"}}'
 echo h@example.com > "$H2/stub-login"; use "$H2" "5 10"
 cat > "$ACCOUNTS_FILE.h" <<'EOF'
 {"accounts": [
-  {"label": "stray2", "provider": "claude", "home": "~/.claude-stray2", "rules": {"week_max": 70, "window_max": 50}},
-  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}}]}
+  {"label": "stray2", "provider": "claude", "home": "~/.claude-stray2", "rules": {"week_max": 70, "window_max": 50}, "tenant": "owner"},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}, "tenant": "owner"}],
+ "tenants": {"owner": {"repos": ["privy", "cv"]}}}
 EOF
 AH() { ACCOUNTS_FILE="$ACCOUNTS_FILE.h" ACCOUNT_ORCA="$T/orca" ACCOUNT_ORCA_DATA="$OD" STUB_ORCA_EMAIL=h@example.com python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
 reset; rm -f "$P1/account-orca.json" "$X/usage-probe.json" "$H2/usage-probe.json"; use "$X" "60 40"; use "$P1" "10 10"
@@ -1323,7 +1437,7 @@ check "$(AH orca-sync)" 0 "orca-sync with no row for an Orca login: synced as a 
 has "$T/out" "new orca-h: $H2" "…labelled from its e-mail"
 has "$T/out" "in the walk" "…and in the walk by default"
 check "$(ACCOUNT_NOW=$WED AH pick --json) $(field "['account']")" "0 orca-h" "pick: the Orca login, before the primary"
-check "$(AH limits orca-h --repo "$HOME/projects/privy" --cached --json) $(field "[0]['denied']")" "0 privy" "…with a secondary's deny list"
+check "$(AH limits orca-h --repo "$HOME/projects/privy" --cached --json) $(field "[0]['denied']")" "0 privy" "…refused the owner tenant's repo, being no tenant's (ORCA_ROW's deny list until deny-drift)"
 check "$(AH orca off orca-h; ACCOUNT_NOW=$WED AH pick --json) $(field "['account']")" "0
 0 main" "orca off: out of the walk at once, no commit"
 check "$(AH limits --all --parked --cached --json; python3 -c "import json;print('orca-h' in [r['label'] for r in json.load(open('$T/out'))])")" "0
@@ -1691,7 +1805,7 @@ for r in acme-one acme-two; do git init -q "$PR/$r"; git -C "$PR/$r" commit -q -
 git -C "$PR/acme-one" worktree add -q "$PR/acme-one/.claude/worktrees/y" -b y 2>/dev/null
 cat > "$ACCOUNTS_FILE.t" <<'J'
 {"accounts": [
-  {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["privy", "cv"]}},
+  {"label": "work", "provider": "claude", "home": "~/.claude-work"},
   {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
   {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
  "tenants": {"acme": {"repos": ["acme-*"]}, "bad": "not an object"}}
@@ -1705,7 +1819,8 @@ check "$(TA pick --repo "$PR/acme-one/.claude/worktrees/y" --json) $(field "['ac
 check "$(TA pick --repo "$PR/acme-one/.claude/worktrees/y" --json) $(field "['owns']") $(TA pick --repo "$PR/app" --json) $(field "['owns']")" "0 True 0 False" \
   "…\`owns\`: the tenant's login owns its repo (the vendor fence's yes); another row another repo, no"
 check "$(TA pick --repo "$PR/app" --json) $(field "['account']")" "0 work" "another repo: the walk as before"
-check "$(TA pick --repo "$PR/privy" --json) $(field "['account']")" "0 lab" "the tenant's login runs elsewhere by its own deny list (none: privy too)"
+check "$(TA limits --all --cached --repo "$PR/privy" --json; python3 -c "import json;print([(r['label'], r['eligible'], r['denied']) for r in json.load(open('$T/out'))])")" "0
+[('work', True, None), ('lab', True, None), ('main', False, None)]" "a repo no tenant holds: denied to no row, and the tenant's login eligible (it is not confined to its repos; main is the primary, kept)"
 use "$L" "100 100"; rm -f "$L/usage-probe.json"
 check "$(TA pick --repo "$PR/acme-one" --json)" 3 "the tenant's login out of room → exit 3, never the primary's or another seat"
 use "$L" "10 10"; rm -f "$L/usage-probe.json" "$L/exhaustion.jsonl"
@@ -1721,7 +1836,7 @@ check "$(TA allowed "$PR")" 0 "…nor ~/projects, which holds the tenant's repo 
 check "$(CLAUDE_CONFIG_DIR="$L" TA allowed "$PR/acme-one")" 0 "allowed: the tenant's own login → exit 0"
 check "$(CLAUDE_CONFIG_DIR="$F" TA allowed "$PR/acme-two")" 1 "allowed: another secondary → exit 1"
 has "$T/out" "acme-two is off work: it is acme's" "…named as the tenant's"
-check "$(CLAUDE_CONFIG_DIR="$F" TA allowed "$PR")" 1 "…while work's own deny list still holds ~/projects (it holds privy)"
+check "$(CLAUDE_CONFIG_DIR="$F" TA allowed "$PR")" 0 "…nor for work: the vault is no tenant's here, and no deny list holds ~/projects since deny-drift"
 echo l > "$REGATTA_CONFIG/lighthouse/cc-prefix"
 cat > "$ACCOUNTS_FILE.t2" <<'J'
 {"accounts": [{"label": "la", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
@@ -1779,8 +1894,8 @@ check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t8" A allowed "$PR/acme-one")" 1 "…and 
 echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}, {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": ["acme"]}], "tenants": {"acme": {"repos": ["acme-*"]}}}' > "$ACCOUNTS_FILE.t9"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t9" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --json >/dev/null; grep -c Traceback "$T/out")" "0" "a row whose tenant is a list is no tenant's: no traceback (review 2026-10-21)"
 mkdir -p "$PR/notes[old]"
-echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}, {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["notes[old]"]}}]}' > "$ACCOUNTS_FILE.t10"
-check "$(CLAUDE_CONFIG_DIR="$HOME/.claude-work" ACCOUNTS_FILE="$ACCOUNTS_FILE.t10" A allowed "$PR/notes[old]")" 1 "a literal deny entry holding [ still refuses its folder (review 2026-10-21)"
+echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "tenant": "own"}, {"label": "work", "provider": "claude", "home": "~/.claude-work"}], "tenants": {"own": {"repos": ["notes[old]"]}}}' > "$ACCOUNTS_FILE.t10"
+check "$(CLAUDE_CONFIG_DIR="$HOME/.claude-work" ACCOUNTS_FILE="$ACCOUNTS_FILE.t10" A allowed "$PR/notes[old]")" 1 "a literal tenant entry holding [ still refuses its folder (review 2026-10-21; a deny entry until deny-drift)"
 echo '{"accounts": [{"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}], "tenants": {"acme": {"repos": ["acme-one"]}}}' > "$ACCOUNTS_FILE.t3"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.t3" ACCOUNT_NOW=$WED A pick --repo "$PR/acme-one" --json)" 3 "a tenant with no login: its repos run nowhere (exit 3), never on the primary"
 has "$T/out" "acme-one is acme's: it runs on no login only (tenants)" "…saying so"
@@ -1788,7 +1903,7 @@ has "$T/out" "acme-one is acme's: it runs on no login only (tenants)" "…saying
 echo "tenants: the tenants file, its logins named there, is the whole of tenancy (2026-10-22)"
 cat > "$ACCOUNTS_FILE.tf" <<'J'
 {"accounts": [
-  {"label": "work", "provider": "claude", "home": "~/.claude-work", "repos": {"deny": ["privy", "cv"]}},
+  {"label": "work", "provider": "claude", "home": "~/.claude-work"},
   {"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "beta"},
   {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true}],
  "tenants": {"beta": {"repos": ["app"]}}}
@@ -2292,7 +2407,7 @@ check "$(cd "$PR" && VT run work --version)" 1 "run work from ~/projects: refuse
 has "$T/out" "is off work: it holds privy (owner's" "…on the holds line"
 VU() { CLAUDE_CONFIG_DIR="$UO/claude-profiles/p1/home" ACCOUNT_ORCA_DATA="$UO" VT "$@"; }
 check "$(VU allowed "$PR/app")" 1 "an Orca login no row names is refused app, a vault-tenant repo regatta/orca-deny never named"
-has "$T/out" "app is off unsynced: it is owner's" "…by tenancy"
+has "$T/out" "app is off this Orca login, which no row names yet (\`account orca-sync\` records it): it is owner's" "…by tenancy, named as the login no row names"
 check "$(VU allowed "$PR/privy")" 1 "…and the vault, with regatta/orca-deny written empty"
 check "$(VU allowed "$PR")" 1 "…and ~/projects"
 has "$T/out" "it holds privy (owner's, tenants.json)" "…on a ' holds ' line, so a cd there is not refused"
@@ -2315,15 +2430,43 @@ has "$T/roster" "ok - tenant acme: acme-* — runs on lab only" "…and every ot
 check "$(grep -c '^fix' "$T/roster")" 0 "…and nothing to fix once the deny lists are gone"
 sed 's|"home": "~/.claude-work"}|"home": "~/.claude-work", "repos": {"deny": ["privy", "zed"]}}|' "$ACCOUNTS_FILE.vt" > "$ACCOUNTS_FILE.vt3"
 VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" vpy "$roster" > "$T/roster"
-has "$T/roster" "fix work privy on work's deny list in accounts.json.vt3 is owner's already: tenancy refuses it there" "doctor: a deny-list entry tenancy derives is a fix (G3)"
-has "$T/roster" "| take privy off work's deny list" "…its fix takes it off"
-check "$(grep -c zed "$T/roster")" 0 "…an entry no tenant holds stays unnamed"
+has "$T/roster" "fix work work's \"repos\": {\"deny\": …} in accounts.json.vt3 is ignored since 2026-11-03" "doctor: a row still carrying repos.deny is a fix (deny-drift), never read"
+has "$T/roster" "| delete the \"deny\" key from work's row in $ACCOUNTS_FILE.vt3" "…its fix deletes the key"
+check "$(grep -c zed "$T/roster")" 0 "…naming no entry: none is read, so none is judged"
+check "$(VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/zed") $(CLAUDE_CONFIG_DIR="$F" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/overlay")" "0 0" \
+  "…and the stale list refuses nothing: the default dir in zed's path, and work in a repo no tenant holds, are allowed"
+mkdir -p "$PR/zed"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/zed") $(VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT limits work --cached --repo "$PR/zed" --json; field "[0]['denied']")" "0 0
+None" "…from work's own dir too, in zed, which its stale list names: allowed, and limits denies it nothing"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/privy")" 1 "…nor widens anything: the vault stays off work by tenancy"
+sed 's|"home": "~/.claude-spare"}|"home": "~/.claude-spare", "repos": {"deny": ["privy"]}}|' "$ACCOUNTS_FILE.vt" > "$ACCOUNTS_FILE.vt4"
+check "$(CLAUDE_CONFIG_DIR="$S1" VT_ACCOUNTS="$ACCOUNTS_FILE.vt4" VT allowed "$PR/privy")" 0 "…a stale list on the vault's tenant's own login takes nothing from it"
+check "$(VT_ACCOUNTS="$ACCOUNTS_FILE.vt4" VT pick --repo "$PR/privy" --json) $(field "['account']")" "0 spare" "…and pick still walks to it first"
 echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/acme-only.json"
 VT_TENANTS="$T/vt/acme-only.json" vpy "$roster" > "$T/roster"
-has "$T/roster" "fix - the vault (privy) is refused no login: no tenant holds it and no deny list names it" "doctor: the deny lists gone before the vault's tenant was written is a fix"
+has "$T/roster" "fix - the vault (privy) is refused no login: no tenant holds it —" "doctor: a vault no tenant holds is a fix"
 has "$T/roster" "tenant set <name> --repos privy" "…whose fix is tenant set"
-VT_CONFIG="$REGATTA_CONFIG" VT_TENANTS="$T/vt/acme-only.json" vpy "$roster" > "$T/roster"
-check "$(grep -c 'refused no login' "$T/roster")" 0 "…while regatta/orca-deny still names the vault, none"
+echo "  a stale list naming a vault no tenant holds keeps it off (deny-drift's landing review, 2026-11-05)"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_TENANTS="$T/vt/acme-only.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/privy")" 1 \
+  "a row whose ignored deny list names the vault, with no tenant holding it: still refused the vault (fail closed)"
+has "$T/out" "privy is off work: no tenant holds the vault here, and this row's ignored" "…on its own line, which the guard blocks on"
+check "$(CLAUDE_CONFIG_DIR="$F" VT_TENANTS="$T/vt/acme-only.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" VT allowed "$PR/zed")" 0 "…while every other entry of the list stays unread"
+check "$(vpy 'print([a.stale_vault_deny({"repos": {"deny": [e]}}) for e in ("./privy", "privy/", "priv*", "privy", "other", "/privy")]); a.VAULT = "private/vault"; print(a.stale_vault_deny({"repos": {"deny": ["private"]}}))' | tail -2 | tr '\n' ' ')" \
+  "[True, True, True, True, False, False] True " "…in every spelling the list took, a folder above the vault included (the landing's round 2)"
+check "$(VT_TENANTS="$T/vt/acme-only.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" vpy 'print([(r["label"], a.employer(r)) for r in reg["accounts"] if r["provider"] == "claude"])' | tail -1)" \
+  "[('work', True), ('lab', False), ('spare', False), ('main', False)]" "…and work stays an employer's: its CLAUDE.md keeps the work file (lab, acme's, is free of a vault no tenant holds)"
+VT_TENANTS="$T/vt/acme-only.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" vpy "$roster" > "$T/roster"
+has "$T/roster" "it names the vault (privy), which no tenant holds here, so the vault stays off work until one does" "…doctor says why the key still counts"
+has "$T/roster" "| first $B/account tenant set <name> --repos privy" "…and its fix writes the tenant before the key goes"
+check "$(VT_TENANTS="$T/vt/acme-only.json" VT_ACCOUNTS="$ACCOUNTS_FILE.vt3" ACCOUNT_LOGINS="$T/no-logins.json" VT doctor --local)" 1 "doctor --local with no logins file (the yard node)…"
+has "$T/out" "work's \"repos\": {\"deny\": …} in accounts.json.vt3 is ignored since 2026-11-03" "…still names the stale row"
+rm -rf "$T/cfg-od"; cp -R "$T/cfg-vt" "$T/cfg-od"; printf 'privy\ncv\n' > "$T/cfg-od/regatta/orca-deny"
+VT_CONFIG="$T/cfg-od" VT_TENANTS="$T/vt/acme-only.json" vpy "$roster" > "$T/roster"
+check "$(grep -c 'refused no login' "$T/roster")" 1 "…and regatta/orca-deny naming the vault changes nothing: it is read by nothing since deny-drift"
+has "$T/roster" "fix - regatta/orca-deny names privy, cv and is ignored since 2026-11-03" "…doctor names the key as a fix"
+has "$T/roster" "no tenant holds the vault (privy) here, so it is open to such a login" "…saying the vault it no longer holds (the landing's round 2)"
+check "$(CLAUDE_CONFIG_DIR="$UO/claude-profiles/p1/home" ACCOUNT_ORCA_DATA="$UO" VT_CONFIG="$T/cfg-od" VT_TENANTS="$T/vt/acme-only.json" VT allowed "$PR/privy")" 0 \
+  "…and an Orca login no row names is let into a vault no tenant holds: the key keeps nothing off it (tenancy is the wall)"
 export ACCOUNT_VSCODE_USER="$T/vsc-t"
 vpy 'for t in a.tenant_ties(reg): print(t[1], t[2].replace(sys.argv[2], "PR"))' > "$T/ties"
 has "$T/ties" "ok PR/privy opens on VS Code profile default, owner's login" "doctor: a vault-tenant repo on the default profile is tied, the default dir being its login"
@@ -2376,7 +2519,7 @@ print(a.closed_row(r), a.home_memory_excluded(r, d), "--no-external-imports" in 
 check "$(vpy 'r=[x for x in reg["accounts"] if x["label"] == "work"][0]; print(a.closed_row(r), "--no-external-imports" in a.trust_argv(r))' | tail -1)" \
   "False True" "…while a work seat on a file that reads still gets them"
 VT_TENANTS="$T/vt/closed.json" vpy "$roster" > "$T/roster"
-check "$(grep -c "tenancy unread" "$T/roster")" 0 "doctor's roster names no tenant for a closed tenancy, nor a deny entry it 'covers'"
+check "$(grep -c "tenancy unread" "$T/roster")" 0 "doctor's roster names no tenant for a closed tenancy"
 check "$(VT_TENANTS="$T/vt/closed.json" vpy 'print(a.tenant_ties(reg))' | tail -1)" "[]" "…nor do the VS Code ties (one fix line, tenancy_state's, says it)"
 echo '{}' > "$T/vt/empty.json"
 check "$(CLAUDE_CONFIG_DIR="$F" VT_TENANTS="$T/vt/empty.json" VT allowed "$PR/privy")" 0 "a file written {}: tenancy off, explicitly (the one written way to end it)"

@@ -8,6 +8,8 @@ unset CLAUDE_UNATTENDED REGATTA_UNATTENDED   # an unattended /finish runs this c
 unset CLAUDE_CODE_SESSION_ID   # a held launch's /finish too: pr merge refuses its session (the cases that need one set it)
 B="$(cd "$(dirname "$0")/../libexec" && pwd)"   # pr sits outside bin/, reached as `regatta pr` (C1)
 T=$(mktemp -d); T=$(cd "$T" && pwd -P); trap 'rm -rf "$T"' EXIT
+# A mismatched run record searches transcripts next; never search the caller's real config.
+export CLAUDE_CONFIG_DIR="$T/claude-config"
 # the caller's config dir when it names one, else an empty scratch one: the core is the one beside this module
 export REGATTA_CONFIG="${REGATTA_CONFIG:-$T/regatta-config}"; unset REGATTA_HOME REGATTA_LEGACY
 fails=0
@@ -43,9 +45,12 @@ pr.common.token = lambda: "tok"
 pr.common.repo_slug = lambda url: "o/r"
 pull = {"number": 7, "title": "WIP: x", "body": "", "draft": True, "html_url": "u7", "base": {"repo": {"full_name": "o/r"}},
         "head": {"sha": os.environ.get("PR_HEAD", "")}}
+if os.environ.get("PR_CI_HOLD"):
+    pull.update(body=pr.common.CI_HOLD_NOTE, draft=False)
 pr.common.find_pr = lambda slug, name, tok=None: dict(pull)
-pr.common.edit_pr = lambda slug, n, tok=None, **f: (print("EDITED") or dict(pull))
-pr.common.ready_pr = lambda p, tok=None: print("READIED") or True
+pr.common.edit_pr = lambda slug, n, tok=None, **f: (print("EDITED") or dict(pull, **f))
+if not os.environ.get("PR_CI_HOLD"):
+    pr.common.ready_pr = lambda p, tok=None: print("READIED") or True
 pr.common.merge_pr_waiting = lambda slug, n, tok=None, automerge=False, **kw: (print("MERGE CALLED") or (True, "ok"))
 pr.common.required_contexts = lambda slug, base, tok=None: []
 CARRY = sys.argv[2] == "carried"  # `pr carried`: say which PR number the flag gave; every other verb carries nothing
@@ -120,6 +125,11 @@ run "$T/good.out" STRAYS
 has "$T/good.out" "STRAYS []" "rebuilt from the merge-base and rebased: no strays"
 run "$T/good-ready.out" ready --title t --body-file /dev/null
 has "$T/good-ready.out" "READIED" "  and pr ready readies it"
+PR_CI_HOLD=1 run "$T/ci-ready.out" ready --title t --body-file /dev/null
+has "$T/ci-ready.out" "API DELETE /repos/o/r/issues/7/labels/hold" "curation carries CI hold ownership across the body edit and releases it"
+PR_CI_HOLD=1 run "$T/ci-held.out" ready --hold --title t --body-file /dev/null
+has "$T/ci-held.out" "API POST /repos/o/r/issues/7/labels" "an explicit landing hold replaces CI's hold"
+lacks "$T/ci-held.out" "API DELETE" "  ready leaves the explicit hold in place"
 PR_HEAD=$(g rev-parse HEAD) run "$T/good-merge.out" merge
 has "$T/good-merge.out" "MERGE CALLED" "  and pr merge merges it"
 PR_HEAD=0123456789abcdef run "$T/stale-head.out" merge

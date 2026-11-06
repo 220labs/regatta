@@ -367,7 +367,7 @@ def _login(ctx, req, agent):
     if o.get("provider", "claude") != "claude":
         ctx.fail("%s is a %s login; this adapter launches claude only" % (acct, o["provider"]), 2)
     if o.get("denied"):
-        ctx.fail("%s is on %s's deny list (accounts.json)" % (o["denied"], acct), 2)
+        ctx.fail("%s: %s" % (acct, o.get("why") or "%s is off it (tenancy or a scope)" % o["denied"]), 2)
     if not o.get("here"):
         ctx.fail("%s's login is not on this Mac (%s): account check says what is owed" % (acct, o.get("why") or o.get("home")), 2)
     return acct, o.get("env") or {}

@@ -12,7 +12,7 @@
 #
 # Two roads, by whether the repo names a runner (free CI's S2, 2026-11-04):
 #   - CI_RUNS_ON or CI_RUNS_ON_FULL set (the private repo, on its own Macs): the `check` job below runs
-#     the whole line, or on a pull request its macOS share (CI_LINUX_ELSEWHERE), as before; the jobs
+#     the whole line, scoped on a pull request, or its scoped macOS share (CI_LINUX_ELSEWHERE); the jobs
 #     after it are skipped.
 #   - neither set (the public twin, a fork): the line in shares, so a run takes its slowest suite's
 #     time, about 7 minutes, not the line's 15. `plan` reads the Linux list (.github/ci/linux-ids,
@@ -99,7 +99,19 @@ jobs:
     # and a run beside 6 to 7 busy dispatch runs (load 8 to 11) was cut at 60 twice in helm's suite,
     # with every case before the cut passing (40435572133, attempts 1 and 2). A run over 90 is
     # a suite gone slow, or the runner under more load than on 2026-10-26.
-    timeout-minutes: 90
+    # 120 since 2026-11-03: that evening five whole-line jobs shared the build Mac at once, and nine
+    # checks on seven PRs were cut at 90 (41755396208 and 41755487396 twice each; 41755491328,
+    # 41755492028, 41755496941, 41755535372, 41762606680; read from the runners' worker logs), each in
+    # a late suite with every case before the cut passing; keel took 21 min and wharf-runs' lanes 25
+    # (about 10 and 14 at load 10), and the first to pass took 89.6 (41755496941's second attempt).
+    # The cause was the runner's load, not a suite: that evening the Linux share was off
+    # (CI_LINUX_ELSEWHERE not `true`) and every pull request ran the whole line here, unscoped. Since
+    # 2026-11-05, while CI_LINUX_ELSEWHERE is not `true`, a pull request runs `share.sh whole --scoped`
+    # (the step "check, the scoped whole line"): the whole line only where its change reaches every
+    # suite, touches .github/ or check_scope.py, or cannot be read. The nightly run (suite by suite)
+    # and a hand start still run it whole, and a push does where CI_SKIP_MAIN_PUSH is not `true`.
+    # A run over 120 is a suite gone slow, or the build Mac under more load than on 2026-11-03.
+    timeout-minutes: 120
     # keel's step runs where its session gate is: without hooks/sheep_gate.py keel's sheep fails
     # closed and its suite with it (178 cases on the twin's files, 2026-10-22). helm's step needs that
     # gate too (talk_nudge's cases). sheep_gate.py is public since keel-held (2026-10-23); the guard
@@ -144,7 +156,7 @@ jobs:
           echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
           echo "REGATTA_CONFIG=$RUNNER_TEMP/regatta-config" >> "$GITHUB_ENV"
       # A pull request's checkout is its merge commit (refs/pull/N/merge); depth 2 brings both parents, so
-      # the macOS share below can ask what the PR adds to its base (HEAD^1..HEAD, share.sh macos --scoped).
+      # both scoped PR steps below can ask what the PR adds to its base (HEAD^1..HEAD).
       # Anything else needs one commit.
       - uses: actions/checkout@v4
         with:
@@ -175,7 +187,10 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/claude-blocking/claude"
           echo "$RUNNER_TEMP/claude-blocking" >> "$GITHUB_PATH"
+      # the last setup step: the nightly steps run only when it succeeded (steps.setup.outcome), so a
+      # failed checkout, HOME move or wrapper reads as a red setup, never as fourteen red suites
       - name: a git identity for the suites' scratch commits
+        id: setup
         run: |
           git config --global user.name "CI"
           git config --global user.email ci@example.invalid
@@ -185,16 +200,21 @@ jobs:
       # macOS share (.github/ci/share.sh). A push, the nightly run and a hand start run the whole line,
       # so the suites' Darwin branches are still run on a Mac each day. Where no runner variable is set
       # (the twin, forks), the Linux list runs in the `suite` jobs below and this job only the rest, on
-      # every event. Exactly one of the three steps runs. The `check` step keeps its name and its one
+      # every event. Exactly one of the four steps runs, none when the green is carried; on the nightly run of a repo with a runner variable
+      # the `nightly <id>` steps stand in for the `check` step, one suite each, so a red suite never hides the
+      # rest. The `check` step keeps its name and its one
       # `run:` block: share.sh, twin-linux.sh and ci-provider read the line from it.
       # The share is scoped (free-ci S3, 2026-11-04): on a pull request only the suites the head's change
       # reaches run, by wharf-runs' check_scope.py, the verdicts a session's `check <worktree>` gives, and
-      # the rest print `SKIP <id>`. A head whose change cannot be read, or that changes a workflow, .github/ci/
+      # the rest print `SKIP <id>`. A head whose change cannot be read, or that changes anything under .github/
       # or check_scope.py itself, runs the whole share. The push, the nightly run and a hand start never
       # reach this step: they run the whole line below, so a scope miss shows in main's 09:17 UTC run
-      # (a push of main runs nothing where CI_SKIP_MAIN_PUSH is set), read by hand: no card reads it yet
-      # (TODO.md [free-ci-main-red]). While CI_LINUX_ELSEWHERE is not `true` the whole line runs, unscoped
-      # (TODO.md [free-ci-s3-share-off]).
+      # (a push of main runs nothing where CI_SKIP_MAIN_PUSH is set), which helm's main-check reader turns
+      # into a `main red` card and a logbook issue, one verdict per `nightly <id>` step (modules/helm/bin/main_check.py).
+      # While CI_LINUX_ELSEWHERE is not `true`, the scoped whole-line PR step also covers the Linux-list
+      # suites: check-linux.yml posts green without running them. With the share on, check-linux.yml's
+      # suite jobs cover those suites; without runner variables, this workflow's suite jobs cover them on
+      # every event.
       # The carry (wharf's `pr restack`, 2026-11-04): a push whose patch is the previous head's, list files
       # (TODO.md, CHANGELOG.md) aside, keeps that head's green instead of running again. It is what `pr restack`
       # pushes when GitHub marks a ready PR DIRTY on a list file alone, and the 85-min re-run it would start
@@ -233,11 +253,73 @@ jobs:
       - name: check, the macOS share
         if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
         run: bash .github/ci/share.sh macos --scoped
+      # Separate steps keep every suite running after a red and expose each verdict to
+      # helm's main-check reader. The ordinary check below stays the canonical line;
+      # helm's test_main_check suite checks that these steps cover it exactly.
+      - name: nightly marketplace
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          claude plugin validate --strict .
+      - name: nightly regatta
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/regatta/tests/check.sh
+      - name: nightly regatta-classes
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/regatta/tests/classes.sh
+      - name: nightly helloworld
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/helloworld/tests/check.sh
+      - name: nightly plumb
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/plumb/tests/check.sh
+      - name: nightly keel
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; }
+      - name: nightly sextant
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/sextant/tests/check.sh
+      - name: nightly wharf-runs
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/wharf-runs/tests/check.sh
+      - name: nightly lighthouse
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/lighthouse/tests/check.sh
+      - name: nightly wharf
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/wharf/tests/check.sh
+      - name: nightly aurora
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/aurora/tests/check.sh
+      - name: nightly atlas
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          bash modules/atlas/tests/check.sh
+      - name: nightly helm
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; }
+      - name: nightly todo-md
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.setup.outcome == 'success' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL) }}
+        run: |
+          { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }
       - name: check, the rest
         if: ${{ steps.carry.outputs.carry != 'true' && !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL }}
         run: bash .github/ci/share.sh rest
+      - name: check, the scoped whole line
+        if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE != 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
+        run: bash .github/ci/share.sh whole --scoped
       - name: check
-        if: steps.carry.outputs.carry != 'true' && (vars.CI_LINUX_ELSEWHERE != 'true' || github.event_name != 'pull_request') && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
+        if: github.event_name != 'schedule' && steps.carry.outputs.carry != 'true' && github.event_name != 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
         run: |
           claude plugin validate --strict . && bash modules/regatta/tests/check.sh && bash modules/regatta/tests/classes.sh && bash modules/helloworld/tests/check.sh && bash modules/plumb/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/keel/tests/check.sh; } && bash modules/sextant/tests/check.sh && bash modules/wharf-runs/tests/check.sh && bash modules/lighthouse/tests/check.sh && bash modules/wharf/tests/check.sh && bash modules/aurora/tests/check.sh && bash modules/atlas/tests/check.sh && { [ ! -f modules/keel/hooks/sheep_gate.py ] || bash modules/helm/tests/check.sh; } && { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }
   # The shares' road (the header's second): the jobs below run only where no runner variable is set,

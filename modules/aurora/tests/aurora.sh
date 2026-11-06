@@ -407,6 +407,26 @@ echo '{"repos": {"harbor": {}}, "scopes": {"vault": {"repos": ["harbor"], "confi
 AURORA_SECTIONS=trim CLAUDE_REPOS_JSON="$T/conf-repos.json" "$W" aurora "$V"; check $? 0 "a confidential scope's repo: the night exits 0"
 grep -q "^REFUSED trim coding $day: trim's fence" "$lg"; check $? 0 "  REFUSED by trim's own fence"
 check "$([ -e "$NT" ] && echo written || echo none)" "none" "  nothing collected, nothing written"
+# the trim step's own lines, from its header to the next section's (its own `== trim waits` header stays inside; another section's lines name its repos, as on main)
+check "$(awk '/^== trim at /{t=1; next} /^== trim waits /{next} /^== /{t=0} t' "$lg" | grep "harbor")" "" "  a scope that rotates (no rotation key), which trim would collect nameless: the night never collects it, and its step names it nowhere"
+echo '{"repos": {"harbor": {}}, "scopes": {"vault": {"repos": ["harbor"], "confidential": true, "rotation": false}}}' > "$T/conf-repos.json"
+rm -f "$lg"; AURORA_SECTIONS=trim CLAUDE_REPOS_JSON="$T/conf-repos.json" "$W" aurora "$V"
+grep -q "^REFUSED trim coding $day: trim's fence" "$lg" && [ ! -e "$NT" ]; check $? 0 "  one with rotation: false: refused the same"
+# the key names the repo by a link in the projects folder: judged as trim judges it, resolved
+ln -s "$TR" "$(core PROJECTS)/harbor-link"; echo "$(core PROJECTS)/harbor-link" > "$REGATTA_CONFIG/aurora/trim-repos"
+echo '{"repos": {"harbor": {}}, "scopes": {"vault": {"repos": ["harbor"], "confidential": true}}}' > "$T/conf-repos.json"
+rm -f "$lg"; AURORA_SECTIONS=trim CLAUDE_REPOS_JSON="$T/conf-repos.json" "$W" aurora "$V"
+grep -q "^REFUSED trim coding $day: trim's fence" "$lg" && [ ! -e "$NT" ]; check $? 0 "  one the key names by a link: refused the same, nothing collected"
+check "$(awk '/^== trim at /{t=1; next} /^== trim waits /{next} /^== /{t=0} t' "$lg" | grep "harbor")" "" "    and its step names it nowhere"
+rm -f "$(core PROJECTS)/harbor-link"; echo "$TR" > "$REGATTA_CONFIG/aurora/trim-repos"
+# the night's fence verb: open is 4, never 1 (python's crash code), and a core that does not load is no answer
+TP=$(awk "/^TRIM_PY='/{f=1; sub(/^TRIM_PY='/, \"\")} f{ if (/^'\$/) exit; print }" "$W")
+echo '{"repos": {"harbor": {}}, "scopes": {"vault": {"repos": ["harbor"], "confidential": true}}}' > "$T/conf-repos.json"
+CLAUDE_REPOS_JSON="$T/conf-repos.json" python3 -c "$TP" "$R/modules/regatta/hooks" confidential "$TR"; c1=$?
+echo '{"repos": {"harbor": {}}, "scopes": {"open": {"repos": ["*"]}}}' > "$T/open-repos.json"
+CLAUDE_REPOS_JSON="$T/open-repos.json" python3 -c "$TP" "$R/modules/regatta/hooks" confidential "$TR"; c2=$?
+python3 -c "$TP" "$T/no-core" confidential "$TR" 2>/dev/null; c3=$?
+check "$c1|$c2|$c3" "0|4|2" "the fence verb: confidential 0, open 4, a core that does not load 2 (the step fails on it, never a REFUSED line)"
 else echo "  skip  plumb's trim is not in this checkout (the public twin, until trim S8)"; fi
 rm -f "$REGATTA_CONFIG/aurora/trim-repos" "$T/logs/aurora-trim-tried" "$lg"
 

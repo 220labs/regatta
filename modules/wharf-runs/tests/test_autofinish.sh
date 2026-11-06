@@ -793,7 +793,7 @@ echo "the week is the picked account's: acct-c first, a denied repo the next row
 ln -s "$T/projects" "$HOME/projects"   # bin/account names a repo by its path under ~/projects
 mkdir -p "$HOME/.acct-c"
 # pool <acct-c week> <acct-a week> <acct-c 5h> <acct-a 5h> [age s]: acct-c (week_max 70)
-# denies smallrepo; both rows read at NOW - age; this login's own reading (tier_check) is 85 %
+# is refused smallrepo, acct-a's tenant's (a deny list until deny-drift); both rows read at NOW - age; this login's own reading (tier_check) is 85 %
 pool() {
   python3 - "$T/accounts.json" "$HOME" "$NOW" "$@" <<'EOF'
 import json, sys
@@ -801,8 +801,9 @@ f, home, now = sys.argv[1], sys.argv[2], float(sys.argv[3])
 iw, dw, i5, d5 = (float(x) for x in sys.argv[4:8])
 at = now - float(sys.argv[8]) if len(sys.argv) > 8 else now
 json.dump({"accounts": [
-    {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50, "week_max": 70}, "repos": {"deny": ["smallrepo"]}},
-    {"label": "acct-a", "home": home + "/.claude", "primary": True, "rules": {"window_max": 50}}]}, open(f, "w"))
+    {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50, "week_max": 70}},
+    {"label": "acct-a", "home": home + "/.claude", "primary": True, "rules": {"window_max": 50}, "tenant": "own"}],
+    "tenants": {"own": {"repos": ["smallrepo"]}}}, open(f, "w"))
 for d, wk, fh in ((home + "/.acct-c", iw, i5), (home + "/.claude", dw, d5)):
     json.dump({"at": at, "limits": {"five_hour": fh, "seven_day": wk, "five_hour_resets": now + 3600,
                                     "seven_day_resets": now + 3 * 86400, "locked": []}}, open(d + "/usage-probe.json", "w"))
@@ -814,7 +815,7 @@ export ACCOUNT_NOW=$NOW ACCOUNT_CLAUDE="$T/probe-claude"
 AP() { ACCOUNTS_FILE="$T/accounts.json" CLAUDE_TIER_CLAUDE_JSON="$T/tier-tight.json" python3 "$B/autofinish" --dry-run "$@"; }
 pool 6 85 10 10; AP demo > "$T/out-w" 2>&1; AP smallrepo >> "$T/out-w" 2>&1
 check "$(line "$T/out-w" a-ok)" "start (A)" "acct-c at 6 % runs A, though this login's own week reads 85 %"
-check "$(line "$T/out-w" b-ok)" "skip: week tight (acct-a 85% used, pace 57.1%)" "B in a repo acct-c denies: the primary's week, named"
+check "$(line "$T/out-w" b-ok)" "skip: week tight (acct-a 85% used, pace 57.1%)" "B in a repo acct-c is refused (acct-a's tenant's): the primary's week, named"
 pool 69 85 10 10; AP demo > "$T/out-w" 2>&1
 check "$(line "$T/out-w" a-ok)" "start (A)" "a secondary 12 points over pace but under its own ceiling (70 %): no pause — the ceiling is its gate"
 pool 85 6 10 10; AP demo > "$T/out-w" 2>&1
@@ -835,6 +836,8 @@ AP demo > "$T/out-w" 2>&1
 check "$(line "$T/out-w" a-ok)" "start (A)" "acct-c read at 5h 90 % six hours ago, its window reset since: it reads 0 %, start (no overnight pause on a stale reading)"
 rm -f "$HOME/.claude/usage-probe.json"; AP smallrepo > "$T/out-w" 2>&1
 check "$(line "$T/out-w" b-ok)" "skip: week tight (acct-a 85% used, pace 57.1%)" "the primary with no reading: the default login's own (tier_check), as before"
+pool 85 6 10 10; rm -f "$HOME/.claude/usage-probe.json"; AP demo > "$T/out-w" 2>&1
+check "$(line "$T/out-w" a-ok)" "start (A)" "an overdraw lifted ahead of a primary with no cached reading is no tight week: the fresh pick decides (overdraw round 2)"
 printf '#!/bin/sh\necho nope\nexit 1\n' > "$T/acct-broken"; chmod +x "$T/acct-broken"
 AUTOFINISH_ACCOUNT="$T/acct-broken" AP demo > "$T/out-w" 2>&1
 case "$(line "$T/out-w" a-ok)" in "skip: week tight (85% used"*) echo "  ok   an unreadable pick: the default login's week, as before";; *) echo "  FAIL broken pick: $(line "$T/out-w" a-ok)"; fails=$((fails+1));; esac

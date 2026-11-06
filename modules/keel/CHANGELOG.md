@@ -2,11 +2,75 @@
 
 ## Unreleased
 
+- The hold and the pick class after #504's review rounds (rabbit-holes S3): a doc in no commit stays could-not-tell
+  (exit 4), so a brief must name a doc the repo holds; the hold follows a `git mv` of the doc, reads branches and remote
+  branches only (never `refs/archive` or the stash), and lets the newer release in a worktree the brief names beat the
+  ref's stale hold; an answer that is one option's text ("merge", "yes, merge") picks it, a question of it ("Merge?")
+  picks nothing, and "recommended and no" or "recommended but overkill" read as none; `status --json`'s `held` agrees
+  with `keel held` where a builder deleted the options; the could-not-tell notes name a ref by its commit; and after the finish review, a worktree that merged the ref's no-pick
+  in leaves the ref's hold standing until the owner answers there, and a no-pick fast-forwarded in gets intake's reopen on `keel pull`'s "nothing new" road.
+- A Codex build's session no longer reads as idle for want of turns: before a tool runs, sheep_gate also sends
+  a prompt-free tier-0 activity signal through sessionpipe 0.5.0's `UserPromptSubmit` mapping, under the
+  event's own session and turn id — at most once a minute per session, only with a turn id, never after a
+  tool. Permission telemetry is dropped for the Codex runs wharf-runs starts (`PLAN_HARNESS=codex`, every
+  one `--approve-for-me`); every other permission hook is untouched. Every privacy check runs before either.
+  The receiver's reading of it is unverified (`docs/sheep-codex-activity-upstream-2026-11-04.md`).
+
 - A reply that hands the owner a doc no longer closes on WAITING FOR NOTHING: the Stop lint blocks it, as it does a Do this now block or a ⚠ stop, and asks for the WAITING FOR YOU line, because a handed doc waits on the owner's reading or answers, D-items or none (the owner, 2026-11-01). `hands_doc` in `bin/keel` is the reader, by the hand-over line's own shape: a link to github or to a file inside prose is no hand-over, a dated doc's file link alone on its line (all `keel line` prints for a new doc on a branch not pushed yet) is one. A WAITING FOR YOU line over a handed doc is no longer sent to another closing line. A skippered run is told to relay the doc in the same block, and that relay is the only ending it hears; a turn that owes a skill's line, a landed digest, keeps that finding. Such a branch now waits for the owner before autofinish lands it, as after any WAITING FOR YOU reply (`reply_veto`).
 - The principal rule's incomplete check judges the arms' rows only: a reviewer that timed out, or the parent's refused
   finding, no longer reads as an arm that did not answer; the last examine's row still does (the finish review).
 - `paste-paths --stop-hook` blocks once a reply that lists later work ("Notes for later:", "Left for later:", "For a follow-up session:") without naming where it went — TODO.md, `/todo`, a hand-off, the bulletin, a docs/ file, the PR body or the queue: nobody reads a closed session's chat (the owner, 2026-11-02). A done or under-way list, a sentence, and a fenced one pass.
 - The decision component (helm-ui S8, docs/helm-board-ux-2026-10-26.md): `decision_html(item, ctx)`, `decision_css()` and `decision_js()` (`ui/decision.css`, `ui/decision.js`, the helm council's round-6 component), and the Course page draws every decision through them, its ids, anchors and Save unchanged (`card-D<n>` with `data-ss-id`, a hidden `ans-D<n>` box Save, Copy and the draft read, `chip-`, `take-`, `reset-`). A decision shows its tier as a hand-drawn buoy and the words (safe, irreversible, held with its class, or yours: reopened, no pick, conditional, unmarked, pre-filled — dnd_held's words, fail-closed), the recommended flag beside its letter, short options side by side, and the owner's own words as the last row, exclusive with a letter: one answer per question, so an answer like `B - why` now shows as words, not a letter with words. A one-way pick (irreversible or held) asks for its confirm inline. The keys: ↓ ↑ walk the rows of a question's buttons before the next question, ← → across, J K question to question, Return chooses and confirms, R the recommended (refused for anything not a plain pick), A–F direct, Esc, ⌘↩ saves. Accept all takes only the safe one-letter picks, then offers the irreversible ones behind one confirm; held, conditional and unmarked stay the owner's (actions D1, the owner's C; it narrows the 2026-10-04 "one click to agree with everything"). A mode switch shows what ask, auto (helm's default), dnd and yolo would take, folding those decisions to two lines; yolo as keel yolo runs it, an unmarked pick taken and nothing at all while an open decision is reopened, conditional or has no pick; it is this browser's, per doc, and changes no run's mode. A doc in no checkout is tiered held · physical, as `yolo --dnd` holds it; the spacesheep page reads the primary's contract and redeploys when its physical line changes. A recommendation reads as a letter as yolo reads one (`B,`, `B.`, `**B**`). The arrows are the page's when nothing is ringed in view or past the last row, a waiting confirm goes when the ring leaves its option, and a key typed into a contenteditable is typing. `tests/decision.sh` has a case per key, per exclusive pick, the guard and the modes, and diffs one item drawn by the seam and by the page.
+- The pick class (rabbit-holes S3, docs/rabbit-holes-2026-11-02.md D3-A): `pick_of` reads an answer as `letter`,
+  `recommended` or `none` against its listed options — `parse` and `status --json` (`picks`, `held`) carry it,
+  `pull` prints it per changed answer, `lint --strict` warns on a `none`. Intake (`pull`, every Save's `merge`)
+  writes `> **Reopened.** no listed option picked` under a `none`; that reopen binds while the box picks nothing,
+  so a builder's `Revised.` or `Applied.` releases nothing. `keel held` (a brief's `Steps:` lines and `keel step`
+  calls, or a doc's steps) exits 3 while a step's `after:` names such an item, read from git along the branch's first
+  parents: the owner's commit that changes the Answer, intake's `> **Picked.**` under a later answer that names an
+  option (a Save a session commits), or a fresh architect's design pass (`> **Design pass.**`, its commit carrying
+  `Design-pass: <doc> D<n>`) releases it; a builder's reply, a merge, a relay or keel yolo's take does not. tests/picks.sh.
+  Its landing review's fixes: a letter the answer refuses beside the one it picks ("A over B", "Let's do B, not C")
+  no longer hides or replaces the pick; "Recommended, with a test too" and a lone lowercase letter are picks; a
+  go-ahead that names the owner's own option ("Go with the rented VM I already have") is `none`; a commit GitHub made is the owner's only
+  without an agent trailer; `status --json`'s `held` agrees with `keel held` under a box a builder rewrote; the walk
+  reads every version through one `git cat-file --batch`; a brief's absolute doc path resolves against this repo's
+  checkouts or its folder name, never by a cut at `/docs/`. Its review loop's: a letter refused by the words after
+  it ("C is too complex", "A and B are both wrong", "B — no, a cron job") or in a list the answer says "both" of is no
+  pick; a recommendation that refuses every option is `none`; a chat relay needs a name, its comma and a date; an
+  emptied box keeps the hold. `AGENT_TRAILER_RE` counts Codex and Antigravity commits as agents' (lighthouse's vendor trailers), for
+  every reader that shares it: stand's voids, `keel_dates`' first answer and the round reader's owner edits too.
+  Its second landing review's: the class errs to no pick — a pick is a chat tap (`Taken in chat (…): B — …`, by
+  construction, whatever its label: a chip reading "no extra round" read `none`), a leading letter followed by a
+  separator or words said of a pick, an option's opening words, a choice verb before a letter, the recommendation
+  bare or taken by a verb ("Go with the recommendation", "I agree"), a delegation ("your call"), a bare go-ahead or
+  a chat relay, and anything else (a question, a doubt, "I hate A") is `none`; `keel held` exits 4, "could not tell",
+  for a named step it cannot judge (a doc that does not parse, another repo's, absent, or without the step), where it
+  said "not held"; a `> **Design pass.**` line ends the git hold (curation drops the trailer); with the overlay's
+  `keel/owner-viewers` set (the names the owner saves a page under), a plumbed Save under any other name releases
+  nothing and intake writes no `Picked.` for it — unset, every plumbed Save is the owner's, as before; a doc named by
+  another worktree's path is judged at its HEAD too, where that HEAD is not already in the ref; `cat-file`'s output is
+  read by each object's size; `lint --strict` says whether a `none` met intake and is quiet once it was dealt with.
+  Its review loop's: a pick the answer withdraws, questions or doubts in its first clause ("B — maybe", "A, really?",
+  "B; no", "Go with B. Actually, scrap that"), a combination ("A and B", "B+C"), an option's words followed by words
+  about them ("rent a cloud VM sounds expensive") and a delegation beside the owner's own option ("Your call — but a
+  cron job") are `none`; intake's reopen binds until a `Picked.` or a `Design pass.` follows it, whatever the box holds;
+  an owner's commit made while the doc did not parse starts the hold at the next version that does. Round 2: one
+  withdrawal test guards every road, the recommendation's and the go-ahead's included ("recommended?", "Yes?"); a
+  combination is `none` on every road; `keel pull` and a page pull write no `Picked.` for an answer someone other than
+  the owner gave (the pulled commits' trailers, each Save's viewer); a failed `git log` is could not tell; another
+  worktree's HEAD is judged only where it holds the ref's last change to the doc. Round 3: a doc or a step absent at
+  the ref (a seed whose design doc lives on its own branch) is judged at the tip of every line that touched it (`doc_tips`);
+  the withdrawal test also reads a but-clause, an aside and another letter chosen after the pick, and guards the relay
+  and `Delegated in chat` roads; a removed worktree's path is the repo's; a `keel step` quoted from a thread is no step;
+  the last commit in a pull's range that changed an answer decides who gave it.
+  The D5 run's three rounds: the but-clause rule and a condition list in the withdrawal test, the owner's boxes in a
+  version that does not parse read as the owner's (`gap_answers`), `released_picks` credits the owner only with the
+  owner's own answer (`answer_others`), and the fence mask is the core's CommonMark reading. The landing review: the
+  gap's boxes are matched by the item's title, never as one set across boxes (a builder's renumbering that set the
+  no-pick box to another box's words released the hold), and another worktree's newer version that does not read is
+  could not tell even where the ref reads clean.
+
 - `keel lint --strict` judges a principal doc's Receipt (the principal tier's S4, G2): a doc whose `Written by` names
   `principal-architect`, or holds `principal` as an item of its own in its parenthesis, dated 2026-11-03 or later. No `## Receipt`, no
   `Completion: **<state>**` line, or anything but `incomplete` beside an arm's row that says refused, failed, timed

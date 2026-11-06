@@ -1090,6 +1090,11 @@ PY
     echo "2026-10-14T01:30:00-07:00 stopped claude/t/2026-10-14-gone-launch no-landing API Error: Your computer went to sleep mid-response."
     echo "2026-10-14T01:40:00-07:00 stopped claude/t/2026-10-14-moved-launch no-landing API Error: Your computer went to sleep mid-response."
   } > "$D/.git/claude/autofinished"
+  # the G1r stop's worktree: its landing ran at force, and its own review loop ended held (landing-fixes-in-run)
+  git -C "$D" worktree add -q "$D/.claude/worktrees/gate" claude/t/2026-10-14-gate-launch 2>/dev/null
+  GW="$(git -C "$D/.claude/worktrees/gate" rev-parse --absolute-git-dir)/claude"; mkdir -p "$GW"
+  printf '{"session": "sid-gate", "outcome": "stopped", "gate": "G1r", "priority": "force"}' > "$GW/autofinish.json"
+  printf '{"session": "sid-gate", "phase": "finish", "outcome": "held", "ended": 1}' > "$GW/build-review-finish.json"
   # S7: a plan whose task b waits on a, done two hours ago, and nobody started b
   "$HM" $SHIP s7plan --id s7 > /dev/null; "$HM" task s7 a > /dev/null; "$HM" task s7 b --title "Step b" > /dev/null
   "$HM" dep s7 b --on a > /dev/null; PLAN_NO_RENDER=1 "$HM" report s7 --task a --status done > /dev/null
@@ -1117,6 +1122,22 @@ PY
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S4'][0]; print(s['action'], s['key'][1], s['key'][2] == '$tip', s['worktree'].endswith('/net'))")" \
     "relaunch claude/t/2026-10-14-net-launch True True" "  S4: relaunch, keyed (host, branch, tip), the last stop of its branch counts"
   check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S5'))")" "['S4 stop, but the tip moved since (1111111 → ${tip:0:7})', 'WAITING line', 'gate G1r']" "  S5: a gate (the review's G1r too, its branch's last stop); a WAITING line that quotes an API error is no S4 (R4); nor a network stop on a tip that moved"
+DPATH=$(hl 'helmlib.peer("dispatch") and __import__("shlex").quote(str(helmlib.peer("dispatch"))) or "dispatch"')
+case "$DPATH" in /*) check "$([ -f "$DPATH" ] && echo yes)" "yes" "  the card's dispatch is a path that exists, never a bare name" ;; *) check "$DPATH" "an absolute path" "  the card's dispatch is a path" ;; esac
+check "$(got "s=[x for x in d['stalls'] if x['rule']=='gate G1r'][0]; print(s['evidence'][-1], '|', s['suggested'])")" \
+  "fix round: $DPATH claude/t/2026-10-14-gate-launch --repo $D --priority force (a finish's tail, ahead of the builds) | the fix round: $DPATH claude/t/2026-10-14-gate-launch --repo $D --priority force — never a plain normal dispatch" \
+  "  S5 G1r: its card names the fix round at the landing's own priority, read from its worktree (landing-fixes-in-run)"
+  printf '{"session": "sid-other", "phase": "finish", "outcome": "held", "ended": 1}' > "$GW/build-review-finish.json"
+  sj2=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$sj2" | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['rule']=='gate G1r'][0]; print(any(e.startswith('fix round') for e in s['evidence']), s['suggested'])")" \
+    "False raise it (A3)" "  a G1r stop whose loop record is another run's (or none: a plan refused): no fix-round line"
+  cp "$D/.git/claude/autofinished" "$T/af.keep"
+  echo "2026-10-14T01:16:00-07:00 stopped claude/t/2026-10-14-gate-launch G1 ⚠ step 1 — 2 real findings left at the cap; the check is green" >> "$D/.git/claude/autofinished"
+  printf '{"session": "sid-gate", "phase": "finish", "outcome": "cap", "ended": 1}' > "$GW/build-review-finish.json"
+  sj3=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$sj3" | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['topic']=='gate-launch'][0]; print(s['rule'], s['evidence'][-1].split(' claude/t/')[0] + ' claude/t/')")" \
+    "gate G1 fix round: $DPATH claude/t/" "  a capped loop whose stop names the check first (G1): its card still names the fix round (round 2's verifier)"
+  cp "$T/af.keep" "$D/.git/claude/autofinished"
   check "$(got "print(sorted(x['rule'] for x in d['stalls'] if x['class']=='S6'))")" "['closing line: RELAYED, its skipper gone', 'closing line: WAITING', 'live: waiting']" \
     "  S6: a parked WAITING line, a permission prompt, an orphaned relay"
   check "$(got "s=[x for x in d['stalls'] if x['class']=='S7'][0]; print(s['key'], s['raise_to'], s['column'])")" "['testhost', 's7', 'b'] owner Needs Sam" \
@@ -5692,6 +5713,28 @@ True True
 ['k#D1', 'k#D2', 'k#D10']
 0o600" \
   "a resume after an ask is the same round; a failed step's unreadable ETA spares the timeline; a later item's own prose is never the next one's; two asks of a guarded task differ in key and hash; a memo's open count and a stall's class move the hash; the doc's order puts lineless cards last, by number; the salt file is 0600"
+
+echo "a review stop's recovery command preserves shell arguments"
+QR="$T/shop's project"; QB='claude/test/fix;$value'
+git init -q -b main "$QR"; git -C "$QR" commit -q --allow-empty -m init
+git -C "$QR" checkout -qb "$QB"
+mkdir -p "$QR/.git/claude"
+printf '2026-11-04T00:00:00+00:00 stopped %s G1r review found a defect\n' "$QB" > "$QR/.git/claude/autofinished"
+printf '{"session":"quoted","priority":"force"}' > "$QR/.git/claude/autofinish.json"
+printf '{"session":"quoted","outcome":"held"}' > "$QR/.git/claude/build-review-finish.json"
+cat > "$T/fix-command.py" <<'PY'
+import shlex, sys
+sys.path.insert(0, sys.argv[1])
+import stalls
+rows, _ = stalls.judge_launches("testhost", set(), 1)
+row = rows[0]
+expected = [str(stalls.helmlib.peer("dispatch") or "dispatch"), sys.argv[3], "--repo", sys.argv[2], "--priority", "force"]
+command = row["evidence"][-1][len("fix round: "):].split(" (a finish", 1)[0]
+suggestion = row["suggested"][len("the fix round: "):].split(" — never", 1)[0]
+print(shlex.split(command) == expected, shlex.split(suggestion) == expected)
+PY
+check "$(STALLS_REPOS="$QR" python3 "$T/fix-command.py" "$B" "$QR" "$QB")" "True True" \
+  "the G1r card's evidence and suggestion quote a repo with spaces and an apostrophe, and a branch with shell syntax"
 
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }

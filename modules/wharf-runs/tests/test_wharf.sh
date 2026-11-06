@@ -1056,7 +1056,11 @@ cp "$T/bp.keep" "$BP"
 echo "  a handoff is a one-block ship: pickup seed writes docs/blueprints/<date>-<topic>.md beside its brief"
 HR="$T/home/projects/hdemo"; mkdir -p "$HR/.claude" "$T/hbp" "$T/home/.claude/projects" "$T/home/.claude/sessions"
 git -C "$HR" init -q -b main; git -C "$HR" config user.email t@t; git -C "$HR" config user.name t
-echo '{"checkpoint": true, "main": "main"}' > "$HR/.claude/workflow.json"; echo x > "$HR/f"; git -C "$HR" add -A; git -C "$HR" commit -qm init
+echo '{"checkpoint": true, "main": "main"}' > "$HR/.claude/workflow.json"; echo x > "$HR/f"
+# the doc the brief's Steps: line names, with an open S3 that waits on no D-item: keel's hold judges it and holds
+# nothing (#504: a doc in no commit is keel's "could not tell", which refuses the seed)
+mkdir -p "$HR/docs"; printf '%s\n' '# X' '' '## Action plan' '' '- **S3 — the follow-up** — x · session `worker` · status: not started' > "$HR/docs/x.md"
+git -C "$HR" add -A; git -C "$HR" commit -qm init
 TODAY=$(date +%F)
 printf '# hand-topic — handoff from demo: tests, %s\nTask: do the follow-up\nTier: Opus 5.5 high\nWhy: found it\nStart here: /x/a.py\nDone means: a test passes\nNot this: b\n## a heading in the brief\nSteps: S3 of docs/x.md\n' "$TODAY" > "$T/hbrief.md"
 PK() { env PICKUP_HOST=laptop PICKUP_NO_START=1 CLAUDE_CODE_SESSION_ID=9aaaaaaa-0000-4000-8000-000000000001 python3 "$B/pickup" "$@"; }
@@ -1084,6 +1088,17 @@ printf '# t\nTask: only a task\n' > "$T/hshort.md"
 out=$(PK seed hand-three --file "$T/hshort.md" --repo "$HR" --no-start --no-fetch 2>&1); check "$?" "0" "a brief that makes no valid blueprint still seeds…"
 check "$(git -C "$HR" diff --name-only main "claude/laptop/$TODAY-hand-three")" "docs/handoff/$TODAY-hand-three.md" "  …as the brief alone"
 has "$out" "no blueprint beside the brief: " "  and says why"
+# #504's fix round: a doc that is in the repo but does not read (a D-id twice) refuses the seed, as one in no commit does
+printf '%s\n' '# Y' '' '## Decisions' '' '- **D1 — one**' '- **D1 — again**' '' '## Action plan' '' \
+  '- **S3 — build** — x · session `worker` · after: D1 · status: not started' > "$HR/docs/y.md"
+git -C "$HR" add docs/y.md; git -C "$HR" commit -qm "a doc that does not read"
+sed 's#Steps: S3 of docs/x.md#Steps: S3 of docs/y.md#' "$T/hbrief.md" > "$T/hbrief-y.md"
+out=$(PK seed hand-four --file "$T/hbrief-y.md" --repo "$HR" --no-start --no-fetch 2>&1); check "$?" "1" "a brief naming a doc that does not read: the seed refused"
+has "$out" "keel's hold could not judge a step the brief names (could not tell: docs/y.md does not read" "  keel's could-not-tell, quoted"
+check "$(git -C "$HR" show-ref --verify --quiet "refs/heads/claude/laptop/$TODAY-hand-four"; echo $?)" "1" "  no seed branch made"
+sed 's#Steps: S3 of docs/x.md#Steps: S3 of docs/nosuch.md#' "$T/hbrief.md" > "$T/hbrief-n.md"
+out=$(PK seed hand-five --file "$T/hbrief-n.md" --repo "$HR" --no-start --no-fetch 2>&1); check "$?" "1" "a brief naming a doc in no commit: the seed refused (could not tell, never not held)"
+has "$out" "could not tell: docs/nosuch.md is not on" "  keel's reason, quoted"
 
 echo "  a crash between a call and its record replays once"
 SB="$WR/docs/blueprints/2026-10-17-solo.md"

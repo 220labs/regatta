@@ -306,5 +306,41 @@ has "$T/out" "open --note: this session runs in a confidential scope" "  by conf
 (cd "$P/node-knowledge" && python3 "$B/pickup" open "$LN" --repo "$P/demo" --fresh --dry-run --no-fetch) > "$T/out" 2>&1
 hasnt "$T/out" "open --note:" "  the same open without a note: not refused by the gate (it hands on no text of the node's)"
 
+echo "sandboxed-seed: every fence still refuses with ps refused, and the roads it lets by lay (docs/sandboxed-seed-2026-11-04.md)"
+# a sandboxed Mac session is refused the exec of ps (EPERM): ps_refused.py stands in, each refusal a line of
+# $T/ps.refused; a live registry entry with a start to check makes collect's walk reach ps (no other session's id)
+PSR_PY="$(cd "$(dirname "$0")" && pwd)/ps_refused.py"
+SX() { : > "$T/ps.refused"; (cd "${CWD:-$P/node-knowledge}" && PS_REFUSED_LOG="$T/ps.refused" python3 "$PSR_PY" "$B/pickup" seed "$@" --no-fetch) > "$T/out" 2>&1; echo $?; }
+printf '{"pid": %s, "sessionId": "live-sbx-1", "cwd": "%s", "procStart": "Mon Jan  1 00:00:00 2001", "updatedAt": 1}\n' "$$" "$P/demo" > "$SDIR/$$.json"
+mark; check "$(SX sbxplain --repo "$P/demo" --file "$T/clean.md" --no-start)" 1 "ps refused: a plain seed out of a confidential scope: refused"
+has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
+check "$(nothing sbxplain) $(wc -l < "$T/ps.refused" | tr -d ' ')" "none 0" "  nothing written, and ps never asked: the fence is before collect()"
+printf '{"pid": 99999, "sessionId": "node-sess-sbx", "cwd": "%s", "updatedAt": 99}\n' "$P/node-knowledge" > "$SDIR/99999.json"
+mark; check "$(CWD="$P/demo" CLAUDE_CODE_SESSION_ID=node-sess-sbx SX sbx7 --file "$T/look.md" --repo "$P/demo" --no-start)" 1 \
+  "  a node session's \`cd <open repo> && pickup seed\`: refused by its session's folder (the registry, never ps)"
+has "$T/out" "a seed out of it goes by --from" "  by confined_refusal"
+check "$(nothing sbx7) $(wc -l < "$T/ps.refused" | tr -d ' ')" "none 0" "  nothing written, ps never asked"
+rm -f "$SDIR/99999.json"
+mark; check "$(CWD="$P/demo" SX sbxout --from node --repo "$P/demo" --file "$T/clean.md")" 1 "  seed --from node from a cwd outside it: refused"
+has "$T/out" "is not in scope node" "  by from_scope_refusal"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ') $(nothing sbxout) $(wc -l < "$T/ps.refused" | tr -d ' ')" "0 none 0" "  no judge, nothing written, ps never asked"
+mark; check "$(CLAUDE_REPOS_JSON="$T/torn.json" SX sbxtorn --from node --repo "$P/demo" --file "$T/clean.md")" 1 "  a torn registry: refused"
+check "$(nothing sbxtorn) $(wc -l < "$T/ps.refused" | tr -d ' ')" "none 0" "  nothing written, ps never asked"
+# a fence after collect(): the scope-pass judge, which reads the brief once ps was asked and refused
+mark; check "$(SX sbxleak --from node --repo "$P/demo" --file "$T/leaky.md")" 1 "  a brief the judge calls a leak, past the refused ps: refused"
+has "$T/out" "judged a leak by the gate's scope.brief judge" "  by the judge"
+check "$(nothing sbxleak) $(grep -c -- '-o lstart=' "$T/ps.refused")" "none 1" "  nothing written, the live registry asked and refused first"
+SXN=claude/laptop/$TODAY-sbxfrom
+mark; check "$(SX sbxfrom --from node --repo "$P/demo" --file "$T/clean.md")" 0 "ps refused: seed --from node, reviewed: seeded"
+has "$T/out" "reviewed: the brief leaving node is clean" "  reviewed first"
+check "$(git -C "$P/demo" diff --name-only main $SXN | tr '\n' ' ')" "docs/blueprints/$TODAY-sbxfrom.md docs/handoff/$TODAY-sbxfrom.md docs/handoff/$TODAY-sbxfrom.review " \
+  "  the brief, its review and its blueprint"
+has "$T/dispatch.calls" "dispatch $SXN --repo $P/demo --next --origin $NM" "  started by dispatch with the marker as --origin"
+check "$(grep -c -- '-o lstart=' "$T/ps.refused")" "2" "  the live registry asked, and refused, before the seed and after"
+hasnt "$T/out" "PermissionError" "  never the sandbox's refusal"
+mark; check "$(CWD="$P/demo" SX sbxopen --repo "$P/demo" --file "$T/clean.md" --no-start)" 0 "ps refused: an open repo's own plain seed: seeded"
+has "$T/out" "seeded claude/laptop/$TODAY-sbxopen in demo" "  laid"
+rm -f "$SDIR/$$.json"
+
 echo
 [ "$fails" -eq 0 ] && echo "all seed --from tests pass" || { echo "$fails seed --from test(s) FAILED"; exit 1; }

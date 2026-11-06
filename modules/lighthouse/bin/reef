@@ -13,6 +13,13 @@ so that regatta's jobs and CI run smoothly at the capacity that we can").
                      (the repo's `live:` line: a session reads live limits, the sweep writes them)
     reef bounds      this host's `lighthouse/reef` line as reef reads it: `regatta limit`'s trial reader (exit 2: a
                      line it refuses)
+    reef seed [--dry-run]
+                     where this host has no line (nor a `*:` one), write `mode=on,run=1-<cap>,check=1-<slots>` from
+                     the host's own run cap and check slots, so reef only shrinks from what the host was sized for and
+                     grows back to it; a host with a line, any line, is left alone. A new node asks for it once: its
+                     clone unit leaves SEED_PENDING as it joins the fleet (wharf-runs' node/agent.payload.yaml), and the
+                     first sweep after (`hosts`' reef_soon) seeds through `apply --seed`, the config settled by then;
+                     the marker goes once a line stands, so a line the owner removes later is never written again
     reef log [-n N]  the last changes reef made here
 
 Why each host tunes itself. The sampler already keeps each host's last 8 h on the host (load per core, free memory,
@@ -24,12 +31,15 @@ moves runs to the hosts with room.
 The bounds, one line per host in `lighthouse/reef` (a live limit: `regatta limit set reef <host>:<line>`, or
 `<line> --all` for a line per host; a `*:` line, for every host without its own, only in the base file
 `<config>/lighthouse/reef`): `mode=on|advise|off`, `run=<floor>-<ceiling>`, `check=<floor>-<ceiling>`. `mode=on` needs
-both ranges; reef never moves a limit outside them, and moves one back inside at its next turn; `run=N-N` pins a
-value. No line, or `mode=advise`, prints and logs what it would do and writes nothing; `mode=off` returns at once.
+both ranges; reef never moves a limit outside them, and moves one back inside at its next turn (bar a value the
+owner set by hand outside them, below); `run=N-N` pins a value. No line, or `mode=advise`, prints and logs what it would do and writes nothing; `mode=off` returns at once.
 
 The owner's word stands: a limit that reads other than reef last left it was set by hand (`regatta limit set`, from
 any host), so reef records what it saw and holds a whole cooldown, then judges from that value on samples taken
-since. One turn at a time per host (a lock beside the ledger): a turn that overlaps another exits 0.
+since. A hand-set value outside the bounds is not moved back inside: reef holds that limit, saying so, while the
+value and that limit's range stay as they were when it saw the hand set (a raise above a seeded ceiling stays the
+owner's). A range changed after it is the newer word: the hand set is spent for good (a baseline row), and the value
+clamps. While a limit is held the other is still judged, bar growth past held check slots, which keeps the order. One turn at a time per host (a lock beside the ledger): a turn that overlaps another exits 0.
 
 The rule, one step a turn, at most one change (or tried change) per host a COOLDOWN, judged over the samples of the
 last WINDOW taken since that change (at least MIN_POINTS of them, so the load the last change made is what is
@@ -38,16 +48,18 @@ measured before the next):
           newest sample's free memory is under 1.2× headroom's `avail`, or its swap rate over half headroom's `rate`:
           check slots down one, at their floor run cap down one (check suites are most of the load; a run that waits
           for a slot holds memory, not CPU).
-  cold  — every sample's load per core under half of load-max, free memory over twice headroom's `avail`, no
-          swapping: check slots up one while checks fill every slot (running or waiting), at their ceiling the run cap
+  cold  — the median load per core under 0.6× load-max, the newest sample under it too and at most one sample at
+          or over it, none over load-max; free memory over twice headroom's `avail`, no swapping (a steady baseline
+          under 0.6× grows back, a load still rising never does). A hold says which of these failed: check slots up one while checks fill every slot (running or waiting), at their ceiling the run cap
           up one while every run slot is busy (an idle host gains nothing from more room, and a burst could land on
           it at once).
   else  — holds.
 CI runners on a host count in its load, which is the point: reef gives a host's room to its CI before its runs.
 
-Exit 0 done (a hold included); 2 a usage error, a refused line, or `apply` under an unattended caller (a dispatched
-run never changes a limit; the sweep's job carries no marker); 3 a write that failed or read back otherwise; 4 no
-fresh row (the sampler has not run, or its row is older than STALE). Python 3.9, stdlib only.
+Exit 0 done (a hold included); 2 a usage error, a refused line, or `apply` or `seed` under an unattended caller (a
+dispatched run never changes a limit; the sweep's job carries no marker); 3 a write that failed or read back
+otherwise, or `seed`'s limits unread (no line written); 4 no fresh row (the sampler has not run, or its row is older
+than STALE). Python 3.9, stdlib only.
 """
 import argparse
 import fcntl
@@ -73,7 +85,10 @@ COOLDOWN = 19 * 60    # s between two changes on one host: just under two sweeps
                       # never turns it into three (the window's MIN_POINTS since the change are the real wait)
 STALE = 20 * 60       # s: a row older than this is no reading of now
 HOT_LOAD = 1.0        # × load-max, the median over the window
-COLD_LOAD = 0.5       # × load-max, every point in the window
+COLD_MEDIAN = 0.6     # × load-max: the median and the newest sample under it, at most one sample at or over it
+                      # (2026-11-04: "every point under half" held a host whose steady load sat between 0.5× and 0.6×;
+                      # the laptop that prompted it is held by memory instead, its free share never over 2× avail)
+COLD_PEAK = 0.8       # × load-max: no point in the window over it (a burst near load-max is no room, even once past)
 HOT_AVAIL = 1.2       # × headroom's avail: free memory under this is pressure
 COLD_AVAIL = 2.0      # × headroom's avail: free memory over this is room
 HOT_RATE = 0.5        # × headroom's rate: swapping over this is pressure
@@ -221,18 +236,30 @@ def judge(row, now, since=None):
     if hot:
         return "hot", "; ".join(hot)
     rates = [p[3] for p in pts if isinstance(p[3], (int, float))]
-    cold = (max(loads) < lmax * COLD_LOAD
-            and isinstance(avail, (int, float)) and avail > (a_lim or 10) * COLD_AVAIL
-            and all(r < 1 for r in rates + ([rate] if isinstance(rate, (int, float)) else [])))
-    if cold:
-        return "cold", "load at most %.2f per core over %d samples, %.0f %% free, no swapping" % (max(loads), len(loads), avail)
-    return "hold", "load %.2f per core (median of %d), within load-max %.2f" % (med, len(loads), lmax)
+    newest = max((p for p in pts if isinstance(p[1], (int, float))), key=lambda p: p[0])[1]
+    line, why_not = lmax * COLD_MEDIAN, []
+    if med >= line:
+        why_not.append("median load %.2f per core, not under %.2f (0.6× load-max)" % (med, line))
+    if newest >= line:
+        why_not.append("newest sample %.2f, not under %.2f (rising)" % (newest, line))
+    if sum(1 for x in loads if x >= line) > 1:
+        why_not.append("%d samples at or over %.2f" % (sum(1 for x in loads if x >= line), line))
+    if max(loads) > lmax * COLD_PEAK:
+        why_not.append("a sample at %.2f, over %.2f (0.8× load-max)" % (max(loads), lmax * COLD_PEAK))
+    floor = (a_lim or 10) * COLD_AVAIL
+    if not (isinstance(avail, (int, float)) and avail > floor):
+        why_not.append("%s %% free, cold needs over %.0f %%" % ("?" if avail is None else "%.0f" % avail, floor))
+    if not all(r < 1 for r in rates + ([rate] if isinstance(rate, (int, float)) else [])):
+        why_not.append("swapping in the window")
+    if not why_not:
+        return "cold", "load %.2f per core (median of %d), at most %.2f, %.0f %% free, no swapping" % (med, len(loads), max(loads), avail)
+    return "hold", "within load-max %.2f, not cold: %s" % (lmax, "; ".join(why_not))
 
 
-def decide(row, b, cur, now, last_change=None, demand=None):
+def decide(row, b, cur, now, last_change=None, demand=None, held=()):
     """The plan: {"state", "why", "changes": [(which, from, to, why)], "note"} for the row, the bounds B, the
-    current values CUR ({"run": n, "check": n}), the last change's time on this host and DEMAND, the checks running
-    or waiting here (None: unknown). Pure: the suite's."""
+    current values CUR ({"run": n, "check": n}), the last change's time on this host, DEMAND, the checks running
+    or waiting here (None: unknown), and HELD, the limits a hand set holds (never moved). Pure: the suite's."""
     state, why = judge(row, now, last_change)
     plan = {"state": state, "why": why, "changes": [], "note": ""}
     if b.get("mode") == "off":
@@ -241,7 +268,7 @@ def decide(row, b, cur, now, last_change=None, demand=None):
     rng = {k: b.get(k) for k in LIMITS}
     # back inside the bounds first: an owner's narrower line, or a value set by hand outside it
     for k in GROW:
-        if rng[k] and isinstance(cur.get(k), int) and not rng[k][0] <= cur[k] <= rng[k][1]:
+        if k not in held and rng[k] and isinstance(cur.get(k), int) and not rng[k][0] <= cur[k] <= rng[k][1]:
             to = min(max(cur[k], rng[k][0]), rng[k][1])
             plan["changes"].append((k, cur[k], to, "outside its bounds %d-%d" % rng[k]))
             return plan
@@ -251,6 +278,8 @@ def decide(row, b, cur, now, last_change=None, demand=None):
     slots = row.get("slots") or {}
     if state == "hot":
         for k in SHRINK:
+            if k in held:
+                continue
             lo = rng[k][0] if rng[k] else 1
             if isinstance(cur.get(k), int) and cur[k] > lo:
                 plan["changes"].append((k, cur[k], cur[k] - 1, why))
@@ -258,6 +287,14 @@ def decide(row, b, cur, now, last_change=None, demand=None):
         plan["note"] = "hot at every floor: nothing left to give back here"
     elif state == "cold":
         for k in GROW:
+            if k in held:
+                if k == "check" and rng[k] and cur[k] < rng[k][1]:
+                    plan["note"] = "%s held by hand: holds (check slots grow first)" % LIMITS[k]
+                    return plan
+                if k == "run":
+                    plan["note"] = "%s held by hand: holds" % LIMITS[k]
+                    return plan
+                continue
             if rng[k] and not isinstance(cur.get(k), int):
                 # growing the next limit past one that cannot be read breaks the order: check slots first
                 plan["note"] = "%s unread: holds" % LIMITS[k]
@@ -306,9 +343,11 @@ def last_change(host):
     return max(ts) if ts else None
 
 
-def known(host):
-    """{which: the value reef last left it at here}: its last write that took, or the hand-set value it last saw."""
-    out = {}
+def known(host, by_hand=False):
+    """{which: the value reef last left it at here}: its last write that took, the value a seed found it at, or the
+    hand-set value it last saw. BY_HAND: only the limits whose last word was a hand set reef saw ({which: (that
+    value, that limit's range when it was seen, `<floor>-<ceiling>` or None)})."""
+    out, hand = {}, {}
     for r in ledger_rows():
         if r.get("host") != host:
             continue
@@ -316,9 +355,32 @@ def known(host):
             if r.get("key") == key:
                 if isinstance(r.get("seen"), int):
                     out[k] = r["seen"]
-                elif r.get("done") and isinstance(r.get("to"), int):
+                    hand[k] = (r["seen"], r.get("range"))
+                elif (r.get("done") or r.get("baseline")) and isinstance(r.get("to"), int):
                     out[k] = r["to"]
-    return out
+                    hand.pop(k, None)
+    return hand if by_hand else out
+
+
+SEED_PENDING = "reef-seed"   # beside the ledger: a node's clone unit asks for one seed (wharf-runs' node payload)
+
+
+def seed_pending():
+    """The marker, honoured only where its one writer left its own record: a node's clone unit, which writes
+    `<config>/wharf-runs/node/reef-seed-asked` beside it (a stray marker elsewhere seeds nothing)."""
+    m = ledger().with_name(SEED_PENDING)
+    return m if m.exists() and (Path(common.CONFIG) / "wharf-runs" / "node" / "reef-seed-asked").exists() else None
+
+
+def refused_unattended(verb):
+    who = common.unattended_caller() if hasattr(common, "unattended_caller") else common.unattended()
+    if who:
+        print("reef: %s writes this host's live limits — refused under %s; the queue's sweep runs it" % (verb, who), file=sys.stderr)
+    return bool(who)
+
+
+def tail(err, out=""):
+    return ((err or "").strip().splitlines() or [(out or "").strip()] or [""])[-1][:200]
 
 
 def check_demand():
@@ -352,8 +414,18 @@ def record(entry):
             fh.write(json.dumps(entry, sort_keys=True) + "\n")
         rows = f.read_text().splitlines()
         if len(rows) > 2000:   # about two weeks of a change every turn; the history worth keeping is the limit's own
+            # each host's limit keeps its last word (a write that took, a seed's reading, a hand set) past the cut,
+            # or known() would lose what reef left there and a held raise would be clamped
+            keep, last = rows[-1000:], {}
+            for l in rows[:-1000]:
+                try:
+                    r = json.loads(l)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("key") in LIMITS.values() and (r.get("done") or r.get("baseline") or "seen" in r):
+                    last[(r.get("host"), r.get("key"))] = l
             tmp = f.with_name("%s.%d.tmp" % (f.name, os.getpid()))
-            tmp.write_text("\n".join(rows[-1000:]) + "\n")
+            tmp.write_text("\n".join(list(last.values()) + keep) + "\n")
             os.replace(tmp, f)
     except OSError:
         pass
@@ -364,12 +436,9 @@ def record(entry):
 def make_plan(a, host):
     row = row_of(a.row)
     now = time.time()
-    if not row or not isinstance(row.get("at"), (int, float)):
-        return None, "no row: the sampler's file is missing or does not read (hosts sample)"
-    if now - row["at"] > STALE:
-        return None, "the row is %d min old (over %d): no reading of now" % ((now - row["at"]) // 60, STALE // 60)
-    if (row.get("host") or "").lower() not in ("", host):
-        return None, "the row is %s's, not %s's" % (row.get("host"), host)
+    refusal = row_refusal(row, host, now)
+    if refusal:
+        return None, refusal
     b, src = bounds(host)
     if b["mode"] == "off":
         return {"state": "off", "why": "mode=off", "changes": [], "note": "off (%s)" % KEY, "host": host, "at": int(now),
@@ -377,18 +446,41 @@ def make_plan(a, host):
     cur = {k: current(host, k) for k in LIMITS}
     if cur["run"] is None and isinstance((row.get("slots") or {}).get("cap"), int):
         cur["run"] = row["slots"]["cap"]
-    plan = decide(row, b, cur, now, last_change(host), check_demand())
-    # a value reef never left there is the owner's newer word: hold a cooldown, recorded, unless it is outside the
-    # bounds (the bounds are the owner's word too, and the clamp already planned)
-    was = known(host)
+    # a value reef never left there is the owner's newer word: hold a cooldown, recorded with that limit's range
+    # when seen. One outside the bounds is held while the value and that range stand (never clamped); a range
+    # changed since is the newer word, spent and clamped
+    was, hand = known(host), known(host, by_hand=True)
     seen = {k: cur[k] for k in LIMITS if isinstance(cur.get(k), int) and k in was and cur[k] != was[k]}
-    if seen and b["mode"] == "on" and not any(c[3].startswith("outside its bounds") for c in plan["changes"]):
+    rng_s = {k: ("%d-%d" % b[k]) if b.get(k) else None for k in LIMITS}
+    held, spent = set(), {}
+    for k in LIMITS:
+        # a hand set whose limit's range changed since: spent for good (recorded, in any mode reef judges: an advise
+        # line or none between two equal lines is a change too), never held again
+        if k in hand and hand[k][1] != rng_s[k] and isinstance(cur.get(k), int) and k not in seen:
+            spent[k] = cur[k]
+    if b["mode"] == "on":
+        for k in LIMITS:
+            if k in spent:
+                continue
+            rk = b.get(k)
+            if rk and isinstance(cur.get(k), int) and not rk[0] <= cur[k] <= rk[1] \
+                    and (k in seen or hand.get(k) == (cur[k], rng_s[k])):
+                held.add(k)
+    plan = decide(row, b, cur, now, last_change(host), check_demand(), held)
+    held_note = "; ".join("held: %s %d was set by hand outside its bounds %d-%d (reef leaves it while the value and its range stand)"
+                          % ((LIMITS[k], cur[k]) + tuple(b[k])) for k in sorted(held))
+    if seen and b["mode"] == "on" and any(c[3].startswith("outside its bounds") for c in plan["changes"]):
+        seen = {k: v for k, v in seen.items() if k in held}   # another limit comes back inside first
+    elif seen and b["mode"] == "on":
         plan["changes"] = []
         plan["note"] = "held: %s set by hand (reef left %s); the cooldown starts now" % (
             ", ".join("%s %d" % (LIMITS[k], v) for k, v in seen.items()), ", ".join(str(was[k]) for k in seen))
-    else:
+    elif b["mode"] != "on":
         seen = {}
-    plan.update(host=host, at=int(now), mode=b["mode"], bounds=canon(b), source=src, current=cur, seen=seen)
+    if held_note:
+        plan["note"] = held_note + ("; " + plan["note"] if plan["note"] else "")
+    plan.update(host=host, at=int(now), mode=b["mode"], bounds=canon(b), source=src, current=cur, seen=seen,
+                spent=spent, ranges=rng_s)
     return plan, None
 
 
@@ -416,24 +508,50 @@ def cmd_plan(a):
     return 0
 
 
-def cmd_apply(a):
-    who = common.unattended_caller() if hasattr(common, "unattended_caller") else common.unattended()
-    if who:
-        print("reef: apply writes this host's live limits — refused under %s; the queue's sweep runs it" % who, file=sys.stderr)
-        return 2
-    host = host_here()
-    # one turn at a time: two overlapping turns would each step the same limit inside one cooldown
+def turn_lock(host):
+    """(the held lock, None) or (None, an exit code): one reef turn at a time here, apply and seed alike — two
+    overlapping turns would each step the same limit, or each seed, inside one cooldown."""
     try:
         lf = ledger().with_name("reef.lock")
         lf.parent.mkdir(parents=True, exist_ok=True)
         lock = open(lf, "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock, None
     except BlockingIOError:
         print("reef %s: another reef turn is running here" % host)
-        return 0
+        return None, 0
     except OSError as e:
         print("reef %s: no lock (%s): writes nothing" % (host, e), file=sys.stderr)
-        return 3
+        return None, 3
+
+
+def row_refusal(row, host, now):
+    """Why ROW is no reading of this host now, or None (make_plan's checks, which a seed meets first too)."""
+    if not row or not isinstance(row.get("at"), (int, float)):
+        return "no row: the sampler's file is missing or does not read (hosts sample)"
+    if now - row["at"] > STALE:
+        return "the row is %d min old (over %d): no reading of now" % ((now - row["at"]) // 60, STALE // 60)
+    if (row.get("host") or "").lower() not in ("", host):
+        return "the row is %s's, not %s's" % (row.get("host"), host)
+    return None
+
+
+def cmd_apply(a):
+    if refused_unattended("apply"):
+        return 2
+    host = host_here()
+    lock, rc = turn_lock(host)
+    if not lock:
+        return rc
+    pend = seed_pending() if a.seed else None
+    srow = row_of(a.row) if pend else None
+    if pend and not row_refusal(srow, host, time.time()):   # a stale or foreign row seeds nothing
+        rc = seed(host, srow)
+        if rc in (0, 2):   # a line stands now, or one the owner must fix: the node's one seed is spent either way
+            try:
+                pend.unlink()
+            except OSError:
+                pass
     try:
         plan, why = make_plan(a, host)
     except Refused as e:
@@ -447,7 +565,11 @@ def cmd_apply(a):
     print(words(plan))
     for k, v in plan["seen"].items():
         record({"at": plan["at"], "host": host, "key": LIMITS[k], "from": None, "to": v, "seen": v, "tried": True,
+                "bounds": plan["bounds"], "range": plan["ranges"][k],
                 "why": "set by hand", "mode": plan["mode"]})
+    for k, v in plan.get("spent", {}).items():
+        record({"at": plan["at"], "host": host, "key": LIMITS[k], "from": None, "to": v, "baseline": True, "mode": plan["mode"],
+                "why": "its range changed since the hand set: the newer word"})
     rc = 0
     for k, f, t, why in plan["changes"]:
         entry = {"at": plan["at"], "host": host, "key": LIMITS[k], "from": f, "to": t, "why": why, "mode": plan["mode"]}
@@ -457,10 +579,9 @@ def cmd_apply(a):
         # limit set reads the value back itself and exits 3 when it reads otherwise: its 0 is the proof
         code, out, err = run(tool("regatta") + ["limit", "set", LIMITS[k], "%s:%d" % (host, t)], timeout=180, host=host)
         done = code == 0
-        record(dict(entry, done=done, tried=True, **({} if done else {"error": (err.strip().splitlines() or [out.strip()] or [""])[-1][:200]})))
+        record(dict(entry, done=done, tried=True, **({} if done else {"error": tail(err, out)})))
         if not done:
-            print("reef: %s %s:%d was not written (exit %d): %s"
-                  % (LIMITS[k], host, t, code, (err.strip().splitlines() or [""])[-1][:200]), file=sys.stderr)
+            print("reef: %s %s:%d was not written (exit %d): %s" % (LIMITS[k], host, t, code, tail(err)), file=sys.stderr)
             rc = 3
     return rc
 
@@ -477,12 +598,67 @@ def cmd_bounds(a):
     return 0
 
 
+def cmd_seed(a):
+    if not a.dry_run and refused_unattended("seed"):
+        return 2
+    host = host_here()
+    if a.dry_run:
+        return seed(host, None, True)
+    lock, rc = turn_lock(host)
+    return seed(host, None) if lock else rc
+
+
+def seed(host, row=None, dry_run=False):
+    """Write HOST's first line from its own limits where it has none (0: written or a line stands; 2: a line that
+    does not read; 3: limits unread or the write refused). ROW: the sampler's, whose slots.cap stands in for an
+    unread run cap, as make_plan reads it."""
+    try:
+        b, src = bounds(host)
+    except Refused as e:
+        print("reef: %s — a line that does not read is left for its owner" % e, file=sys.stderr)
+        return 2
+    if src.startswith(KEY):
+        print("reef %s: %s — its line stands" % (host, src))
+        return 0
+    cur = {k: current(host, k) for k in LIMITS}
+    if cur["run"] is None and isinstance(((row or {}).get("slots") or {}).get("cap"), int):
+        cur["run"] = row["slots"]["cap"]
+    if not all(isinstance(v, int) and v >= 1 for v in cur.values()):
+        print("reef %s: run cap %s, check slots %s unread: no line written" % (host, cur["run"], cur["check"]), file=sys.stderr)
+        return 3
+    line = canon(parse("mode=on,run=1-%d,check=1-%d" % (min(cur["run"], 32), min(cur["check"], 32))))
+    if dry_run:
+        print("reef %s: would set %s %s:%s" % (host, KEY, host, line))
+        return 0
+    code, out, err = run(tool("regatta") + ["limit", "set", KEY, "%s:%s" % (host, line)], timeout=180, host=host)
+    now = int(time.time())
+    if code in (0, 3):   # 3: limit set wrote the line and read it back otherwise; the line stands, so does its baseline
+        record({"at": now, "host": host, "key": KEY, "from": None, "to": line, "seeded": True, "mode": "on",
+                "why": "seeded from run cap %d, check slots %d" % (cur["run"], cur["check"])})
+        # what the seed found each limit at is what reef "left" there: a hand set past the new ceiling is then seen
+        for k in LIMITS:
+            record({"at": now, "host": host, "key": LIMITS[k], "from": None, "to": cur[k], "baseline": True, "mode": "on",
+                    "why": "the seed's reading"})
+    else:
+        # a seed that keeps failing logs each new reason once, not every sweep (the ledger keeps its last 1000 rows)
+        last = next((r for r in reversed(ledger_rows()) if r.get("host") == host and r.get("key") == KEY), {})
+        if last.get("seeded") is not False or last.get("error") != tail(err, out):
+            record({"at": now, "host": host, "key": KEY, "from": None, "to": line, "seeded": False, "mode": "on",
+                    "why": "seed refused", "error": tail(err, out)})
+    if code != 0:
+        print("reef %s: %s %s:%s was not written (exit %d): %s" % (host, KEY, host, line, code, tail(err)), file=sys.stderr)
+        return 3
+    print("reef %s: set %s %s:%s" % (host, KEY, host, line))
+    return 0
+
+
 def cmd_log(a):
     rows = ledger_rows()[-a.n:]
     for r in rows:
         print("%s  %s  %s %s → %s  %s  %s" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("at", 0))), r.get("host"),
                                               r.get("key"), r.get("from"), r.get("to"),
-                                              "seen" if "seen" in r else "done" if r.get("done") else ("advised" if r.get("mode") != "on" else "FAILED"),
+                                              "seeded" if r.get("seeded") else "baseline" if r.get("baseline") else "seen" if "seen" in r
+                                              else "done" if r.get("done") else ("advised" if r.get("mode") != "on" else "FAILED"),
                                               r.get("why", "")))
     if not rows:
         print("reef: no change recorded here")
@@ -495,13 +671,17 @@ def main(argv=None):
     for name in ("plan", "apply"):
         s = sub.add_parser(name)
         s.add_argument("--row", help="the row the sampler wrote (else a fresh `hosts sample`)")
+        if name == "apply":
+            s.add_argument("--seed", action="store_true", help="seed this host's line first where a node asked for one (the sweep's)")
         if name == "plan":
             s.add_argument("--json", action="store_true")
     sub.add_parser("bounds")
+    sd = sub.add_parser("seed")
+    sd.add_argument("--dry-run", action="store_true")
     lg = sub.add_parser("log")
     lg.add_argument("-n", type=int, default=20)
     a = p.parse_args(argv)
-    return {"plan": cmd_plan, "apply": cmd_apply, "bounds": cmd_bounds, "log": cmd_log}[a.verb](a)
+    return {"plan": cmd_plan, "apply": cmd_apply, "bounds": cmd_bounds, "seed": cmd_seed, "log": cmd_log}[a.verb](a)
 
 
 if __name__ == "__main__":

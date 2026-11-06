@@ -618,6 +618,18 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
         ended, alive = bool(st.get("ended")), bool(f.get("alive"))
         skipper = st.get("manager")
 
+        if st.get("mode") == "agy" or st.get("harness") == "agy":
+            # dispatch's agy road (`dispatch --harness agy`, agy-road): no Claude transcript to read, and a retry
+            # here would start a Claude build on the branch (dispatch_cmd carries no --harness), in the worktree
+            # where agy's edits wait for the owner. Ended, or gone with no end (agy and its watcher both dead: a reboot,
+            # a killed job; nothing else writes its end): an S1 card, raised, never retried; live: nothing
+            if not alive and (ended or not f.get("watcher")):
+                ev.append("its edits, if any, wait uncommitted in %s" % (st.get("wt") or "its worktree"))
+                rule = "agy build ended (%s)" % (reason or "no end reason") if ended else "agy build gone without an end"
+                stalls.append(_stall("S1", host, st, name, rule, ev, now, _num(st.get("ended")) or since, action="raise",
+                                     harness="agy"))
+            continue
+
         if reason.startswith("max lifetime"):
             # what the cap cut (dispatch-rc's cut_at_cap): a check whose verdict nobody read, a login out of room
             cut = st.get("cut") if isinstance(st.get("cut"), dict) else {}
@@ -739,13 +751,13 @@ def worktrees(repo):
     return out
 
 
-def _run_record(wt):
-    """The worktree's autofinish.json (autofinish-run's record of its last run), or None."""
+def _run_record(wt, name="autofinish.json"):
+    """The worktree's autofinish.json (autofinish-run's record of its last run), or another record beside it, or None."""
     gd = _git(wt, "rev-parse", "--absolute-git-dir")
     if not gd:
         return None
     try:
-        d = json.loads((Path(gd.strip()) / "claude" / "autofinish.json").read_text())
+        d = json.loads((Path(gd.strip()) / "claude" / name).read_text())
     except (OSError, ValueError):
         return None
     return d if isinstance(d, dict) else None
@@ -813,6 +825,23 @@ def judge_launches(host, live_branches, now):
             else:
                 rule = "login" if LOGIN_RE.search(text) else "WAITING line" if "WAITING FOR YOU" in text else \
                     "gate %s" % gate if re.match(r"^G\d+r?$", gate) else "stopped mid-work (%s)" % gate
+                step1 = gate in ("G1", "G1r") and rule == "gate %s" % gate   # either: a ⚠ line may name the check first
+                wts = worktrees(repo) if step1 and wts is None else wts
+                prev = _run_record(wts[branch]) if step1 and wts.get(branch) else None
+                loop = _run_record(wts[branch], "build-review-finish.json") if prev else None
+                if (step1 and loop and loop.get("session") == prev.get("session")
+                        and loop.get("outcome") in ("held", "cap")):
+                    # a review stop whose own loop left findings (autofinish-run's findings_left): its next move is its
+                    # fix round, at the landing's own priority or high, never a plain normal build behind the fleet
+                    # (landing-fixes-in-run; autofinish-run's fix_round_line)
+                    prio = prev.get("priority") if prev.get("priority") in ("high", "force") else "high"
+                    # dispatch by its path, as autofinish-run's line names it: no plugin is installed on the Macs, so a
+                    # bare `dispatch` is not on PATH where the owner pastes it (the landing review)
+                    disp = helmlib.peer("dispatch")
+                    line = "%s %s --repo %s --priority %s" % (shlex.quote(str(disp)) if disp else "dispatch",
+                                                              shlex.quote(branch), shlex.quote(str(repo)), prio)
+                    ev = ev + ["fix round: %s (a finish's tail, ahead of the builds)" % line]
+                    kw["suggested"] = "the fix round: %s — never a plain normal dispatch" % line
                 stalls.append(_stall("S5", host, st, None, rule, ev, now, since, **kw))
     return stalls, notes
 
@@ -1399,6 +1428,9 @@ def title(s, now):
     what = TITLES[s["class"]]
     if s["class"] == "S1" and s.get("harness") in ("orca", "codex") and s["action"] == "raise":
         what = "failed %s ago" % _ago(s.get("since"), now)
+    elif s["class"] == "S1" and s.get("harness") == "agy" and (s.get("rule") or "").startswith("agy build ended"):
+        # an agy build that ended hands its edits over; it is not a dead run (round 3's item 3). Gone without an end keeps "gone"
+        what = "ended %s ago, its edits wait" % _ago(s.get("since"), now)
     elif s["class"] == "S1":
         what = what % _ago(s.get("since"), now)
     elif s["class"] == "S5":

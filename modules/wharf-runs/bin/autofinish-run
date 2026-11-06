@@ -160,7 +160,7 @@ refusals and both write:
     `<git dir>/claude/autofinish-chain.json`), and a yolo launch it relaunches stays a yolo one;
   - the login (work-account E5, as `dispatch --account auto`; joined early on the owner's word,
     2026-10-08): `bin/account pick --repo <primary> --json` at start time, so a second login, first in
-    the walk, takes the run unless the repo is on its deny list; the pick's CLAUDE_CONFIG_DIR goes to
+    the walk, takes the run unless the repo is routed off it (tenancy, a scope's login); the pick's CLAUDE_CONFIG_DIR goes to
     the start (unset for the default dir, whose env must stay empty — bin/account's header), and
     `account` in the state and the log line names the row. Exit 3 from the pick (no row may run
     now) is a refusal with each row's reason; exit 4 (no registry) or an unreadable answer keeps
@@ -171,7 +171,10 @@ refusals and both write:
     then the pick decides, and with no row to move to it refuses (2026-10-22). A finish put in the queue keeps
     neither: the claim's job takes its own host's pick (Where). Kept:
     a panel session on the work login handing its /finish off cold, or a test (bin/autofinish's start_runner and dispatch --yolo's
-    launch pass neither, so the sweep, the override and a yolo launch always pick). A pick past PICK_TIMEOUT (a probe hanging) falls back
+    launch pass neither, so the sweep, the override and a yolo launch always pick; the sweep's week() hands a picked
+    dir to start_runner, but never an overdrawn one, so an overdraw is always this run's own pick). Every pick asks
+    `--overdraw` (lighthouse's account header, "Overdraw"), and its object reaches the `dispatch --start` as
+    ACCOUNT_OVERDRAW_PICK, which logs it once the session began. A pick past PICK_TIMEOUT (a probe hanging) falls back
     to `pick --cached`; --by typed picks `--cached` from the start (cold_prompt's 45 s, a hook's);
   - no lock taken from a session at work: owner.json naming a session that is not the caller,
     live in the registry (~/.claude/sessions, its pid alive) and not `idle` — busy, waiting on a
@@ -236,7 +239,10 @@ After the end, in `finally`, whatever happened before:
       never-started  no reply in the transcript: gate `never-started` and the screen's last lines
                      (the watcher's hardcopy), or `refused` when dispatch refused to start;
   - autofinish.json updated (`ended`, `outcome`, `pr`, `gate`); a stop posted as one comment on the
-    branch's PR through hooks/common.py's api; a line in `<common git dir>/claude/autofinished`
+    branch's PR through hooks/common.py's api — a step 1 stop (G1r or G1) whose own loop ended held or cap
+    (build-review-finish.json, this run's session) with its **Do this now** line, the fix
+    round dispatched at the landing's own `priority` (the state keeps it), else high, never a plain normal
+    build (fix_round_line; landing-fixes-in-run, 2026-11-04); a line in `<common git dir>/claude/autofinished`
     (`launched <branch> #N` — no number when none was read —, `stopped <branch> <gate> <line>` or
     `never-started <branch> <line>`: the shapes bin/autofinish's header gives, design section 7);
     and one line in ~/Library/Logs/claude-weekly/autofinish-<date>.log,
@@ -286,14 +292,17 @@ The finisher rotation (S2 of docs/bench-continuous-2026-10-24.md; the owner's bu
 has not passed, each start draws its finisher by a fair coin — ARMS, today's finisher (Opus 5.5 at
 `medium`: dispatch's opus and the skill's `effort: medium`) or Sonnet 5.5 at `medium` — and passes the
 arm's full model id and effort to dispatch, both arms alike. The key is the one switch and its end: no
-key, a passed day or a line that does not parse is today's start, unchanged. The fence comes first:
-a repo in any scope that is `confidential: true`, a repo in no scope, or a registry that does not
-read or walk (read_registry) keeps today's finisher and writes no row anywhere.
+key, a passed day or a line that does not parse is today's start, unchanged. The fence comes first, the
+core's scope_rotates (one rule with the builder coin's): a repo any of whose scopes says `"rotation": false`
+(or a `rotation` that is no bool), a repo in no scope, or a registry that does not read or walk
+(read_registry) keeps today's finisher and writes no row anywhere. A confidential scope rotates unless it
+opts out so (scope-rotation, 2026-11-04: one scope opts out, the others draw); its row carries `scope` and
+`confidential: true`, so trim counts it in its arm tallies only.
 The drawn arm goes into autofinish.json as `arm` ({name, model, effort, coin, until, forced}), and at
 the end — record(), or bury() for a death — one JSON row goes to <logs>/finisher-rotation.jsonl,
 outside git, private to this Mac: host, repo, branch, session, the coin and arm, the models the
 transcript returned, the outcome, gate and PR, and the cost of the session and of its agents, priced
-by plumb's usage-report. The fence is asked again there, so a repo that turned confidential meanwhile
+by plumb's usage-report. The fence is asked again there, so a repo whose scope opted out meanwhile
 writes nothing. AUTOFINISH_COIN=0|1 forces the coin (the tests), and the row says `forced`; `rotation`
 counts forced rows apart, never in an arm. A row whose session returned no model at all is `voided:
 no-reply`, one that never answered in its arm's model `voided: fallback`. With the key file there but
@@ -322,8 +331,9 @@ recorded base, at the head the run pushed, that head not the base's tip, with a 
 someone recorded as merging it, a diff that is not empty, and no later finish run on the branch started before
 the merge (a row here of the same repo by its real path, the run's worktree state, or a line in the repo's
 `autofinished` dated after the row: a peer's run writes its row on that Mac); once the PR is closed and one fails, `landing: unknown` and `landing_why` names which; a row missing a
-field (every row from before S1) is never read. A row of a repo that is
-confidential now is passed over, and an unreadable registry refuses the verb, exit 3.
+field (every row from before S1) is never read. A row of a repo the coins
+fence now (rotation_fence: a scope with `rotation: false` or a `rotation` that is no bool, or no scope) is passed
+over, a rotating confidential scope's rows are counted, and an unreadable registry refuses the verb, exit 3.
 
 The run's own output (dispatch's log and this child's) goes to
 ~/Library/Logs/claude-weekly/<date>-dispatch-finish-<topic>.log. --dry prints what would be
@@ -397,7 +407,7 @@ WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
 OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "host", "from", "eff_mode", "land_mode", "arm",
-                 "pushed", "base", "base_tip", "queue")   # written only when set: a launch without --merge or a hold keeps the file it always had
+                 "pushed", "base", "base_tip", "queue", "priority")   # written only when set: a launch without --merge or a hold keeps the file it always had
 # eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
 # (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
 # has no mode now, never a bare `by: yolo` (follow-ups item 4). land_mode: the branch's mode landing() read
@@ -980,6 +990,7 @@ def account_pick(t, cached=False):
     it is. Raises NoAccount on the pick's exit 3."""
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         # the token outranks any dir (bin/account's header): `account which` reads only the dir
+        os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)   # an overdraw is this run's own pick's word alone
         return "oauth-token", None, "the caller's CLAUDE_CODE_OAUTH_TOKEN, kept"
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     if not ACCOUNT and not cfg:
@@ -1001,13 +1012,20 @@ def account_pick(t, cached=False):
             label = cooling
         else:
             # no spaces: the run lines are key=value, split on whitespace
+            os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)
             return re.sub(r"\s+", "_", label or cfg), "" if default else None, "the caller's CLAUDE_CONFIG_DIR, kept"
     cmd = [ACCOUNT, "pick", "--repo", t.primary, "--json"]
+    overdraw = ["--overdraw", "--job", t.branch]
+    os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)   # an overdraw is this pick's word alone
     try:
-        r = common.run_group(cmd + (["--cached"] if cached else []), PICK_TIMEOUT)
+        # a landing is a job too (the owner, 2026-11-04): with no login under its week bar it starts past one
+        # (lighthouse's account header, "Overdraw"). The pick only decides, on every road, a cached one included;
+        # its `overdraw` object goes to the `dispatch --start` this runs (ACCOUNT_OVERDRAW_PICK), which logs it
+        # once the session began
+        r = common.run_group(cmd + (["--cached"] if cached else []) + overdraw, PICK_TIMEOUT)
     except subprocess.TimeoutExpired:
         try:  # a probe that hangs: the cached readings decide, as a dry run's do
-            r = common.run_group(cmd + ["--cached"], 5)
+            r = common.run_group(cmd + ["--cached"] + overdraw, 5)
         except (OSError, subprocess.TimeoutExpired) as e:
             return None, None, "account pick failed (%s) — the login this run was started with" % type(e).__name__
     except OSError as e:
@@ -1026,6 +1044,9 @@ def account_pick(t, cached=False):
     why = d.get("reason") or ""
     if cfg and cooling:
         why = "the caller's %s is cooling down, so picked: %s" % (label, why)
+    if isinstance(d.get("overdraw"), dict):
+        # start_env copies it to dispatch --start, which logs it at the session's start and unsets it
+        os.environ["ACCOUNT_OVERDRAW_PICK"] = json.dumps(d["overdraw"], ensure_ascii=True)
     return d["account"], (d.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), why
 
 
@@ -1087,31 +1108,27 @@ def rotation_window(today=None):
     return end, "rotation on until %s" % end
 
 
-def rotation_fence(primary):
-    """None when a landing of this repo may rotate and be recorded, else why not. Fails closed: a torn
-    registry reads as no scopes to scope_of_repo, so it is asked first (AGENTS.md's fence trap), and a
-    repo in no scope is never known not to be confidential. One parse judges the tear and every scope,
-    and a repo in any confidential scope is fenced, not only in the first that lists it (the core's
-    gather_fence; S2's finish review). A shape scope_of_repo cannot walk fences too."""
+def rotation_gate(primary):
+    """(why, fields): why None when a landing of this repo may rotate and be recorded, else why not; fields the
+    row's `scope` and `confidential`. One rule, the core's scope_rotates, which buildercoin.py's fence asks too.
+    Fails closed: a torn registry reads as no scopes to scope_of_repo, so it is asked first (AGENTS.md's fence
+    trap), on the one parse scope_rotates then judges; a repo in no scope is never known open; every scope that
+    lists the repo is judged, not only the first (the core's gather_fence; S2's finish review), and any one with
+    `rotation: false`, or a `rotation` that is no bool, fences; a shape it cannot walk fences too, and so does a
+    core older than scope_rotates. A confidential scope rotates unless it opts out so (the owner, 2026-11-04)."""
     reg, bad = common.read_registry()
     if bad:
-        return "the scope registry does not read"
-    try:
-        # a scope whose `repos` is there but no list, open or not, is a registry this fence cannot walk (the core's
-        # scope_of_repo reads an open scope's odd value as no member since S6's sixth round; this fence never did)
-        for n, sc in ((reg or {}).get("scopes") or {}).items():
-            if isinstance(sc, dict) and sc.get("repos") is not None and not isinstance(sc.get("repos"), list):
-                raise TypeError("scope %r: `repos` is no list" % n)
-        name, _ = common.scope_of_repo(primary, reg=reg) if reg is not None else (None, {})
-        if not name:
-            return "%s is in no scope" % os.path.basename(primary)
-        for n, sc in (reg.get("scopes") or {}).items():
-            if (isinstance(sc, dict) and sc.get("confidential") is True
-                    and common.scope_of_repo(primary, reg={"scopes": {n: sc}})[0]):
-                return "scope %s is confidential" % n
-    except Exception as e:  # noqa: BLE001 — a registry it cannot walk is never known open
-        return "the scope registry does not walk (%s)" % type(e).__name__
-    return None
+        return "the scope registry does not read", {}
+    rule = getattr(common, "scope_rotates", None)
+    if rule is None:
+        return "the core has no scope_rotates (older than scope-rotation)", {}
+    ok, why, fields = rule(primary, reg)
+    return (None, fields) if ok else (why, {})
+
+
+def rotation_fence(primary):
+    """None when a landing of this repo may rotate and be recorded, else why not (rotation_gate's why)."""
+    return rotation_gate(primary)[0]
 
 
 def draw_arm(t):
@@ -1197,9 +1214,9 @@ def rotation_lock():
 def rotation_row(t, st, outcome, gate, pr):
     """One row for every finish run (task-shape S1: the rows a landing is read from, the rotation on or off);
     `arm` null when none was drawn, the model then dispatch's record of the run and the effort the skill's. None written (and
-    why) when the fence is closed: the same fence as a draw's, so no confidential repo has a row."""
+    why) when the fence is closed: the same fence as a draw's, so no repo the coins fence has a row."""
     arm = st.get("arm") if isinstance(st.get("arm"), dict) else None
-    fenced = rotation_fence(t.primary)
+    fenced, scope = rotation_gate(t.primary)
     if fenced:
         return "no rotation row: %s" % fenced
     cost = transcript_cost(st["session"]) or {}
@@ -1220,7 +1237,10 @@ def rotation_row(t, st, outcome, gate, pr):
            "outcome": outcome, "gate": gate, "pr": pr, "hold": st.get("hold"),
            "pushed": st.get("pushed"), "base": st.get("base"), "base_tip": st.get("base_tip"),
            "cost_usd": cost.get("cost_usd"), "agents_cost_usd": cost.get("agents_cost_usd"),
-           "touched_48h": None, "fix_48h": None, "settled": None, "landing": None}
+           "touched_48h": None, "fix_48h": None, "settled": None, "landing": None,
+           # the scope that let it rotate, and whether it is confidential: trim counts such a row in its arm
+           # tallies only, never naming it (trimlib's collect_fence)
+           "scope": scope.get("scope"), "confidential": bool(scope.get("confidential"))}
     with rotation_lock() as path:
         with open(path, "a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -1576,6 +1596,10 @@ FINISH_TOOLS = ("wharf-runs/bin/pickup", "wharf-runs/bin/check", "wharf-runs/bin
                 "wharf-runs/bin/rc-hosts", "keel/bin/keel", "keel/bin/paste-paths", "keel/bin/owed",
                 "atlas/bin/knowledge-commit", "wharf/libexec/pr", "wharf/bin/review-gate",
                 "wharf-runs/bin/build-review covers",
+                # the landing's own review loop (landing-fixes-in-run): its rounds and end, by the finish phase alone,
+                # never the build's record, which `covers` reads (build-review refuses a --phase given twice)
+                "wharf-runs/bin/build-review round * --phase finish", "wharf-runs/bin/build-review end * --phase finish",
+                "wharf-runs/bin/build-review picks", "wharf-runs/bin/build-review cap",
                 "wharf/hooks/carried.py", "regatta/bin/regatta which", "helloworld/bin/helloworld check")
 
 
@@ -1911,6 +1935,37 @@ def merged_pr(t):
     return hit.get("number") if hit else None
 
 
+FINISH_LOOP = "build-review-finish.json"   # build-review --phase finish: the landing's own review loop
+
+
+def findings_left(t, st):
+    """True when this run's own review loop stopped with findings left: build-review's finish record (beside this
+    state) kept by this run's session, ended held or cap. A G1r stop that is not so (a plan refused, a principal
+    route, reviewers that never ran) has no fix round to hand on (the round-1 verifier's finding)."""
+    try:
+        with open(os.path.join(t.state_dir, FINISH_LOOP)) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and d.get("session") == st.get("session") and d.get("outcome") in ("held", "cap")
+
+
+def fix_round_line(t, st):
+    """The Do-this-now line of a review stop (G1r) with real findings left: the fix round, dispatched at the landing's
+    own priority, else high (landing-fixes-in-run, the owner, 2026-11-03: claim-after-failed-start's stop was queued
+    as a plain `normal` build, rank 19-23 behind the fleet, hours of wait). A finish ranks ahead of a build of the same
+    priority (dispatch-queue's rank()), and its fix round is the finish's tail, so it never waits behind the builds the
+    finish already outranked. Its brief is the stop's own: the finish skill commits a `## Fix round` brief on the
+    branch before it stops (step 1), so dispatch finds one on a branch /finish never curated. For whoever acts on the
+    stop, the owner or a skipper: an unattended caller may not raise a run's priority (dispatch's force-any rule)."""
+    prio = st.get("priority") if st.get("priority") in ("high", "force") else "high"
+    return ("**Do this now** — the fix round, at the landing's priority (`%s`; a finish ranks ahead of a build, and "
+            "its fix is the finish's tail, so never a plain `normal` dispatch): `%s %s --repo %s --priority %s`. Its "
+            "brief is the `## Fix round` section the run committed in `docs/handoff/` on the branch; once that round "
+            "ends clean, its landing starts as any build's does." % (
+                prio, shlex.quote(os.path.join(HERE, "dispatch")), shlex.quote(t.branch), shlex.quote(t.primary), prio))
+
+
 def comment(t, st, outcome, gate, lines):
     """The stop, on the branch's PR. Returns (pr number or None, what happened)."""
     s = slug(t)
@@ -1934,6 +1989,10 @@ def comment(t, st, outcome, gate, lines):
             "The transcript, if any, is session `%s` on %s." % (st["session"], common.host_name()))
     else:
         body = head + "\n\n" + ("```\n%s\n```" % quoted if outcome == "never-started" else quoted) + (
+            # G1 too: a held or capped loop's ⚠ line may name the check before the review (round 2's verifier);
+            # findings_left is what proves the stop is the run's own loop
+            "\n\n" + fix_round_line(t, st) if outcome == "stopped" and gate in ("G1", "G1r") and findings_left(t, st)
+            else "") + (
             "\n\nNothing retries on this tip. A new commit can be started again; the transcript is "
             "session `%s` on %s." % (st["session"], common.host_name()))
     code, _ = common.api("POST", "/repos/%s/issues/%d/comments" % (s, pr["number"]), {"body": body})
@@ -2280,15 +2339,17 @@ def ladder_stay(t, args, by):
 
 def finish_runs_here():
     """Whether this host may claim a finish: dispatch-queue's `finish-queue` need, judged as builtin_met and the feature
-    line judge it for the host itself (a Mac meets it by its code, any other host by a `finish-queue` feature line). A
+    line judge it for the host itself (Darwin or local readiness, an explicit grant, and a negation over either). A
     pin to a host that cannot claim a finish is a deadlock: no host may take the entry, and it waits for a person (the
     node's handed landing of principal tier S4, 2026-11-04: `queue-unclaimed`, cancelled by hand and put again from a
     Mac). A queue module that will not load reads as yes: the pin as before."""
-    if (os.environ.get("AUTOFINISH_PLATFORM") or sys.platform) == "darwin":
-        return True   # a Mac meets the need by its code: no module load on the typed hand-off's budget
     try:
         dq = load_bin("dispatch-queue")
-        return dq.FINISH_NEED in dq.features().get(self_host(), set())
+        h = dq.host_name()
+        feats = dq.features()
+        grants = feats.get(h, set())
+        return dq.finish_feature_refusal(h, feats) is None and (
+            dq.FINISH_NEED in grants or dq.builtin_met(dq.FINISH_NEED, h))
     except BaseException:   # core_path.require() exits on a missing core
         return True
 
@@ -3311,7 +3372,9 @@ def start_here(t, args, prev, by, via):
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.session, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
           "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "from": args.sent_from, "queue": args.queue,
-          "eff_mode": eff, "land_mode": mode, "arm": arm}
+          "eff_mode": eff, "land_mode": mode, "arm": arm,
+          # the landing's rank (--priority): a review stop's fix round goes at it, or high (fix_round_line)
+          "priority": getattr(args, "priority", None)}
     cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from, priority=getattr(args, "priority", None),
                     queue=(args.queue, args.job) if args.queue else None)
     try:

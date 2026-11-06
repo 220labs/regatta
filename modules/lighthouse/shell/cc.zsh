@@ -8,7 +8,7 @@
 #
 # `cc X` is `account run <prefix>X`, the prefix the config dir's `lighthouse/cc-prefix` (none
 # without it: `cc w` runs the row labelled `w`): the label, the env (an inherited
-# CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN dropped) and the deny-list and disabled-row
+# CLAUDE_CONFIG_DIR and CLAUDE_CODE_OAUTH_TOKEN dropped) and the tenancy and disabled-row
 # refusals all live in bin/account, so a row added to the registry is reachable here with no edit.
 # It replaces the hand-pick `cswap switch` did, which moved the default dir's own login and with it
 # every panel, Remote Control host and routine (2026-10-07). bin/account is this module's, found

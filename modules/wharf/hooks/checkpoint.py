@@ -300,7 +300,7 @@ VENDOR = ""
 # no list of dispatch's: Claude's substring rule `*dispatch-queue kick*` denies it, so this denies it too (queue-rank)
 # finished: a finish's outcome into the fleet's tombstone, the waiter's word outside any session (finish-as-task's review)
 DISPATCH_QUEUE_VERBS = {"enqueue", "claim", "sweep", "poll", "jobs", "unreserve", "requeue", "kick", "kicked", "finished"}
-DISPATCH_FLAGS = ("--claim", "--poll", "--requeue", "--kick", "--queue-finish")   # --queue-finish: finish-as-task
+DISPATCH_FLAGS = ("--claim", "--poll", "--requeue", "--kick", "--queue-finish", "--queue-jobs")   # --queue-finish: finish-as-task; --queue-jobs: node-reef
 DISPATCH_RC_VERBS = {"kick-listen"}
 
 

@@ -5,7 +5,9 @@ project. crew-report and its weekly job are below; usage-report, interruptions, 
 the statusline, the tier hint (`hooks/tier_check.py`), the attention log (`hooks/attention.py`), the
 limits widget and the benches (`bench/`) read their private values as the next section says.
 `trim collect|report|verdict` reads whether each pin still earns its place: one row per outcome from the
-ledgers above, a scorecard per job and arm, and a verdict against a floor that never trades (`bin/trim`'s header).
+ledgers above, a scorecard per job and arm, and a verdict against a floor that never trades (`bin/trim`'s header). A confidential scope that
+rotates (the core's `scope_rotates`: no `"rotation": false`) is collected nameless and counts in the arm tallies alone; one
+that opts out is refused, as every confidential scope was before scope-rotation (2026-11-04).
 Aurora's night runs it weekly with `--night`, its ledger under usage-report's data folder and host name, and usage-report's daily report
 carries the verdict's state in one `Trim:` line.
 

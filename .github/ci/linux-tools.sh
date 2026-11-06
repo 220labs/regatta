@@ -64,11 +64,14 @@ if ! /usr/bin/python3 -c 'import sys; from websockets.version import version as 
   /usr/bin/python3 -c 'from websockets.sync.client import connect'   # a failed unpack fails the job, never a quiet skip
 fi
 # Node as the twin's check.yml asks for it (node-version: 22, the newest 22.x; lighthouse needs
-# 22.13+), checked against nodejs.org's own sums
-case "$(uname -m)" in
-  x86_64) arch=x64 ;;
-  aarch64|arm64) arch=arm64 ;;
-  *) echo "linux-tools: no Node build for $(uname -m)" >&2; exit 1 ;;
+# 22.13+), checked against nodejs.org's own sums. The build is the userland's, so dpkg's architecture names it
+# (amd64 is Node's x64, arm64 its arm64: an Oracle A1 runner's, free CI S6), as linux-local's Containerfile does;
+# `uname -m` (the kernel's aarch64, x86_64) only where there is no dpkg
+arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+case "$arch" in
+  amd64|x86_64) arch=x64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "linux-tools: no Node build for $arch" >&2; exit 1 ;;
 esac
 base=https://nodejs.org/dist/latest-v22.x
 work="$(mktemp -d)"

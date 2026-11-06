@@ -13,8 +13,29 @@
 # SUITE_OVERLAY is the caller's overlay checkout, read before the switch, for the cases whose input
 # is a file of the overlay's source (claude-host.c, bootstrap.sh): the suite reads it, a tool under
 # test never does; "" where the caller has none (CI), and those cases say they are skipped.
-# GIT_CONFIG_GLOBAL goes too: set, it would outlive the HOME move and every suite would write the
-# caller's file; unset, `git config --global` is the scratch HOME's .gitconfig.
+# GIT_CONFIG_GLOBAL is replaced with a file in the fixture: it survives a later HOME move without
+# reading or writing the caller's identity (Linux cannot guess an email from its hostname).
+
+dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
+sedi() { local f="${!#}"; sed -i.bak "$@" && rm -f "$f.bak"; }
+days_from_now() {
+  python3 -c 'import datetime, sys; print((datetime.date.today() + datetime.timedelta(days=int(sys.argv[1]))).isoformat())' "$1"
+}
+plistget() {   # FILE KEY: JSON, compact so array assertions work identically on both OSes
+  python3 -c 'import json, plistlib, sys
+with open(sys.argv[1], "rb") as f: d = plistlib.load(f)
+print(json.dumps(d[sys.argv[2]], separators=(",", ":")))' "$1" "$2"
+}
+fixture_gitconfig() {
+  printf '[user]\n\tname = Test\n\temail = t@t\n[init]\n\tdefaultBranch = main\n' > "$1"
+  export GIT_CONFIG_GLOBAL="$1"
+}
+require_process_probe() {   # SUITE: process assertions must not compare two empty ps answers
+  local start
+  if start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null)" && [ -n "$start" ]; then return 0; fi
+  echo "$1: cannot read this test process with ps; process inspection is required" >&2
+  return 2
+}
 fixture_config() {
   SUITE_OVERLAY="$(head -1 "${REGATTA_CONFIG:-$HOME/.config/regatta}/regatta/overlay" 2>/dev/null)"
   case "$SUITE_OVERLAY" in "~"*) SUITE_OVERLAY="$HOME${SUITE_OVERLAY#\~}";; esac
@@ -32,6 +53,7 @@ fixture_config() {
   # hosts row to the case's queue home and outlive the suite; lighthouse's tests/hosts.sh runs the sampler
   echo off > "$1/wharf-runs/hosts-sample"
   unset REGATTA_LAPTOP REGATTA_HOME REGATTA_LEGACY GIT_CONFIG_GLOBAL
+  fixture_gitconfig "$1/gitconfig"
   # This Mac's real memory never decides a case: every dispatch start asks bin/headroom, so each suite
   # gets a calm reading, and a case about memory sets its own (headroom, 2026-10-22)
   unset HEADROOM_HOST HEADROOM_OS HEADROOM_PROC HEADROOM_SAMPLE_S

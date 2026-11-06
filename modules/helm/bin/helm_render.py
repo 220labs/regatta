@@ -1337,7 +1337,8 @@ def intake_cards(doc=_READ):
 # helm-board-ux S2: the Decide feed's order and the Later shelf, carried in the board's JSON as keys into
 # the owner's column (a card is written once, in its column; `queue` and `later` name it by `key`).
 QUEUE_GROUPS = {"pr": "land", "held": "land", "stall": "unstick", "waiting": "unstick", "permission": "unstick",
-                "road": "unstick", "lookout": "unstick", "run": "unstick", "memo": "memo"}
+                "road": "unstick", "lookout": "unstick", "run": "unstick", "memo": "memo",
+                "main-red": "unstick"}
 GUARDED_DROP = ("title", "recommended", "blockers", "by", "owner", "doc", "ref", "url", "evidence", "rule", "session", "run",
                 "next_action", "orca_dispatch", "host", "course", "github", "branch", "frame", "rel", "item") + ASK_FIELDS
 
@@ -1626,6 +1627,9 @@ def overview_state():
     # a WAITING session a stall already cards (a run's S6) keeps the stall's card alone
     cards += [c for c in waiting_cards(judged) if not (c.get("session") and c["session"] in covered)]
     cards += road_cards()
+    import main_check
+    main_cards = main_check.cards()
+    cards += main_cards
     cards += todo_cards()
     held = held_cards()
     cards += held
@@ -1638,7 +1642,9 @@ def overview_state():
     pr, wip_idle = pr_cards(prs, live)
     cards += [c for c in pr if c.get("url") not in held_urls]
     cards += done_cards(prs)
-    cards += intake_cards(intake_doc)
+    # case-folded: an older row's link is built from the config's spelling, the intake's is GitHub's html_url
+    main_issues = {c["github"].casefold() for c in main_cards if c.get("github")}
+    cards += [c for c in intake_cards(intake_doc) if str(c.get("url") or "").casefold() not in main_issues]
     cards = embark_first(cards)
     owner = helmlib.columns()[0]
     key_cards([c for c in cards if c.get("column") == owner])

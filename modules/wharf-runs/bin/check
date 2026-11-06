@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # check — a checkout's AGENTS.md `check:` line, one script at a time, under one of N slots per Mac login.
 #
+#   bin/check [<checkout>] [--ci [--ci-wait MIN] [--ci-merge-main]] [--out <dir>]
 #   bin/check [<checkout>] [--only <script>…] [--full] [--fresh] [--out <dir>]
 #   bin/check --slots    the slot count this host runs by, nothing run (`regatta limit`'s trial read)
 #
@@ -29,7 +30,8 @@
 # three or four times (the build run, /finish, the PR's CI, main's CI) while the Macs sat at load 98
 # (docs/check-load-2026-10-23.md). `pr merge` refuses until the pull request's CI passed (an admin
 # token is not refused by the protection), and that CI is scoped by the same rules (.github/ci/share.sh:
-# the Linux share since 2026-10-30, the macOS share since free-ci S3, while CI_LINUX_ELSEWHERE is `true`);
+# the Linux share since 2026-10-30, the macOS share since free-ci S3, and the whole-line PR while
+# CI_LINUX_ELSEWHERE is not `true` since free-ci-scope-whole);
 # the whole line is main's nightly run.
 # A pass is remembered per tree: after a run, each script that passed is recorded under
 # $CHECK_LOGS/passed/<tree> (the checkout's exact content, `git write-tree` over a scratch index,
@@ -45,7 +47,7 @@
 # Start it with the Bash tool's run_in_background: a whole check of the overlay's size runs ~36 min, past one
 # Bash call's cap (10 min, the tool's maximum; AGENTS.md). Where background tasks are off (an unattended /finish), `nohup bin/check … --out
 # <dir> > <dir>.out 2>&1 &` in one call, then poll <dir>/summary until its last line starts DONE,
-# INTERRUPTED or REFUSED. Unattended (CLAUDE_UNATTENDED), the line is origin/main's, not the branch's,
+# FAILED (--ci's red), INTERRUPTED or REFUSED. Unattended (CLAUDE_UNATTENDED), the line is origin/main's, not the branch's,
 # and the first line says so (below). The log folder is printed as `logs: <dir>` (the first line,
 # attended); in it, one log per script (`01-test_checkpoint.sh.log`…) and `summary`, one line per
 # script as it ends —
@@ -67,6 +69,26 @@
 #                no scope (what is named runs), the pass memory still answers.
 #   --full       the whole line, whatever changed; --fresh: run what is in scope, remembered or not.
 #   --out        the log folder; default $CHECK_LOGS (~/Library/Caches/check-runs)/<checkout>-<stamp>-<pid>
+#   --ci         use this claude/* branch's PR CI: its Linux matrix and scoped macOS share run in
+#                parallel, spending CI minutes and opening a non-draft PR labelled hold (automerge
+#                stays off). Fetch and merge origin/main if needed, then push only this branch,
+#                never force. A conflict is FAILED, aborted with its files named. A PR readied by
+#                /finish is never merged with main (it would leave it unlandable): the local line
+#                answers instead, unless --ci-merge-main, the owner's yes, refused unattended.
+#                Wait for the contexts in origin/main's .github/main-protection.json (never the
+#                branch's) on this exact head; a moved head is FAILED. --ci-wait MIN bounds the wait
+#                (whole minutes, default 120); a head with no check yet is pending. Once readied,
+#                every later checkpoint push of the branch runs the PR's CI too. A signal ends the
+#                helper and says INTERRUPTED. A new PR opens as a draft, labelled, then readied.
+#                A green says UNRUN for each command of the contract's line that the CI's own line
+#                (`.github/ci/share.sh line`) never holds, the publish gate's, and exits 3: run
+#                each by its own call. Without that file nothing says what CI covers: local.
+#                Missing gh/network, refused push, no PR, a branch already landed or timeout falls
+#                back to the local line, said once; so do confidential or guarded repos (the core's
+#                fenced_scopes) or an unreadable registry, uncommitted work, and local-only
+#                --only/--full/--fresh. No local slot or pass record is used for CI.
+#                Why: review/fix loops waited hours for Mac slots; PR CI runs the shares at once.
+#                CI failures end with FAILED, with failed-job lines and logs in --out; exit 0/1.
 #
 # Why the slots (2026-10-19): with five checks running on the laptop, Claude Code killed rename S3's
 # test_hooks and test_pickup for low memory (load averages 40–90 the day before), and the killed
@@ -101,6 +123,7 @@ slots_here() {
   echo "${v:-2}" | tr -d '[:space:]'
 }
 wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""
+ci=""; ci_wait=120; ci_wait_set=""; ci_merge=""; ci_logs=""
 # a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
 refuse() {
   echo "check: $1" >&2
@@ -118,7 +141,10 @@ while [ $# -gt 0 ]; do
     --out) [ $# -ge 2 ] || refuse "--out needs a folder"; out="$2"; mode=""; shift 2; continue ;;
     --full) full=1; mode=""; shift; continue ;;
     --fresh) fresh=1; mode=""; shift; continue ;;
-    -h|--help) sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --ci) ci=1; mode=""; shift; continue ;;
+    --ci-wait) [ $# -ge 2 ] || refuse "--ci-wait needs minutes"; ci_wait="$2"; ci_wait_set=1; mode=""; shift 2; continue ;;
+    --ci-merge-main) ci_merge=1; mode=""; shift; continue ;;
+    -h|--help) sed -n '2,/^set -u/{ /^set -u/d; p; }' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) refuse "unknown option $1" ;;
   esac
   if [ "$mode" = only ]; then only+=("$1")
@@ -131,6 +157,11 @@ done
 [ -n "$wt" ] || wt="$(git rev-parse --show-toplevel 2>/dev/null)" || refuse "not in a git checkout: name the checkout to check"
 [ -d "$wt" ] || refuse "no such checkout: $wt"
 wt="$(cd "$wt" && pwd -P)"
+case "$ci_wait" in ''|*[!0-9]*) refuse "--ci-wait must be whole minutes from 0" ;; esac
+[ -n "$ci" ] || [ -z "$ci_merge$ci_wait_set" ] || refuse "--ci-wait and --ci-merge-main need --ci"
+# merging main into a ready PR leaves it unlandable (AGENTS.md's trap): the flag is a person's yes
+[ -z "$ci_merge" ] || [ -z "${CLAUDE_UNATTENDED:-}${REGATTA_UNATTENDED:-}${AUTOFINISH_CALLER_UNATTENDED:-}" ] \
+  || refuse "--ci-merge-main is the owner's yes, never an unattended run's"
 
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
 # a `- check:` line's code (between its first pair of backticks), empty for prose
@@ -186,6 +217,41 @@ if [ -n "$braw" ] && [ ${#only[@]} -eq 0 ] && [ -n "$(code_of "$braw")" ]; then
   done
 fi
 split_line "$line"
+# --ci answers from the branch's PR CI here, once the line is read (what CI never runs is said)
+if [ -n "$ci" ]; then
+  ci_line=""
+  [ -f "$wt/.github/ci/share.sh" ] && ci_line="$(bash "$wt/.github/ci/share.sh" line "$wt" 2>/dev/null)"
+  if [ -n "$asked_only$full$fresh" ]; then
+    echo "check: CI unavailable (local options requested); falling back to local check"
+  elif [ -z "$ci_line" ]; then
+    # without the CI's own line nothing says which of the contract's commands a CI green covers
+    echo "check: CI unavailable (no .github/ci/share.sh line to compare); falling back to local check"
+  else
+    # each contract command CI's line never holds (the publish gate reads a word list CI lacks),
+    # and each branch-only one (unrun, above): UNRUN after a CI green, exit 3
+    ci_unrun=("${unrun[@]+"${unrun[@]}"}")
+    for c in "${cmds[@]}"; do case "$ci_line" in *"$c"*) ;; *) ci_unrun+=("$c") ;; esac; done
+    [ -n "$out" ] || out="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/$(basename "$wt")-$(date +%Y%m%d-%H%M%S)-$$"
+    mkdir -p "$out" || refuse "cannot make $out"
+    out="$(cd "$out" && pwd -P)"; : > "$out/summary"
+    echo "logs: $out"; ci_logs=1
+    # in the background under traps, so a signal to check ends the helper too and says INTERRUPTED
+    CHECK_CI_UNRUN="$(printf '%s\n' "${ci_unrun[@]+"${ci_unrun[@]}"}")" \
+      python3 "$(cd "$(dirname "$0")" && pwd)/check_ci.py" "$wt" "$out" "$ci_wait" "${ci_merge:-0}" &
+    cip=$!
+    ci_signal() {
+      kill -TERM "$cip" 2>/dev/null
+      echo "INTERRUPTED 0/0 by SIG$1" >> "$out/summary"; echo "INTERRUPTED 0/0 by SIG$1"
+      exit "$2"
+    }
+    trap 'ci_signal INT 130' INT; trap 'ci_signal TERM 143' TERM; trap 'ci_signal HUP 129' HUP
+    wait "$cip"; rc=$?
+    trap - INT TERM HUP
+    # 75 is this helper's no-answer result; red CI (1) never reruns locally to turn green; 3 is green
+    # with UNRUN lines, as the local road's
+    case "$rc" in 0|1|3) exit "$rc" ;; 75) ;; *) echo "check: CI unavailable (helper could not answer); falling back to local check" ;; esac
+  fi
+fi
 # the script a command runs: its first word with a / or a .sh/.py ending, else its first word;
 # a leading `NAME=value` is an assignment, never the script. A `~/` word, or one led by the HOME variable,
 # is expanded, as bash will when it runs the command: such a path, or one from `/`,
@@ -267,7 +333,7 @@ total=${#run[@]}
 [ -n "$out" ] || out="${CHECK_LOGS:-$HOME/Library/Caches/check-runs}/$(basename "$wt")-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$out" || refuse "cannot make $out"
 out="$(cd "$out" && pwd -P)"; : > "$out/summary"
-echo "logs: $out"
+[ -n "$ci_logs" ] || echo "logs: $out"
 [ -z "$scope_line" ] || echo "check: scope — $scope_line"
 for sk in "${skipped[@]+"${skipped[@]}"}"; do echo "SKIP $sk" >> "$out/summary"; echo "SKIP $sk"; done
 passed=0

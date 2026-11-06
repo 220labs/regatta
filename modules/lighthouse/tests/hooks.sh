@@ -431,42 +431,45 @@ done
 check "$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"sessionpipe install"}}))' | SECRETS_GUARD_DIR="$T/sg/no" python3 "$H/secrets_guard.py" | python3 -c 'import json,sys; r=json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"]; print("sheep gate" in r, "his " in r, "no help flag" in r, "--body-file" in r, "another shape" in r)')" \
   "True False True True False" "  the reason names keel's sheep gate, says sessionpipe has no help flag, points at a file for text, and no pronoun for the owner"
 
-echo "account_guard: a prompt in a repo the session's account denies (work-account E4)"
+echo "account_guard: a prompt in a repo the session's account is routed off (work-account E4; tenancy since deny-drift)"
 GH="$T/guardhome"; mkdir -p "$GH/projects/cv" "$GH/.claude-work" "$GH/.claude"
 for r in privy app2; do git init -q "$GH/projects/$r"; done
 mkdir -p "$GH/projects/privy/memory"
-printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy","cv"]}},{"label":"main","home":"~/.claude","primary":true}]}' > "$T/guard-accounts.json"
-ag() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; }
+# privy (the vault) and cv are the owner tenant's, main its login: work is refused them, as its deny list said until deny-drift
+printf '{"accounts":[{"label":"work","home":"~/.claude-work"},{"label":"main","home":"~/.claude","primary":true,"tenant":"owner"}],"tenants":{"owner":{"repos":["privy","cv"]}}}' > "$T/guard-accounts.json"
+AGV="$T/config-agv"; cp -R "$REGATTA_CONFIG" "$AGV"; echo privy > "$AGV/lighthouse/vault"   # the vault: a folder holding it holds for its tenant
+ag() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | HOME="$GH" REGATTA_CONFIG="$AGV" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; }
 check "$(ag "$GH/.claude-work" "$GH/projects/privy" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["decision"])')" "block" "work in privy: the prompt is blocked"
-check "$(ag "$GH/.claude-work" "$GH/projects/privy/memory" | grep -c 'privy is off work (accounts.json deny list): open it in the default VS Code profile')" 1 "  …from a folder inside it too, with the way out"
+check "$(ag "$GH/.claude-work" "$GH/projects/privy/memory" | grep -c "privy is off work: it is owner's, which runs on main only (accounts.json tenants) .* open it in the default VS Code profile")" 1 "  …from a folder inside it too, with the way out"
 check "$(ag "$GH/.claude-work" "$GH/projects/cv" | grep -c 'cv is off work')" 1 "work in cv (no git repo): blocked by path"
 check "$(ag "$GH/.claude-work" "$GH/projects/app2")" "" "work in app2: passes, silent"
 check "$(ag "$GH/.claude-work" "$GH/projects" | grep -c '"block"')" "1" "work in ~/projects itself: blocked, since it holds privy (2026-10-18: ~/.claude/CLAUDE.md's imports load there)"
-check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" python3 "$H/account_guard.py")" "" "no CLAUDE_CONFIG_DIR (the default dir): nothing happens"
-check "$(echo "{\"cwd\":\"$GH/projects\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")" "" \
+check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" REGATTA_CONFIG="$AGV" ACCOUNTS_FILE="$T/guard-accounts.json" python3 "$H/account_guard.py")" "" "no CLAUDE_CONFIG_DIR (the default dir): nothing happens"
+check "$(echo "{\"cwd\":\"$GH/projects\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" REGATTA_CONFIG="$AGV" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")" "" \
   "a session started in app2 whose shell moved to ~/projects: passes — \"holds\" binds the start only (2026-10-22)"
-check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c 'privy is off work')" "1" \
-  "  one whose shell moved into a denied repo: still blocked"
-check "$(echo "{\"cwd\":\"$GH/projects/app2\"}" | CLAUDE_PROJECT_DIR="$GH/projects" HOME="$GH" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c '"block"')" "1" \
+check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" REGATTA_CONFIG="$AGV" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c 'privy is off work')" "1" \
+  "  one whose shell moved into a tenant's repo: still blocked"
+check "$(echo "{\"cwd\":\"$GH/projects/app2\"}" | CLAUDE_PROJECT_DIR="$GH/projects" HOME="$GH" REGATTA_CONFIG="$AGV" ACCOUNTS_FILE="$T/guard-accounts.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py" | grep -c '"block"')" "1" \
   "  one started in ~/projects is blocked wherever its shell went"
-check "$(ag "$GH/.claude-stray" "$GH/projects/privy")" "" "a dir with no row in the registry: nothing happens"
+check "$(ag "$GH/.claude-stray" "$GH/projects/app2")" "" "a dir with no row in the registry: nothing happens in a repo no tenant holds"
+check "$(ag "$GH/.claude-stray" "$GH/projects/privy" | grep -c "privy is off this login (no row): it is owner's")" 1 "  …and a tenant's is refused it, being no tenant's (review 2026-10-20)"
 check "$(echo 'not json' | HOME="$GH" CLAUDE_CONFIG_DIR="$GH/.claude-work" ACCOUNTS_FILE="$T/guard-accounts.json" python3 "$H/account_guard.py" >/dev/null 2>&1; echo "rc=$?")" "rc=0" "bad input: exit 0"
 check "$(echo "{\"cwd\":\"$GH/projects/privy\"}" | HOME="$GH" ACCOUNTS_FILE=/nonexistent CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")" "rc=0" "no registry: silent, exit 0"
 printf '{"accounts": [\n' > "$T/guard-truncated.json"
 check "$(echo "{\"cwd\":\"$GH/projects/app2\"}" | HOME="$GH" ACCOUNTS_FILE="$T/guard-truncated.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; echo "rc=$?")" "rc=0" "a malformed registry (a merge in progress): silent, never a block (review 2026-10-06)"
 echo "account_guard: a tenant's repo, on every login but the tenant's (2026-10-20)"
 mkdir -p "$GH/.claude-lab"; git init -q "$GH/projects/acme-one"
-printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy","cv"]}},{"label":"lab","home":"~/.claude-lab","tenant":"acme"},{"label":"main","home":"~/.claude","primary":true}],"tenants":{"acme":{"repos":["acme-*"]}}}' > "$T/guard-tenants.json"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work"},{"label":"lab","home":"~/.claude-lab","tenant":"acme"},{"label":"main","home":"~/.claude","primary":true}],"tenants":{"acme":{"repos":["acme-*"]}}}' > "$T/guard-tenants.json"
 agt() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py"; fi; }
 out=$(agt "" "$GH/projects/acme-one")
 check "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["decision"])')" "block" "the default dir in a tenant's repo: blocked, though it denies nothing else"
 check "$(echo "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin)["reason"])' | grep -c "acme-one is off main: it is acme's, which runs on lab only (accounts.json tenants) — open it in VS Code profile lab")" 1 "  the reason names the tenant's login and its way in"
-check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …and not the deny list's way out"
+check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …and not the default login's way out"
 check "$(agt "" "$GH/projects/app2")" "" "the default dir elsewhere: silent"
-check "$(agt "" "$GH/projects/privy")" "" "the default dir in a repo another row denies: silent, as before"
+check "$(agt "" "$GH/projects/privy")" "" "the default dir in a repo no tenant holds: silent, as before"
 check "$(agt "" "$GH/projects")" "" "the default dir in ~/projects, which holds the tenant's repo: silent (holding loads nothing of it)"
 check "$(agt "$GH/.claude-lab" "$GH/projects/acme-one")" "" "the tenant's own login in its repo: silent"
-check "$(agt "$GH/.claude-lab" "$GH/projects/app2")" "" "  …and in another repo (its own deny list says where else)"
+check "$(agt "$GH/.claude-lab" "$GH/projects/app2")" "" "  …and in another repo (a tenant's login is not confined to its repos)"
 check "$(agt "$GH/.claude-work" "$GH/projects/acme-one" | grep -c "acme-one is off work: it is acme's")" 1 "another secondary in the tenant's repo: blocked"
 check "$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | env -u CLAUDE_CONFIG_DIR CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants.json" python3 "$H/account_guard.py" | grep -c "acme-one is off main: it is acme's")" 1 \
   "the default dir started in app2, its shell moved into the tenant's repo: still blocked (tenancy follows the shell, 2026-10-22)"
@@ -477,7 +480,7 @@ sed 's#"acme-\*"#"*-acme"#' "$T/guard-tenants.json" > "$T/guard-tenants2.json"
 out=$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/clients/x-acme\"}" | env -u CLAUDE_CONFIG_DIR HOME="$GH" ACCOUNTS_FILE="$T/guard-tenants2.json" python3 "$H/account_guard.py")
 check "$(echo "$out" | grep -c '"block"')" 1 "a glob whose * spans / (\"*-acme\" takes clients/x-acme): the default dir is asked, and blocked (review 2026-10-21)"
 echo "account_guard: the tenants file, its logins named there (2026-10-22)"
-printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["privy","cv"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}' > "$T/guard-rows.json"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work"},{"label":"lab","home":"~/.claude-lab"},{"label":"main","home":"~/.claude","primary":true}]}' > "$T/guard-rows.json"
 printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/guard-tenants-file.json"
 agf() { echo "{\"session_id\":\"g1\",\"cwd\":\"$2\"}" | if [ -n "$1" ]; then HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$1" python3 "$H/account_guard.py"; else env -u CLAUDE_CONFIG_DIR HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" python3 "$H/account_guard.py"; fi; }
 out=$(agf "" "$GH/projects/acme-one")
@@ -513,7 +516,17 @@ check "$(echo "{\"session_id\":\"g1\",\"cwd\":\"$GH/projects/acme-one\"}" | env 
   "  …and a plain file naming a tenant blocks the default dir though its copy says {} (never the copy's open door)"
 out=$(echo "{\"cwd\":\"$GH/projects/acme-one\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" TENANTS_FILE="$T/guard-tenants-file.json" ACCOUNTS_FILE="$T/guard-rows.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py")
 check "$(echo "$out" | grep -c "acme-one is off work: it is acme's, which runs on lab only")" 1 "a secondary whose shell moved into the file's tenant's repo: blocked with the tenant's way in…"
-check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …not the deny list's, which names a login tenancy refuses (review 2026-10-23)"
+check "$(echo "$out" | grep -c 'open it in the default VS Code profile')" 0 "  …not the default login's, which tenancy refuses (review 2026-10-23)"
+echo "account_guard: a vault no tenant holds, kept off a stale row (deny-drift's landing, round 2)"
+cp -R "$REGATTA_CONFIG" "$T/cfg-uh"; echo vlt > "$T/cfg-uh/lighthouse/vault"; git init -q "$GH/projects/vlt"
+printf '{"accounts":[{"label":"work","home":"~/.claude-work","repos":{"deny":["vlt"]}},{"label":"lab","home":"~/.claude-lab"},{"label":"spare","home":"~/.claude-spare"},{"label":"main","home":"~/.claude","primary":true}]}' > "$T/guard-uh.json"
+printf '{"acme":{"repos":["acme-*"],"logins":["lab"]}}' > "$T/guard-uh-tenants.json"; cp "$T/guard-uh-tenants.json" "$T/.guard-uh-tenants.json.last"
+agu() { echo "{\"cwd\":\"$1\"}" | CLAUDE_PROJECT_DIR="$GH/projects/app2" HOME="$GH" REGATTA_CONFIG="$T/cfg-uh" TENANTS_FILE="$T/guard-uh-tenants.json" ACCOUNTS_FILE="$T/guard-uh.json" CLAUDE_CONFIG_DIR="$GH/.claude-work" python3 "$H/account_guard.py"; }
+out=$(agu "$GH/projects/vlt")
+check "$(echo "$out" | grep -c 'vlt is off work: no tenant holds the vault here')" 1 "a shell moved into a vault no tenant holds, on a stale row: blocked, though the line says \"holds\""
+check "$(echo "$out" | grep -c 'no CLAUDE_CONFIG_DIR')" 0 "  …its own way in said once, never the default login's after it"
+check "$(echo "$out" | grep -c 'profile lab')" 0 "  …and never an employer's seat as the way in"
+check "$(agu "$GH/projects" | grep -c '"block"')" 0 "  a shell moved to the folder that holds it still passes: \"it holds\" binds the start only"
 # A config dir the overlay installed (its regatta/overlay marker) without the private values: a core from B2b on
 # refuses to load, bin/account cannot answer, and the deny hook fails closed. Judged by what the
 # core does (config_problems), so a core from before B2b skips the case.

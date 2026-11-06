@@ -21,6 +21,7 @@ hasnt() { if grep -qF -- "$2" "$1"; then echo "  FAIL $3: unexpected [$2]"; fail
 # moves below (bin/blueprintlib.py; dispatch --next and pickup seed read blueprints, wharf-on-orca S5)
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 . "$(cd "$(dirname "$0")" && pwd)/config_fixture.sh"; fixture_config "$T/config"   # the suite's own config dir, never the login's (config_fixture.sh)
+require_process_probe test_pickup || exit $?
 # words that wharf's own modules spell (branches.py's archive reason, session_status's waiting label, and
 # the peer-side form of an ssh command pickup prints): read from them, so this suite follows their scrub
 CONFIRMED="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import branches; print(branches.CONFIRMED)' "$WHOOKS")"
@@ -52,6 +53,10 @@ export PICKUP_SSH="$T/ssh-down"
 # one, and on the build Mac the real name made buildbox "this machine" (26 failures, 2026-10-08).
 export PICKUP_HOST=laptop
 P() { python3 "$B/pickup" "$@" > "$T/out" 2>&1; echo $?; }
+# PSR: P as a sandboxed Mac session runs it — every `ps` refused at the exec with EPERM, each refusal a line
+# of $T/ps.refused (ps_refused.py; sandboxed-seed, docs/sandboxed-seed-2026-11-04.md)
+PSR_PY="$(cd "$(dirname "$0")" && pwd)/ps_refused.py"
+PSR() { : > "$T/ps.refused"; PS_REFUSED_LOG="$T/ps.refused" python3 "$PSR_PY" "$B/pickup" "$@" > "$T/out" 2>&1; echo $?; }
 slug() { python3 -c 'import re,sys;print(re.sub(r"[^A-Za-z0-9]","-",sys.argv[1]))' "$1"; }
 # commit <dir> <file> <session8> <prompt>: a checkpoint-shaped commit, as checkpoint.py writes it
 commit() {
@@ -299,14 +304,14 @@ check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account acct-b --no-
 has "$T/out" "--account acct-b: week 80% ≥ 70% (week ceiling)" "…naming the rule"
 check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account acct-b --force --no-fetch)" "0" "…--force runs it there anyway"
 has "$T/out" "in $R: CLAUDE_CONFIG_DIR=$HOME/.acct-b claude --name 'demo: alpha · acct-b'" "…under its config dir, its label in the name"
-# work-account E2: a secondary whose deny list names this repo is skipped, and refused by name
-printf '{"accounts":[{"label":"acct-b","home":"~/.acct-b","rules":{"week_max":70,"window_max":50},"repos":{"deny":["demo"]}},{"label":"acct-a","home":"~/.claude","primary":true,"rules":{"week_max":95,"window_max":80}}]}' > "$T/accounts.json"
+# work-account E2: a secondary this repo is routed off (another tenant's; a deny list until deny-drift) is skipped, and refused by name
+printf '{"accounts":[{"label":"acct-b","home":"~/.acct-b","rules":{"week_max":70,"window_max":50}},{"label":"acct-a","home":"~/.claude","primary":true,"rules":{"week_max":95,"window_max":80},"tenant":"own"}],"tenants":{"own":{"repos":["demo"]}}}' > "$T/accounts.json"
 rm -f "$HOME/.acct-b/usage-probe.json" "$HOME/.claude/usage-probe.json"; echo "10 20" > "$HOME/.acct-b/stub-usage"; echo "10 20" > "$HOME/.claude/stub-usage"
-check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --no-fetch)" "0" "a secondary that denies this repo → the primary"
+check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --no-fetch)" "0" "a secondary the repo is routed off → the primary"
 has "$T/out" "in $R: claude --name 'demo: alpha' '/pickup" "…no env, no label"
 check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account acct-b --no-fetch)" "3" "…and --account acct-b is refused here"
-has "$T/out" "--account acct-b: demo is on its deny list" "…naming the deny list"
-check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account acct-b --force --no-fetch)" "3" "…and --force never crosses a deny list"
+has "$T/out" "--account acct-b: demo is own's: it runs on acct-a only (tenants)" "…naming the tenant"
+check "$(CLAUDE_CODE_ENTRYPOINT=cli AC open alpha --fresh --account acct-b --force --no-fetch)" "3" "…and --force never crosses tenancy"
 printf '{"accounts":[{"label":"acct-b","home":"~/.acct-b","rules":{"week_max":70,"window_max":50}},{"label":"acct-a","home":"~/.claude","primary":true,"rules":{"week_max":95,"window_max":80}}]}' > "$T/accounts.json"
 rm -f "$HOME/.acct-b/usage-probe.json" "$HOME/.claude/usage-probe.json"; echo "10 80" > "$HOME/.acct-b/stub-usage"
 before=$(git -C "$R" worktree list | wc -l)
@@ -411,6 +416,12 @@ has "$T/out" "end it first: close it where it runs" "…and how to end it"
 echo "{\"pid\":$$,\"sessionId\":\"$A\",\"procStart\":\"Mon Jan  1 00:00:00 2001\"}" > "$HOME/.claude/sessions/$$.json"
 check "$(P show alpha --no-fetch)" "0" "a registry entry whose procStart does not match"
 has "$T/out" "handoff   vscode" "…is a reused pid, not a running session"
+# sandboxed-seed: with ps refused the start cannot be read, so the live pid reads as its session running —
+# as an entry with no procStart does, on the side every reader refuses on (never reopened beside it)
+check "$(PICKUP_NO_START=1 PSR open alpha --no-fetch)" "0" "the same entry with ps refused (a sandboxed session): no traceback"
+has "$T/out" "→ live: its session is running now" "…the start unreadable: read as running, so nothing reopens beside it"
+hasnt "$T/out" "Traceback" "…never the PermissionError"
+check "$(grep -c -- '-o lstart=' "$T/ps.refused")" "1" "…and the start was asked, and refused"
 rm -f "$HOME/.claude/sessions/$$.json"
 
 echo "adopt here: a branch made on the other machine"
@@ -475,6 +486,22 @@ echo "{\"pid\":$$,\"sessionId\":\"$F\",\"procStart\":\"$start\"}" > "$HOME/.clau
 check "$(PICKUP_NO_START=1 P open alpha --here --no-fetch)" "0" "a lock whose owner is running"
 has "$T/out" "is running and holds this worktree" "…is kept, and said"
 check "$([ -f "$gd/claude/owner.json" ] && echo kept)" "kept" "…the file stays"
+# sandboxed-seed: an owner whose pid lives and whose start does not match is a reused pid, released; with ps
+# refused the start cannot be read, and the lock is kept — the fence fails closed, never released on a guess
+echo "{\"pid\":$$,\"sessionId\":\"$F\",\"procStart\":\"Mon Jan  1 00:00:00 2001\"}" > "$HOME/.claude/sessions/$$.json"
+check "$(PICKUP_NO_START=1 PSR open alpha --here --no-fetch)" "0" "ps refused: a lock whose owner's pid lives, its start unreadable"
+has "$T/out" "is running and holds this worktree" "…is kept, and said"
+check "$([ -f "$gd/claude/owner.json" ] && echo kept)" "kept" "…the file stays"
+check "$([ -s "$T/ps.refused" ] && echo asked)" "asked" "…ps was asked, and refused"
+check "$(PICKUP_NO_START=1 PS_REFUSED_BLANK=1 PSR open alpha --here --no-fetch)" "0" "ps blank (a loaded Mac's, for a live pid): the same lock"
+has "$T/out" "is running and holds this worktree" "…is kept: a blank start is no proof of a reused pid"
+check "$([ -f "$gd/claude/owner.json" ] && echo kept)" "kept" "…the file stays"
+check "$(PICKUP_NO_START=1 PS_REFUSED_BLANK=gone PSR open alpha --here --no-fetch)" "0" "ps blank with exit 1 (no such process: gone since kill(0), or a thread id on Linux)"
+has "$T/out" "released a stale lock: session ffffffff" "…is released, as on main"
+echo "{\"session\":\"$F\",\"branch\":\"$BA\",\"seen\":$(date +%s)}" > "$gd/claude/owner.json"
+check "$(PICKUP_NO_START=1 P open alpha --here --no-fetch)" "0" "the same lock with ps answering"
+has "$T/out" "released a stale lock: session ffffffff" "…is a reused pid: released"
+echo "{\"session\":\"$F\",\"branch\":\"$BA\",\"seen\":$(date +%s)}" > "$gd/claude/owner.json"   # the lock as the cases below had it
 rm -f "$HOME/.claude/sessions/$$.json"
 
 echo "next: a stage hands over to the next (docs/subagent-cache-2026-10-04.md D6–D7)"
@@ -995,6 +1022,39 @@ has "$T/out" "over 60 lines or 4,000 characters" "…and says what the cap is"
 printf 'no task here\n' > "$T/notask.md"
 check "$(P seed notask --file "$T/notask.md" --no-fetch)" 1 "a brief without a Task: line: refused"
 check "$(P seed Bad_Topic --file "$SB" --no-fetch)" 1 "a topic that is no branch-name part: refused"
+echo "sandboxed-seed: helm send's seed from a sandboxed Mac session, every ps refused (docs/sandboxed-seed-2026-11-04.md)"
+# a live registry entry with a start to check, so the walk is reached: before the fix, the PermissionError killed the seed
+echo "{\"pid\":$$,\"sessionId\":\"5b5b5b5b-0000-4000-8000-000000000005\",\"cwd\":\"$R\",\"procStart\":\"$start\",\"status\":\"busy\"}" > "$HOME/.claude/sessions/$$.json"
+SXN=claude/$HN/$TODAY-sbxseed
+# the brief as helm send writes it (sendlib's BRIEF): its handoff lines make the one-block blueprint
+printf '# sbxseed — sent with helm send from laptop, %s\nTask: probe the node road\nTier: worker\nWhy: sent by a test to skipper · demo.\nStart here: the task above.\nDone means: the task done and committed.\nNot this: a landing.\n' "$TODAY" > "$T/sbx.md"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PSR seed sbxseed --file "$T/sbx.md" --repo "$R" --no-start --no-fetch)" 0 "helm send's form (--no-start), ps refused: seeded"
+has "$T/out" "seeded $SXN in demo — docs/handoff/$TODAY-sbxseed.md, 7 lines; pushed" "…laid and pushed, the line helm send reads"
+has "$T/out" "and its one-block blueprint docs/blueprints/$TODAY-sbxseed.md" "…with the blueprint the yard lays"
+hasnt "$T/out" "PermissionError" "…never the sandbox's refusal"
+check "$(grep -c -- '-o lstart=' "$T/ps.refused")" "2" "…the live registry asked twice (before the seed and after), refused each time"
+git log -1 --format=%B $SXN > "$T/msg"
+has "$T/msg" "Seeded-By: demo/9aaaaaaa on $HN" "…who seeded it from the session's env, as with ps answering"
+check "$(git rev-parse origin/$SXN)" "$(git rev-parse $SXN)" "…on origin, where the yard reads it"
+rm -f "$HOME/.claude/sessions/$$.json"
+# the VS Code walks a plain seed's start reaches (fresh_kind): ps refused reads as no window and no CLI from
+# VSCODE_PID — the fallbacks the code has when no extension host is found — never a traceback
+cat > "$T/vsc_probe.py" <<'PY'
+import importlib.util, os, shutil, sys
+from importlib.machinery import SourceFileLoader
+l = SourceFileLoader("pk", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("pk", l)); l.exec_module(m)
+os.environ["VSCODE_PID"] = str(os.getppid())
+for k in ("PICKUP_VSCODE_WINDOW", "PICKUP_VSCODE_CLI"):
+    os.environ.pop(k, None)
+m.APP_CLI = m.Path(sys.argv[2])
+shutil.which = lambda *a, **k: None
+print(m._vscode_window(), m.code_cli())
+PY
+: > "$T/ps.refused"
+check "$(PS_REFUSED_LOG="$T/ps.refused" python3 "$PSR_PY" "$T/vsc_probe.py" "$B/pickup" "$T/no-app" 2>&1)" "None None" \
+  "ps refused: this VS Code window unknown, the CLI not found by VSCODE_PID"
+check "$(grep -c '^ps ' "$T/ps.refused")" "2" "…both walks asked ps, and were refused"
 echo "routed comments S2: a paged doc a brief names — keel's gate first, its Routed: line in the same commit"
 cat > "$T/keel-stub" <<'EOF'
 #!/usr/bin/env python3
@@ -1042,6 +1102,23 @@ check "$(git show "$RB:docs/r.md" | grep -c '^Routed: ')" "0" "…and the doc le
 has "$T/out" "unrouted: docs/r.md" "…saying so"
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_KEEL= PICKUP_NO_START=1 P seed routedb --file "$SB" --no-fetch)" 0 "no keel here: seeded as before"
 has "$T/out" "no keel here: no \`Routed:\` line written" "…with one note"
+echo "rabbit-holes S3 (D3-A): a step held on an answer that picks no listed option is no new work"
+NP="$T/nopick"; mkdir -p "$NP/docs/handoff" "$NP/.claude" && git -C "$NP" init -q
+echo '{"checkpoint": true, "main": "main"}' > "$NP/.claude/workflow.json"
+printf '%s\n' '# Roads (design, 2026-11-03)' '' '- **D1 — which road**' '  - A — one road' '  - B — another road' '' \
+  '  Reversible: yes' '' '  ➤ Recommended: A' '' '  ➤ Answer:' '  none of these, a third road' '' '## Action plan' '' \
+  '- **S1 — build it** — the work · session `worker` · after: D1 · status: not started' \
+  '- **S2 — measure** — later · session `worker` · after: S1 · status: not started' > "$NP/docs/roads.md"
+git -C "$NP" add -A; git -C "$NP" commit -qm "the design, answered by its owner"
+printf 'Task: build S1\nSteps: S1 of docs/roads.md\n' > "$T/np1.md"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed holdme --file "$T/np1.md" --repo "$NP" --no-fetch)" 1 "a seed whose brief names a held step: refused"
+has "$T/out" "keel's hold refused: docs/roads.md S1 waits on D1" "…naming the step and the item"
+check "$(git -C "$NP" branch --list "*-holdme" | wc -l | tr -d ' ')" "0" "…and no branch made"
+printf 'Task: measure\nSteps: S2 of docs/roads.md\n' > "$T/np2.md"
+check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed measureme --file "$T/np2.md" --repo "$NP" --no-fetch)" 0 "a seed naming a step after S1 alone: seeded"
+check "$(PICKUP_NO_START=1 P brief "claude/$HN/$TODAY-measureme" --text "$(cat "$T/np1.md")" --repo "$NP" --no-fetch)" 1 "pickup brief naming the held step: refused"
+has "$T/out" "keel's hold refused" "…in the hold's words"
+check "$(PICKUP_NO_START=1 P brief "claude/$HN/$TODAY-measureme" --text "$(cat "$T/np1.md")" --repo "$NP" --no-fetch --unroute)" 0 "…but --unroute of it is not refused: a released start drops its Routed: line (round 3)"
 echo "a routed seed is still a seed: its doc's Routed: line alone, named by Routed-By: (S2 landing review)"
 SR="$T/seedrouted"; mkdir -p "$SR/docs" && git -C "$SR" init -q && mkdir -p "$SR/.claude"
 echo '{"checkpoint": true, "main": "main"}' > "$SR/.claude/workflow.json"
@@ -1280,7 +1357,6 @@ mkdir -p "${PM%.jsonl}/subagents" "${PM%.jsonl}/tool-results"
 echo "{\"type\":\"assistant\",\"sessionId\":\"$MS\",\"timestamp\":\"2026-10-03T08:00:30.000Z\"}" > "${PM%.jsonl}/subagents/agent-m.jsonl"
 echo "a tool's long output" > "${PM%.jsonl}/tool-results/out.txt"
 PAD="$PICKUP_SCRATCH_ROOT/$(slug "$WM")/$MS/scratchpad"; mkdir -p "$PAD" && echo "draft" > "$PAD/note.txt"
-cp "$HOME/.gitconfig" "$IH/.gitconfig"
 echo "TOKEN=y" > "$IH/projects/demo/.env"
 MV() { CLAUDE_CODE_SESSION_ID=$MS PICKUP_SSH="$T/ssh-peer" PICKUP_NO_START=1 P move "$@" --repo "$WM" --no-fetch; }
 check "$(MV --to buildbox)" "3" "a subagent wrote seconds ago: refused"
@@ -1349,7 +1425,7 @@ echo more > "$IW2/later.txt"
 echo "{\"pid\":$$,\"sessionId\":\"$N2\",\"cwd\":\"$IW2\",\"entrypoint\":\"sdk-cli\",\"status\":\"busy\",\"statusUpdatedAt\":$(( $(date +%s) * 1000 )),\"name\":\"demo-mu\"}" > "$IH/.claude/sessions/$$.json"
 check "$(MV mu --from buildbox)" "3" "the session there is mid-turn: refused"
 has "$T/out" "is mid-turn on $BM" "…and says so"
-sed -i '' 's/"status":"busy"/"status":"idle"/' "$IH/.claude/sessions/$$.json"
+sedi 's/"status":"busy"/"status":"idle"/' "$IH/.claude/sessions/$$.json"
 check "$(MV mu --from buildbox)" "0" "move --from buildbox"
 IM2="$(git -C "$IW2" rev-parse --absolute-git-dir)/claude/teleported.json"
 check "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["to"])' "$IM2")" "$HM" "buildbox's worktree is marked, moved here"
