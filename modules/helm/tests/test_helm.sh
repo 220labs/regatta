@@ -1256,6 +1256,15 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run
   check "$(echo "$hj" | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['topic']=='handed-step']; print([(x['class'], x['action'], x['raise_to'], x['title']) for x in s], [e for x in s for e in x['evidence'] if e.startswith('dispatch: ')])")" \
     "[('S6', 'raise', 'owner', 'handed-step · S6 handed over, its launch never started')] ['dispatch: no launch — autofinish is disarmed on this Mac (bin/autofinish arm)']" \
     "D1-B: the hand-over with its launch declined: raised to the owner with dispatch's reason, never S1's retry"
+  rec 14-handed.json handed-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 10 min" \
+    "launch=no launch — origin lacks the tip; to land: publish this tip"
+  for closing in "SAM, THIS SESSION IS WAITING FOR NOTHING — built" "SAM, THIS SESSION IS WAITING FOR YOU — D1" "RELAYED TO run-7 — D1" "Built."; do
+    say sid-handed-step "$closing"
+    hj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+    check "$(echo "$hj" | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['topic']=='handed-step']; print(len(s), s[0]['class'], any('to land: publish this tip' in e for e in s[0]['evidence']))")" \
+      "1 S6 True" "  any closing line: one helm card with the refusal and next action"
+  done
+  say sid-handed-step "SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run)"
   rec 14-handed.json handed-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 10 min" "launch=started: autofinish-run --rule M --by yolo"
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='handed-step'])")" \
     "[]" "  its launch started: no card here (a launch that stops is S4 or S5)"
@@ -1438,8 +1447,19 @@ PY
   has "$out" "helm tick: disarmed — not armed (helm tick --arm)" "disarmed: says so"
   check "$(lines)" "16" "  a dry line per verdict, written (14 stalls with the locked step, 2 unsure)"
   check "$(ncalls) $(ncalls "$X/claude-calls")" "0 0" "  nothing called: no dispatch, no autofinish-run, no classifier"
+  cp "$STALLS_LOG" "$X/first-tick.jsonl"
   out=$(tk "$((now+60))")
   check "$(lines)" "16" "the same tick again writes nothing new (R6: a line per changed verdict)"
+  if [ "$(lines)" != 16 ]; then
+    python3 - "$X/first-tick.jsonl" "$STALLS_LOG" <<'PY'
+import json, sys
+before, after = ([json.loads(l) for l in open(p) if l.strip()] for p in sys.argv[1:])
+for row in after[len(before):]:
+    prior = [old for old in before if old.get("key") == row.get("key")]
+    print("  FAIL repeated tick added verdict: " + json.dumps(row, sort_keys=True))
+    print("       prior verdicts for its key: " + json.dumps(prior, sort_keys=True))
+PY
+  fi
   has "$out" "(unchanged)" "  and says which verdicts stood"
   CLAUDE_UNATTENDED=dispatch "$HM" tick --arm > "$X/arm.out" 2>&1; check "$? $([ -f "$X/state/armed" ] && echo armed || echo none)" "1 none" \
     "--arm under CLAUDE_UNATTENDED is refused: nothing unattended arms the tick"

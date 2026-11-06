@@ -16,8 +16,10 @@ launchd job that starts the run in a worktree of the branch and removes itself. 
 branch with a handoff brief (`docs/handoff/<YYYY-MM-DD>-<topic>.md`, what `/todo handoff` writes).
 The run is a visible session (Remote Control, screen run-<repo>-<topic>; never headless — an
 untrusted repo is trusted first): it builds, tests and commits; the checkpoint hook pushes; it never launches, and it is
-ended once idle (at the latest after 8 h). The owner's `/finish` does the launch, or `/pickup` opens
-the branch to read it.
+ended once idle (at the latest after 8 h). With the landing switch on, a done build hands its landing to dispatch. Never write or relay
+a D-item asking to land, launch or finish the build's own branch, and never ask whether to land
+it. A missing step stamp is named as `Stamp owed: <doc> S<n>` for the landing's PR.
+Real unanswered decisions and unfinished work still hold. `/pickup` opens the branch to read it.
 
 ## 1. Which branch, where, when
 

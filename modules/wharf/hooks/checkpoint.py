@@ -329,6 +329,23 @@ def vendor_denied(command):
     return None
 
 
+# A ready PR put back to draft and readied again reruns `check` on the same stale merge ref GitHub made before
+# main's fix: on #434 that cost an hour, and the toggle was an agent's (restack-clean-overlap, 2026-11-04). A red
+# PR on a base main has moved past is `pr restack`'s (wharf: restacked onto main, or its failed jobs rerun once),
+# and a draft is /finish's to ready. The GraphQL mutation is the same toggle by another road.
+def ready_undo(command):
+    """The `gh` command that puts a pull request back to draft, as text, or None."""
+    for words, _, _ in simple_commands(command):
+        if not words or os.path.basename(words[0]) != "gh":
+            continue
+        if ("pr" in words and "ready" in words[words.index("pr") + 1:]
+                and any(w == "--undo" or w.startswith("--undo=") for w in words)):
+            return "gh pr ready --undo"
+        if "api" in words and any("convertPullRequestToDraft" in w for w in words):
+            return "gh api … convertPullRequestToDraft"
+    return None
+
+
 def git(*args, input=None, check=True):
     return subprocess.run(["git", *args], cwd=ROOT, input=input,
                           capture_output=True, text=True, check=check)
@@ -2969,6 +2986,15 @@ def main():
                 f"readying a pull request, the queue's verbs), and this hook is the same rule in {VENDOR}'s own "
                 "socket (docs/codex-agy-gaps-2026-10-29.md, D2-A). Commit on the claude/* branch and stop there; "
                 "the checkpoint pushes and /finish lands it."), ensure_ascii=False))
+            return
+        undo = ready_undo((data.get("tool_input") or {}).get("command", ""))
+        if undo:
+            print(json.dumps(deny(
+                f"⛔ `{undo}` puts a ready pull request back to draft, and readying it again reruns `check` on the "
+                "same stale merge ref (#434, an hour lost, 2026-11-04). A PR whose required check is red on a base "
+                "main has moved past is wharf's `pr restack <N>`: it rebases it onto main to a new tip, or reruns "
+                "its failed jobs once where main has not moved; the armed sweep runs it each tick. A draft is "
+                "/finish's to ready."), ensure_ascii=False))
             return
         if CONFIRMED_RE.search(cmd):
             print(json.dumps({"hookSpecificOutput": {

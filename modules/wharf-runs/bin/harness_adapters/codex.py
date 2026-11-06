@@ -1132,8 +1132,11 @@ def hail_fence(core, rec, msg, agent, side):
     doc). orca.py's _hail_fence keeps the same rule."""
     if msg.get("sender_fenced"):
         return "the sender's repo, on the Mac it hails from, is confidential or guarded (or could not be judged)"
-    sides = [(side, rec.get("cwd"))] + [("the sender's", p) for p in
-                                        (msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()])]
+    sides = [(side, rec.get("cwd"))]
+    # The sender was judged before ssh. The receiving login's cwd is no sender path.
+    if not msg.get("peer_half"):
+        sides += [("the sender's", p) for p in
+                  (msg.get("fence_paths") or [msg.get("sender_cwd") or os.getcwd()])]
     for i, (s, where) in enumerate(sides):
         if not where and i == 0:
             continue

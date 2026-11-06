@@ -16,6 +16,9 @@ weekly pass (aurora's weekly-run runs it once a week, zero attended tokens):
               time; a confidential scope's sessions are counted and never opened (its own pass reads them).
   2 sieve     a zero-token pre-label (machine / status / answer / ask / correction / task); a machine
               prompt (a launcher's, an IDE block, pasted content) is not the owner's and goes no further.
+              A launcher's prompt is judged by the core's `transcript.machine_start`, the one rule
+              week-digest applies before it (which already leaves those out and counts them); the
+              sieve's own list is what the owner types that is no ask (`/autofinish`, `dispatch …`).
   3 classify  every other prompt through the gate: one batched call per dimension on the row
               `evolve.ask` — target (system | question | none), then kind, level and detectability for
               what is not `none`. `unknown` is a label. With the row off or the gate failing, the sieve's
@@ -29,13 +32,16 @@ weekly pass (aurora's weekly-run runs it once a week, zero attended tokens):
               intervention, never topic overlap), on the row `evolve.match`: `anticipated`, or the cause of
               the miss, M1–M7, or J (new information or a legitimate choice: kept, never in the
               denominator). No findings yet (S3/S5 write them): the step reports that and spends nothing.
+              An earlier pass's detectable ask with no verdict yet (the matcher failed, or no findings
+              then) is judged again while the digest still holds its prompt; one outside it stays unjudged.
   6 record    plumb's state dir (`asks/`): `asks.jsonl` one row per owner prompt (ids, labels, counts —
               never a prompt's text), `themes.json`, `overrules.jsonl` (the owner's memo and chat answers that went
               against the recommendation, from `interruptions`), `runs.jsonl` (what each pass cost).
 
 `numbers` prints the rows `knowledge-numbers` shows: asks per 100 owner prompts, the detectable and J
 shares, the repeat share over a 60-day lookback, recall and lead time once findings exist, and the
-loop's cost. `baseline` replays the 60-day model-labelled corpus (the owner's prompts, verbatim, on one
+loop's cost. Recall is printed beside what it was judged over: each class's eligible (judged, not J),
+the matcher's J (`judged_j`) and the not yet matched (`unmatched_eligible`), so a recall over few judged asks reads as such. `baseline` replays the 60-day model-labelled corpus (the owner's prompts, verbatim, on one
 Mac only: read, never copied) through the sieve, and with --model through the gate, and prints the
 agreement per dimension — counts only. `ship` records that a mechanism shipped for a theme.
 
@@ -152,9 +158,13 @@ TARGET_OF_HAND = {"I": "system", "Q": "question"}
 
 # ---- the sieve: zero tokens, a pre-label (the first pen's asks.py, kept here as its home) -------------
 
-MACHINE = re.compile(r"^(<|kind: build|Task:|Read first:|Unattended run|You are (a|the) |/finish|/aurora|/sextant|"
-                     r"/embark|/pickup|/autofinish|pickup |dispatch |Resume |The brief|Brief:|This is a dispatched|"
-                     r"Continue (the|this) |Pick up )", re.I)
+# The sieve's own: what the owner types that is no ask (a command, a pickup or resume line, a brief named), and
+# the older brief frames the 60-day corpus taught it (`Read first:`, `Unattended run`, …), which no launcher
+# writes today and an owner's sentence may open with: week-digest keeps those as the owner's.
+# A launcher's prompt (dispatch's brief, /aurora, a `Task:` frame, hail's, …) is machine_start()'s alone, so
+# asks and week-digest read one rule for it (evolve-readers: this list once held launchers machine_start missed).
+MACHINE = re.compile(r"^(<|/finish|/pickup|/autofinish|pickup |dispatch |Resume |The brief|Brief:|"
+                     r"Continue (the|this) |Pick up |kind: build|Task:|Read first:|Unattended run|This is a dispatched)", re.I)
 PASTED = re.compile(r"<pasted_content|<system-reminder>|<ide_|<browser_instruction>|<command-name>", re.I)
 STATUS = re.compile(r"^(status\??|how('s| is) it going\??|(any )?update\??|done\??|progress\??|where are (we|you)\??|"
                     r"what('s| is) the status\??|still (there|working)\??|are you (done|there)\??|ready\??|and\??|"
@@ -206,10 +216,21 @@ their them then there these they this those through too under until upon very wa
 while who whom will with would you your let get got one two use used using way""".split())
 
 
+def _machine_start():
+    """The core's launcher rule, loaded where the sieve runs: numbers, ship and the rest need none, so an
+    older core (a plugin install) refuses only run and baseline, with one line, never a silent owner count."""
+    try:
+        from transcript import machine_start
+    except ImportError:
+        print("asks: the regatta core predates transcript.machine_start — update the regatta plugin", file=sys.stderr)
+        sys.exit(2)
+    return machine_start
+
+
 def sieve(text):
     """(kind, level): kind is machine | status | answer | correction | ask | task; level a code or None."""
     t = text.strip()
-    if PASTED.search(t) or MACHINE.match(t):
+    if _machine_start()(t) or PASTED.search(t) or MACHINE.match(t):
         return "machine", None
     if len(t) <= 40 and STATUS.match(t):
         return "status", None
@@ -260,7 +281,7 @@ class Gate:
 
     def __init__(self, enabled=True):
         self.cost, self.calls, self.error, self.off = 0.0, 0, None, not enabled
-        self.mod = None
+        self.mod, self.answered = None, set()   # answered: the ids of the last label() call a reply came back for
         if enabled:
             try:
                 self.mod = gate_module()
@@ -274,6 +295,7 @@ class Gate:
         source=<that repo>, so the owner's guarded repos (jev's GUARDED) are refused there, as jev's header
         asks of a caller that gathers across repos. A refused repo's ids get no label (the sieve's stand);
         the other repos go on."""
+        self.answered = set()
         if self.off or not items:
             return {}
         groups = defaultdict(list)
@@ -300,6 +322,7 @@ class Gate:
                     return {}
                 self.calls += 1
                 self.cost += float(r.get("cost_usd") or 0)
+                self.answered |= set(part)
                 out.update({k: v["label"] for k, v in r["items"].items()})
         return out
 
@@ -465,13 +488,22 @@ def load_findings():
     return sorted(out, key=lambda r: r["date"])
 
 
+def matchable(r):
+    """A detectable improvement ask (E or N): what the matcher judges. Recall's `eligible` is the judged ones bar J."""
+    return r.get("target") == "system" and r.get("detect") in ("E", "N")
+
+
 def match_rows(gate, rows, texts, findings):
-    """Set row['match'] for each detectable ask. -> (matched, why-not)."""
+    """Set row['match'] for each detectable ask that has no verdict yet and whose text this pass holds
+    (this pass's, and an earlier pass's still in the digest). -> (matched, why-not, the ids a matcher's
+    reply came back for: a guarded repo's, or a call that failed, never reached it)."""
     if not findings:
-        return 0, "no findings yet"
-    todo = [r for r in rows if r["target"] == "system" and r.get("detect") in ("E", "N") and r["id"] in texts]
+        return 0, "no findings yet", set()
+    todo = [r for r in rows if matchable(r) and not r.get("match") and not r.get("match_void") and r["id"] in texts]
     if not todo:
-        return 0, "no detectable ask in this pass"
+        return 0, "no detectable ask in this pass", set()
+    if gate.off:   # --no-model, the row off, or classify failed this pass: nothing reaches the matcher
+        return 0, gate.error or "the gate is off", set()
     items, cands = {}, {}
     for r in todo:
         sig = set(signature(texts[r["id"]]))
@@ -484,21 +516,25 @@ def match_rows(gate, rows, texts, findings):
         items[r["id"]] = f"ASK ({r['date']}): {texts[r['id']][:TEXT_MAX]}\nFINDINGS: {listed or 'none'}"
     got = gate.label("evolve.match", MATCH_ASK, MATCH_LABELS, items, context="",
                      sources={r["id"]: r.get("project") for r in todo})
+    sent = gate.answered & {r["id"] for r in todo}
     if not got:
-        return 0, gate.error or "the matcher returned nothing"
+        return 0, gate.error or "the matcher returned nothing", sent
     for r in todo:
         lab = got.get(r["id"])
         if not lab:
             continue
         if lab == "anticipated" and not cands[r["id"]]:
-            continue   # nothing was listed, so nothing anticipated it: no verdict, never counted as recall
+            # nothing was listed, so nothing anticipated it: no verdict, never counted as recall, and never sent
+            # again (each later pass would spend a call on the same void answer): it stays not yet matched
+            r["match_void"] = "anticipated with no candidate"
+            continue
         m = {"label": lab}
         if lab == "anticipated":
             f = cands[r["id"]][0]
             # lead time = the finding's time minus the ask's: negative when the loop was first (findings carry a day)
             m.update(finding=f["id"], lead_days=(dt.date.fromisoformat(f["date"]) - dt.date.fromisoformat(r["date"])).days)
         r["match"] = m
-    return len(got), None
+    return len(got), None, sent
 
 
 # ---- run -----------------------------------------------------------------------------------------------
@@ -555,7 +591,11 @@ def run_pass(a):
         merges, map_bad = theme_merges(), None
     except MapUnreadable as e:   # labelled without the map, and no merge pass over it: the map stays as it is
         merges, map_bad = {}, str(e)
-    texts, fresh, machine, fenced = {}, [], 0, int((digest.get("fenced") or {}).get("sessions", 0))
+    texts, fresh, fenced = {}, [], int((digest.get("fenced") or {}).get("sessions", 0))
+    machine = int((digest.get("machine") or {}).get("prompts", 0))   # the launchers' prompts week-digest left out
+    again = {}   # an earlier pass's ask with no verdict, its text still in the digest: the matcher tries it again
+    relabel = 0   # an earlier pass's prompt the classifier never labelled (the sieve's stand): classified again
+    left = []   # (theme, session) a row tried again held: let go below unless a kept row of the session holds it
     for s in digest.get("sessions", []):
         for p in s["prompts"]:
             kind, level = sieve(p["text"])
@@ -563,7 +603,16 @@ def run_pass(a):
                 machine += 1
                 continue
             i = ask_id(s["session"], p["ts"], p["text"])
-            if i in prior or i in texts:
+            if i in prior and prior[i].get("by") == "sieve" and not a.no_model and i not in texts:
+                old = prior.pop(i)   # read as fresh again, under its own id: the gate may label it this pass
+                relabel += 1
+                if old.get("theme"):
+                    left.append((old["theme"], old["session"]))
+            if i in prior:
+                if matchable(prior[i]) and not prior[i].get("match"):
+                    again[i] = p["text"]
+                continue
+            if i in texts:
                 continue
             texts[i] = p["text"]
             fresh.append({"id": i, "date": p["ts"][:10], "ts": p["ts"], "week": iso_week(p["ts"][:10]),
@@ -600,15 +649,27 @@ def run_pass(a):
                                      "first": {"session": r["session"], "date": r["date"]}, "shipped": None})
         th["sig"] = sorted(set(th["sig"]) | set(sig))[:60]
         th["sessions"].setdefault(r["session"], r["date"])
-        th["last"] = {"session": r["session"], "date": r["date"]}
+        if r["date"] >= (th.get("last") or {}).get("date", ""):   # an earlier pass's prompt tried again is no newer
+            th["last"] = {"session": r["session"], "date": r["date"]}
         th["count"] = len(th["sessions"])
         r["theme"] = tid
-    matched, why = match_rows(gate, fresh, texts, load_findings())
+    held = {(r.get("theme"), r["session"]) for r in list(prior.values()) + fresh}
+    for tid, sess in left:   # a theme the sieve gave a row tried again keeps no session no row of it holds
+        th = themes.get(tid)
+        if (tid, sess) in held or not th or sess not in th.get("sessions", {}):
+            continue
+        del th["sessions"][sess]
+        th["count"] = len(th["sessions"])
+        if not th["sessions"] and HASHED.fullmatch(tid) and not th.get("shipped"):   # a slug or a ship stays on record
+            del themes[tid]
+    matched, why, sent = match_rows(gate, fresh + [prior[i] for i in again], {**again, **texts}, load_findings())
+    retry = [i for i in again if i in sent]   # an earlier pass's asks this pass put to the matcher
     over, over_why = (None, "skipped") if a.no_overrules else overrule_rows(a.days)
     run = {"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": a.days,
            "prompts": len(fresh), "machine": machine, "fenced_sessions": fenced, "labelled_by": by,
            "gate_calls": gate.calls, "cost_usd": round(gate.cost, 4), "gate_error": gate.error,
-           "matched": matched, "match_note": why, "overrules": None if over is None else len(over)}
+           "matched": matched, "match_retried": len(retry), "match_note": why, "relabelled": relabel,
+           "overrules": None if over is None else len(over)}
     if a.dry_run:
         print(json.dumps(run, indent=1))
         return 0
@@ -627,9 +688,11 @@ def run_pass(a):
         # that flag, and the merge pass judges evolve.theme's own row through a Gate of its own
         merged = do_merge(Gate(enabled=True))   # the month's one evolve.theme call over the ledger's slugs
     asks = {(r["session"], r.get("theme")) for r in fresh if r["target"] == "system" and r.get("theme")}
-    print(f"asks: {len(fresh)} new owner prompts ({machine} machine, {fenced} confidential sessions not opened), "
+    print(f"asks: {len(fresh)} new owner prompts ({machine} machine, {fenced} confidential sessions not opened"
+          + (f", {relabel} of them an earlier pass's left to the sieve, tried again" if relabel else "") + "), "
           f"{sum(r['target'] == 'system' for r in fresh)} improvement asks in {len(asks)} session-themes, "
-          f"labelled by {by}" + (f" ({gate.error})" if gate.error else "") + f"; match: {why or str(matched) + ' matched'}; "
+          f"labelled by {by}" + (f" ({gate.error})" if gate.error else "") + f"; match: {why or str(matched) + ' matched'}"
+          + (f" ({len(retry)} an earlier pass left unjudged)" if retry else "") + "; "
           f"gate {common.cost_text(gate.cost)}" + (f"; overrules: {len(over)}" if over is not None else f"; overrules: {over_why}")
           + (f"; {merged}" if merged else ""))
     return 0
@@ -712,7 +775,9 @@ def numbers(days=7, today=None):
         "g1_E": gE, "g1_N": gN,
         "residual_asks": residual, "residual_per_100": round(100 * residual / len(win), 1) if win else None,
         "j_asks": det["J"], "unknown_asks": sum(n for k, n in det.items() if k not in ("E", "N", "J")),
-        "unmatched_eligible": sum(1 for r in ask_rows if r.get("detect") in ("E", "N") and not r.get("match")),
+        "unmatched_eligible": sum(1 for r in ask_rows if matchable(r) and not r.get("match")),
+        # the E and N asks the matcher judged J (new information): out of recall's denominator, printed beside it
+        "judged_j": sum(1 for r in matched if r.get("detect") in ("E", "N") and r["match"]["label"] == "J"),
         "labelled_by_sieve": sum(r.get("by") == "sieve" for r in win),
         "cost_week_usd": round(sum(x["cost_usd"] for x in week_runs), 4),
         "cost_4w_usd": round(sum(x["cost_usd"] for x in spend if x["ts"][:10] > cut), 4),
@@ -734,6 +799,8 @@ def cmd_numbers(a):
           f"({n['owner_prompts']}); detectable {n['detectable_share']} %, owner's judgement {n['judgement_share']} %; "
           f"repeating a theme (60 d) {n['repeat_share']} %; recall E {n['g1_E']['recall']}, N {n['g1_N']['recall']}, "
           f"residual {n['residual_per_100']} per 100; lead time (days, finding minus ask) E {n['g1_E']['lead_days']}; "
+          f"recall judged over eligible E {n['g1_E']['eligible']}, N {n['g1_N']['eligible']}; the matcher's J {n['judged_j']}, "
+          f"not yet matched {n['unmatched_eligible']}; "
           f"cost {common.cost_text(n['cost_week_usd'])} this week, {common.cost_text(n['cost_4w_usd'])} in 4 weeks")
     return 0
 

@@ -2,9 +2,17 @@
 
 ## Unreleased
 
+- review-gate's principal route picks as a finish, with the receipt, so it names the login a landing started on under
+  lighthouse's `week-max-finish`; `plan --phase build`, which a build round's prompt passes, keeps a plain pick
+  (finish-ceiling's landing review, 2026-11-06).
 - `pr hold` (check-ci-default's landing review, 2026-11-06): labels this branch's PR `hold` as build CI's own, with check_ci.py's
   marker and ownership note, through the token, so an unattended `/finish` re-landing a ready PR holds it before its push
   (it may not call `gh`); an owner's unmarked hold is kept and nothing claimed. Step 11.2 names it.
+- A Linux runner's image carries `lsof` (runner-lsof, 2026-11-06): `RUNNER_CONTAINERFILE`'s apt line names it beside procps,
+  as hosted ubuntu ships it (pickup's `ide_windows` finds a VS Code window by its listening port: 19 `test_pickup` cases failed
+  on a runner without it), and `.github/ci/linux-tools.sh` checks `lsof` and procps (`ps`, `pgrep`) with the other tools, so a runner whose image
+  lacks either fails at setup naming the package (a hosted one installs it). A runner takes the image at its next
+  `--runner install`.
 - A Linux runner's berth parts (free CI S6, docs/free-ci-2026-11-03.md, 2026-11-04): the image is ubuntu:26.04, hosted
   ubuntu-latest's release, by its index digest, its packages upgraded at each build, procps added and the base's own login
   gone (the runner keeps uid 1001); the container is capped by the new live limit `wharf/ci-runner-limits` (modules/wharf/limits,
@@ -42,6 +50,27 @@
   false, and a fenced scope whose repos do not read refuses the run in one line naming nothing; a host with no
   registry skips the step.
 
+- The worker briefs hand a completed build's landing to the parent or dispatch: no D-item or question asking to land its own branch. A missing step stamp is named as owed for the landing's PR.
+- `pr restack` widened (restack-clean-overlap, the owner 2026-11-04 on #434: "figure out how to make resolution of
+  trivial conflicts like that automatic and not rerun the CI"): a ready DIRTY PR restacks when git's plain merge
+  conflicts in list files alone, so a path both sides changed in hunks that merge clean (#434's README and
+  `limits`) no longer refuses; a both-sides path with a merge attribute other than union on a list file does, and
+  a plain-merge conflict names its file. `.helloworld/allowlist.txt` is a list file with no merge attribute (a
+  plain merge conflicts there; union revived a path main took off the list, the review's probe): `restack`
+  settles its conflict with list-merge's new set merge (a path either side took off stays off, none listed
+  twice), and asks for the clone's list-merge driver only where a union file needs it. `pr carry`
+  compares, per file, the added and removed lines in order, mode lines included, as bytes, ignoring context and
+  hunk positions, in a file that is exactly a clean three-way merge of the PR's change onto main's copy (a
+  hand-resolved conflict and a moved line are refused, the review's probes); otherwise the same entries at both
+  heads and forks, as before. A path the allowlist would list twice refuses. Merge attributes are read at
+  main's tip and the PR's head. The red road: a ready PR whose required check's run was made before main's tip
+  landed (the run's `created_at`, which a rerun keeps) is restacked onto main to a new tip, never rerun, once a
+  push of the PR's own, and a head-tested status (check-linux) red on a head behind main likewise; one that saw
+  main's tip gets `rerun-failed-jobs`, once a run, a refusal said on the PR. Each mark
+  is written before the act it bounds, a failed push's source tip included. Nothing moves while a required check
+  or its rerun runs, a cancelled run is never red, and a run whose making will not read waits. The checkpoint hook denies `gh pr ready --undo` (and the GraphQL
+  `convertPullRequestToDraft`), naming `pr restack`. Suite: `tests/test_restack.sh`, `tests/test_checkpoint.sh`.
+
 - `council run` asks each arm for a complete design on the pen's mandate, not a position paper, and `council
   examine` for an agreement round: what each arm adopts from each paper, and its stand where they disagree (concede,
   hold with evidence, or a compromise), then what only the owner can decide (the principal tier's revision of
@@ -51,6 +80,8 @@
   on the Mac holding the node's folder and on the node itself; an open scope naming a node, another scope's node,
   the shared node and a host nothing knows are refused, each said why.
 
+- `pr`'s re-judge reads `--by lander` as `handed` (`handed_held`), and as a mode launch when it carries a mode flag in
+  `land_by` (stuck-ships S1).
 - `principal-architect`'s Receipt bullet names its completion line (`Completion: **<state>** — <why>`), a flagged
   judgement, the council's rows taken as given, and `keel lint --strict`'s principal rule; test_council.sh runs
   sextant's `bin/principal` on its stand-ins (off macOS: every arm refused, the Receipt saying so; on macOS: a paper

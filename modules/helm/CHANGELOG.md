@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A refused build's card puts dispatch's cause and next action first, so the evidence summary keeps them visible.
+- Landing retries use the finish week ceiling in their preflight, so a login past its build ceiling
+  can reach autofinish-run; build retries keep the normal ceiling.
+
+- Builder retry words recognize both GPT arms and reject pre-flight fallback arms.
+
 - stalls: a review stop's card (gate G1r) names its fix round, `<dispatch's path> <branch> --repo <repo> --priority
   <the landing's, else high>`, never a plain normal build; the command quotes shell arguments (landing-fixes-in-run).
 - `stalls_tick`'s `ARM_WORD` reads the builder coin's third arm, `argon-high`, and its coin 0 to 2 (the fallback's
@@ -26,6 +32,8 @@
   proof in node (84 cases), the document's allowlist, states and sig, and under headless Chrome the view at 1440, 720
   and a true 390 in both themes and both roads (248 reads); `HELM_BOARD_ANY_OS=1` runs the Chrome frames off a Mac,
   here and in `test_board.sh`.
+- A build whose hand-over recorded a launch refusal gets one S6 card with the refusal and its next action, whatever its closing line, so an idle or done ending no longer hides an unlanded build. A refusal another rule already judges keeps that rule: a queued step, a crash (S1's retry), an ask already carded, a relay its live skipper holds. A started landing gets no card, and a guarded repo's refusal text stays private.
+- A done build that had no hand-over (dispatch's `no hand-over` note) gets one S6 card for `/finish`; its other endings keep their rules. A landing-only WAITING run whose launch a later gate refused is carded with that refusal, never hidden behind the landing ask.
 - Main's nightly whole-line check has a reader in the laptop's `ask poll`: one board card and one logbook
   `bug` issue, no mention, naming failed or unfinished suites and linking the run; a green night closes it.
   The nightly workflow runs each suite in its own step past an earlier failure, but never after a failed setup

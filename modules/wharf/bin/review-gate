@@ -260,21 +260,31 @@ def principal_brief(repo, base="main"):
         return None
 
 
-def principal_route(repo):
+def principal_route(repo, finish=True):
     """Where a held principal review runs (header, the principal rule): {"account", "here", "reason", "unread",
     "skipped", "waits", "reread", "closed", "torn"} from `account pick` (pick's own room, as for any review: /finish spawns both
     on Opus). account None when no login has room: reread when some login could not be read (read it once
     more first), waits when some refusal lifts at a reset; unread when the login named is pick's last resort
     with its limits unread. None when account gave no answer (absent, no registry, a crash), so the plain
-    advice stands."""
+    advice stands. FINISH picks as a landing, with the receipt; a build round's plan (`--phase build`) asks a plain
+    pick, as the band past its week ceiling is a landing's alone."""
     acct = os.environ.get("REVIEW_GATE_ACCOUNT") or common.tool("account")
     if not acct:
         return None
     try:
         # its own process group: a timeout kills account's in-flight `claude -p` probe too (common.run_group)
         # --overdraw, no --job: the route must name the login a landing started on past its week bar (autofinish-run's
-        # own pick), or the gate says no login has room for a run that is on one; nothing is logged here
-        r = common.run_group([sys.executable, str(acct), "pick", "--repo", repo, "--json", "--overdraw"], 120)
+        # own pick), or the gate says no login has room for a run that is on one; nothing is logged here. A finish's
+        # pick for the same reason: its finish ceiling is the one that landing started under, and read at the build
+        # ceiling this route names another login, or none, for a run that is on one (finish-ceiling's landing review,
+        # 2026-11-06). The gate only names a route and starts nothing; autofinish-run still needs its own receipt
+        cmd = [sys.executable, str(acct), "pick", *(("--for", "finish") if finish else ()), "--repo", repo, "--json",
+               "--overdraw"]
+        if finish:
+            with common.finish_pick_env() as (env, fds):
+                r = common.run_group(cmd, 120, env=env, pass_fds=fds)
+        else:
+            r = common.run_group(cmd, 120)
     except (OSError, subprocess.TimeoutExpired) as e:
         print("review-gate: account pick did not run (%s)" % e, file=sys.stderr)
         return None
@@ -325,7 +335,7 @@ def principal_route(repo):
             "unread": unread, "skipped": skipped, "waits": False, "reread": False, "closed": False, "torn": False}
 
 
-def plan(repo, base, principal=False):
+def plan(repo, base, principal=False, phase="finish"):
     rp, cp = review_provider("review-gate.reviewer"), review_provider("review-gate.code-review")
     by = "--principal" if principal else principal_brief(repo, base)
     n, warn = inserted(repo, base)
@@ -364,7 +374,7 @@ def plan(repo, base, principal=False):
     held = budget if by and budget != "normal" else None
     return {
         "inserted": n, "tier": tier, "budget": budget, "warning": warn, "gated": gated,
-        "principal": {"by": by, "held": held, "route": principal_route(repo) if held else None} if by else None,
+        "principal": {"by": by, "held": held, "route": principal_route(repo, phase == "finish") if held else None} if by else None,
         "week": {"percent": w[0], "pace": w[1], "age_h": round(w[4], 1)} if w else None,
         "reviewer": rev,
         "code_review": cr,
@@ -988,6 +998,7 @@ def main():
     p.add_argument("--repo", default=os.getcwd())
     p.add_argument("--json", action="store_true")
     p.add_argument("--principal", action="store_true", help="a principal build: the top tier at any size, held through a tight week")
+    p.add_argument("--phase", choices=("build", "finish"), default="finish", help="who asks: a build round's route reads no finish ceiling")
     m = sub.add_parser("merge")
     m.add_argument("--reviewer", required=True)
     m.add_argument("--code-review", required=True)
@@ -1004,7 +1015,7 @@ def main():
     repo = git(a.repo, "rev-parse", "--show-toplevel").strip() or a.repo
     if a.cmd == "plan":
         try:
-            r = plan(repo, a.base, a.principal)
+            r = plan(repo, a.base, a.principal, a.phase)
         except gate.GateError as e:
             print("review-gate: plan refused: %s" % e, file=sys.stderr)
             return 1

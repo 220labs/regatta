@@ -690,7 +690,8 @@ def g1_text(asks):
     e, n = asks["g1_E"], asks["g1_N"]
     return (f"recall of E asks {pc(e['recall'])} ({e['eligible']} eligible), of N asks {pc(n['recall'])} ({n['eligible']} eligible); "
             f"residual {num(asks['residual_per_100'], 'per 100 prompts')}; lead time {num(e['lead_days'], 'days')} (E); "
-            f"not counted: J {asks['j_asks']}, unknown {asks['unknown_asks']}, not yet matched {asks['unmatched_eligible']}; ")
+            f"not counted: J {asks['j_asks']}" + (f" (and {asks['judged_j']} the matcher judged J)" if asks.get("judged_j") else "")
+            + f", unknown {asks['unknown_asks']}, not yet matched {asks['unmatched_eligible']}; ")
 
 
 def main():

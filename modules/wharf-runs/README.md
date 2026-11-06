@@ -8,7 +8,7 @@ themselves. Requires the core (`regatta`); the rest of the module moves in piece
 | `bin/orca-host` | Orca on this Mac kept to the registry: the app and its CLI, one project group per scope (anchor first, coloured, worktrees from local `main` in `.claude/worktrees/`), and the pairing to the Macs whose Orca it drives (`check`, `setup`, `scopes`, `pair PEER`, `--on PEER <verb>`); on a Linux peer the same verbs over `orca-ide`, its release `.deb` and the server's systemd user unit |
 | `bin/orca-serve-agent` | a Mac's Orca run as a headless server under a LaunchAgent in the login session, so it survives a reboot and reaches the keychain (`HOST\|here [--remove] [--dry-run]`); the agent's label is a config key. On Linux the systemd user unit `orca-serve.service` with linger, the one the agent guest's cloud-init writes |
 | `bin/dispatch`, `run-seed` | a seeded `claude/*` branch started with nobody at the keyboard: now, at a time, on another Mac (`--on`), or as the next step of a chain (`--next`); the run's records, its watcher and its window (`dispatch-rc`). With a queue home `--on` (a host, or `here`) is a preference — that host claims the entry first, any eligible host once it has waited a sweep or that host finds no room — and `--pin` the hard pin, for a run only that host can do (dispatch-queue S12) |
-| `bin/dispatch-queue` | `dispatch`'s fleet queue: one git ref every host claims from by compare-and-swap, a node-local queue per confidential scope, the outbox and the sweep; `dispatch --queue`, `--sweep`, `--priority` are its faces. A finish is an entry like a build (finish-as-task): one rank rule for every kind of task, a finish ahead of a build of the same priority, `--priority` taken as a build takes it (`autofinish-run --priority`, or `dispatch BRANCH --priority` raising one already queued), and a tombstone per finished tip, so no host runs a tip twice. `hosts put` writes a host's row for the Engine room page to `refs/regatta/hosts` (the queue's lease, the one other ref under the owner's D6-A exception), `hosts get` reads them; the page's verbs (the Engine room's S4): `repin QID HOST|any` and `cancel QID`, each refused to an unattended caller, and `features` for the row; `dispatch-rc settle --stale` ends the old peer road's records no run is behind |
+| `bin/dispatch-queue` | `dispatch`'s fleet queue: one git ref every host claims from by compare-and-swap, a node-local queue per confidential scope, the outbox and the sweep; `dispatch --queue`, `--sweep`, `--priority` are its faces. A finish is an entry like a build (finish-as-task): one rank rule for every kind of task, a finish ahead of a build of the same priority, `--priority` taken as a build takes it (`autofinish-run --priority`, or `dispatch BRANCH --priority` raising one already queued), and a tombstone per finished tip, so no host runs a tip twice. `hosts put` writes a host's row for the Engine room page to `refs/regatta/hosts` (the queue's lease, the one other ref under the owner's D6-A exception), `hosts get` reads them (`--cached` skips the fetch); the page's verbs (the Engine room's S4): `repin QID HOST|any` and `cancel QID`, each refused to an unattended caller, and `features` for the row; `dispatch-rc settle --stale` ends the old peer road's records no run is behind |
 | `bin/systemd-launchctl` | launchctl's verbs (`bootstrap`, `bootout`, `print`, `kickstart`) over systemd's user manager: the launcher dispatch, dispatch-queue and `regatta check` use off macOS, so a Linux node runs the same plists — a RunAtLoad job as a transient unit, an interval or calendar job as a unit pair with an enabled timer |
 | `bin/autofinish`, `autofinish-run` | the lander: a sweep that judges each idle `claude/*` worktree by the start rules in its header and, once armed on a Mac, starts a fresh unattended `/finish` on it; `install.sh --schedule` adds the sweep. `autofinish arm --landings`, the landing switch apart from the sweep's, has a done `default` build hand its landing to dispatch, `--by handed` (task-shape S3) |
 | `bin/pickup` | a session's branch picked up, seeded, reviewed or moved between Macs (`/pickup`, `/move`, `/later`) |
@@ -32,6 +32,19 @@ through `common.tool()`: wharf (a hard edge: `branches`, `checkpoint`, `session_
 plumb's `tier_check`, lighthouse's `account` and the project-management tools `ask`, `helm` and
 `helmlib` (absent: a run's prompt drops the ask lines, `wharf check` refuses). Which Mac is which,
 who the owner is and where an overlay lives are config, below; the code names none of them.
+
+Finish launches ask `account pick --for finish`: lighthouse's live `week-max-finish` may raise their
+week ceiling without raising a build's. `autofinish-run` gives each pick attempt a fresh pipe receipt,
+including the cached retry and a claimed finish (after the queue's `mine` check). Its detached
+`dispatch --start` receives a separate receipt, consumed before its own auto or bound picks and
+removed before the session starts. A bare purpose flag or environment word grants no allowance;
+subsequent builds use the normal ceiling. No existing purpose marker was present on these roads.
+The sweep and dispatch's completed-build handover also use finish receipts for their cached and
+fresh landing preflights; a build's `--if-room` check keeps the normal ceiling. Those preflights keep
+the primary's pace rule, so a line on the primary clears `autofinish-run`'s pick but not rules A, B, E
+and M, dispatch's handover or helm's relaunch. Past a login's line a finish is refused, and the week's
+`none` then stops rules C, D and L too: a deployed branch waits there. Landings are Claude sessions: a Codex or agy login's line is judged by `account`, and has no effect
+until a landing runs on that provider.
 
 ## Install
 
@@ -74,7 +87,7 @@ the tools here will find.
   | `wharf-runs/load-max` | `<load per core> [log]` — a host whose 5-minute load per core is at or over it is passed over for the next one its scope allows; `log` records the pick without acting on it | 1.5; log only while `load-margin` is unset or `log` too |
   | `wharf-runs/finisher-rotation` | `until YYYY-MM-DD`: the finisher rotation's switch and its last day. `autofinish-run` draws each finisher by coin, Opus 5.5 or Sonnet 5.5 at `medium`, and records the run in the log dir's `finisher-rotation.jsonl`; with the rotation off every finish run still writes its row, `arm` null (task-shape S1). A repo any of whose scopes says `"rotation": false` (or a `rotation` that is no bool), or one in no scope, keeps today's finisher; a confidential scope rotates unless it opts out so, its row carrying `scope` and `confidential: true` (the core's `scope_rotates`, since scope-rotation 2026-11-04; `autofinish-run`'s header; `autofinish-run rotation` reads the rows back) | today's finisher, dispatch's default model |
   | `wharf-runs/builder-rotation` | `until YYYY-MM-DD`: the builder rotation's switch and its last day (S6 of the Trim design). A run whose brief is specced — its `Tier:` line names `worker` or Sonnet — or plain Opus — Opus alone, no tier word, no effort but `high` (since 2026-11-03) — and that no `--model` or `--effort` was given for draws its builder once where `dispatch` enqueues or schedules it, by `wharf-runs/builder-odds` (below; Opus 5.5, Sonnet 5.5 and Gemini 4 Argon, each `high`; 3 in 5 Sonnet and no Argon until S3 of the Argon design, 1 in 5 before 2026-11-03); an Argon draw runs only on a builder host (its `wharf-runs/features` line names `agy`, its row on the hosts ref fresh) and adds `--needs agy`, else it falls back to Opus, the row saying `fallback`; while dispatch has no road for agy (its S4) Argon weighs 0 at the draw (`1:2:2` draws as `1:2`); the row's `brief_class` says which class (trim does not split by it yet: TODO.md [trim-brief-class]); every road carries the draw (`DISPATCH_ARM`), and the run's record and one row in the log dir's `builder-rotation.jsonl` keep it, which trim reads as `arm_source: coin`. A repo any of whose scopes says `"rotation": false` (or a `rotation` that is no bool), one in no scope or a registry that does not read draws nothing; a confidential scope draws unless it opts out so (the owner, 2026-11-04: one scope does, the others draw), and its row carries `scope` and `confidential: true`, which trim counts in its arm tallies only (the core's `scope_rotates`, since scope-rotation 2026-11-04); such a scope draws the claude arms only, never Argon (Google), and a vendor word fires there as its Opus fallback. The fire path asks the key again on the host the run fires on, so every host that claims runs needs it (the overlay's config line on each, the Linux node included): a host without it drops the arm, said in the run's log (`bin/buildercoin.py`'s header) | today's builder: opus/high, or a principal tier's |
-  | `wharf-runs/builder-odds` | optional; a fleet limit, changed live with `regatta limit set builder-odds 'opus-high=1,sonnet-high=2,argon-high=0' --all --why '…'` (this module's `limits` file). The builder coin's whole weight per arm, by the arm's name, in any order, an arm left out weighing 0 (named, never `1:2:2`: the config's grammar reads `1:` as a host's word). Read where a run is drawn and again where it fires: a weight of 0 for the drawn arm there runs today's builder, unrecorded, and a value that does not read draws nothing. The row's `odds` writes the weights as `o:s:a`, which `buildercoin.py`'s `odds_of` reads beside #459's `n/d` (S3 of docs/argon-builder-arm-2026-11-03.md) | `opus-high=1,sonnet-high=2,argon-high=2` (the owner's D2) |
+  | `wharf-runs/builder-odds` | optional; a fleet limit, changed live with `regatta limit set builder-odds 'opus-high=1,sonnet-high=2,argon-high=0' --all --why '…'` (this module's `limits` file). The builder coin's whole weight per arm, by the arm's name, in any order, an arm left out weighing 0; or, as a live value only, positional in the coin's order `opus:sonnet:argon:gpt-big:gpt-mid` (three or five weights, e.g. `0:0:0:1:1`), read ahead of the named base line (a named base, never `1:2:2:1:1`: the config's grammar reads `1:` there as a host's word). A weight of 0 is never drawn; with both Claude weights 0 a worker brief draws `gpt-mid` and an sr-worker brief `gpt-big`, a principal tier stays Claude. Read where a run is drawn and again where it fires: a weight of 0 for the drawn arm there runs today's builder, unrecorded, and a value that does not read draws nothing. The row's `odds` writes the weights as `o:s:a`, which `buildercoin.py`'s `odds_of` reads beside #459's `n/d` (S3 of docs/argon-builder-arm-2026-11-03.md) | `opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1` (1:2:2:1:1; the owner's D2, S8) |
   | `wharf-runs/load-margin` | `<load per core> [log]` — how much lighter a later host must be than the ones passed over | 0.5; log only while `load-max` is unset or `log` too |
   | `wharf-runs/build-review-rounds` | optional. The build loop's round cap, a whole number from 1 to 20 (`build-review cap`), read at each round, so a change holds from the next one; a value split one word per line reads as one, a note after `#` or `(` as nothing. A value that does not read is the default, said on stderr | 3 |
   | `wharf-runs/queue-repo` | the home of `dispatch`'s fleet queue (`dispatch-queue`'s header): `owner/name` on GitHub, or a path or URL; `off` turns the queue off. Every host that claims needs write on it; set the URL that host's git reaches | none: no queue, and `dispatch` runs as before it (`helm/logbook-repo` stands in once S2 lands) |
@@ -82,7 +95,7 @@ the tools here will find.
   | `wharf-runs/queue-mode` | optional (dispatch-queue S10(g)). `writes`, or `<host>:writes` for one host: that host's queue home is for its own writes alone — `dispatch --requeue`'s ops, replayed from the outbox by its sweep at wake. It enqueues none of its own runs and claims nothing; `claim`, the default, as before. No host claims in a DarkWake (`pmset -g systemstate` without Graphics) | `claim` |
   | `wharf-runs/hosts-sample` | optional (the Engine room's S2). `off`: the sweep and the claims never start lighthouse's `hosts sample --put`, so this host puts no row on `refs/regatta/hosts` (`dispatch-queue hosts`); the suites' fixtures write it | on wherever a queue home and lighthouse are |
   | `wharf-runs/kick-roads` | optional (dispatch-queue S8, `bin/kicklib.py`): the kick's switch and its roads, `<host>:<road>[,<road>…]` (`sheep`, `orca`, `ssh`, tried in the order the line names them) or `<host>:none`; a value split one word per line, and a note after `#` or `(`, read as one line, a host's first line winning. The file's presence turns the kick on: a host that enqueued what it does not take kicks every eligible peer over the first road that takes it. A host with no line gets what exists: `orca` where `orca-pairs` names the pair this way, `ssh` where `wharf-runs/ssh` or `wharf-runs/kick-ssh` has its alias; `sheep` only where a line names it (a kicker cannot see a peer's listener; `dispatch --roads` prints what exists here, this host's listener included) | absent: no kick, and the pending poll is every host's way to hear |
-  | `wharf-runs/kick-ssh` | optional (`bin/kicklib.py`): `<host>:<ssh alias>`, read by the kick alone, after `wharf-runs/ssh`. For a host the ssh road may reach that no other reader of `wharf-runs/ssh` may: a scope's node, which berth would otherwise probe and place one-shots on, and pickup, stalls and `account doctor` would read. A line here is a road for `reached()`, as an alias in `wharf-runs/ssh` is; it reaches a host the entry's scope `berths` or a `wharf-runs/features` line name, since a repo with no berths takes its peers from `wharf-runs/ssh` alone | none: the ssh road reaches only what `wharf-runs/ssh` names |
+  | `wharf-runs/kick-ssh` | optional (`bin/kicklib.py`): `<host>:<ssh alias>`, read by the kick and message roads, after `wharf-runs/ssh`. For a host the ssh road may reach that no other reader of `wharf-runs/ssh` may: a scope's node, which berth would otherwise probe and place one-shots on, and pickup, stalls and `account doctor` would read. A line here is a road for `reached()`, as an alias in `wharf-runs/ssh` is; it reaches a host the entry's scope `berths` or a `wharf-runs/features` line name, since a repo with no berths takes its peers from `wharf-runs/ssh` alone | none: the ssh road reaches only what `wharf-runs/ssh` names |
   | `wharf-runs/kick-space` | optional (`bin/kicklib.py`): the space id of the private page that declares `kick/*` (`<meta name="ss-streams">`), published once under the kickers' full key's account. The sheep road presses over that space's stream socket, which presses only the streams its page declares; the kicker's python3 needs the `websockets` package (14.0+), and a host lacking either says so in `kicks.jsonl` and `dispatch --roads` and kicks over the next road | none: the sheep road is unavailable |
   | `wharf-runs/kick-stream` | optional (S8): `<host>:<stream>`, the spacesheep stream a host's kick listener hears on, for a listener shared through `--on-dir` (`dispatch-rc kick-listen install --shared DIR`) | `kick/<host>` |
   | `wharf-runs/power` | optional (S10(e), read by helm's stalls). `<host>:sleeps` for a host that may sleep, beside the core's laptop, which may unless its line says otherwise: unreachable, with no queue word of its own younger than two sweeps, it reads `asleep`; any other host stays `unreachable` | only the laptop may sleep |
@@ -113,6 +126,25 @@ answer's words (a text carrying one is refused). A hail is data to its receiver;
 It keeps `hail.jsonl` and the `--when idle` rows, `hail-subs.jsonl`, in keel's state dir
 (`MEMO_STATE_DIR` moves it). Without helm's `asklib.py` the Talk and file roads
 are skipped, said in the record.
+
+**Message peers** use the fleet's `refs/regatta/hosts`, read through `dispatch-queue hosts get --cached`
+when `wharf-runs/queue-repo` is set. The sampler's `hosts put` refreshes that local ref (each claim and sweep starts it where
+lighthouse is present and `wharf-runs/hosts-sample` is not `off`); hail and Stop hooks never fetch it. Fresh samples (at most 24 hours old, or up to 5 minutes ahead of the reader's clock) with bare fleet names become ssh destinations.
+Configured aliases win in order: `wharf-runs/ssh`, `wharf-runs/kick-ssh`, then a named node's
+`wharf-runs/nodes/<name>/ssh` (for its `<name>-agent` peer). An explicit `hail --host` tries aliases
+before reading the fleet cache. No new message list needs maintaining.
+
+Automatic discovery, mailbox pulls and helm's relays skip every name they add (kick aliases,
+node folders, fleet rows) that is a confidential scope's yard or its own node (the core's
+`nodes_here`, `<scope>-agent`, or a host whose fleet row is torn or whose `scope` marker, lighthouse's
+sampler's, is no open scope here, however old the row); a kick alias alone is added only while a fresh,
+unmarked row vouches for it; a node folder whose `scope` names no open scope here is blocked too, and a
+builder user's row (`builder: true`) is reached only by a configured alias; a `wharf-runs/ssh` peer is
+reached as before, a Mac yard included. A registry, a
+yard or a node folder that does not read drops every added name. An explicit `hail --host <yard>` may still reach
+that yard, under the sender and receiver fences and pointer-only rules. The caller needs ssh access
+by its alias or fleet name (or the reverse mailbox road). Placement keeps its own readers of
+`wharf-runs/ssh`; discovering a node grants no placement permission.
 
 **The roads, in order:** socket (any Claude Code login on the target's Mac whose sessions share its
 registry, as the login dirs do by link; idle only, read back from the receiver; a session whose record sits
@@ -181,6 +213,17 @@ until a verdict or the wait limit. CI neither waits for a local slot nor fills i
 CI's coverage comes from `.github/ci/share.sh line`: contract commands neither it nor the explicit
 local list runs remain `UNRUN <command>`, exit 3. Without that CI line to compare, check runs locally.
 
+With the landing switch on, a completed default build hands its landing to dispatch (`--by handed`).
+The hand-over reads its changed documents and review result, and requires a clean tree whose exact tip
+is on origin. A legacy landing-only question or a wait solely for a step stamp does not ask the owner:
+the finish removes the obsolete question and lists owed doc/step stamps in the PR. A stamp is owed only
+when its Course doc is not on the branch, or the build's ⏳ line (`Stamp owed: <doc> S<n>`) names that
+doc and step and keel reads the step as `wip`; a step not started, blocked, without a status keel knows,
+or missing from its doc holds, whatever the closing line says. A landing question counts only where the
+branch added it, and one the owner answered hold holds. Real unanswered
+decisions, warnings and unfinished waits hold. Every refusal records a `to land:` action in the run's
+`launch` field, which helm shows in one S6 card independently of the closing line.
+
 `bash modules/wharf-runs/tests/check.sh` — scratch paths only; no Orca, no network, no real launchd
 (macOS). The suites run in three lanes at once, test_dispatch alone in one, each lane printed whole, in lane order,
 when it ends; `WHARF_RUNS_CHECK_LANES=1` runs them one after another. A suite the checkout lacks is
@@ -190,10 +233,52 @@ skipped with a line.
 `--shard NAME` runs one group in one lane; off macOS it runs `LINUX_OK`'s suites only, and
 `WHARF_RUNS_LINUX_PROOF=1` runs the group whole, to prove a candidate. The check line names the suite
 once (a Mac's whole line runs it in lanes); `share.sh` splits it into one id per shard. The PR's
-`check-linux` runs seven of the eight that passed on Linux (#500, 2026-11-05); the macOS share runs
-`wharf-runs-pickup` (until the self-hosted Linux runners have `lsof`), `wharf-runs-queue` and `wharf-runs-macos`.
+`check-linux` runs the eight that passed on Linux (#500, 2026-11-05; `pickup` waited a day for the self-hosted runners' `lsof`); the macOS share runs
+`wharf-runs-queue` and `wharf-runs-macos`.
 `test_harness` needs macOS's research seatbelt, and `test_rc_hosts` compiles and signs the TCC
 launcher; both stay in `macos`.
 `share.sh` names a command ending in `tests/check.sh --shard NAME` as `<module>-NAME`, and a plain
 `bash <module>/tests/check.sh` whose script answers `--list-shards` as one such id per shard. Both Actions matrices
 read `share.sh linux-ids`; CircleCI's static matrix must match `.github/ci/linux-ids`.
+
+## Codex builds
+
+`dispatch BRANCH --harness codex` and either GPT coin arm use `run-vendor`.
+The launcher owns fetch, the initial merge, explicit branch pushes, checks,
+fresh reviews and the verifier, then resumes the builder thread for fixes.
+Only a clean review/check end schedules a changed next brief. Landing stays
+with `/finish`. `build-review review WORKTREE --cli codex` runs one review
+round; `--cli antigravity` is the explicit S4 seam. A row declaring a second
+vendor uses that vendor for reviews; an unavailable declared road holds the
+loop. Each turn repeats the scope fence and scans its message before sending.
+
+The default `wharf-runs/builder-odds` is `1:2:2:1:1`: Opus, Sonnet, Argon,
+GPT big (`gpt-6.1-sol`, xhigh), GPT mid (the same model, high). Named weights
+such as `gpt-big=1,gpt-mid=1` also read. Omitted and zero weights never draw.
+With both Claude weights zero, worker/Sonnet briefs take GPT mid and
+sr-worker/Opus briefs take GPT big; principal tiers stay Claude. At the next draw, any positive
+Claude weight restores the earlier specced/plain brief rule. If every arm
+eligible for a class weighs zero, the current Claude builder remains the
+fallback. Codex entries need the `codex` feature on a fresh builder host.
+
+`sudo builder-user codex --gh-as LOGIN` creates the vendor user and the same
+home ACL wall as the other builder user. It uses the readable Homebrew CLI
+and shares the sudo user's ChatGPT plan login (`--cli-from USER` selects a
+trusted source), as gh access is shared. Login contents are never printed.
+The runtime needs `wharf-runs/only` naming `codex`, the scope registry and a
+signed-in CLI with the requested model/effort in its local model catalog.
+The builder Codex home must hold only the generated Regatta PreToolUse
+handler (`vendor-hooks apply`); the launcher checks it before trusting it
+headlessly. Reviews grant the worktree read access, keeping the run fence.
+Host installation and real-user probes remain the owner's steps; the
+builder-host installer includes S9's hardening.
+
+`check WORKTREE --builder` keeps module suites and TODO lint, leaving
+`claude plugin validate` and the private publish gate to the landing. Omitted
+commands are reported as skipped and never remembered as passed. A launcher
+records its own PID across review gaps, a separate turn PID, the thread,
+provider tokens and the final outcome. Pre-flight failure returns a claimed
+entry to the fleet as its Claude fallback, keeping its hard pin. If the pinned
+host cannot run Claude, the fallback stays queued there. A failure after a vendor starts
+belongs to that vendor. Antigravity's build turns are S4; record readers and
+the finish hand-over are S5.

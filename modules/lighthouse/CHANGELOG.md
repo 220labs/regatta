@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- The lend bar (2026-11-05): `rules.lend_max`, in the registry or budgets.json, is a week ceiling for every repo
+  that is not the login's own (its scope's or its tenant's); its own work keeps `week_max`. Past it, `pick` and
+  `limits --repo` refuse another's repo in judge's week wording, and a ship pinned there moves to another login;
+  `limits --repo` says `lends`, which dispatch's --next reads; a `lend_max` that is present but no number from 0 to
+  100 lends nothing. `pick --overdraw` lifts a lent row last, after every other row past its own week ceiling, so
+  the tenant's own room is spent last. First use: a tenant's login at 50% for anything but its tenant's repos.
+- Finish ceilings keep the normal week ceiling when the live layer is inaccessible, including on
+  Python 3.14 where path predicates suppress permission errors; a readable base never widens that failed read.
+
+- `lighthouse/week-max-finish` gives launcher-proven finish picks a higher weekly ceiling, per login
+  or `*:`, without admitting builds. `account pick --for finish` alone grants nothing: the launcher
+  supplies a consumed pipe receipt. Invalid or unreadable values keep the normal ceiling; valid
+  values never exceed 100 and only raise it. Verdicts name `finish ceiling`. A `*:` line reads as `week-max`'s, over a
+  row that sets no ceiling of its own; a line that is no ceiling turns `*:` off; the overdraw never lifts a row this
+  ceiling judged, so a line holds on the launchers' `--overdraw` road. Cases in `tests/account.sh`, a Codex login's
+  among them.
+
 - The Engine room's S4 (docs/engine-room-2026-11-02.md): `hosts sample`'s row carries `checks` (this login's wharf-runs
   check slots: busy, cap, waiting) and `features` (`dispatch-queue features`), and its `records.stale` counts what
   `dispatch-rc settle --stale` would end, so one Settle clears it. `hosts --json`'s queue entries, finish entries
@@ -10,6 +27,9 @@
   text: no commit, path or branch) `by`, the waiting session's first 8, and `pin_login` (its run names a login, so repin never moves it; never the
   label). `ops`' check count skips a pid of 0 and check's ticket being written, as `hosts` does. Cases in `tests/hosts.sh`.
 
+- `hosts sample`: a named node's row carries its scope as the core's `scope_marker` (`scope`, never the name;
+  `confidential:unread` where `wharf-runs/node/scope` does not read, through the core's node reader, so a link whose target moved is unread), so hail's message discovery skips a confidential
+  scope's node whatever it is named (node-hail). A builder user's row (`wharf-runs/host` set) carries `builder: true`.
 - reef grows a host back once its median and newest load are under 0.6× load-max, with at most one sample at or over
   that and none over load-max (2026-11-04; it was every sample under half). A hold now names what kept it from cold:
   the laptop, at its floor all day, is held by memory (free never over 2× headroom's avail), not by load.

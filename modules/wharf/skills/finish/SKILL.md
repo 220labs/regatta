@@ -439,7 +439,17 @@ session's work sharing the branch — note them; they're reported separately.
    Update auto-memory only for cross-session state the repo shouldn't hold. Don't restate
    what the commit log already says.
 
-4. **⚠ Gate — no open items left.** First the **open steps** (entry D6-A of
+4. **⚠ Gate — no open items left.**
+   For a landing whose launcher says "This is a done build handed to its landing", first remove
+   the obsolete landing-only questions it names from the build digest; never fill in an owner
+   answer for them. The launcher's explicit `Stamp owed:` list is bookkeeping the build could
+   not write, including a doc on another branch: carry each doc and step into the PR body as
+   owed and pass those status marks through this gate, those alone: a step its `Still open:`
+   list names, or any the `Stamp owed:` list leaves out, holds as usual. Never stamp another branch. All other
+   open steps, real unanswered decisions, unfinished implementation and review findings still
+   hold. This exception belongs to a handed build; an attended finish keeps the usual gate.
+
+   First the **open steps** (entry D6-A of
    the layer's docs/design-docs-2026-10-14.md): `keel landing` (keel's own verb) —
    exit 1 lists each step a brief this branch added names (its `Steps:` line) that the Course doc
    does not mark done or superseded. Then this branch is **refused**: write nothing (no

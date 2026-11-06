@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """autofinish-run — a fresh, unattended `/finish` on one claude/* worktree, and how it ended.
 
-    autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|brief|typed|yolo|dnd|chain|ship|handed] [--merge | --hold]
+    autofinish-run WORKTREE [--rule A|B|C|D|E|L|M] [--by sweep|override|brief|typed|yolo|dnd|chain|ship|handed|lander]
+                   [--road refinish|login|limit|stand] [--merge | --hold]
                    [--digest D] [--session ID] [--on here] [--priority high|force] [--dry]
     autofinish-run notify [WORKTREE]      the run's own session: whom to message, and the text (below)
+    autofinish-run lander VERB …          the lander's store: show|hold|lift|stuck|reset|spend|armed (below)
     autofinish-run queued QID --repo R --branch B   a claimed finish's start: its launchd job's verb (Where, below)
     autofinish-run waiter                 detach()'s exec'd grandchild, its spec in AUTOFINISH_WAITER_SPEC; never typed
 
@@ -18,7 +20,8 @@ ship's digest. Claimed here at once when this host has room; else any host with 
 grace it gives up the moment its claim finds no room (the queue's --prefer). Pinned here instead when only this host
 can judge or run it: `--on here`; the landing ladder (a hold, a mode, a mode or ship launch, `--by brief|handed`,
 rule M — landing() reads this host's plans; ladder_stay; off a host that cannot claim a finish only `--on here`, a
-ship, a brief and a chain resolved to another --by keep that pin, and a ladder hold rides as `hold`); a tip origin lacks after a push that failed, or a worktree
+ship, a brief, a lander (whose caps are this host's lander.json) and a chain resolved to another --by keep that pin,
+and a ladder hold rides as `hold`); a tip origin lacks after a push that failed, or a worktree
 holding what origin lacks (the queue's held_here at the put). Nothing of the run is written here: no state, no lock,
 no waiter. It prints `queued: QID (a finish of <tip>), …` with the window's name and exits 0 (every caller reads 0
 as the finish in hand, a live finish of the branch (`busy … (a finish)`) included); a put the queue refuses — a
@@ -114,6 +117,98 @@ queued is raised in place (`dispatch-queue raise`), never started twice: the cal
 exits 0. Neither a chain relaunch nor a sweep retry carries it: force
 buys one run.
 
+The lander (stuck-ships S1, docs/stuck-ships-2026-10-31.md; the skipper's settlement of 2026-11-01): `--by lander
+--road R` is the start helm's tick makes for a stopped branch's next move (S3 builds the tick's side), on the Mac that
+ran the stop. Today's same-tip refusal stays for every `by`; a lander start lifts it only by its road, which it must
+name (exit 2 without one, and `--road` with any other `by`), judged in refusal() in this order, before the chain's
+(and whole before the origin gate, in tree_refusal(), as a chain relaunch is: its road names the stop's own tip):
+  - the key's state: `stuck` refuses every start that is not a person's (`lander`, `chain`, `sweep`, `yolo`, `dnd`,
+    `brief`, `ship`, `handed`, and a person's label from an unattended caller), exit STUCK_RC (9); an entry with a key
+    in a shape no writer makes (a non-object `relaunches`, a counter that is no count, any other `state`) and a store
+    that does not read refuse the same starts with exit 3 (a narrowing that cannot be read narrows; the refusal names
+    its `lander reset`), a person's start passing as before;
+  - a last run not ended (one that may be going spent its road already and still reads as the same stop to the next
+    tick, so the cap must not answer first): a plain wait, exit 3. A lander finish queued in the fleet writes nothing
+    here: a second put while it waits is the queue's `queued already` (exit 0), and its road is spent at its claimed
+    start, judged again there;
+  - the road's cap in lander.json (re-finishes 2; a `login`, `limit` or `stand` relaunch 1 each), exit STUCK_RC;
+  - the road's predicate, judged on the stop: the last run, or, when that run is a start dispatch refused before any
+    session (a REFUSED_GATES record, with no base_tip and the new pick's login), the stop the refused lander start
+    passed on, kept in the entry's `stop` with `stop_for` its session (as for a lander start that never replied or
+    died, and for a chain relaunch of a lander run, under its own session; a refused record of any other start: a
+    wait, exit 3, until a run ends; a stop that ran on another host, a finish it claimed whose end tomb_state wrote
+    here: that host's), each road reading that stop's own gate
+    and its own `autofinished` line only (never an older run's), on a HEAD with no work the stop never saw
+    (moved_since_stop(): `login` and `limit` the stop's tip, `stand` that tip plus commits on keel's D-list docs,
+    `refinish` the tip its run pushed; else exit 3, the sweep's to judge) — `refinish`: the branch's open PR reads
+    DIRTY (REST `mergeable_state` dirty), ready (its `draft` false), with no `hold` label (DEAD_ROAD_RC: the owner's
+    tap) and labels that read, its head is this worktree's HEAD (another Mac's branch is not this Mac's to
+    re-finish), origin's main is not in HEAD's history (read from git, never the run's `base_tip`, which is main at
+    the run's end), and the last run launched, stopped no-landing with a ready PR, or stopped at G11; `login`: the
+    branch's last `autofinished` stop is a no-landing one matching LOGIN_RE (the class, never the logged-out row a
+    probe may clear); `limit`: that stop is the 5-hour usage-limit line, and the newest `five_hour` row of the run's
+    window (written after its start, or resetting after it: one row per window) in the `exhaustion.jsonl` of the
+    login it ran on (its `account`, a label or a home read through `account limits --all --parked --json --cached`)
+    has passed its `resets_at`; `stand`: that stop is G4 and `keel status --json` reads no open item on any D-list
+    doc of keel's memo set (docs/, docs/record/, docs/embark/, the top level) the branch changed, and none `taken`
+    (keel yolo's answers never land so: DEAD_ROAD_RC). A predicate that can never hold — a PR labelled `hold`, no
+    exhaustion row, no registry login, a G4 stop with no D-list doc keel reads items in, or a doc keel refuses (its
+    `memo:` exit 1) — exits DEAD_ROAD_RC
+    (8), which the tick raises once as the owner's; one not holding yet (main unmoved, a reset to come, an open item)
+    is exit 3. The tick names no `--road limit` for a landing: main's chain relaunch takes a limit stop first (the
+    design's revision 11);
+  - then today's same-tip test, which a holding predicate lifts.
+A lander start lands as a typed `/finish` (task-shape D1-C), judged as `--by handed` is: handed_held at landing()
+and at bin/pr's re-judge (a diff or config that will not read, a binary, a `.gitattributes` change, the launcher's own
+gates), mode ask and a mode or a ladder it cannot read holding it; with rule M, or carrying the stopped run's mode
+flag while the branch's mode still says it, it is that mode's launch, judged by held_slice; the stopped run's `hold`
+is carried verbatim, so a run held is held again for the tap.
+`--merge` is refused (no person's yes). It is recorded `by: lander`, logged `via=<the stopped run's by>` with
+`road=<road> stopped_on=<the stopped run's account>` beside `account=<the new pick>`. With a queue home it is a fleet
+finish pinned to this host, as a hand-over is (ladder_stay: its caps are this host's lander.json, its road judged
+this host's record of the stop; carrying either to the fleet is TODO.md [finish-ladder]'s), its entry's rights naming
+`road` and the `land_by` this put judged (a claim keeps a flag only where its own judgement agrees: the entry narrows,
+never widens), and the queue lets it past the tombstone of its own tip only when that stop ran on this host and was
+no cancel (dispatch-queue's tomb_holds); a chain relaunch of a lander run stays `lander` (CHAIN_KEEPS). `land_by` carries the mode flag: a
+lander start, or a chain relaunch that keeps the stopped run's `by`, writes that run's `land_by` (else its `by` when a
+mode launch; a plain yolo or dnd start writes none, its flag is its `by`), and finish_prompt adds `--yolo`/`--dnd` from it; a lander start carries it only while the branch's mode
+still says it — never under E12's standing yes, which is a person's (flag_rides) — a mode lowered since would land the
+taken answers a chain relaunch's held_slice holds. At the end record() writes `automerge`, the open PR's
+auto-merge request then ({merge_method, enabled_by}), so a census classes a DONE line by the PR at the stop.
+The store, `lander.json` in autofinish's state dir beside `armed` (this Mac's; AUTOFINISH_STATE_DIR), keyed
+`<repo key>/<branch>`: {first_stop, starts, relaunches: {login, limit, stand}, reruns, refinishes, rounds, refusals:
+{tip, n, first, last, by, logged}, hold: {label, head, reason, started}, state}, every write under flock on
+`lander.json.lock`, through a rename; a file that does not parse, or an entry with a key in a shape no writer makes,
+refuses every start that is not a person's, makes `lander armed` say no, and is never written over: a malformed entry
+bar a `reset` of its own key, a file that does not parse bar `reset --aside`, which sets it aside and clears every
+branch's caps and stuck states with it.
+Three writers: refuse() counts today's same-tip refusal per tip (never in autofinish.json, which a refuser rewriting
+while a run may be live would race record()) and logs it once an hour per branch (a person's every time), and logs
+each text a lander start is refused with (its figures aside), and a stuck key's refusal of any start, once an hour (an
+unreadable store's refusal every time: there is no store to count it in); the start spends its road before the run's state is written (a
+store that does not write refuses the start) and refunds it when dispatch refused it or no child started — or, for a
+start whose verdict was unconfirmed and that dispatch then refused, at the next lander judgement of that
+refused record (the spend keeps `spent` {session, road}; the refund settles where record() writes that refused
+record, else at the road's next judgement; a dry run only judges it) — so it is spent on
+every exit-0 verdict of await_verdict — started, unconfirmed (it may be going) — and on a caller killed during the
+verdict wait, never on a refusal, no account or a detach that failed (a fleet put spends nothing: its claimed start
+does, as any start); and the verbs:
+
+    autofinish-run lander show [--worktree W | --repo R --branch B]   the entry, or the whole store
+    autofinish-run lander hold --worktree W --head SHA --reason refinish|relaunch|round [--started]
+    autofinish-run lander lift|stuck|reset --worktree W [--aside: reset's, on a store that does not parse]
+    autofinish-run lander spend reruns|rounds --worktree W          0, or STUCK_RC once the cap (2, 1) is spent
+    autofinish-run lander armed     0 when a stop here will be moved: the relaunch gate on (autofinish's `armed`; the
+                                    `landings` switch, task-shape S3's) and a tick runs on this Mac (helm's
+                                    poll_tick test: the laptop, or a scope's yard), armed past its dry hours (`helm
+                                    tick --arm`: a disarmed or dry tick calls nothing); else 3, saying why
+
+`reset` is refused an unattended caller and a skipper (PRIO_UNATTENDED; exit 2): it clears a stuck ship's caps, the tick's or a person's to do. The
+counts and the state reset, the hold kept until `lift`, also when a person's start runs (`typed`, or one carrying
+`--merge`, with no unattended caller; never a bare `override`, the default of an unnamed caller), on the host whose
+store it is: at the put, and at a claim here, never at a claim of another host's put. The PR's merge and a
+branch gone reset it through the tick (S3); `pr stuck` spends `reruns` and the tick `rounds` (S4, S5).
+
 A ship's lease (skipper-resilience S4): when DISPATCH_SHIP (or the older DISPATCH_PLAN) names a ship
 that has one here (plans/<id>/skipper.json, helm's bin/leaselib.py), the caller's generation is
 checked first — SKIPPER_GEN, else the lease's own session, else a plain shell — and any other is
@@ -159,7 +254,7 @@ refusals and both write:
     usage limit as the branch's last autofinished line (S4), at most CHAIN_RELAUNCHES times per tip (counted in
     `<git dir>/claude/autofinish-chain.json`), and a yolo launch it relaunches stays a yolo one;
   - the login (work-account E5, as `dispatch --account auto`; joined early on the owner's word,
-    2026-10-08): `bin/account pick --repo <primary> --json` at start time, so a second login, first in
+    2026-10-08): `bin/account pick --for finish --repo <primary> --json` at start time, so a second login, first in
     the walk, takes the run unless the repo is routed off it (tenancy, a scope's login); the pick's CLAUDE_CONFIG_DIR goes to
     the start (unset for the default dir, whose env must stay empty — bin/account's header), and
     `account` in the state and the log line names the row. Exit 3 from the pick (no row may run
@@ -353,9 +448,10 @@ run of the same topic writes the same log). With a queue home the verdict is the
 stdout, exit 0. `not started` goes to stderr, which a sweep quotes.
 Exit: 0 started or queued (or --dry), 1 the detach failed (nothing ran, the lock given back), 2 usage or not
 a claude/* worktree, 3 refused (same tip, a run going, another start under way, a lock in use, no
-account may run it now), 6 the origin gate refused (origin's branch holds what this tip lacks: nothing ran; cold_prompt
+account may run it now, a lander road not holding yet), 6 the origin gate refused (origin's branch holds what this tip lacks: nothing ran; cold_prompt
 blocks on it, where any other refusal lets a typed /finish run in its tab), 4 the ship's lease refuses the caller's generation (DISPATCH_SHIP; S4),
-5 dispatch refused the start (no room, the cap, memory, no account: nothing ran, the tip may start again); no
+9 STUCK_RC (a `stuck` key, a lander road's cap spent), 8 DEAD_ROAD_RC (a lander road whose predicate can never
+hold), 5 dispatch refused the start (no room, the cap, memory, no account: nothing ran, the tip may start again); no
 verdict in time is 0, said `not confirmed`.
 Tests (bin/test_autofinish_run.sh) replace dispatch's commands with DISPATCH_CLAUDE, _SCREEN and the
 rest; AUTOFINISH_HOST names this host, AUTOFINISH_QUEUE dispatch-queue, AUTOFINISH_END_WARM `dispatch-rc end-warm`,
@@ -407,7 +503,13 @@ WAITER = "autofinish-waiter.json"   # {"pid", "start"}: the detached waiter, for
 NOTIFY = "autofinish-notify.json"   # {"session", "targets", "ts"}: who `notify` tells (the header)
 KEYS = ("started", "session", "tip", "by", "rule", "window", "account", "ended", "outcome", "pr", "gate")
 OPTIONAL_KEYS = ("merge", "hold", "keel_hold", "host", "from", "eff_mode", "land_mode", "arm",
-                 "pushed", "base", "base_tip", "queue", "priority")   # written only when set: a launch without --merge or a hold keeps the file it always had
+                 "pushed", "base", "base_tip", "queue", "land_by", "automerge", "road", "priority", "hold_from", "handover", "owed")   # written only when set: a launch without --merge or a hold keeps the file it always had
+# hold_from: the session whose hold this run carries rather than judged (a chain or lander relaunch, a retry of a died
+# or refused run), so a later retry carries only a hold no rule of its own would recompute (the S1 landing's review:
+# a sweep's own mode-ask hold, refused by dispatch, outlived the owner's raise of the mode)
+# land_by: the mode flag a lander or chain relaunch carries (stuck-ships S1): `yolo` or `dnd`, so a second hop keeps
+# `--yolo`/`--dnd` in its prompt though its `by` is `lander`. automerge: the PR's auto-merge request as read at the
+# run's end ({"merge_method", "enabled_by"}), so a census classes a DONE line by the PR's state at the stop
 # eff_mode: the mode landing() judged a mode launch by — the branch's, or `yolo` for E12's standing yes
 # (no mode, a "merge": "auto" repo, a person's caller) — which bin/pr's re-check reads where the branch
 # has no mode now, never a bare `by: yolo` (follow-ups item 4). land_mode: the branch's mode landing() read
@@ -418,8 +520,25 @@ MERGE_BY = PERSON_BY + ("ship",)   # whose yes --merge may carry: a person's, or
 SHIP_HOLD = "the keel holds it (--hold)"   # the state's `hold` for a --hold launch (S6)
 BRIEFS = "autofinish-briefs"   # bin/autofinish's BRIEFS: <common git dir>/claude/<it>/<branch, quoted>.json (S7)
 HANDED = "handed"   # dispatch's hand-over of a done build (task-shape S2): a label, never a person's yes
-CHAIN_KEEPS = LAND_BY + ("brief", "ship", HANDED)   # the launches a chain relaunch stays (landing review, finding 5)
-BY_WORDS = ("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship", HANDED)   # --by; dispatch-queue's FINISH_BY
+CHAIN_KEEPS = LAND_BY + ("brief", "ship", HANDED, "lander")   # the launches a chain relaunch stays (landing review,
+                                                              # finding 5; a lander run's relaunch stays a lander run,
+                                                              # stuck-ships S1)
+# The lander (stuck-ships S1, docs/stuck-ships-2026-10-31.md; the header's "The lander"): its roads, their caps, the
+# one store, and the exits a road's refusal takes beside today's 3
+LANDER = "lander.json"   # this Mac's, in autofinish's state dir beside `armed`, keyed <repo key>/<branch>
+ROADS = ("refinish", "login", "limit", "stand")
+ROAD_CAPS = {"refinish": 2, "login": 1, "limit": 1, "stand": 1}   # starts per road per branch, then stuck
+SPEND_CAPS = {"reruns": 2, "rounds": 1}   # spent through `lander spend` by pr stuck and the tick (S4, S5)
+HOLD_REASONS = ("refinish", "relaunch", "round")
+LANDER_HOLD = "lander-hold"
+STUCK_RC = 9       # state `stuck`, or the road's cap spent: the owner's (never 1, a crash; never 7; never 6, the
+                   # origin gate's ORIGIN_RC, which cold_prompt blocks on)
+DEAD_ROAD_RC = 8   # the road's predicate can never hold (a hold label, no exhaustion row, no D-list doc): raised once (S3)
+REFUSAL_LOG_S = 3600   # a same-tip refusal is logged once an hour per branch; every one is counted in lander.json
+# the usage-limit end, as `autofinished` keeps it: `You've hit your 5-hour limit · resets 9pm`. The 5-hour window's
+# alone: the road reads `five_hour` exhaustion rows, so a weekly or a model's limit is no stop it can tell (review 1)
+LIMIT_RE = re.compile(r"^You(?:'|\u2019)ve hit your 5-hour limit\b", re.I)
+BY_WORDS = ("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship", HANDED, "lander")   # --by; dispatch-queue's FINISH_BY
 REFUSED = common.REFUSED   # the gate of a start dispatch refused before any session; was "not-launched"
 REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
 DIED = "died"
@@ -636,6 +755,19 @@ def last_stop(t):
     return entries[-1]["detail"] if entries and entries[-1]["outcome"] == "stopped" else None
 
 
+def stop_line(t, prev):
+    """The detail of the judged stop's own `autofinished` line (a stop line stamped with its `ended`, as record() and
+    dispatch-queue's tomb_line write it), or None. Never the branch's last stop line instead: after a lander start that never
+    replied or died that is the start's, and before another host's end line is back (tomb_line) it is an older run's, whose text would spend
+    a road on a stop that was not its class (review 5; the landing review: an older run's text, not this stop's)."""
+    ended = (prev or {}).get("ended")
+    if ended:
+        for e in reversed(common.autofinished(t.common)):
+            if e["branch"] == t.branch and e["outcome"] == "stopped" and e["ts"] == ended:
+                return e["detail"]
+    return None
+
+
 def chain_runs(t):
     """The sessions `--by chain` started on this worktree's tip, from CHAIN (any other tip's are void)."""
     try:
@@ -692,7 +824,614 @@ def stopped_on(t, prev):
     return not prev.get("ended") or (prev.get("gate") not in REFUSED_GATES and prev.get("outcome") != DIED)
 
 
-def refusal(t, prev, by=None, sent=False):
+class Refusal(str):
+    """A refusal's text and its exit: 3 (today's: a plain wait or no), STUCK_RC or DEAD_ROAD_RC; `same_tip` marks
+    today's same-tip refusal, which refuse() counts in lander.json and logs once an hour (stuck-ships S1)."""
+
+    def __new__(cls, text, rc=3, same_tip=False):
+        s = str.__new__(cls, text)
+        s.rc, s.same_tip, s.road = rc, same_tip, False
+        return s
+
+
+class StoreUnreadable(Exception):
+    """lander.json is there and does not read: no road starts on a cap it cannot count."""
+
+
+class RoadSpent(Exception):
+    """A road's cap reached under the store's lock, at the spend: the start refuses as stuck (args[0]: the count)."""
+
+
+def lander_path():
+    return pathlib.Path(common.autofinish_state_dir()) / LANDER
+
+
+@contextlib.contextmanager
+def lander_locked():
+    """The store's lock: every write to lander.json, by any of its three writers, under flock on lander.json.lock."""
+    p = lander_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(p) + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def lander_read():
+    """The whole store, {} when there is none; raises StoreUnreadable when the file is there and does not parse."""
+    try:
+        text = lander_path().read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        raise StoreUnreadable(str(e))
+    try:
+        d = json.loads(text)
+    except ValueError as e:
+        raise StoreUnreadable("not JSON: %s" % e)
+    if not isinstance(d, dict):
+        raise StoreUnreadable("not an object")
+    return d
+
+
+def lander_key(primary, branch):
+    """`<repo key>/<branch>`: the repo as the registry names it (a worktree's is its main checkout's); a repo outside
+    the projects folder, which repo_key gives back as spelt, by its real path, so a temp folder's two spellings (a
+    symlinked parent and its target, the tick's and a start's) are one key (round 2)."""
+    key = common.repo_key(primary) or primary or "."
+    return "%s/%s" % (os.path.realpath(key) if str(key).startswith("/") else key, branch)
+
+
+def fresh_entry():
+    return {"first_stop": None, "starts": 0, "relaunches": {"login": 0, "limit": 0, "stand": 0}, "reruns": 0,
+            "refinishes": 0, "rounds": 0, "refusals": None, "hold": None, "state": None}
+
+
+def reset_entry(e):
+    """The counts and the state fresh; the hold kept until `lift` takes the label off (S1's resets), and the kept stop,
+    which records the last stop, not a count (a lander start refused after a reset still has it to judge: review 3)."""
+    # the hold, and the last stop: no counts; a kept key in a shape no writer makes is dropped (entry_problem)
+    keep = {k: e[k] for k in ("hold", "stop", "stop_for") if k in e and (k == "stop_for" or isinstance(e[k], dict))}
+    e.clear()
+    e.update(fresh_entry(), **keep)
+
+
+def lander_update(key, fn, replace=False, aside=False):
+    """fn(entry) changes KEY's entry (a fresh one when absent) under the lock; the store written through a rename.
+    Returns fn's value. Raises StoreUnreadable rather than write over a store it could not read, or over an entry
+    that is there and not an object: a refusal's own count would otherwise widen what lander_entry narrowed (the
+    landing review). REPLACE (a reset: the tick's or a person's) writes a fresh entry over such a one. ASIDE (the
+    `lander reset --aside` verb only, refused an unattended caller) moves a store that does not parse to lander.json.unreadable-<epoch>, said on stderr,
+    and starts a new one: the one road out of an unreadable store that is not a hand edit (round 1). Every write
+    prunes the entries that hold nothing but old refusal counts (prune_entries)."""
+    with lander_locked():
+        try:
+            d = lander_read()
+        except StoreUnreadable as x:
+            if not aside:
+                raise
+            p = lander_path()
+            kept = "%s.unreadable-%d" % (p, int(time.time()))
+            os.replace(str(p), kept)
+            print("autofinish-run lander: %s did not read (%s): set aside as %s, a new store started — every "
+                  "branch's caps and stuck states on this Mac are cleared with it" % (p, x, kept), file=sys.stderr)
+            d = {}
+        why = entry_problem(d[key]) if key in d else None
+        if why and not replace:
+            raise StoreUnreadable("its entry for %s %s" % (key, why))
+        # a reset writes over a malformed entry, keeping the hold and the stop of one that is still an object
+        e = d[key] if key in d and isinstance(d[key], dict) and (not why or replace) else fresh_entry()
+        out = fn(e)
+        d[key] = e
+        prune_entries(d, keep=key)
+        p = lander_path()
+        tmp = "%s.%d" % (p, os.getpid())
+        try:
+            with open(tmp, "w") as f:
+                json.dump(d, f, indent=1, ensure_ascii=False, sort_keys=True)
+                f.write("\n")
+            os.replace(tmp, str(p))
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    return out
+
+
+COUNTERS = ("starts", "refinishes", "reruns", "rounds")
+PRUNE_S = 7 * 86400   # an entry holding only refusal counts this old is dropped at the next write (round 1)
+
+
+def prune_entries(d, keep=None):
+    """Drop the entries that hold nothing a road, a cap or a hold reads — no count, no state, no hold, no kept stop —
+    and whose last refusal count is older than PRUNE_S: count_refusal adds one per branch the sweep refuses, on any
+    repo, and nothing else would ever remove it (round 1). A malformed entry is kept: it is the owner's to see."""
+    now = time.time()
+    for k in [k for k in d if k != keep]:
+        e = d[k]
+        if entry_problem(e) or any(e.get(n) for n in ("hold", "state", "stop", "spent", "stop_for", "first_stop")):
+            continue
+        if any(e.get(n) for n in COUNTERS) or any((e.get("relaunches") or {}).values()):
+            continue
+        logged = [v for v in (e.get("road_logged") or {}).values() if isinstance(v, (int, float))]
+        if logged and now - max(logged) < max(REFUSAL_LOG_S, PRUNE_S):
+            continue   # a road's wait logged in the last week (round 2: pruned, every wait was logged again)
+        try:
+            last = datetime.datetime.fromisoformat(str((e.get("refusals") or {}).get("last") or "")).timestamp()
+        except ValueError:
+            last = None if e.get("refusals") else 0
+        if last is not None and now - last > PRUNE_S:
+            del d[k]
+
+
+def entry_problem(e):
+    """Why a present entry does not read, or None: a key a cap or the state is read from that is there in a shape
+    no writer makes — a non-object `relaunches`, a counter that is no whole number, a `state` other than `stuck` —
+    narrows to nothing rather than read as 0 or as not stuck (AGENTS.md's narrowing trap; the landing review)."""
+    if not isinstance(e, dict):
+        return "is not an object"
+    def count(v):
+        return v is None or (isinstance(v, int) and not isinstance(v, bool) and v >= 0)
+    for k in COUNTERS:
+        if not count(e.get(k)):
+            return "has %s %r, no count" % (k, e.get(k))
+    rel = e.get("relaunches")
+    if rel is not None and not (isinstance(rel, dict) and all(count(v) for v in rel.values())):
+        return "has relaunches %r, no counts" % (rel,)
+    if e.get("state") not in (None, "stuck"):
+        return "has state %r, which no writer writes" % (e.get("state"),)
+    for k in ("spent", "stop", "hold", "refusals", "road_logged"):
+        if e.get(k) is not None and not isinstance(e.get(k), dict):
+            return "has %s %r, no object" % (k, e.get(k))
+    return None
+
+
+def lander_entry(t):
+    """The key's entry, {} when absent; one that is there and does not read (entry_problem) raises StoreUnreadable
+    (a narrowing that cannot be read narrows: AGENTS.md's trap, review 5)."""
+    # Only an absent key is empty: a stored null must reach entry_problem like any other non-object.
+    e = lander_read().get(lander_key(t.primary, t.branch), {})
+    why = entry_problem(e)
+    if why:
+        raise StoreUnreadable("its entry for %s %s" % (t.branch, why))
+    return e
+
+
+def road_add(e, road, delta):
+    """The road's counter moved by DELTA, never below 0: re-finishes, else the relaunch of that class."""
+    if road == "refinish":
+        e["refinishes"] = max(0, int(e.get("refinishes") or 0) + delta)
+    else:
+        rel = e.get("relaunches") if isinstance(e.get("relaunches"), dict) else {}
+        rel[road] = max(0, int(rel.get(road) or 0) + delta)
+        e["relaunches"] = rel
+    e["starts"] = max(0, int(e.get("starts") or 0) + delta)
+
+
+def road_spent(e, road):
+    if road == "refinish":
+        return int(e.get("refinishes") or 0)
+    return int(((e.get("relaunches") or {}) if isinstance(e.get("relaunches"), dict) else {}).get(road) or 0)
+
+
+def is_person(by):
+    """A person's own launch, as the lander reads one: a person's label, no unattended caller (AGENTS.md's trap: a
+    bare loop under CLAUDE_UNATTENDED is `override` by label and no person), and none of PRIO_UNATTENDED — a skipper's
+    `--by typed` is no person either, as judged_stop reads it (round 2: it reset a stuck key's caps)."""
+    return by in PERSON_BY and not unattended_caller() and not any(os.environ.get(n) for n in PRIO_UNATTENDED)
+
+
+def pr_detail(t):
+    """The branch's open PR as GitHub's pulls endpoint gives it (mergeable_state, head, draft, auto_merge), or None."""
+    s = slug(t)
+    if not s:
+        return None
+    pr = common.find_pr(s, t.branch)
+    if not pr:
+        return None
+    st, d = common.api("GET", "/repos/%s/pulls/%d" % (s, pr["number"]))
+    return d if st == 200 and isinstance(d, dict) else None
+
+
+def road_refinish(t, prev):
+    """(a): the PR conflicts after main moved, its head is this worktree's HEAD, and the last run is one the re-finish
+    road takes (launched; a no-landing stop with a ready PR; a G11 stop) — never a G1r, G4, held or ask-held stop, a
+    PR labelled `hold` (a held launch's, or the owner's by hand: a re-finish would merge what the label holds) or a
+    draft. "Main moved" is read from git, never from the run's recorded `base_tip`: that is main at the run's end, not
+    the base its /finish rebased onto, so a conflict landed mid-run read as unmoved, and a run whose ls-remote failed
+    recorded none (the landing review). Origin's main not in HEAD's history is main moved past the branch."""
+    outcome, gate = prev.get("outcome"), prev.get("gate")
+    if not (outcome in common.LAUNCHED_OUTCOMES or (outcome == "stopped" and gate in ("G11", "no-landing"))):
+        return Refusal("its last run ended %s at %s: the refinish road takes a launched run, a no-landing stop with a "
+                       "ready PR or a G11 stop" % (outcome, gate or "no gate"))
+    pr = pr_detail(t)
+    if not pr:
+        return Refusal("no open PR for %s could be read: the refinish road waits" % t.branch)
+    labels = pr.get("labels") if isinstance(pr.get("labels"), list) else None
+    if labels is None:   # a narrowing that cannot be read narrows (AGENTS.md's trap): no labels read is no start
+        return Refusal("PR #%s's labels could not be read: the refinish road waits" % pr.get("number"))
+    if any(isinstance(l, dict) and l.get("name") == "hold" for l in labels):
+        return Refusal("PR #%s is labelled `hold`: it lands by the owner's tap, never by the refinish road"
+                       % pr.get("number"), DEAD_ROAD_RC)
+    if pr.get("draft") is not False:
+        return Refusal("its %s left PR #%s a draft (or its draft flag did not read): the refinish road takes a ready one"
+                       % ("launch" if outcome in common.LAUNCHED_OUTCOMES else "%s stop" % gate, pr.get("number")))
+    if str(pr.get("mergeable_state") or "").lower() != "dirty":
+        return Refusal("PR #%s reads %s, not DIRTY: the refinish road waits" % (pr.get("number"), pr.get("mergeable_state") or "unknown"))
+    head = ((pr.get("head") or {}) if isinstance(pr.get("head"), dict) else {}).get("sha")
+    if head != t.tip:
+        return Refusal("PR #%s's head %s is not this worktree's HEAD %s: another Mac's to re-finish (pr stuck lists it)"
+                       % (pr.get("number"), str(head)[:7], t.tip[:7]))
+    base = prev.get("base") or main_of(t)
+    heads = remote_heads(t, base)
+    if heads is None or not heads.get(base):
+        return Refusal("origin's %s could not be read: the refinish road waits" % base)
+    if is_ancestor(t.path, heads[base], t.tip):
+        return Refusal("%s (%s) is in this branch's history: main has not moved past it, the refinish road waits"
+                       % (base, heads[base][:7]))
+    return None
+
+
+def stopped_at(prev, gate):
+    """True when the judged stop itself stopped at GATE: the last autofinished line alone may be an older run's (another
+    host's end line not back yet), and a road must not be spent on a stop that was not its class (review 4)."""
+    return bool(prev) and prev.get("outcome") == "stopped" and prev.get("gate") == gate
+
+
+def road_login(t, prev):
+    """(b): the last stop's text is a login failure (LOGIN_RE, read as chain_refusal reads last_stop) — the class,
+    never the logged-out row, which a pick's probe may clear meanwhile."""
+    gate, _, text = (stop_line(t, prev) or "").partition(" ")
+    if gate != "no-landing" or not LOGIN_RE.search(text) or not stopped_at(prev, "no-landing"):
+        return Refusal("the branch's last autofinished line is no login failure (a no-landing stop): no login road")
+    return None
+
+
+def account_home(label):
+    """(home, None) for the login a run recorded, or (None, Refusal): a dir is its own home; a label is read from
+    `account limits --all --parked --json --cached` by its label (spaces as the run lines write them, `_`)."""
+    if not label or label == "oauth-token":
+        return None, Refusal("its run recorded no registry login (%s): the limit road can never read its window"
+                             % (label or "none"), DEAD_ROAD_RC)
+    if label.startswith(("/", "~")) and os.path.isdir(os.path.expanduser(label)):
+        return os.path.expanduser(label), None
+    if not ACCOUNT:
+        return None, Refusal("no account tool here: the limit road cannot read %s's window now" % label)
+    try:
+        r = common.run_group([ACCOUNT, "limits", "--all", "--parked", "--json", "--cached"], 10)
+        rows = json.loads(r.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return None, Refusal("account limits did not read (%s): the limit road waits" % type(e).__name__)
+    if not isinstance(rows, list) or not rows:
+        # no rows at all is a cache not written yet, never "no such login" (round 1): a wait
+        return None, Refusal("account limits --cached read no rows: the limit road waits for a reading")
+    for a in rows:
+        # a label as pick records it, as the run lines write it (spaces as `_`), or a home recorded the latter way
+        if isinstance(a, dict) and a.get("home") and label in (str(a.get("label") or ""),
+                                                               re.sub(r"\s+", "_", str(a.get("label") or "")),
+                                                               re.sub(r"\s+", "_", str(a["home"]))):
+            return os.path.expanduser(a["home"]), None
+    return None, Refusal("no registry row is labelled %s: the limit road can never read its window" % label, DEAD_ROAD_RC)
+
+
+def seat_rows(home):
+    """A test of an exhaustion row: whether it is HOME's own seat's, as lighthouse's account reads one (own_record: an
+    Orca profile's exhaustion.jsonl holds the primary's rows copied in, whose reset says nothing of this login's window;
+    the port's round 3). Every row counts where account does not load or HOME's login does not read, as account counts
+    them itself: unknown is not nobody's."""
+    try:
+        path = str(common.tool("account") or "")
+        ld = importlib.machinery.SourceFileLoader("afr_lh_account", path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+        ld.exec_module(mod)
+        seat = mod.login_ids(home)
+        return lambda r: mod.own_record(r, seat)
+    except Exception:  # noqa: BLE001 — no account: today's reading, every row
+        return lambda r: True
+
+
+def road_limit(t, prev):
+    """(c): the last stop is the usage-limit line, and the newest `five_hour` exhaustion row written after the run's
+    start, in the exhaustion.jsonl of the login the run ran on (its `account`), has passed its `resets_at`."""
+    gate, _, text = (stop_line(t, prev) or "").partition(" ")
+    if gate != "no-landing" or not LIMIT_RE.search(text) or not stopped_at(prev, "no-landing"):
+        return Refusal("the branch's last autofinished line is no usage-limit end: no limit road")
+    home, why = account_home(prev.get("account"))
+    if why:
+        return why
+    try:
+        since = datetime.datetime.fromisoformat(prev.get("started") or "").timestamp()
+    except ValueError:
+        since = 0
+    rows, own = [], seat_rows(home)
+    try:
+        with open(os.path.join(home, "exhaustion.jsonl")) as f:
+            for l in f:
+                try:
+                    r = json.loads(l)
+                except ValueError:
+                    continue
+                # the window the run ran in: a row written after its start, or one written before whose reset is
+                # after it (record_exhaustion writes one row per window, so a probe's earlier row is that window's)
+                if isinstance(r, dict) and r.get("window") == "five_hour" and isinstance(r.get("at"), (int, float)) \
+                        and (r["at"] >= since or (isinstance(r.get("resets_at"), (int, float)) and r["resets_at"] > since)) \
+                        and own(r):
+                    rows.append(r)
+    except OSError:
+        pass
+    if not rows:
+        return Refusal("no five_hour exhaustion row for %s's window (written after its run started, or resetting "
+                       "after it): the limit road can never tell its reset" % prev.get("account"), DEAD_ROAD_RC)
+    newest = max(rows, key=lambda r: r["at"])
+    reset = newest.get("resets_at")
+    if not isinstance(reset, (int, float)):
+        return Refusal("%s's newest five_hour row has no reset: the limit road can never tell it" % prev.get("account"),
+                       DEAD_ROAD_RC)
+    if reset > time.time():
+        return Refusal("%s's 5-hour window resets at %s: the limit road waits for it" % (
+            prev.get("account"), datetime.datetime.fromtimestamp(reset).isoformat(timespec="minutes")))
+    return None
+
+
+# keel's ITEM_RE, multiline: a D-item in any form keel reads (`- **D1 —`, `1. **D1 —`, `**D1** —`, `D1:`)
+D_ITEM_RE = re.compile(r"^\s*(?:(?:[-*]|\d+\.)\s+)?\*{0,2}D\d+\*{0,2}\s*[—–\-.:]", re.M)
+
+
+def road_stand(t, prev):
+    """(d): the last stop is G4 and `keel status --json` reads no open item on any doc keel's stand sweep reads
+    (S6 stood them; the stand's commit is HEAD). A G4 stop with no such doc is the owner's."""
+    gate, _, _ = (stop_line(t, prev) or "").partition(" ")
+    if gate != "G4" or not stopped_at(prev, "G4"):
+        return Refusal("the branch's last autofinished line is no G4 stop: no stand road")
+    af = _lander()
+    if af is None:
+        return Refusal("bin/autofinish did not load: the stand road cannot read keel status now")
+    rc, out, err = quiet_git(t.path, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "--diff-filter=AM",
+                             "origin/%s...HEAD" % main_of(t), "--", "*.md")
+    if rc:
+        return Refusal("the branch's docs could not be listed (%s): the stand road waits" % (err.strip()[-120:] or rc))
+    docs, opened = [], []
+    for doc in out.splitlines():
+        if not stand_doc(doc):
+            continue   # keel's sweep_docs: every changed Markdown doc bar handoff briefs, at any depth
+        try:
+            with open(os.path.join(t.path, doc), errors="replace") as f:
+                if D_ITEM_RE.search(f.read()):
+                    docs.append(doc)
+        except OSError:
+            continue
+    if not docs:
+        # nothing keel could ever stand: the G4 items are the owner's, raised once, never a wait each tick
+        return Refusal("no D-list doc on the branch: its G4 items are the owner's, no stand road", DEAD_ROAD_RC)
+    read = 0
+    for doc in docs:
+        st = af.memo_status(t.path, doc)
+        if st is not None and not (isinstance(st.get("items"), int) and st["items"] > 0):
+            continue   # D_ITEM_RE's hit on a wrapped `D1-A` line: keel reads no item there, so no stand here (round 3)
+        read += 1
+        if st is None:
+            # memo_status reads a timeout, a crash and an answer with no verdict alike: asked again here, only keel
+            # answering cleanly with no verdict is a road that never holds; anything else may pass (round 1)
+            return Refusal(*keel_unread(af, t, doc))
+        if st.get("verdict") == "taken":
+            # keel yolo's picks: taken answers never launch where the owner has not read them (yolo-veto D1); the
+            # sweep's rule D skips them too — the owner's, raised once (review 3)
+            return Refusal("%s's answers were taken by keel yolo: the stand road never lands them" % doc, DEAD_ROAD_RC)
+        if st.get("unanswered") and st.get("verdict") in ("too-big", "physical", "voided", "no-contract", "part-stood",
+                                                           "ask-mode"):
+            # keel's stand never takes these (more than ten items, a physical repo, a touch since the link, no
+            # contract, a branch in mode ask): the owner's, raised once (review 4; ask-mode, the landing review)
+            return Refusal("%s reads %s with %s open: keel never stands it" % (doc, st["verdict"], st["unanswered"]),
+                           DEAD_ROAD_RC)
+        if st.get("unanswered"):
+            opened.append("%s (%s open)" % (doc, st["unanswered"]))
+    if opened:
+        return Refusal("%s: the stand road waits for the stand" % ", ".join(opened))
+    if not read:
+        return Refusal("no D-list doc on the branch keel reads items in: its G4 items are the owner's, no stand road",
+                       DEAD_ROAD_RC)
+    return None
+
+
+def keel_unread(af, t, doc):
+    """(text, rc) for a doc memo_status had no verdict for, from keel asked once more. keel answers every doc it can
+    read with a verdict, and refuses one it never can (no link, not a claude/* branch, origin not on GitHub) with exit
+    1 and a `memo: …` line (keel's `status --json` on a Stop): that is DEAD_ROAD_RC, no stand will change it. A
+    verdict on the second ask, a missing keel, a timeout, a traceback or any other failure is a wait, exit 3 (round 2:
+    the first form read keel's refusal as a wait and a passing failure as dead)."""
+    memo = getattr(af, "MEMO", "") or ""
+    if not os.access(memo, os.X_OK):
+        return "keel is not installed here: the stand road cannot read %s now" % doc, 3
+    try:
+        r = subprocess.run([memo, "status", "--json", "--no-fetch", doc], cwd=t.path, capture_output=True, text=True,
+                           timeout=getattr(af, "MEMO_TIMEOUT", 30))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "keel status did not answer for %s (%s): the stand road waits" % (doc, type(e).__name__), 3
+    err = (r.stderr or "").strip()
+    if r.returncode == 1 and err.startswith("memo: ") and "Traceback" not in err:
+        return "keel never stands %s (%s): the stand road never holds for it" % (doc, err.splitlines()[0][:160]), \
+            DEAD_ROAD_RC
+    if r.returncode == 0:
+        return "keel answered for %s on a second ask: the stand road judges it at the next pass" % doc, 3
+    return "keel status failed for %s (exit %d): the stand road waits" % (doc, r.returncode), 3
+
+
+ROAD_PREDICATES = {"refinish": road_refinish, "login": road_login, "limit": road_limit, "stand": road_stand}
+STOP_KEYS = ("session", "started", "tip", "by", "land_by", "eff_mode", "hold", "account", "ended", "outcome", "pr", "gate",
+             "base", "base_tip", "pushed", "keel_hold", "hold_from", "handover", "owed")   # pushed: the refinish road's HEAD test on a kept stop (moved_since_stop)
+
+
+def road_stop(prev, e):
+    """The stop a road judges: the last run, or — when that run is a start dispatch refused before any session (a
+    REFUSED_GATES record: no base_tip, the new pick's account, its own start time) — the stop the refused lander start
+    was judged by, kept in the entry's `stop` (review 1: the road read the refused record and went dead)."""
+    # a lander start that never started (no reply) or died is no stop of its own either: its road re-judges the stop
+    # it passed on, under its spent cap, rather than waiting on a record no road takes (review 4)
+    nothing_ran = prev and (prev.get("gate") in REFUSED_GATES or (
+        prev.get("by") == "lander" and prev.get("outcome") in ("never-started", DIED)))
+    # A lander record is the kept stop's whatever its session: a chain relaunch of a lander run stays `lander`
+    # (CHAIN_KEEPS) under its own session, never `stop_for`, and passed on no stop of its own — judged as the stop,
+    # its never-started record wedged every road (the landing review). Any other refused record needs `stop_for`.
+    ours = prev and prev.get("session") and (prev.get("session") == e.get("stop_for") or prev.get("by") == "lander")
+    if nothing_ran and isinstance(e.get("stop"), dict) and ours:
+        return e["stop"]
+    return prev
+
+
+def refund_session(t, sid, restore=False):
+    """Give back the road a lander start of session SID spent, under the lock, the session re-read there: at most
+    once, and never another start's. Called where its refused record is written (record()), by the start itself on a
+    refusal, and, as the fallback, where it is next judged."""
+    def settle(e):
+        if (e.get("spent") or {}).get("session") == sid:
+            refund_spent(e, restore)
+    lander_update(lander_key(t.primary, t.branch), settle)
+
+
+def refund_spent(e, restore=False):
+    """Give back the road `spent` names (one start's), and forget it: at most once per start. `restore`: the start
+    left no record at all (its state write failed), so `stop_for` goes back to the session it named before (review 4)."""
+    sp = e.pop("spent", None)
+    if not isinstance(sp, dict) or sp.get("road") not in ROADS:
+        return
+    road_add(e, sp["road"], -1)
+    if restore and "stop_for_before" in sp:
+        if sp["stop_for_before"]:
+            e["stop_for"] = sp["stop_for_before"]
+        else:
+            e.pop("stop_for", None)
+
+
+def ran_elsewhere(st):
+    """True for a run recorded here that ran on another host: a finish this host put and another claimed, whose end
+    tomb_state wrote here (`host` names where it ran), or a run the peer road sent before the queue."""
+    return bool(st and st.get("host") and str(st["host"]).lower() != self_host())
+
+
+def lander_refusal(t, prev, road, e, dry=False):
+    """A lander start's refusal, in S1's order past the key's state: a last run not ended (a queued start's included:
+    a plain wait, so a queued relaunch is never answered by the cap it spent), the road's cap (STUCK_RC), the road's
+    predicate (DEAD_ROAD_RC when it can never hold), then today's same-tip test, which a road whose predicate holds lifts."""
+    if road not in ROADS:
+        return Refusal("a lander start names its road: --road %s" % "|".join(ROADS))
+    if prev and not prev.get("ended") and prev.get("session"):
+        return Refusal("a run on this worktree started %s (session %s) has not ended%s: the %s road waits" % (
+            prev.get("started"), str(prev.get("session"))[:8], ", on %s" % prev["host"] if ran_elsewhere(prev) else "", road))
+    spent_by = e.get("spent") if isinstance(e.get("spent"), dict) else {}
+    if prev and prev.get("gate") in REFUSED_GATES and prev.get("session") and spent_by.get("session") == prev["session"]:
+        # a lander start spent on an unconfirmed or queued verdict that dispatch refused after all: nothing ran, so
+        # its road is given back once, as chain_spent discounts such a record (review 2)
+        if dry:   # --dry writes nothing: the refund owed is judged on a copy
+            e = json.loads(json.dumps(e))
+            refund_spent(e)
+        else:
+            try:
+                refund_session(t, prev["session"])
+                e = lander_entry(t)
+            except (OSError, StoreUnreadable) as x:
+                return Refusal("the lander's store %s does not write (%s): the %s road waits" % (lander_path(), x, road))
+    prev = road_stop(prev, e)
+    if ran_elsewhere(prev):
+        # one host roads a stop, the one that ran it: its login's window, its worktree's HEAD (review 5). A finish this
+        # host put and another host claimed ends here as that host's (tomb_state's `host`), never this host's road
+        return Refusal("its stop ran on %s: that host's tick roads it, never this one" % prev["host"])
+    if prev and prev.get("gate") in REFUSED_GATES:
+        return Refusal("its last run was a start dispatch refused, and the stop before it is not kept here: the %s "
+                       "road waits for a run that ends" % road)
+    spent = road_spent(e, road)
+    if spent >= ROAD_CAPS[road]:
+        return Refusal("the %s road is spent on %s (%d of %d): stuck, the owner's" % (road, t.branch, spent, ROAD_CAPS[road]),
+                       STUCK_RC)
+    if not prev:
+        return Refusal("no run on this worktree to road: the %s road takes a stop" % road)
+    return moved_since_stop(t, prev, road) or ROAD_PREDICATES[road](t, prev)
+
+
+def stand_doc(path):
+    """Keel's sweep_docs file set, rather than list's shallower memo set. Keel's status judges the items."""
+    return path.endswith(".md") and not path.startswith("docs/handoff/")
+
+
+def moved_since_stop(t, prev, road):
+    """A refusal when HEAD holds work the stop never saw (the landing review: commits added after a stop landed
+    unjudged by its road), else None. `login` and `limit` re-run the stop's own tip; `stand` takes the stand's
+    commits on top of it, each carrying keel's stand trailer and touching Markdown only (including a set's entry,
+    whose Status stamp need not hold D-items). Anything else is new work, the sweep's to judge;
+    `refinish` the tip its run pushed, where it recorded one (the PR's head then: pr_detail's test reads it now)."""
+    tip = prev.get("tip")
+    if road == "refinish":
+        pushed = prev.get("pushed")
+        if pushed and pushed != t.tip:
+            return Refusal("HEAD %s is not the tip %s its last run pushed: the work since is the sweep's to judge, not "
+                           "the refinish road's" % (t.tip[:7], pushed[:7]))
+        if not pushed and tip != t.tip:
+            # no pushed tip read back (a later push, a failed ls-remote, a run from before task-shape S1), and HEAD is
+            # not the tip the run started on: nothing tells the run's own rewrite from work added since (round 2)
+            return Refusal("its last run recorded no pushed tip and HEAD %s is not its start %s: the refinish road "
+                           "cannot tell what the stop saw" % (t.tip[:7], str(tip)[:7]), DEAD_ROAD_RC)
+        return None
+    if not tip:
+        return Refusal("its stop recorded no tip: the %s road cannot tell what it judged" % road, DEAD_ROAD_RC)
+    if tip == t.tip or (road != "stand" and prev.get("pushed") == t.tip):
+        # the stop's start tip, or the tip its own run pushed (a /finish that curated and pushed, then hit the limit
+        # or a login failure: its rewrite is the stop's, not work since; round 3)
+        return None
+    if road != "stand":
+        return Refusal("HEAD %s is past the stop's tip %s: the work since is the sweep's to judge, not the %s road's"
+                       % (t.tip[:7], tip[:7], road))
+    if not is_ancestor(t.path, tip, t.tip):
+        return Refusal("HEAD %s does not hold the stop's tip %s: the stand road takes the stand's commits on it only"
+                       % (t.tip[:7], tip[:7]))
+    rc, out, err = quiet_git(t.path, "rev-list", "--parents", "%s..%s" % (tip, t.tip))
+    if rc:
+        return Refusal("the commits since the stop could not be listed (%s): the stand road waits" % (err.strip()[-120:] or rc))
+    for row in out.splitlines():
+        commit, *parents = row.split()
+        # stand_apply makes one ordinary commit. A merge could introduce unjudged work without a tree diff.
+        trailer = git(t.path, "show", "-s", "--format=%(trailers:key=Stood-By,valueonly)", commit)
+        if len(parents) != 1 or trailer.splitlines() != ["autofinish"]:
+            return Refusal("commit %s since the stop (%s) is not a keel stand commit: more than a stand's answers, "
+                           "the sweep's to judge" % (commit[:7], tip[:7]))
+        rc, names, err = quiet_git(t.path, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit)
+        if rc:
+            return Refusal("the stand commit %s could not be read (%s): the stand road waits" % (
+                commit[:7], err.strip()[-120:] or rc))
+        other = [p for p in names.split("\0") if p and not stand_doc(p)]
+        if other:
+            return Refusal("commit %s changed %s since the stop (%s): more than a stand's answers, the sweep's to judge" % (
+                commit[:7], ", ".join(other[:3]), tip[:7]))
+    return None
+
+
+def checked_lander_entry(t, by, sent=False):
+    """(entry, refusal) for this host's cap store, before anything may end a run or move a tree. A person's start
+    and a claim another host put do not read this store. Shared by tree_refusal and the later tip judgement."""
+    e = {}
+    # a claim of another host's put (`sent`) reads no lander.json here: that host's store is the branch's, judged at its
+    # put (S1's one store, read and written by the putting host only; round 1's S2: a stuck key here tombstoned it failed)
+    if not is_person(by) and not sent:
+        try:
+            e = lander_entry(t)
+        except StoreUnreadable as x:
+            # a narrowing that cannot be read narrows (AGENTS.md's trap): a stuck key it might hold refuses every
+            # start that is not a person's, until the store reads again; a person's start passes as before
+            # the remedy for what does not read: a malformed entry is its own key's reset; a file that does not parse
+            # is set aside whole, every branch's caps with it (round 3)
+            fix = ("`autofinish-run lander reset --worktree <worktree>` writes a fresh entry" if str(x).startswith("its entry")
+                   else "`autofinish-run lander reset --aside --worktree <worktree>` sets it aside, clearing every branch's caps")
+            why = Refusal("the lander's store %s does not read (%s): no start but a person's until it does — %s"
+                          % (lander_path(), x, fix))
+            why.road = True   # every caller meets it each pass: no store to count it in, so logged every time
+            return e, why
+        if e.get("state") == "stuck":
+            why = Refusal("%s is stuck past the lander's caps: no start but a person's until it is reset" % t.branch, STUCK_RC)
+            why.road = True   # the tick and the sweep meet it every pass: logged once an hour per text
+            return e, why
+    return e, None
+
+
+def refusal(t, prev, by=None, sent=False, road=None, dry=False):
     """Why no run starts now, or None. `sent`: judged on the host that claimed a finish another host put (the
     claim's job). A chain relaunch is judged where its stop happened: the putting host ran chain_refusal on its own
     record of the stop, under its start lock, before it put; the claiming host has no record of a stop on this tip
@@ -701,7 +1440,19 @@ def refusal(t, prev, by=None, sent=False):
     to the peer was always refused there, so the network-drop relaunch the chain exists for ran on
     neither Mac). A stop made there is a run of the peer's own on this tip that ran and ended: one it
     refused, or one that died, made no stop there, and chain_refusal would refuse it for want of one
-    (third landing review, S2: the second's fix still refused those two)."""
+    (third landing review, S2: the second's fix still refused those two).
+    The lander (stuck-ships S1): a key whose state is `stuck` refuses every start that is not a person's (STUCK_RC),
+    before the chain's branch; a `--by lander` start is judged by lander_refusal() alone. A refusal is a Refusal:
+    its `rc` is the exit, and today's same-tip one is marked `same_tip`."""
+    e, why = checked_lander_entry(t, by, sent)
+    if why:
+        return why
+    if by == "lander":
+        why = lander_refusal(t, prev, road, e, dry=dry)
+        if why:
+            why = why if isinstance(why, Refusal) else Refusal(why)
+            why.road = True   # the tick asks every 5 minutes: refuse() logs each text once an hour
+        return why
     if by == "chain" and not (sent and not stopped_on(t, prev)):
         return chain_refusal(t, prev, claimed=bool(getattr(t, "own_claim", False)))
     if not prev:
@@ -715,9 +1466,9 @@ def refusal(t, prev, by=None, sent=False):
         if not prev.get("ended"):
             return "a run on this tip started %s (session %s) has not ended" % (
                 prev.get("started"), str(prev.get("session"))[:8])
-        return ("its run on this tip (%s) ended %s, %s%s — no retry on the same tip" % (
+        return Refusal("its run on this tip (%s) ended %s, %s%s — no retry on the same tip" % (
             t.tip[:7], prev.get("ended"), prev.get("outcome"),
-            " at %s" % prev["gate"] if prev.get("gate") else ""))
+            " at %s" % prev["gate"] if prev.get("gate") else ""), same_tip=True)
     if not prev.get("ended") and prev.get("session"):
         if run_live(prev["session"]):
             return "a run is going on this worktree (session %s, tip %s)" % (
@@ -731,14 +1482,35 @@ def refusal(t, prev, by=None, sent=False):
     return None
 
 
-def tree_refusal(t, prev, by=None, sent=False):
+def store_refusal(t, args):
+    """A lander start's store must write before anything ends a warm run (tip_gate, route, start_here): the spend
+    that refuses on a store that does not write came after end_warm, so the warm run was ended for a start that never
+    ran, each tick (round 1). A write of the entry as it stands proves it; --dry writes nothing."""
+    if args.by != "lander" or getattr(args, "dry", False):
+        return None
+    try:
+        lander_update(lander_key(t.primary, t.branch), lambda e: None)
+    except (OSError, StoreUnreadable) as e:
+        return Refusal("the lander's store %s does not write (%s): the %s road cannot be spent" % (
+            lander_path(), e, args.road))
+    return None
+
+
+def tree_refusal(t, prev, by=None, sent=False, road=None, dry=False):
     """The refusal of what no tree moves under, judged before the origin gate: a run not ended, and a run launched
     on this tip, whose own push may have left origin past it, so its same-tip refusal stands as on main. A chain
-    relaunch is judged whole: it is for the stop's own tip, and one it refuses ends no warm run and moves nothing."""
-    if by == "chain":
-        return refusal(t, prev, by, sent=sent)
+    relaunch is judged whole: it is for the stop's own tip, and one it refuses ends no warm run and moves nothing.
+    So is a lander start (stuck-ships S1): its road's predicate lifts the same-tip refusal of a launched run (the
+    refinish road's launched leg), which the plain test here would refuse. `by` goes along, so a stuck key refuses
+    no person's start here either."""
+    if by in ("chain", "lander"):
+        return refusal(t, prev, by, sent=sent, road=road, dry=dry)
+    _, why = checked_lander_entry(t, by, sent)
+    if why:
+        return why
     if prev and (not prev.get("ended") or prev.get("outcome") in common.LAUNCHED_OUTCOMES):
-        return refusal(t, prev)
+        # `sent` along too: a claim of another host's put reads no lander.json here (round 2)
+        return refusal(t, prev, by, sent=sent)
     return None
 
 
@@ -1014,18 +1786,22 @@ def account_pick(t, cached=False):
             # no spaces: the run lines are key=value, split on whitespace
             os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)
             return re.sub(r"\s+", "_", label or cfg), "" if default else None, "the caller's CLAUDE_CONFIG_DIR, kept"
-    cmd = [ACCOUNT, "pick", "--repo", t.primary, "--json"]
+    cmd = [ACCOUNT, "pick", "--for", "finish", "--repo", t.primary, "--json"]
     overdraw = ["--overdraw", "--job", t.branch]
     os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)   # an overdraw is this pick's word alone
+    def run_pick(cached, timeout=PICK_TIMEOUT):
+        # A fresh, single-use receipt for every attempt, the cached retry included.
+        with common.finish_pick_env() as (env, fds):
+            return common.run_group(cmd + (["--cached"] if cached else []) + overdraw, timeout, env=env, pass_fds=fds)
     try:
         # a landing is a job too (the owner, 2026-11-04): with no login under its week bar it starts past one
         # (lighthouse's account header, "Overdraw"). The pick only decides, on every road, a cached one included;
         # its `overdraw` object goes to the `dispatch --start` this runs (ACCOUNT_OVERDRAW_PICK), which logs it
         # once the session began
-        r = common.run_group(cmd + (["--cached"] if cached else []) + overdraw, PICK_TIMEOUT)
+        r = run_pick(cached)
     except subprocess.TimeoutExpired:
         try:  # a probe that hangs: the cached readings decide, as a dry run's do
-            r = common.run_group(cmd + ["--cached"] + overdraw, 5)
+            r = run_pick(True, 5)
         except (OSError, subprocess.TimeoutExpired) as e:
             return None, None, "account pick failed (%s) — the login this run was started with" % type(e).__name__
     except OSError as e:
@@ -1484,11 +2260,13 @@ def rotation(argv):
     return 0
 
 
-def finish_prompt(branch, by=None, merge=False, hold=None, sent_from=None):
+def finish_prompt(branch, by=None, merge=False, hold=None, sent_from=None, land_by=None):
     """The prompt the run starts with (the header's). `--from=<host>`: a run that host sent here, whose
     approval is that host's at /finish step 11.4 (D2-A, the header's Where); one word, so /finish's
-    one-word branch argument stays one word."""
-    return "/finish %s --unattended" % branch + (" --%s" % by if by in LAND_BY else "") + (" --hold" if hold else "") \
+    one-word branch argument stays one word. `land_by`: the mode flag a lander or chain relaunch carries
+    (stuck-ships S1), so `--yolo`/`--dnd` survives a hop whose `by` is not the mode's."""
+    flag = land_by if land_by in LAND_BY else by if by in LAND_BY else None
+    return "/finish %s --unattended" % branch + (" --%s" % flag if flag else "") + (" --hold" if hold else "") \
         + (" --merge" if merge else "") + (" --from=%s" % sent_from if sent_from else "")
 
 
@@ -1524,6 +2302,23 @@ def unattended_caller():
     return bool(rule())
 
 
+def lander_flag(stop):
+    """The mode flag a lander start may carry from the stop it roads: the stop's own `land_by`, else its `by` when
+    that was a mode launch (start()'s land_by, before the branch's mode is weighed)."""
+    stop = stop if isinstance(stop, dict) else {}
+    flag = stop.get("land_by") or stop.get("by")
+    return flag if flag in LAND_BY else None
+
+
+def flag_rides(t, flag, stop, mode):
+    """True when a relaunch may carry the stopped run's mode flag (start()'s land_by, landing()'s mode launch) — the one
+    predicate both read (round 2: two copies with two inputs). The flag is the mode's yes to the taken answers: it
+    rides only while the branch's mode still says it. Never under E12's standing yes with no mode: that yes is a
+    person's, and the one automated caller of a lander start, helm's tick, runs under launchd with no unattended
+    marker, so no caller test here can tell it from a person (round 3)."""
+    return flag in LAND_BY and mode == flag
+
+
 def landing(t, by, rule):
     """(hold, mode, eff) for this launch — the landing ladder (skipper-modes S3b), read here from plan.json
     (bin/autofinish's landing_mode), never from the caller: `--by` is a label any caller may type, and
@@ -1548,13 +2343,15 @@ def landing(t, by, rule):
         person's yes: mode ask
         holds it (and a mode that cannot be read), `--merge` is refused, and with rule M it is a mode launch,
         judged by held_slice as one, so held in mode default (dispatch never sends that pair);
+      - a lander launch (`--by lander`, stuck-ships S1): as a handed one; carrying the stopped run's mode flag (the
+        branch's mode still that flag), as that mode's launch;
       - anything else: None, today's rules (a plain /finish --unattended, step 11.4 by host).
     `eff` is the mode a mode or ship launch was judged by (None for any other), for autofinish.json's
     `eff_mode`: bin/pr judges the launch again by it where the branch has no mode by then."""
     af = _lander()
     if af is None:
         return ("the lander's judge did not load (bin/autofinish)"
-                if by in LAND_BY or rule == "M" or by in ("ship", "brief", HANDED) else None), None, None
+                if by in LAND_BY or rule == "M" or by in ("ship", "brief", HANDED, "lander") else None), None, None
     mode, why_mode = af.landing_mode(t.branch, t.primary or None)  # with the repo, as the sweep's verdict reads it
     # a mode that cannot be read (helm absent, a reader that raised) is no "no mode": a mode or ship launch
     # holds, as bin/pr's re-check does — read as None, a ship was judged yolo and E12 took its standing
@@ -1564,12 +2361,27 @@ def landing(t, by, rule):
     person = by in PERSON_BY and not unattended_caller()
     if mode == "ask" and not person:
         return "mode ask — nothing lands by itself", mode, None
+    # stuck-ships S1, task-shape D1-C (the skipper's settlement, 2026-11-01): a lander start is judged as a handed
+    # one, since it lands what a typed /finish lands — handed_held, bar a rule-M start, which is a mode launch; and a
+    # lander start that will carry the stopped run's mode flag (`--yolo`/`--dnd`, start()'s land_by: only while the
+    # branch's mode still says it) is that mode's launch too, judged by held_slice as a chain relaunch of it is
+    stop = getattr(t, "stop", None) or {}
+    flag = lander_flag(stop) if by == "lander" else None
+    # a claimed lander start: the flag rides only where its put judged the same one (enqueue's `land_by`), settled
+    # before the slice is chosen, so the start and bin/pr's re-judge read one rule (round 1)
+    word = getattr(t, "flag_word", None)
+    if word is not None and word[0] != flag:
+        flag = None
+    if by == "lander" and flag and not unread and flag_rides(t, flag, stop, mode):
+        # the flag rides (flag_rides, start()'s land_by too): the mode's launch, judged by held_slice; under E12 the
+        # `standing` line below grants the yes on its own terms, as for a person's yolo launch (round 2)
+        by = flag
     if by == "brief":
         try:
             return af.brief_held(t.primary, t.path, main_of(t)), mode, None
         except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
             return "the brief's held paths could not be read (%s)" % type(e).__name__, mode, None
-    if by == HANDED and rule != "M":
+    if by in (HANDED, "lander") and rule != "M":
         # judged as `typed` under D1-C (bin/autofinish's handed_held: an empty slice), bar what will not read;
         # mode ask is handed's one wall, so a mode that cannot be read holds it as it holds a mode launch
         if unread:
@@ -1577,7 +2389,7 @@ def landing(t, by, rule):
         try:
             return af.handed_held(t.primary, t.path, main_of(t)), mode, None
         except Exception as e:  # noqa: BLE001 — what it cannot read is a hold
-            return "the handed slice could not be read (%s)" % type(e).__name__, mode, None
+            return "the %s slice could not be read (%s)" % (by, type(e).__name__), mode, None
     if by not in LAND_BY and rule != "M" and by != "ship":
         return None, mode, None
     # bin/autofinish's effective_mode: the one rule bin/pr's re-check reads too (follow-ups' landing review, item 8)
@@ -1617,7 +2429,22 @@ def regatta_main():
     return os.path.abspath(str(root)) if os.path.realpath(top) == os.path.realpath(str(root)) else top
 
 
-def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None, sent_from=None, priority=None, queue=None):
+def handover_of(by, args_by, src):
+    """(whether this start carries the hand-over note, the stamps dispatch's judge waived). A handed start reads the
+    judge's own word (HANDOVER_OWED: dispatch's env on the direct start, the entry's rights on a claim); a chain or
+    lander relaunch of a handed landing reads it from the stop it continues, which recorded both (`handover`, `owed`),
+    else a relaunch after a review, login or limit stop held on the very items the judge waived (the re-landing's
+    review, 2026-11-06)."""
+    env = [x for x in os.environ.get("HANDOVER_OWED", "").split("\n") if x.strip()]
+    if by == HANDED and args_by == HANDED:
+        return True, env
+    src = src if isinstance(src, dict) else {}
+    if by in (HANDED, "lander") and (src.get("by") == HANDED or src.get("handover")):
+        return True, env or [x for x in src.get("owed") or [] if isinstance(x, str)]
+    return False, []
+
+
+def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None, sent_from=None, priority=None, queue=None, land_by=None):
     """dispatch --start, with E1's lists. The FINISH_TOOLS rules are the modules' in
     the regatta main checkout (/finish runs its tools there since B14b, 2026-10-23, which deleted the
     overlay's shims; B14a's D1-A), in the two spellings a session types them in: under `~/` and the
@@ -1641,7 +2468,11 @@ def start_cmd(t, sid, dry=False, by=None, merge=False, hold=None, arm=None, sent
         # `regatta pr merge` among them, which no deny pattern matched (the B14b landing review)
         for tool in FINISH_TOOLS:
             allow += ["Bash(%s/modules/%s*)" % (root, tool), "Bash(python3 %s/modules/%s*)" % (root, tool)]
-    prompt = finish_prompt(t.branch, by, merge, hold=hold, sent_from=sent_from)
+    prompt = finish_prompt(t.branch, by, merge, hold=hold, sent_from=sent_from, land_by=land_by)
+    ho, owed = getattr(t, "handover", None) or handover_of(by, by, None)
+    if ho:
+        handover = importlib.machinery.SourceFileLoader("handover", os.path.join(HERE, "handover.py")).load_module()
+        prompt += "\n\n" + handover.finish_note(t.path, t.branch, "origin/" + main_of(t), owed="\n".join(owed))
     cmd = [DISPATCH, "--start", prompt, t.path, t.window,
            "--session-id", sid]   # opus: dispatch's default (header)
     if arm:   # the rotation's arm, by full id (the header); none: dispatch's default, today's finisher
@@ -1976,7 +2807,7 @@ def comment(t, st, outcome, gate, lines):
         return None, "no comment: no open pull request for %s" % t.branch
     what = {"never-started": "never started", DIED: "runner died"}.get(outcome) or "stopped at %s" % gate
     head = ("**autofinish %s** — `%s`, session `%s`, tip `%s`, rule %s, started by %s at %s."
-            % (what, finish_prompt(t.branch, st.get("by"), st.get("merge"), st.get("hold"), st.get("from")), st["session"], str(st.get("tip") or t.tip)[:7], st.get("rule"), st.get("by"),
+            % (what, finish_prompt(t.branch, st.get("by"), st.get("merge"), st.get("hold"), st.get("from"), st.get("land_by")), st["session"], str(st.get("tip") or t.tip)[:7], st.get("rule"), st.get("by"),
                st.get("started")))
     quoted = "\n".join(lines)
     if len(quoted) > COMMENT_CAP:
@@ -2059,7 +2890,8 @@ def wait_for_end(t, st, cmd):
     p = None
     try:
         print("%s autofinish-run: bundle %s" % (now_iso(), write_bundle(t, st)), flush=True)
-        p = subprocess.Popen(cmd, env=start_env(t))
+        with common.finish_pick_env(start_env(t), target="dispatch") as (env, fds):
+            p = subprocess.Popen(cmd, env=env, pass_fds=fds)
         rc = p.wait()
     except BaseException as e:  # SystemExit from SIGTERM included: the finally below is the point
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a second TERM must not cut the cleanup short
@@ -2129,8 +2961,19 @@ def record(t, st, log_from, rc, why, notes):
             st.update(landing_fields(t, sid))
         except Exception as e:  # noqa: BLE001 — an unread push is an unknown row, never a lost record
             notes = list(notes) + ["landing fields unread (%s)" % type(e).__name__]
+        try:   # stuck-ships S1: the PR's auto-merge request at the stop, never at a later fetch
+            st["automerge"] = automerge_at_end(t)
+        except Exception as e:  # noqa: BLE001 — an unread request is no key, never a lost record
+            notes = list(notes) + ["automerge unread (%s)" % type(e).__name__]
     st.update(outcome=outcome, pr=pr, gate=gate)
     write_state(t, st)
+    if gate in REFUSED_GATES and st.get("by") == "lander":
+        # an unconfirmed lander start dispatch refused after all: nothing ran, its road given back here,
+        # before another start can replace this record and leave the spend unmatched (review 3)
+        try:
+            refund_session(t, sid)
+        except (OSError, StoreUnreadable) as e:
+            notes = list(notes) + ["lander refund not written (%s)" % type(e).__name__]
     # /autofinish's marker has done its job once a run ended: left behind, a `now` marker would
     # have the Stop hook judge the branch again at every later turn's end (E3's note)
     if gate not in REFUSED_GATES:
@@ -2162,6 +3005,18 @@ def record(t, st, log_from, rc, why, notes):
         st["ended"], t.repo, t.branch, outcome, " gate=%s" % gate if gate else "",
         " pr=#%s" % pr if pr else "", sid[:8], t.tip[:7], st.get("rule"), st.get("by"), st.get("account") or "-",
         first[:300], "; " + "; ".join(extra) if extra else ""))
+
+
+def automerge_at_end(t):
+    """The open PR's auto-merge request as GitHub reads it now ({"merge_method", "enabled_by"}), or None: none set,
+    no open PR (a merged one has none to read), or origin not on GitHub."""
+    s = slug(t)
+    pr = common.find_pr(s, t.branch) if s else None
+    am = pr.get("auto_merge") if isinstance(pr, dict) else None
+    if not isinstance(am, dict):
+        return None
+    return {"merge_method": am.get("merge_method"), "enabled_by": (am.get("enabled_by") or {}).get("login")
+            if isinstance(am.get("enabled_by"), dict) else None}
 
 
 def runlog_of(t, st):
@@ -2334,6 +3189,10 @@ def ladder_stay(t, args, by):
         return "a --by brief launch is this host's yes at the brief"
     if by == HANDED:
         return "a --by handed launch is judged by this host's plans (mode ask holds it)"
+    # stuck-ships S1: a lander start's caps are this host's lander.json, and its road judged this host's record of the
+    # stop; carrying either to the fleet is TODO.md [finish-ladder]'s
+    if by == "lander":
+        return "a --by lander start is this host's road, its caps in this host's lander.json"
     return None
 
 
@@ -2380,10 +3239,11 @@ def enqueue(t, args, by, via):
     # Kept pinned, as before (each waits unclaimed there, TODO.md [finish-ladder]): a typed --on here, the caller's own
     # word; a ship (the claimer's ship_refusal reads the keel's yes from its own plans, and its exit 2 tombstones the
     # tip `failed`); a brief (its yes file lives in this host's git dir, used up only where the run ends); and a chain
-    # whose launch resolved to another --by here (the rights carry `chain`, which the claimer judges as plain).
+    # whose launch resolved to another --by here (the rights carry `chain`, which the claimer judges as plain);
+    # a lander, whose caps and stop are this host's alone (stuck-ships S1).
     unpinned = None
     asked_by = getattr(t, "asked", (args.by,))[0]
-    if (pin and args.on != "here" and by not in ("ship", "brief") and asked_by == by
+    if (pin and args.on != "here" and by not in ("ship", "brief", "lander") and asked_by == by
             and not finish_runs_here()):
         unpinned, pin = pin, None
         print("autofinish-run: not pinned here (%s): this host cannot claim a finish (no finish-queue), so any host "
@@ -2412,6 +3272,15 @@ def enqueue(t, args, by, via):
               "from": self_host()}
     if digest0 and merge0:
         rights["digest"] = digest0
+    if by0 == "lander":
+        # the road the claim judges again (lander_refusal), and the mode flag this put judged: the claim keeps a flag
+        # only where its own judgement and this word agree, so an entry's word never widens what this host read
+        rights["road"] = args.road
+        if getattr(t, "land_by", None):
+            rights["land_by"] = t.land_by
+    ho, owed = getattr(t, "handover", None) or handover_of(by0, by0, None)
+    if by0 in (HANDED, "lander") and ho and owed:   # the stamps dispatch's judge waived: the claim's start has no env of the put's
+        rights["owed"] = owed
     line = ["--repo", t.primary, "--branch", t.branch, "--tip", t.tip, "--finish", json.dumps(rights, sort_keys=True),
             "--priority", args.priority or "normal", "--cwd", t.path] + (["--pin", self_host()] if pin else ["--prefer", self_host()])
     if args.session:
@@ -2483,6 +3352,10 @@ def enqueue(t, args, by, via):
         return 0
     if r.returncode or not res or res.startswith(("busy", "ran ", "clash")):
         return refuse(t, args, "the queue: %s" % (res or (r.stderr or r.stdout).strip()[-300:] or "exit %d" % r.returncode))
+    if not res.startswith("queued already"):
+        # a person's finish put here resets this host's lander caps, the one store of the branch's (stuck-ships S1): a
+        # claim elsewhere writes none there (start_here's `sent`), and a claim here resets again, to the same
+        lander_after_start(t, args, read_state(t))
     log("%s run %s %s queued %s tip=%s rule=%s by=%s%s%s — %s; %s" % (
         now_iso(), t.repo, t.branch, d.get("qid"), t.tip[:7], args.rule, by, via, " merge=yes" if args.merge else "",
         res, "pinned here: %s" % pin if pin else "claimed here" if d.get("qid") in (d.get("claimed") or []) else
@@ -2577,6 +3450,8 @@ def queued_main(argv):
         # standing yes), as AUTOFINISH_CALLER_UNATTENDED told the peer's job (round 2's S1). DROP_JOB keeps it out of
         # the session's own env
         os.environ["AUTOFINISH_CALLER_UNATTENDED"] = "1"
+    # a handed finish's waived stamps ride in its rights, as dispatch's HANDOVER_OWED does on the direct start
+    os.environ["HANDOVER_OWED"] = "\n".join(f.get("owed") or []) if f.get("by") in (HANDED, "lander") else ""
     try:   # a run of this worktree here that died (a disarmed host's sweep never buries one): buried first
         here = Tree(wt)
         prev = read_state(here)
@@ -2590,7 +3465,8 @@ def queued_main(argv):
         worktree=wt, rule=f.get("rule") or "C", by=f.get("by") or "sweep", merge=bool(f.get("merge")),
         hold=bool(f.get("hold")), digest=f.get("digest") or None, session=own, on="here",
         priority=e.get("priority") if e.get("priority") in ("high", "force") else None, dry=False,
-        queue=a.qid, job=label, sent=sent, sent_from=f["from"] if sent else None)
+        queue=a.qid, job=label, sent=sent, sent_from=f["from"] if sent else None,
+        road=f.get("road") if f.get("by") == "lander" else None, entry_land_by=f.get("land_by"))
     print("== the claimed finish %s: %s at %s in %s, by %s%s" % (a.qid, a.branch, tip[:7], wt, args.by,
                                                                ", put on %s" % f["from"] if sent else ""))
     try:
@@ -2601,9 +3477,18 @@ def queued_main(argv):
     if rc in (0, UNCONFIRMED_RC):
         return 0   # started, or dispatch's verdict still to come: its start writes `started`, its end `ended`
     why = getattr(args, "refused_why", None) or "autofinish-run exit %d" % rc
-    # nothing ran here: a reason any host would meet holds the tip (failed); this host's own state hands it back
-    final = rc in (2, ORIGIN_RC) or "no retry on the same tip" in why
-    return back("failed" if final else "refused", why)
+    return back("failed" if claim_final(rc, sent, args.by, why) else "refused", why)
+
+
+def claim_final(rc, sent, by, why):
+    """Whether a claimed finish that ran nothing holds its tip (failed) or hands it back (refused).
+
+    A reason any host would meet holds the tip; this host's own state hands it back. A lander road stuck or dead
+    is final too where this host put it: the put judged it under the same store a moment before. Never on a claim
+    of another host's put, which reads no store here (refusal()'s `sent`), nor on another launch a stuck key
+    refused: its `failed` would outlive the `lander reset` that clears the key (the S1 landing's review)."""
+    return (rc in (2, ORIGIN_RC) or (not sent and by == "lander" and rc in (STUCK_RC, DEAD_ROAD_RC))
+            or "no retry on the same tip" in why)
 
 
 def self_host():
@@ -3096,12 +3981,15 @@ def main(argv):
         return queued_main(argv[1:])
     if argv[:1] == ["rotation"]:
         return rotation(argv[1:])
+    if argv[:1] == ["lander"]:
+        return lander_cmd(argv[1:])
     if argv[:1] == ["waiter"] and WAITER_SPEC in os.environ:   # a worktree named `waiter` stays a finish
         return waiter_main()
     ap = argparse.ArgumentParser(prog="autofinish-run", description=__doc__.split("\n\n")[0])
     ap.add_argument("worktree")
     ap.add_argument("--rule", choices="ABCDELM", default="C")
     ap.add_argument("--by", choices=BY_WORDS, default="override")
+    ap.add_argument("--road", choices=ROADS, help="--by lander's: the road the tick names (stuck-ships S1)")
     ap.add_argument("--merge", action="store_true",
                     help="carry the owner's /finish --merge into the run (--by override|typed, or ship with --digest)")
     ap.add_argument("--hold", action="store_true", help="stop at a ready PR whatever the mode: the keel's no (S6)")
@@ -3118,6 +4006,10 @@ def main(argv):
 
 
 def run_main(args):
+    if (args.by == "lander") != bool(args.road):
+        print("autofinish-run: --by lander names its road (--road %s), and only a lander start names one"
+              % "|".join(ROADS), file=sys.stderr)
+        return 2
     if args.merge and args.by not in MERGE_BY:
         print("autofinish-run: --merge needs a person's yes, so --by %s (not %s) only" % (" or ".join(MERGE_BY), args.by),
               file=sys.stderr)
@@ -3173,11 +4065,8 @@ def run_main(args):
     # --dry writes nothing, the start lock included: it only says what a start would meet
     held = None if args.dry else take_start_lock(t)
     if not args.dry and not held:
-        why = "another start on this worktree is under way (%s)" % os.path.join(t.state_dir, START_LOCK)
-        print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
-        log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
-                                                                args.rule, args.by, why))
-        return 3
+        # through refuse(): a lander start's refusal is logged once an hour per text, as every other one of its own
+        return refuse(t, args, "another start on this worktree is under way (%s)" % os.path.join(t.state_dir, START_LOCK))
     t.held = held
     try:
         rc = start(t, args)
@@ -3190,6 +4079,145 @@ def run_main(args):
                 os.remove(t.held)
             except OSError:
                 pass
+
+
+def lander_target(args):
+    """(primary, branch) a `lander` verb acts on: --worktree's, else --repo (a checkout: its main checkout) and --branch."""
+    if args.worktree:
+        t = Tree(os.path.abspath(os.path.expanduser(args.worktree)))
+        if not t.primary or not t.branch:
+            raise ValueError("%s is not a branch's worktree" % args.worktree)
+        return t.primary, t.branch
+    if not (args.repo and args.branch):
+        raise ValueError("name the branch: --worktree W, or --repo R --branch B")
+    repo = os.path.abspath(os.path.expanduser(args.repo))
+    cd = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir") if os.path.isdir(repo) else ""
+    return (os.path.dirname(cd) if cd.endswith("/.git") else repo), args.branch
+
+
+def tick_here():
+    """None when a tick runs on this Mac, else why not — helm's poll_tick's own test: the laptop, or a host some
+    scope's yard names (a registry that does not read is no tick: the yard gate fails closed)."""
+    lib = common.tool("helmlib.py")
+    if not lib:
+        return "helm is not installed: no tick"
+    if str(lib.parent) not in sys.path:
+        sys.path.append(str(lib.parent))
+    try:
+        import helmlib
+        import surfaces
+        if surfaces.host() == common.LAPTOP:
+            return tick_disarmed()
+        yards, torn = helmlib.yard_hosts()
+    except Exception as e:  # noqa: BLE001 — what cannot be told is no tick
+        return "helm's tick test did not run (%s)" % type(e).__name__
+    if torn:
+        return "the registry does not read: a yard's tick fails closed"
+    if helmlib.host() not in yards:
+        return "%s is neither the laptop nor a scope's yard: no tick runs here" % helmlib.host()
+    return tick_disarmed()
+
+
+def tick_disarmed():
+    """None when helm's tick acts here (`helm tick --arm`, past its dry hours: stalls_tick's mode() is `armed`), else
+    why not: a tick that runs disarmed or dry calls nothing, so no road would move a stop (the landing review)."""
+    try:
+        import stalls_tick
+        mode, why = stalls_tick.mode()
+    except Exception as e:  # noqa: BLE001 — what cannot be told is no tick
+        return "helm's tick state did not read (%s)" % type(e).__name__
+    return None if mode == "armed" else "helm's tick is %s: %s" % (mode, why)
+
+
+def lander_armed():
+    """None when a stop on this Mac will be moved by a road: the relaunch gate is on (autofinish's `armed`; the
+    `landings` switch, task-shape S3's) and a tick runs here. Else why not."""
+    landings = getattr(common, "autofinish_landings", lambda: False)
+    if not (common.autofinish_armed() or landings()):
+        return "the relaunch gate is off (no armed or landings file in %s)" % common.autofinish_state_dir()
+    try:
+        lander_read()
+    except StoreUnreadable as e:
+        return "the lander's store %s does not read (%s): no start but a person's runs here" % (lander_path(), e)
+    return tick_here()
+
+
+def lander_cmd(argv):
+    """`autofinish-run lander VERB` — the store's verbs (the header's "The lander")."""
+    ap = argparse.ArgumentParser(prog="autofinish-run lander")
+    ap.add_argument("verb", choices=("show", "hold", "lift", "stuck", "reset", "spend", "armed"))
+    ap.add_argument("what", nargs="?", choices=tuple(SPEND_CAPS), help="spend's counter")
+    ap.add_argument("--worktree")
+    ap.add_argument("--repo")
+    ap.add_argument("--branch")
+    ap.add_argument("--head", help="hold: the PR's head the hold was taken at")
+    ap.add_argument("--reason", choices=HOLD_REASONS, help="hold: why the lander holds the PR")
+    ap.add_argument("--started", action="store_true", help="hold: the road's session has started")
+    ap.add_argument("--aside", action="store_true",
+                    help="reset: set a lander.json that does not parse aside and start a new store — every branch's caps "
+                         "and stuck states with it, so a person's or the tick's word only")
+    a = ap.parse_args(argv)
+    if a.verb == "armed":
+        why = lander_armed()
+        print("armed: a stop here is the lander's" if not why else "not armed: %s" % why)
+        return 0 if not why else 3
+    if (a.verb == "spend") != bool(a.what):
+        print("autofinish-run lander: spend names its counter (%s), and only spend takes one" % "|".join(SPEND_CAPS),
+              file=sys.stderr)
+        return 2
+    if a.verb == "hold" and not (a.head and a.reason):
+        print("autofinish-run lander: hold takes --head SHA and --reason %s" % "|".join(HOLD_REASONS), file=sys.stderr)
+        return 2
+    if a.aside and a.verb != "reset":
+        print("autofinish-run lander: --aside goes with reset only", file=sys.stderr)
+        return 2
+    if a.verb in ("reset", "lift") and (unattended_caller() or any(os.environ.get(n) for n in PRIO_UNATTENDED)):
+        # a reset clears a stuck ship's caps and a lift its hold: the tick's (launchd, S8's label road) or a person's,
+        # never a run's own way past its cap or its hold (AGENTS.md's unattended-caller trap; the landing review)
+        print("autofinish-run lander: %s is the tick's or a person's, never an unattended run's" % a.verb, file=sys.stderr)
+        return 2
+    if a.verb == "show" and not (a.worktree or a.repo or a.branch):
+        try:
+            print(json.dumps(lander_read(), indent=1, ensure_ascii=False, sort_keys=True))
+        except StoreUnreadable as e:
+            print("autofinish-run lander: %s does not read — %s" % (lander_path(), e), file=sys.stderr)
+            return 3
+        return 0
+    try:
+        key = lander_key(*lander_target(a))
+    except ValueError as e:
+        print("autofinish-run lander: %s" % e, file=sys.stderr)
+        return 2
+    said = []
+
+    def act(e):
+        if a.verb == "hold":
+            e["hold"] = {"label": LANDER_HOLD, "head": a.head, "reason": a.reason, "started": bool(a.started)}
+        elif a.verb == "lift":
+            e["hold"] = None
+        elif a.verb == "stuck":
+            e["state"] = "stuck"
+        elif a.verb == "reset":
+            reset_entry(e)
+        elif a.verb == "spend":
+            n = int(e.get(a.what) or 0)
+            if n >= SPEND_CAPS[a.what]:
+                said.append("%s spent on %s (%d of %d): stuck, the owner's" % (a.what, key, n, SPEND_CAPS[a.what]))
+                return STUCK_RC
+            e[a.what] = n + 1
+        said.append(json.dumps(e, ensure_ascii=False, sort_keys=True))
+        return 0
+    try:
+        if a.verb == "show":
+            e = lander_read().get(key)
+            print(json.dumps(e if isinstance(e, dict) else None, ensure_ascii=False, sort_keys=True))
+            return 0
+        rc = lander_update(key, act, replace=a.verb == "reset", aside=a.aside)
+    except StoreUnreadable as e:
+        print("autofinish-run lander: %s does not read — %s; nothing written" % (lander_path(), e), file=sys.stderr)
+        return 3
+    print(said[-1] if said else "", file=sys.stderr if rc else sys.stdout)
+    return rc
 
 
 # the callers prio_refusal judges as unattended: a raise from one is judged on its own run's record
@@ -3228,13 +4256,64 @@ def spend_force():
 
 
 def refuse(t, args, why):
-    why = " ".join(str(why).split())   # one line: cold_prompt reads the last line as the whole reason
+    """Say the refusal and exit with its code (a Refusal's rc, else 3). Today's same-tip refusal is counted in
+    lander.json's `refusals` under the store's lock, never in autofinish.json (a refuser rewriting the run record
+    while a run may be live would race record()), and logged once an hour per branch (stuck-ships S1: a caller's
+    loop wrote 20 lines every 120 s)."""
+    if isinstance(why, Refusal):   # one line, its rc and marks kept: cold_prompt reads the last line as the whole reason
+        flat = Refusal(" ".join(why.split()), why.rc, why.same_tip)
+        flat.road = why.road
+        why = flat
+    else:
+        why = " ".join(str(why).split())
     args.refused_why = why   # a claimed finish's word to the queue (queued_main)
     print("autofinish-run: not starting %s — %s" % (t.branch, why), file=sys.stderr)
-    if not args.dry:
-        log("%s run %s %s refused tip=%s rule=%s by=%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
-                                                                args.rule, args.by, why))
-    return 3
+    road = " road=%s" % args.road if getattr(args, "road", None) else ""
+    quiet = (getattr(why, "same_tip", False) and not is_person(args.by)) or getattr(why, "road", False) \
+        or args.by == "lander"   # every lander refusal, a lock's or no account's too: the tick asks every 5 min
+    # a claim of another host's put writes no lander.json here (S1's one store is the putting host's): logged plainly
+    sent = bool(getattr(args, "sent", False))
+    if getattr(why, "same_tip", False) and not args.dry and not quiet and not sent:
+        count_refusal(t, args.by)   # a person's: counted, and logged every time
+    if not args.dry and (not quiet or sent or count_refusal(t, args.by, counted=getattr(why, "same_tip", False), text=str(why))):
+        log("%s run %s %s refused tip=%s rule=%s by=%s%s — %s" % (now_iso(), t.repo, t.branch, t.tip[:7],
+                                                                  args.rule, args.by, road, why))
+    return getattr(why, "rc", 3)
+
+
+def count_refusal(t, by, counted=True, text=""):
+    """One same-tip refusal counted per tip ({tip, n, first, last, by, logged}); True when it is to be logged (the
+    first on a tip, or an hour since the last logged). A store that does not read or write: logged, uncounted. A lander
+    road's wait (counted False) is not counted, only logged once an hour (its own `road_logged`): the tick asks every
+    5 minutes (review 1)."""
+    now = time.time()
+
+    def wait(e):
+        # {text: when logged}, the hour's only: a text logged in the last hour is not logged again
+        seen = {k: v for k, v in (e.get("road_logged") or {}).items() if isinstance(v, (int, float))
+                and now - v < REFUSAL_LOG_S} if isinstance(e.get("road_logged"), dict) else {}
+        key = re.sub(r"\d+", "#", text)   # a pick's reasons quote figures that move every tick (review 4)
+        say = key not in seen
+        if say:
+            seen[key] = now
+        e["road_logged"] = seen
+        return say
+
+    def bump(e):
+        r = e.get("refusals") if isinstance(e.get("refusals"), dict) else None
+        if not r or r.get("tip") != t.tip:
+            r = {"tip": t.tip, "n": 0, "first": now_iso(), "last": None, "by": by, "logged": 0}
+        n, logged = r.get("n"), r.get("logged")   # a count is the log's, never a cap: a bad one restarts, never crashes
+        r.update(n=(n if isinstance(n, int) and not isinstance(n, bool) else 0) + 1, last=now_iso(), by=by)
+        say = now - (logged if isinstance(logged, (int, float)) and not isinstance(logged, bool) else 0) >= REFUSAL_LOG_S
+        if say:
+            r["logged"] = now
+        e["refusals"] = r
+        return say
+    try:
+        return lander_update(lander_key(t.primary, t.branch), bump if counted else wait)
+    except (OSError, StoreUnreadable):
+        return True
 
 
 def refuse_tip(t, args, why):
@@ -3268,6 +4347,70 @@ def end_warm(t, args, cap=None):
     return None
 
 
+def lander_spend(t, args, n, sid=None, restore=False):
+    """A lander start's road spent (n 1) before the run's state is written, or refunded (n -1) when dispatch refused
+    it or no child started (stuck-ships S1: spent on every exit-0 verdict — started, unconfirmed — never on a
+    refusal). Spent before the detach, not after the verdict: a caller's timeout that kills this process during the
+    verdict wait leaves a run going and must not leave its road unspent (review 1). The spend keeps `spent` {session,
+    road}, so a refused record of that session later gives it back once (lander_refusal), and the stop it passed on as
+    `stop`, `stop_for` that session, so the next road judges the stop, never the refused record. True when written,
+    False when it cannot be: a spend that cannot be written refuses the start (an uncapped road: review 2); a refund
+    that cannot is said. A Refusal (STUCK_RC) when the road's cap, judged again under the store's lock, is spent."""
+    road = args.road
+    stop = getattr(t, "stop", None) or {}
+
+    def spend(e):
+        if n < 0:
+            if (e.get("spent") or {}).get("session") == sid:   # this start's own, never another's (review 4)
+                refund_spent(e, restore)
+            return
+        if road_spent(e, road) >= ROAD_CAPS[road]:
+            # the cap again, under the store's lock: lander_refusal read it without one, and a start lock gone stale
+            # past a slow predicate lets a second lander start reach here (the /finish review, 2026-11-03)
+            raise RoadSpent(road_spent(e, road))
+        road_add(e, road, 1)
+        e["spent"] = {"session": sid, "road": road, "stop_for_before": e.get("stop_for")}
+        e["first_stop"] = e.get("first_stop") or stop.get("ended")
+        if stop and stop.get("gate") not in REFUSED_GATES:
+            e["stop"] = {k: stop.get(k) for k in STOP_KEYS}
+        if e.get("stop"):
+            e["stop_for"] = sid
+    try:
+        lander_update(lander_key(t.primary, t.branch), spend)
+        return True
+    except RoadSpent as e:
+        return Refusal("the %s road is spent on %s (%d of %d): stuck, the owner's" % (
+            road, t.branch, e.args[0], ROAD_CAPS[road]), STUCK_RC)
+    except (OSError, StoreUnreadable) as e:
+        print("autofinish-run: lander.json not written (the %s road's %s) — %s" % (
+            road, "spend" if n > 0 else "refund", e), file=sys.stderr)
+        return False
+
+
+def keep_chain_stop(t, prev, sid):
+    """A chain relaunch of a lander run keeps that run as the entry's stop, `stop_for` its own session, no road spent:
+    should it never start or die, the next road judges the lander run it relaunched — which usually rebased and
+    pushed — never the older stop before it, on which every road would refuse a HEAD it never saw (round 2)."""
+    if not prev or prev.get("gate") in REFUSED_GATES:
+        return
+    try:
+        lander_update(lander_key(t.primary, t.branch),
+                      lambda e: e.update(stop={k: prev.get(k) for k in STOP_KEYS}, stop_for=sid))
+    except (OSError, StoreUnreadable) as e:
+        print("autofinish-run: lander.json not written (the chain's kept stop) — %s" % e, file=sys.stderr)
+
+
+def lander_after_start(t, args, prev):
+    """After an exit-0 verdict: a person's start (typed, or one carrying --merge, with no unattended caller; never
+    `override` alone, the default of an unnamed caller) resets the counts and the state, the hold kept."""
+    if not (is_person(args.by) and (args.by == "typed" or args.merge)):
+        return
+    try:
+        lander_update(lander_key(t.primary, t.branch), reset_entry, replace=True)
+    except (OSError, StoreUnreadable) as e:
+        print("autofinish-run: lander.json not written (the reset) — %s" % e, file=sys.stderr)
+
+
 def write_chain(t, sessions):
     """CHAIN for this tip, replaced whole (count_chain and uncount_chain)."""
     tmp = os.path.join(t.state_dir, "%s.%d" % (CHAIN, os.getpid()))
@@ -3289,15 +4432,22 @@ def start(t, args):
     sent = bool(args.queue and args.sent)
     t.own_claim = bool(args.queue and not args.sent)
     # The origin gate between what no tree moves under and the refusals that read the tip: they judge the tip that
-    # lands (a stop on the old tip is no refusal of the one origin moved on to; AGENTS.md's launched-tip trap)
-    why = tree_refusal(t, prev, args.by, sent) or lock_refusal(t, args.session, args.by == "typed")
+    # lands (a stop on the old tip is no refusal of the one origin moved on to; AGENTS.md's launched-tip trap). A
+    # lander start is judged whole before it (tree_refusal), as a chain relaunch is: its road names the stop's tip
+    road = getattr(args, "road", None)
+    why = tree_refusal(t, prev, args.by, sent, road=road, dry=getattr(args, "dry", False)) \
+        or lock_refusal(t, args.session, args.by == "typed") or store_refusal(t, args)
     if why:
         return refuse(t, args, why)
-    # a claimed finish lands the tip its entry names: its tree is never moved here (queued_worktree put it there)
-    why = tip_gate(t, args, follow=not args.queue)
+    # a claimed finish lands the tip its entry names: its tree is never moved here (queued_worktree put it there).
+    # A lander start judged its tip whole above: tip_gate never moves the tree or ends a warm run for it (round 3:
+    # a fast-forward before judged_stop's refusal left HEAD past the stop's tip, and every road refused it after)
+    why = tip_gate(t, args, follow=not args.queue and args.by != "lander")
     if why:
         return refuse_tip(t, args, why)
-    why = refusal(t, prev, args.by, sent=sent)
+    # a lander start was judged whole above, on this very tip (tip_gate refuses it any other): its road's predicate
+    # reads GitHub and spends nothing twice
+    why = None if args.by == "lander" else refusal(t, prev, args.by, sent=sent)
     if why:
         return refuse(t, args, why)
     # A chain relaunch of a yolo launch is a yolo launch again (chain-manager E3; bin/autofinish's
@@ -3314,19 +4464,76 @@ def start(t, args):
     by = (prev or {}).get("by") if args.by == "chain" and (prev or {}).get("by") in CHAIN_KEEPS \
         and (not sent or (prev or {}).get("tip") == t.tip) else args.by
     via = " via=chain" if args.by == "chain" else ""
+    if args.by == "lander":   # stuck-ships S1: recorded `lander`, logged with the stopped run's by
+        try:
+            judged = road_stop(prev, lander_entry(t)) or {}
+        except StoreUnreadable:
+            judged = prev or {}
+        via = " via=%s" % (judged.get("by") or "none")
+        t.stop = judged
+    elif by == "lander":
+        # a chain relaunch of a lander run (CHAIN_KEEPS): its stop is that run, whose flag landing() weighs as the
+        # lander start's own (round 1: judged by handed_held, it carried --dnd with no --hold)
+        t.stop = prev or {}
+    # a claimed lander start carries its put's word on the flag (enqueue's `land_by`), which landing() reads first
+    t.flag_word = (getattr(args, "entry_land_by", None),) if args.queue and args.by == "lander" else None
+    # a hand-over's note and waiver: its own on a handed start, the stop's on a chain or lander relaunch of one
+    t.handover = handover_of(by, args.by, t.stop if by == "lander" else prev if args.by == "chain" else None)
     hold, mode, eff = landing(t, by, args.rule)
-    if args.by == "chain" and not hold and (prev or {}).get("hold"):
-        hold = prev["hold"]
+    hold_from = None   # whose hold this start carries, where it carries one rather than judging it (OPTIONAL_KEYS)
+    # A carried hold rides on whether or not this start's own landing() also holds: decided apart from `hold`, so a
+    # start held by its own judgement (mode ask) still records the hold it carries, and a mode raised before the next
+    # start never drops it (the S1 landing's review, round 2)
+    if args.by == "chain" and (prev or {}).get("hold"):
+        hold, hold_from = prev["hold"], prev.get("hold_from") or prev.get("session")
+    if args.by == "lander" and t.stop.get("hold"):
+        hold = t.stop["hold"]   # the stopped run's hold, verbatim: a run the mode held is held again for the tap
+        hold_from = t.stop.get("hold_from") or t.stop.get("session")
+    # the mode flag (stuck-ships S1): a mode launch writes its own; a lander or chain relaunch carries the stopped
+    # run's, else its by when that was a mode launch — `via` is the log's only, so a second hop would drop it
+    p = prev or {}
+    if args.by == "lander":
+        p = t.stop   # the stop the road judged, past a refused start's record
+    # a chain relaunch that fell back to `chain` (a new tip) carries no flag: landing() judges `chain` by no slice, so a
+    # flag there would land a mode launch held_slice never saw (the /finish review, 2026-11-03)
+    t.land_by = (by if by in LAND_BY else lander_flag(p)) \
+        if args.by == "lander" or (args.by == "chain" and by != "chain") else None
+    if by not in LAND_BY and t.land_by and not flag_rides(t, t.land_by, p, mode):
+        # the flag is the mode's yes to the taken answers: carried only while the branch's mode still says it (a mode
+        # lowered since would have a lander relaunch land what a chain relaunch's held_slice holds: review 1)
+        t.land_by = None
+    if args.queue and args.by == "lander" and t.land_by != getattr(args, "entry_land_by", None):
+        # a claimed lander start keeps a flag only where its put judged the same one (enqueue's `land_by`): the
+        # entry's word narrows this judgement, never widens it
+        t.land_by = None
     # the keel's no (S6): a mode that would merge is not asked, and a later launch of this worktree —
     # the sweep's retry of a held run that died starts `--by sweep`, no --hold — keeps it. Its own key,
     # not the text of `hold`: a launch that another rule held first (mode ask) records that rule's
     # reason, and the keel's no must outlive it (S6's finish review)
     keel_hold = bool(args.hold or (prev or {}).get("keel_hold") or (prev or {}).get("hold") == SHIP_HOLD)
+    if args.by == "lander":   # the keel's no of the stop the road judged, past a refused start's record (round 3)
+        keel_hold = keel_hold or bool(t.stop.get("keel_hold") or t.stop.get("hold") == SHIP_HOLD)
+    if ((prev or {}).get("outcome") == DIED or (prev or {}).get("gate") in REFUSED_GATES) \
+            and prev.get("hold") and prev.get("hold_from") \
+            and not (is_person(args.by) and (args.by == "typed" or args.merge)):
+        # A retry carries the prior hold, as a chain relaunch does. Dispatch refusing a start (or a failed detach)
+        # replaces `died` with a refused record, but releases no hold. Its caller may now be `sweep` or a mode
+        # launch instead of `lander`: the hold must survive every retry. A person's own launch (typed, or carrying
+        # --merge, as lander_after_start reads one) is that person's yes, never held by it. A changed tip gives no tap.
+        # Only a carried hold rides on (`hold_from`): a hold the retried run judged itself by the mode (ask) is
+        # judged again by this start's landing(), so a mode raised since is read
+        hold, hold_from = prev["hold"], prev["hold_from"]
+    # a lander start's own hold that is no mode ask (handed_held's slice, a mode that will not read) is one a sweep
+    # retry's landing() never judges again, so it is marked carried, from this run (start_here fills the session)
+    t.hold_own = bool(args.by == "lander" and hold and not hold_from and mode != "ask")
     if keel_hold and not hold:
         hold = SHIP_HOLD
+    t.hold_from = hold_from   # start_here records it beside the hold (OPTIONAL_KEYS)
     t.asked = (args.by, bool(args.merge), args.digest)   # the put's rights: the caller's words, the ladder judged again where it is claimed
     if hold and args.merge:
         args.merge = False   # a held launch merges nothing: no `--merge` in its prompt or state beside `--hold`
+    if by == "lander" and t.land_by and not eff:
+        eff = t.land_by   # the mode the kept flag stands for, so the next hop from this record keeps it (review 5)
     t.ladder = (hold, mode, keel_hold, eff)
     if not args.queue and queue_home():
         try:
@@ -3372,10 +4579,16 @@ def start_here(t, args, prev, by, via):
     st = {"started": now_iso(), "session": sid, "tip": t.tip, "by": by, "rule": args.rule,
           "window": t.session, "account": label, "ended": None, "outcome": None, "pr": None, "gate": None,
           "merge": args.merge, "hold": hold, "keel_hold": keel_hold, "from": args.sent_from, "queue": args.queue,
-          "eff_mode": eff, "land_mode": mode, "arm": arm,
+          "eff_mode": eff, "land_mode": mode, "arm": arm, "land_by": getattr(t, "land_by", None),
+          "hold_from": (getattr(t, "hold_from", None) or (sid if getattr(t, "hold_own", False) else None)) if hold else None,
+          "road": args.road if args.by == "lander" else None,
+          # a hand-over's, for a relaunch of this landing (handover_of): written only on one
+          "handover": bool(getattr(t, "handover", (False,))[0]) or None,
+          "owed": list(getattr(t, "handover", (False, []))[1]) or None,
           # the landing's rank (--priority): a review stop's fix round goes at it, or high (fix_round_line)
           "priority": getattr(args, "priority", None)}
-    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from, priority=getattr(args, "priority", None),
+    cmd = start_cmd(t, sid, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from,
+                    priority=getattr(args, "priority", None), land_by=st["land_by"],
                     queue=(args.queue, args.job) if args.queue else None)
     try:
         targets = open_sessions(t, args.session, args.by == "typed")
@@ -3401,23 +4614,39 @@ def start_here(t, args, prev, by, via):
         # without --priority: judged above (prio_refusal). dispatch's own force check would see this caller's claude
         # among its parents and no session id (start_env drops it), and refuse what the real start, under the
         # detached waiter, passes; the session it prints is the same either way
-        return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from),
-                               env=start_env(t))
+        with common.finish_pick_env(start_env(t), target="dispatch") as (env, fds):
+            return subprocess.call(start_cmd(t, sid, dry=True, by=by, merge=args.merge, hold=hold, arm=arm, sent_from=args.sent_from,
+                                             land_by=st["land_by"]),
+                                   env=env, pass_fds=fds)
     try:
         with open(os.path.join(t.state_dir, common.OWNER_FILE)) as f:
             before = f.read()
     except OSError:
         before = None
-    write_state(t, st)
+    lander = args.by == "lander"
+    spent = lander_spend(t, args, 1, sid) if lander else True
+    if isinstance(spent, Refusal):
+        return refuse(t, args, spent)
+    if not spent:
+        return refuse(t, args, "the lander's store %s does not write: the %s road cannot be spent" % (lander_path(), args.road))
+    try:
+        write_state(t, st)
+    except OSError:
+        if lander:
+            lander_spend(t, args, -1, sid, restore=True)   # nothing ran, no record: the road and stop_for given back
+        raise
     try:
         write_targets(t, sid, targets)
     except OSError as e:  # never worth the launch: notify then finds no file and sends nothing
         print("autofinish-run: %s not written — %s" % (NOTIFY, e), file=sys.stderr)
     common.write_owner(t.state_dir, sid, t.branch)
+    if args.by == "chain" and by == "lander":
+        keep_chain_stop(t, prev, sid)
     if args.by == "chain" and not (args.queue and not args.sent):   # a put here counted it already (enqueue)
         count_chain(t, prev, sid)
     log("%s run %s %s started session=%s tip=%s rule=%s by=%s%s account=%s window=\"%s\" — %s" % (
         st["started"], t.repo, t.branch, sid[:8], t.tip[:7], args.rule, by, via + (" merge=yes" if args.merge else "")
+        + (" road=%s stopped_on=%s" % (args.road, getattr(t, "stop", {}).get("account") or "-") if args.by == "lander" else "")
         + (" hold=\"%s\"" % hold if hold else "") + (" arm=%s" % arm["name"] if arm else " arm=off (%s)" % arm_why if arm_off else ""),
         label or "-", t.session, picked))
     try:
@@ -3428,6 +4657,8 @@ def start_here(t, args, prev, by, via):
         detach("wait_for_end", t, (st, cmd), t.runlog)
     except OSError as e:
         # no child: a lock naming a session that never exists would refuse the panel for 2 h
+        if lander:
+            lander_spend(t, args, -1, sid)
         give_back(t, sid, before, st)
         print("autofinish-run: %s did not start — %s; the lock is given back" % (t.branch, e), file=sys.stderr)
         log("%s run %s %s never-started gate=%s session=%s tip=%s rule=%s by=%s — the detach failed: %s" % (
@@ -3437,9 +4668,15 @@ def start_here(t, args, prev, by, via):
     # log, never at the detach. The waiter records the end of a refusal itself
     bound = verdict_bound(t)
     kind, detail = await_verdict(t, sid, log_from, bound)
+    if kind in ("refused", "no-account"):
+        if lander:
+            lander_spend(t, args, -1, sid)
+    elif not args.sent:   # a finish another host put: its caps are that host's store, reset at its put (enqueue)
+        lander_after_start(t, args, prev)
     return report_verdict(t, kind, detail, bound, "state %s; log %s" % (os.path.join(t.state_dir, STATE), t.runlog),
                           "started: %s — window and Remote Control \"%s\", session %s, account %s; state %s; log %s" % (
-                              finish_prompt(t.branch, by, args.merge, hold=hold, sent_from=args.sent_from), t.session, sid,
+                              finish_prompt(t.branch, by, args.merge, hold=hold, sent_from=args.sent_from,
+                                            land_by=st["land_by"]), t.session, sid,
                               label or "unchanged", os.path.join(t.state_dir, STATE), t.runlog))
 
 

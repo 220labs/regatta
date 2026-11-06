@@ -1179,7 +1179,7 @@ rm -f "$FEAT"
 echo "S5: dispatch — --needs, the berth pick retired, no home"
 check "$(sed -n '/^queue_dispatch() {/,/^}/p' "$B/dispatch" | grep -c 'needs:+--needs')" "1" "queue_dispatch passes --needs to the enqueue"
 check "$(grep -c 'needs:+--needs "$needs"} ${arm_need:+--arm-need' "$B/dispatch")" "3" "  as do the fire-time enqueues (a one-shot's, a refusal's), each with the builder coin's --arm-need"
-check "$(grep -c 'needs:+--needs' "$B/dispatch")" "4" "  and the builder coin's draw, its fresh check judging the run's own needs"
+check "$(grep -c 'needs:+--needs' "$B/dispatch")" "5" "  and the builder coin's draw, its fresh check judging the run's own needs, and a vendor run's Claude retry"
 check "$(grep -c '<string>--needs</string>' "$B/dispatch")" "1" "  and a one-shot's plist carries it to its fire time"
 BRN=claude/laptop/2026-10-29-dn
 "$B/dispatch" $BRN --repo "$T/repo" --needs 'Feat Z' --dry-run > /dev/null 2> "$T/err"; check "$?" "2" "dispatch refuses a malformed need"

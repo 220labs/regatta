@@ -70,6 +70,7 @@ echo "claude \$*" >> "$T/claude.calls"; env > "$T/claude.env"
 sid=; prev=; for a in "\$@"; do [ "\$prev" = --session-id ] && sid=\$a; prev=\$a; done
 gd=\$(git rev-parse --absolute-git-dir)
 cp "\$gd/claude/owner.json" "$T/at-start.\$sid.lock" 2>/dev/null
+[ -z "\${STUB_READY_DELAY:-}" ] || sleep "\$STUB_READY_DELAY"
 [ -n "\${STUB_MARK:-}" ] && touch "\$gd/claude/finishing"
 [ -n "\${STUB_FINISH:-}" ] && printf '{"session": "%s", "phase": "finish", "outcome": "%s", "ended": 1}' "\$sid" "\$STUB_FINISH" > "\$gd/claude/build-review-finish.json"
 cp "\$gd/claude/autofinish.json" "$T/at-start.\$sid.state" 2>/dev/null
@@ -85,6 +86,7 @@ case "\${STUB_RUN:-reply}" in
          echo '{"type":"user","message":{"content":"/finish"},"timestamp":"2026-10-15T00:00:00Z"}' > "\$HOME/.claude/projects/x/\$sid.jsonl"
          trap 'printf "{\\"session\\": \\"%s\\"}" "\$sid" > "\$gd/claude/owner.json"; rm -f "\$rec"; exit 0' TERM;;
 esac
+echo \$\$ > "$T/at-ready.\$sid.pid"
 while [ -d "$T" ] && [ \$SECONDS -lt 900 ]; do sleep 0.2; done   # ends with its suite's \$T, or at 15 min: an endless loop outlived every killed suite run (99 on one Mac, 2026-11-05)
 EOF
 cat > "$T/screen" <<EOF
@@ -119,6 +121,22 @@ field() { python3 -c 'import json, sys; v = json.load(open(sys.argv[1])).get(sys
 # the runner returns at once; its child records the end: wait for it (up to ~30 s)
 ended() { for _ in $(seq 1 150); do [ "$(field ended 2>/dev/null)" != null ] && [ -n "$(field ended 2>/dev/null)" ] && return 0; sleep 0.2; done; echo "  (no end recorded in 30 s)"; return 1; }
 af() { CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=caller "$B/autofinish-run" "$W" "$@"; }
+busy_pid() {   # this session's stub, after its marker, registry and prompt are written
+  local sid pid
+  sid=$(field session) || return 1
+  for _ in $(seq 1 150); do
+    if [ -s "$T/at-ready.$sid.pid" ]; then
+      read -r pid < "$T/at-ready.$sid.pid"
+      if kill -0 "$pid" 2>/dev/null; then echo "$pid"; return 0; fi
+    fi
+    [ "$(field ended 2>/dev/null)" = null ] || break
+    sleep 0.2
+  done
+  echo "  FAIL busy session $sid did not become ready" >&2
+  cat "$T/out" >&2
+  tail -30 "$HOME/Library/Logs/claude-weekly/$AUTOFINISH_DAY-dispatch-finish-demo.log" >&2
+  return 1
+}
 
 echo "a stop: the lock before the start, the state at each stage, the ⚠ on the PR"
 printf 'Ran the check: all pass.\n\n⚠ step 4 — 2 open items before this branch can be finished:\n1. the README row — not recorded anywhere\n2. a test for --x — TODO.md\n\nSAM, THIS SESSION IS WAITING FOR YOU — two open items, above\n' > "$T/stop.txt"
@@ -353,9 +371,10 @@ af --dry > "$T/out" 2>&1; check "$?" "0" "  an old record's gate not-launched re
 
 echo "a fake SIGTERM end: the session ended by SIGTERM, leaving its lock behind (R29)"
 next_tip "term"; : > "$T/claude.calls"
-STUB_RUN=busy af > /dev/null 2>&1
-for _ in $(seq 1 50); do CP=$(pgrep -f "$T/claude /finish" | head -1); [ -n "$CP" ] && break; sleep 0.2; done
-sleep 1; kill -TERM "$CP"
+STUB_RUN=busy DISPATCH_START_WAIT=20 af > "$T/out" 2>&1; r=$?
+check "$r" "0" "the busy run starts"; [ "$r" = 0 ] || cat "$T/out"
+CP=$(busy_pid) || exit 1
+kill -TERM "$CP"
 ended
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "the lock the dead session left is gone after the end"
 check "$(field outcome)" "never-started" "  no reply: never-started"
@@ -376,9 +395,12 @@ ended
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "the waiter's SIGTERM: the lock released in finally"
 has "$AFLOG" "the waiter ended: signal 143" "  and the log says why"
 next_tip "waiter, live"; : > "$T/claude.calls"
-STUB_RUN=busy STUB_MARK=1 af > /dev/null 2>&1
-for _ in $(seq 1 50); do CP=$(pgrep -f "$T/claude /finish" | head -1); [ -n "$CP" ] && break; sleep 0.2; done
-sleep 1
+# Readiness, not a flat sleep or a process-name match: on a loaded runner the stub can still be
+# starting then, and the suite's usual two-second start deadline can end it before this SIGTERM.
+# Exercise that ordering with a startup longer than both old waits; hang cases keep their short deadline.
+STUB_RUN=busy STUB_MARK=1 STUB_READY_DELAY=3 DISPATCH_START_WAIT=20 af > "$T/out" 2>&1; r=$?
+check "$r" "0" "the delayed busy run starts"; [ "$r" = 0 ] || cat "$T/out"
+CP=$(busy_pid) || exit 1
 # the waiter: its pid in autofinish-waiter.json (an exec'd `autofinish-run waiter` since waiter-fork-crash,
 # 2026-11-03: no process keeps the runner's own command line)
 # this run's file, never the last case's: its session is the one the run's state names
@@ -397,7 +419,14 @@ for _ in $(seq 1 25); do kill -0 "$CP" 2>/dev/null || break; sleep 0.1; done   #
 kill -0 "$CP" 2>/dev/null; check "$?" "1" "  …whose waiter is ended: its session is ended first"
 check "$([ -f "$LOCK" ] && echo kept || echo gone)" "gone" "  then the lock released"
 check "$([ -f "$GD/claude/finishing" ] && echo kept || echo gone)" "gone" "  and the finishing marker removed"
-grep -q '"end_reason": "ended with its autofinish waiter"' "$HOME"/Library/Logs/claude-weekly/run-seed-runs/*.json; check "$?" "0" "  dispatch's record says why it ended"
+python3 - "$LOGS/run-seed-runs" "$WSID" > "$T/end.reason" <<'PY'
+import json, pathlib, sys
+for path in pathlib.Path(sys.argv[1]).glob("*.json"):
+    rec = json.loads(path.read_text())
+    if rec.get("session") == sys.argv[2]:
+        print(rec.get("end_reason"))
+PY
+check "$(cat "$T/end.reason")" "ended with its autofinish waiter" "  this session's dispatch record says why it ended"
 
 echo "a lock held by a session at work is never taken (review, 2026-10-05)"
 next_tip "locks"
@@ -650,11 +679,11 @@ printf '#!/bin/sh\necho "$*" >> "%s"\necho "{}"\nexit 1\n' "$T/acct.calls" > "$T
 next_tip "pool: typed"; : > "$T/acct.calls"
 STUB_REPLY="$T/stop.txt" AUTOFINISH_ACCOUNT="$T/acct-log" afp --rule C --by typed > "$T/out" 2>&1; check "$?" "0" "a typed hand-off starts"
 ended
-check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --repo R --json --cached --overdraw --job $BR" "  its pick was --cached (an overdraw judged too: the pick only decides)"
+check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --for finish --repo R --json --cached --overdraw --job $BR" "  its finish pick was --cached (an overdraw judged too: the pick only decides)"
 next_tip "pool: overdraw"; : > "$T/acct.calls"
 STUB_REPLY="$T/stop.txt" AUTOFINISH_ACCOUNT="$T/acct-log" afp --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a sweep's landing starts"
 ended
-check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --repo R --json --overdraw --job $BR" \
+check "$(sed 's/--repo [^ ]*repo /--repo R /' "$T/acct.calls")" "pick --for finish --repo R --json --overdraw --job $BR" \
   "  its fresh pick asks for an overdraw, naming the branch (the owner, 2026-11-04: a landing is a job too)"
 unset ACCOUNT_CLAUDE; export ACCOUNTS_FILE="$T/no-accounts.json"; rm "$HOME/projects"
 
@@ -1098,7 +1127,8 @@ next_tip "handed: the dry runs"
 modefix default
 af --dry --by handed > "$T/out" 2>&1; check "$?" "0" "mode default, --by handed --dry"
 has "$T/out" "mode default: may merge, past the check and the review gate" "  a done default build's hand-over carries no hold (D1-C)"
-has "$T/out" "/finish\ $BR\ --unattended --session-id" "  a plain /finish --unattended: no --hold, no mode flag"
+has "$T/out" "/finish $BR --unattended" "  a plain /finish --unattended before the hand-over note"
+has "$T/out" "This is a done build handed to its landing." "  the multiline note rides in the same prompt"
 has "$T/out" '"by": "handed"' "  the state says handed, which bin/pr re-judges by handed_held"
 af --dry --by handed --rule M > "$T/out" 2>&1
 has "$T/out" "held at a ready PR — mode default — a taken answer never lands there (yolo-veto D1)" "  --by handed --rule M: held"

@@ -204,9 +204,11 @@ asks golden add|list|check                     # the fixture behind a change to 
 ```
 
 `run` reads `week-digest --json` (a confidential scope's sessions are counted and never opened), drops what a launcher
-typed, and classifies every other prompt through the gate's rows `evolve.ask` (target, kind, level, detectability: one
+typed (the core's `transcript.machine_start`, the rule week-digest applies first), and classifies every other prompt through the gate's rows `evolve.ask` (target, kind, level, detectability: one
 batched call each), `evolve.theme` (a slug naming the need) and `evolve.match` (a detectable ask against the findings
-dated before it, idle until a findings folder exists). The ledger in plumb's state dir (`asks/`, or `ASKS_STATE`) holds
+dated before it, idle until a findings folder exists; an ask an earlier pass left unjudged is tried again while the
+digest holds it, and `numbers` prints recall beside the eligible, the matcher's J and the not-yet-matched counts; a
+prompt an earlier pass left to the sieve is classified again once the gate answers). The ledger in plumb's state dir (`asks/`, or `ASKS_STATE`) holds
 ids, labels, counts, model theme slugs and short unsalted word hashes, never a prompt's text (a word list can reverse a hash: the state dir is the owner's alone); a prompt from a guarded repo (jev's GUARDED) is refused per repo and keeps the sieve's labels; with a gate row off or failing the sieve's labels stand and each row
 says so. The prompts and label set are the owner's to change, not the loop's.
 

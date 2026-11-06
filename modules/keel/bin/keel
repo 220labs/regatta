@@ -1569,6 +1569,41 @@ def yolo_settled(it, lines):
     return False
 
 
+def landing_subject(title, branch="", implicit=True):
+    """A question about landing this build, never a product launch or another branch."""
+    title = plain(title).strip().rstrip(".?")
+    title = re.sub(r"\s*\(\s*A\b[^()]*/\s*B\b[^()]*\)$", "", title).rstrip(".?")   # an option list only, `(A … / B …)`
+    m = re.match(r"^(?:(?:should we|shall we|may we|can we|whether to)\s+)?"
+                 r"(land(?:ing)?|launch(?:ing)?|finish(?:ing)?|merg(?:e|ing)|ship(?:ping)?)\s+(.+)$", title, re.I)
+    if not m:
+        return False
+    target = m.group(2).lower().strip()
+    if target in ("it", "now"):
+        return implicit
+    # outside a build digest only this run's own words count: "this branch", or the branch's topic
+    # landed, merged or finished; a launch or a ship there is a product's, and "the build" anyone's
+    if re.fullmatch((r"(?:the |this |our )?" if implicit else r"this ") + r"(?:branch|build|run)(?: now)?", target):
+        return True
+    if not implicit and m.group(1).lower().startswith(("launch", "ship")):
+        return False
+    topic = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", branch.rsplit("/", 1)[-1])
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    return bool(topic and norm(re.sub(r" now$", "", target)) in (norm(branch), norm(topic)))
+
+
+def build_digest(text):
+    """The doc says it is a build's digest (its heading, or a worker wrote it): there "it" is the build."""
+    head = "\n".join(text.splitlines()[:12])
+    return bool(re.search(r"^# .*\bbuild digest\b", head, re.M | re.I)
+                or re.search(r"Written by `(?:sr-|principal-)?worker`", head))
+
+
+def dispatched_build():
+    """A dispatched unattended run: any doc it writes may be its digest, so an explicit own-branch
+    landing title is refused there too; an implicit one ("Launch it") only in a doc that says so."""
+    return bool(os.environ.get("DISPATCH_BRIEF") and _common().unattended())
+
+
 def lint(text, strict=False, path=None):
     """(errors, warnings) for a doc that asks the owner, deterministically:
 
@@ -1617,9 +1652,15 @@ def lint(text, strict=False, path=None):
         for x in ids_in(lines[a:b]) & known:  # a lead lists on its own line too
             unverified.setdefault(x, a + 1)
     by = written_by(lines)
+    is_build = build_digest(text)
+    gate_landing = is_build or dispatched_build()
+    branch = git(Path(path).parent, "branch", "--show-current", check=False).stdout.strip() if path and gate_landing else ""
     for it in items:
         rec = it["recommended"]
         done = answered(it, lines)
+        if gate_landing and not done and landing_subject(it["title"], branch, implicit=is_build):
+            errors.append("%s (line %d): landing this build is the hand-over's work, never a D-item — "
+                          "remove the landing question and hand over the committed build" % (it["id"], it["start"] + 1))
         pick = rec if rec is not None else (it["answer"] or "").strip()
         if pick and (strict or not done) and not CONDITIONAL_RE.search(pick.strip()) and unverified:
             # the agent's lines: up to the answer (on the item's own line, that line), never the owner's below

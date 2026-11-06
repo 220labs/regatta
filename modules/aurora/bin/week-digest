@@ -17,11 +17,17 @@ session id used to win, and dropped what the other held; evolve S11). A prompt c
 by its own timestamp, not its file's. A fork's prompts at or before its `forked-from` cutoff
 are its source's and are skipped (bin/fork_claude_session.py; teleport design E1), and a prompt
 another session of the project already holds, same time and same words, is not counted twice.
+A prompt a launcher typed (dispatch's brief, autofinish-run's `/finish … --unattended`, a seed's pickup
+tab, a skipper's brief: the core's `transcript.machine_start`, the rule plumb's `asks` shares) is
+recorded as human all the same; it is not the owner's and is left out, counted by launcher
+(evolve-readers, 2026-11-03: the iteration-0 councils read 7 of 11 such sessions as the owner's).
 Read-only.
 
 `--json` is the same read without the cut: one object, `sessions` (project, session, title, start,
-source, and each prompt's `ts`, full `text` and `marked`) and `fenced` (the confidential sessions
-counted, `sessions` only) — the input of plumb's `asks` (evolve S1). The text interface is unchanged.
+source, and each prompt's `ts`, full `text` and `marked`), `fenced` (the confidential sessions
+counted, `sessions` only) and `machine` (the launchers' prompts left out: `prompts`, `sessions` that
+held one, and `by` launcher) — the input of plumb's `asks` (evolve S1). The text interface adds one
+line for the launchers' prompts when there were any.
 
 Lines that look like corrections are marked `✱` so the dream can count repeats: they contain
 "again", "still", "I told you", "don't", "never", "stop", "wrong", "remember", "always".
@@ -48,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import find_core  # noqa: E402  the regatta core's hooks/; none: one line, exit 2
 sys.path.insert(0, find_core.hooks())
 import common  # noqa: E402  gather_fence, PROJECTS
+from collections import Counter  # noqa: E402
 
 HOME = Path.home()
 
@@ -176,10 +183,19 @@ def main():
         if fenced:
             print(f"({fenced} folder(s) of a confidential scope not read — its own pass reads them)")
         return 0
+    try:   # here, not at import: --promote-tags needs no prompt rule and still runs on an older core
+        from transcript import machine_start  # the one rule for a launcher's prompt (asks shares it)
+    except ImportError:   # a core older than the rule (a plugin install): one line, exit 2, never a silent owner count
+        print("week-digest: the regatta core predates transcript.machine_start — update the regatta plugin", file=sys.stderr)
+        return 2
     cutoff = time.time() - days * 86400
     since = stamp(cutoff)
     seen, held, by_project, fenced_seen = set(), set(), {}, set()
     copies, order = {}, []   # a session's copies by its id (or file stem), in the order the sources name them
+    # a launcher's prompts, each once by (time, words): a fork's copy of a brief counts once. Never by project: the
+    # archive names a repo by its checkout's folder (`_x`), the live slug by its tail (`-x`). A launcher's words name
+    # its own branch or worktree.
+    machine_held, machine_by, machine_keys = set(), Counter(), set()
     for root in sources():
         for f in sorted(root.glob("*/*.jsonl")):
             mtime = f.stat().st_mtime
@@ -201,7 +217,18 @@ def main():
     for key in order:
         group = copies[key]
         f = group[0][1]   # the first source's copy names the project (the archive's, where there is one)
-        ps = merge([(m, p, x) for m, p, x, _ in group])
+        ps, owner = merge([(m, p, x) for m, p, x, _ in group]), []
+        for ts, text in ps:   # a launcher's prompt is not the owner's: counted by launcher, left out
+            who = machine_start(text)
+            if not who:
+                owner.append((ts, text))
+            elif (ts, text) not in machine_held:
+                machine_held.add((ts, text))
+                machine_by[who] += 1
+                machine_keys.add(key)
+        if not owner:   # a session of launcher prompts only is not the owner's session
+            continue
+        ps = owner
         title = next((t for m, p, x, t in sorted(group, key=lambda c: (c[0], str(c[1])), reverse=True) if t), None)
         seen.add(key)
         project = project_of(f)
@@ -214,10 +241,11 @@ def main():
         if fresh:
             by_project.setdefault(project, []).append(
                 (fresh[0][0], key, title, fresh, "archive" if max(group, key=lambda c: (c[0], str(c[1])))[1].parts[-3] == "transcripts" else "live"))
+    launched = {"prompts": sum(machine_by.values()), "sessions": len(machine_keys), "by": dict(sorted(machine_by.items()))}
     if "--json" in sys.argv:
         print(json.dumps({
             "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days,
-            "scope": scope, "fenced": {"sessions": len(fenced_seen)},
+            "scope": scope, "fenced": {"sessions": len(fenced_seen)}, "machine": launched,
             "sessions": [{"project": project, "session": key, "title": title, "start": start, "source": source,
                           "prompts": [{"ts": ts, "text": text, "marked": bool(CORRECTION.search(" ".join(text.split())))}
                                       for ts, text in ps]}
@@ -241,6 +269,10 @@ def main():
     if fenced_seen:
         print(f"_{len(fenced_seen)} sessions of a confidential scope: counted, never opened — "
               "its own pass reads them._\n")
+    if launched["prompts"]:
+        print(f"_{launched['prompts']} prompts a launcher typed, in {launched['sessions']} sessions ("
+              + ", ".join(f"{w} {n}" for w, n in launched["by"].items())
+              + "): not the owner's, left out._\n")
     print(f"_{marked} prompts marked ✱ as possible corrections — read them, don't count them blindly._")
     return 0
 

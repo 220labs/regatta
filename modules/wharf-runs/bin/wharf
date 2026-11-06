@@ -2809,7 +2809,7 @@ def apply_ship(pid, path, dry=False, once=False, as_json=False, quiet=False, lau
                      % (bp["name"], pid, ", ".join(clash)))
             return 2
         if not dry and not orca()._app_up():
-            say_once(pid, bp["name"], quiet, "wharf apply: Orca is not running here (open the app; a session in VS Code clears ELECTRON_RUN_AS_NODE)", dry)
+            say_once(pid, bp["name"], quiet, "wharf apply: Orca is not running here (%s)" % orca().not_running_hint("apply", harness().machine()), dry)
             return 3
         warned = "; ".join(bp.get("yard_warnings") or [])
         if warned and not dry and rec.get("yard_warned") != warned:

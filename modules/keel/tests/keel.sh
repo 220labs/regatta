@@ -100,6 +100,22 @@ Open feedback goes below this line.
 EOF
 
 echo "parse"
+cat > "$T/build-digest.md" <<'EOF'
+# Example — build digest
+
+- **D1 — Land this branch.**
+  - A — land now
+  - B — hold
+  Reversible: yes
+  ➤ Recommended: A
+  ➤ Answer:
+EOF
+"$B/keel" lint "$T/build-digest.md" > "$T/build-lint.out"
+check "$?" "1" "lint refuses a landing D-item in a build digest"
+has "$T/build-lint.out" "landing this build is the hand-over's work" "  the error names the hand-over"
+sed 's/Land this branch/Launch the product/' "$T/build-digest.md" > "$T/product-build.md"
+"$B/keel" lint "$T/product-build.md" > "$T/build-lint.out"
+check "$?" "0" "lint keeps a real product-launch decision"
 "$B/keel" parse "$T/memo.md" > "$T/parse.json"
 py() { python3 -c "import json,sys; d=json.load(open('$T/parse.json')); $1"; }
 check "$(py 'print(len(d["items"]))')" "6" "six decisions, the fenced one skipped"
@@ -2418,6 +2434,19 @@ check "$(kp pin lm@claude/lm3:docs/y.md moved_to)" "null" "…which keeps its pi
 
 # the second landing review: R3, R4, R10 (what proves a landing); R5 and R6 went with Supersedes: (D3-A)
 setspace() { python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["space"]=sys.argv[3]; json.dump(d, open(f, "w"))' "$S/state/sheep.json" "$1" "$2"; }
+deployspace() {  # A missing setup pin must name the deploy error, before later assertions hide it.
+  local output rc
+  output=$(srun sheep "$1" 2>&1); rc=$?
+  if [ "$rc" != 0 ]; then
+    printf '  FAIL initial deploy of %s (exit %s): %s\n' "$2" "$rc" "$(printf '%s' "$output" | tr '\n' ' ')"
+    exit 1
+  fi
+  if ! setspace "$2" "$3" 2> "$T/setspace.err"; then
+    printf '  FAIL initial deploy left no pin for %s: %s\n' "$2" "$(printf '%s' "$output" | tr '\n' ' ')"
+    cat "$T/setspace.err"
+    exit 1
+  fi
+}
 lastspace() { grep '^deploy' "$S/cli.log" | tail -1 | grep -o -- '--space [^ ]*' | cut -d' ' -f2; }
 doc() { printf '# %s\n\n%b- **D1 — %s?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' "$1" "$2" "$1"; }
 doc Idle "" > "$G/lm/docs/z.md"; gitc "$G/lm" add docs/z.md; gitc "$G/lm" commit -qm "z on main"
@@ -2616,9 +2645,9 @@ check "$(lastspace)" "sp-b12" "finding 12: on main, the landed branch's page win
 has "$T/f12.out" "docs/b12.md landed from claude/lm12" "…and says so"
 # findings 9 and 6: main's page gives way only when its comments read, and its room holds no Save
 doc Unread "" > "$G/lm/docs/g2.md"; gitc "$G/lm" add docs/g2.md; gitc "$G/lm" commit -qm "g2 on main"
-srun sheep "$G/lm/docs/g2.md" > /dev/null 2>&1; setspace lm@main:docs/g2.md sp-g2m
+deployspace "$G/lm/docs/g2.md" lm@main:docs/g2.md sp-g2m
 gitc "$G/lm" checkout -q -b claude/lm13; doc Unread "Changed on lm13.\n\n" > "$G/lm/docs/g2.md"; gitc "$G/lm" commit -qam "g2 on lm13"
-srun sheep "$G/lm/docs/g2.md" > /dev/null 2>&1; setspace lm@claude/lm13:docs/g2.md sp-g13
+deployspace "$G/lm/docs/g2.md" lm@claude/lm13:docs/g2.md sp-g13
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm13
 rm -f "$S/web-comments.json"; cp "$S/comments.txt" "$T/comments.kept" 2>/dev/null || :; printf 'a shape this tool has never seen\n' > "$S/comments.txt"
 srun sheep "$G/lm/docs/g2.md" > "$T/f9.out" 2>&1
@@ -2636,10 +2665,10 @@ check "$(kp pin lm@main:docs/g2.md kept_over) $(kp pin lm@main:docs/g2.md space)
 has "$T/f6.out" "a Save not taken in" "…and says so"
 # finding 10: main's page giving way drops what main kept of it; finding 8: a pin with no sha reads cleanly
 doc Cursor "" > "$G/lm/docs/g3.md"; gitc "$G/lm" add docs/g3.md; gitc "$G/lm" commit -qm "g3 on main"
-srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1; setspace lm@main:docs/g3.md sp-g3m
+deployspace "$G/lm/docs/g3.md" lm@main:docs/g3.md sp-g3m
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].update(events_after=5, receipt={"at": "x"}, opens_seen={"s|c": 1}); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g3.md
 gitc "$G/lm" checkout -q -b claude/lm14; doc Cursor "Changed on lm14.\n\n" > "$G/lm/docs/g3.md"; gitc "$G/lm" commit -qam "g3 on lm14"
-srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1; setspace lm@claude/lm14:docs/g3.md sp-g14
+deployspace "$G/lm/docs/g3.md" lm@claude/lm14:docs/g3.md sp-g14
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm14
 srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1
 check "$(lastspace) $(kp pin lm@main:docs/g3.md events_after) $(kp pin lm@main:docs/g3.md receipt) $(kp pin lm@main:docs/g3.md opens_seen)" "sp-g14 null null null" "finding 10: main's page giving way drops main's cursors and receipt with it"
@@ -2649,10 +2678,10 @@ check "$rc" "0" "finding 8: sheep check on a pin with no sha (a deploy that fail
 lacks "$T/f8.out" "Traceback" "…with no KeyError"
 # the finish review: the owner's set-aside words (refused_saves) on main's pin keep main's page, as a pending Save does
 doc Refused "" > "$G/lm/docs/g4.md"; gitc "$G/lm" add docs/g4.md; gitc "$G/lm" commit -qm "g4 on main"
-srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1; setspace lm@main:docs/g4.md sp-g4m
+deployspace "$G/lm/docs/g4.md" lm@main:docs/g4.md sp-g4m
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].update(refused_saves=[{"D1": "C, with a cap"}]); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g4.md
 gitc "$G/lm" checkout -q -b claude/lm15; doc Refused "Changed on lm15.\n\n" > "$G/lm/docs/g4.md"; gitc "$G/lm" commit -qam "g4 on lm15"
-srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1; setspace lm@claude/lm15:docs/g4.md sp-g15
+deployspace "$G/lm/docs/g4.md" lm@claude/lm15:docs/g4.md sp-g15
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm15
 echo '{"comments": []}' > "$S/web-comments.json"
 srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1

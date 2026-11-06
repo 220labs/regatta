@@ -92,6 +92,17 @@ PROBE_TIMEOUT = 90      # the whole read, transcripts included
 IDLE_DECIDES = 3600     # a live run idle this long: its last reply decides (section 4, A4)
 S7_QUIET = 30 * 60      # a ready task nobody reported on for this long (S7)
 TEXT_LINE = 160         # an evidence line's length
+# dispatch's `no launch` reasons the later rules judge as on main: a queued or requeued next step (the queue-first
+# rule), a crash or an API error (S1's retry), its own pending work, an ask or a relay (asks N, the live skipper)
+# dispatch's no_handover: a default or ask run that had no hand-over to land it (the landing review's pick B)
+NO_HANDOVER = "no launch — no hand-over:"
+# refusals that are the ask itself (the judge read the closing line's question as the owner's): the ask's rules card them
+ASK_REFUSALS = ("no launch — open for", "no launch — its last reply stops for", "no launch — its relayed or waiting question",
+                "no launch — its last reply contains a ⚠")
+LAUNCH_OWN_RULES = re.compile(r"no launch — (?:a next step is |it was requeued \(dispatch --requeue\)|the build run ended with "
+                              r"|it ended idle on an API error|the mode is now "
+                              r"|its last reply waits on its own work|its last reply stops for |its relayed or waiting question"
+                              r"|it ended by |its last turn ended on Claude Code|its last reply could not be read)")
 GUARDED = helmlib.GUARDED
 
 # autofinished's stop text that means the network, sleep or a login's usage limit, anchored at its start
@@ -568,6 +579,13 @@ def _stall(cls, host, st, name, rule, evidence, now, since=None, **kw):
     return rec
 
 
+def _launch_line(launch):
+    """A refusal cut to one evidence line, its `; to land:` action kept whole."""
+    why, sep, act = launch.rpartition("; to land: ")
+    why, act = (why, sep + act) if sep else (launch, "")
+    return why[:max(40, TEXT_LINE - len(act))] + act[:TEXT_LINE]
+
+
 def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, read=None, queued=None, queued_out=None):
     """(stalls, unsure) of one host's run records. `all_records` is every record of both Macs, as
     (host, name, st), for the superseded test; `live_ids` every live session id on both; `read` the
@@ -656,6 +674,41 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
             continue   # its watcher is ending it now: not gone until `ended` is written
         gone = (not ended and not alive) or GONE_ENDS.match(reason) or re.match(r"^exit [1-9]", reason) \
             or (s.get("api_error") and not alive)
+        launch = str(st.get("launch") or "")
+        if (ended or not alive) and launch.startswith("started") and kind != "handed to its launch":
+            continue   # its landing started (a queued finish included): a launch that stops is S4/S5's card
+        done_kind = kind == "done" or (kind or "").startswith("done")
+        if (ended or not alive) and launch.startswith(NO_HANDOVER):
+            # a default or ask run with no hand-over (dispatch's no_handover): a done build waits for the owner's
+            # /finish, one card; any other ending is judged by the rules below, as before the note existed
+            if done_kind:
+                detail = ["guarded — open it"] if guarded else ["dispatch: %s" % _launch_line(launch)]
+                stalls.append(_stall("S6", host, st, name, "done, no hand-over: it waits for /finish", detail + ev, now, since))
+                continue
+        elif (ended or not alive) and launch.startswith("no launch") and kind in (
+                WAITING_ON_OWNER, "waiting on skipper", "waiting on manager") and not launch.startswith(ASK_REFUSALS) \
+                and not LAUNCH_OWN_RULES.match(launch):
+            # the judge passed its landing-only ask and a later gate refused the launch (a review cap, origin, the
+            # week): the refusal is the card, never the obsolete landing ask the asks rule would leave alone
+            detail = ["guarded — open it"] if guarded else ["dispatch: %s" % _launch_line(launch)]
+            stalls.append(_stall("S6", host, st, name, "closing line: WAITING, its launch refused", detail + ev, now, since))
+            continue
+        elif (ended or not alive) and launch.startswith("no launch") and kind in (
+                WAITING_ON_OWNER, "waiting on skipper", "waiting on manager"):
+            # an ask's own rules judge it (asks N, the live skipper, the cap); its card carries the refusal
+            if not guarded:
+                ev = ["dispatch: %s" % _launch_line(launch)] + ev
+        elif (ended or not alive) and launch.startswith("no launch") and not LAUNCH_OWN_RULES.match(launch):
+            # Dispatch records every refusal with its next action. One card regardless of the
+            # closing line, before done filtering can hide it; never retry the build. A refusal the
+            # later rules already judge (a queued next step, a crash, an ask or a relay) is theirs.
+            if launch.startswith(("no launch — open for", "no launch — its last reply contains a ⚠")) \
+                    and (repo, st.get("branch")) in asked:
+                continue   # its D-items are open asks already (asks N), not a second card
+            detail = ["guarded — open it"] if guarded else ["dispatch: %s" % _launch_line(launch)]
+            stalls.append(_stall("S6", host, st, name, "closing line: hand-over, its launch never started",
+                                 detail + ev, now, since))
+            continue
         if guarded:
             if gone:   # its text is never read (K6): the record alone says gone
                 stalls.append(_stall("S1", host, st, name, "gone, guarded — not read", ev + ["guarded — open it"], now, since,

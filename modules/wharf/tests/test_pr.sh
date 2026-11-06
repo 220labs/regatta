@@ -285,6 +285,10 @@ else
   sw run "$T/sw-handed-gate.out" ready --title t --body-file /dev/null
   has "$T/sw-handed-gate.out" "pr: NOT readied — this /finish was started by a dispatch hand-over (by handed), and the curated diff touches a gate (held: the launcher's own gate (hooks/x.py))" \
     "a handed run's own edit into the launcher's gate: held by handed_held, naming the hand-over"
+  state lander 5e55-run   # stuck-ships S1: the lander is judged as handed is (task-shape D1-C), at its start and here
+  sw run "$T/sw-lander-gate.out" ready --title t --body-file /dev/null
+  has "$T/sw-lander-gate.out" "pr: NOT readied — this /finish was started by the lander's road (by lander), and the curated diff touches a gate (held: the launcher's own gate (hooks/x.py))" \
+    "a lander run's own edit into the launcher's gate: held by handed_held, naming the lander's road"
   printf '{"by": "handed", "session": "5e55-run", "ended": null, "hold": "the launcher'"'"'s own gate (hooks/x.py)"}\n' > "$ST"
   sw run "$T/sw-handed-startheld.out" ready --title t --body-file /dev/null
   has "$T/sw-handed-startheld.out" "READIED" "  a start handed_held held already: readied, not left a draft (the landing review)"
@@ -317,6 +321,9 @@ else
   printf '{"by": "handed", "rule": "M", "session": "5e55-run", "ended": null}\n' > "$ST"
   hw run "$T/sw-handed-m.out" ready --title t --body-file /dev/null
   has "$T/sw-handed-m.out" "touches a gate (held: mode default — a taken answer never lands there" "  a handed run with rule M is re-judged as a mode launch, by the mode now"
+  printf '{"by": "lander", "land_by": "dnd", "eff_mode": "dnd", "session": "5e55-run", "ended": null}\n' > "$ST"
+  hw run "$T/sw-lander-flag.out" ready --title t --body-file /dev/null
+  has "$T/sw-lander-flag.out" "touches a gate (held: mode default — a taken answer never lands there" "  a lander run carrying --dnd is re-judged as a mode launch, by the mode now"
   rm -f "$T/mplans/ms/plan.json"
   state sweep 01d-run
   sw run "$T/sw-old.out" ready --title t --body-file /dev/null

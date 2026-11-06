@@ -257,6 +257,34 @@ def role(h):
     return "linux node" if platform.system() == "Linux" else None
 
 
+def node_scope_mark():
+    """A named node's scope as the core's scope_marker (hail's message discovery blocks a row whose marker is
+    no open scope there), None on a shared node or a host that is no node. A key that will not read marks the
+    row as an unknown scope's, so discovery fails closed."""
+    unread = "confidential:unread"
+    try:
+        # The core's node reader, as nodes_here reads it: a link whose target moved is unread, not absent.
+        read = getattr(common, "_node_key", None)
+        if not callable(read):
+            return unread
+        lines, why = read("wharf-runs/node/scope")
+        if why:
+            return unread
+        name = ((lines or [""])[0] or "").strip()
+        return common.scope_marker(name) if name else None
+    except Exception:   # noqa: BLE001 — no scope read: no open scope's either
+        return unread
+
+
+def builder_row():
+    """True on a builder user's row (`<host>-<vendor>`, the config dir's `wharf-runs/host`, which builder-host make
+    writes): another user on a Mac, no ssh host, so hail's message discovery never takes it as an automatic peer."""
+    try:
+        return bool(((common.config_lines("wharf-runs/host") or [""])[0] or "").strip())
+    except Exception:   # noqa: BLE001 — a label; unread is no builder
+        return False
+
+
 def machine():
     """(cores, ram_gb, swap_total_gb): what the OS says, None where it says nothing."""
     cores, ram, swap = os.cpu_count(), None, None
@@ -458,6 +486,11 @@ def sample(h=None, cap=None, logins=None, keep_history=True):
     r = role(h)
     if r:
         row["role"] = r
+    mark = node_scope_mark()
+    if mark:
+        row["scope"] = mark
+    if builder_row():
+        row["builder"] = True
     row["history"] = history(row, append=keep_history)
     return row
 

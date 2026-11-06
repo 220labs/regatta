@@ -9,6 +9,7 @@ Hooks must never cost a turn over GitHub being unreachable.
 """
 import base64
 import collections
+import contextlib
 import errno
 import fnmatch
 import glob
@@ -3265,14 +3266,54 @@ def real_money_effective(text):
     return out
 
 
-def run_group(cmd, timeout, env=None):
+@contextlib.contextmanager
+def finish_pick_env(env=None, target="account"):
+    """One launcher's finish receipt, passed only to its next child with pass_fds. A bare --for or
+    environment word grants nothing. The read end is consumed once and closed before any session or
+    probe starts; a build therefore cannot inherit a finish's allowance. Like the command guards,
+    this prevents accidental claims, not deliberate forgery by code running as the same user."""
+    r, w = os.pipe()
+    try:
+        os.write(w, ("regatta-finish:" + target).encode())
+    finally:
+        os.close(w)
+    child = dict(os.environ if env is None else env)
+    child["REGATTA_FINISH_PICK_FD"] = str(r)
+    try:
+        yield child, (r,)
+    finally:
+        os.close(r)
+
+
+def consume_finish_pick(target="account"):
+    """Take the internal receipt, never a caller's purpose label. Missing, spent or unreadable
+    receipts keep the build ceiling. Nonblocking and bounded: a stray fd must never hang a pick."""
+    word = os.environ.pop("REGATTA_FINISH_PICK_FD", "")
+    if len(word) > 9 or not word.isascii() or not word.isdigit() or int(word) < 3:
+        return False
+    fd = int(word)
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            return False
+        os.set_blocking(fd, False)
+        return os.read(fd, 64) == ("regatta-finish:" + target).encode()
+    except (OSError, ValueError, OverflowError):
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def run_group(cmd, timeout, env=None, pass_fds=()):
     """subprocess.run(capture_output, text) in its own process group; on the timeout the whole
     group is killed, not just `cmd`: bin/account's `claude -p` probe outlived a killed parent
     with no deadline of its own (review of the autofinish pool, 2026-10-08). Raises
     TimeoutExpired, as subprocess.run does."""
     import signal
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                         start_new_session=True)
+                         start_new_session=True, pass_fds=pass_fds)
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

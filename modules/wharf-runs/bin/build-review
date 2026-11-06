@@ -9,6 +9,7 @@
     build-review covers <worktree> [--base REF]
     build-review picks <verdict file> <worktree>
     build-review cap
+    build-review review <worktree> --cli codex|antigravity [--out DIR] [--base REF] [--origin MARKER]
 
 Why (build-review, the owner, 2026-10-30): a build ended when its brief was done, and `/finish --unattended`
 then reviewed, fixed and stopped on what it may not do; each stop cost the skipper a fix-round dispatch, a
@@ -897,6 +898,12 @@ def count(v):
 def main(argv):
     ap = argparse.ArgumentParser(prog="build-review", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="verb", required=True)
+    vr = sub.add_parser("review")
+    vr.add_argument("worktree")
+    vr.add_argument("--cli", choices=("codex", "antigravity"), required=True)
+    vr.add_argument("--out", default="")
+    vr.add_argument("--base", default="origin/main")
+    vr.add_argument("--origin", default="")
     r = sub.add_parser("round")
     r.add_argument("worktree")
     r.add_argument("--found", type=lambda s: count(int(s)), default=None)   # 0 alone: a count above comes from --verdicts
@@ -945,6 +952,16 @@ def main(argv):
         if not rows:
             print("none: no real finding")
         return 5 if any(r[0] == "stop" for r in rows) else 0
+    if a.verb == "review":
+        import vendorlib
+        import vendorreview
+        try:
+            out = a.out or str(where(a.worktree)[0].parent / ("vendor-review-%d" % time.time_ns()))
+            print(json.dumps(vendorreview.review(a.worktree, a.cli, out, a.base, a.origin)))
+            return 0
+        except (vendorlib.Refused, OSError, ValueError) as ex:
+            print("build-review: %s" % ex, file=sys.stderr)
+            return 2
     if a.verb == "cap":
         print(rounds_cap())
         return 0

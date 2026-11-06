@@ -3103,7 +3103,7 @@ lx install > "$T/out" 2>&1; check "$?" "0" "a fresh install with the berth's par
 grep -qxF 'PodmanArgs=--cpus=3 --memory=12g --memory-swap=12g' "$UNITS/ci-runner-lnx1.container"; check "$?" "0" "…the unit caps its container: 3 cores, 12 GB, no swap past it"
 grep -qF 'FROM docker.io/library/ubuntu@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c' "$CF"; check "$?" "0" "…the image over ubuntu:26.04's digest, hosted ubuntu-latest's release"
 grep -q 'apt-get upgrade -y' "$CF"; check "$?" "0" "…its packages upgraded at every build"
-grep -q 'tzdata procps' "$CF"; check "$?" "0" "…procps among them"
+grep -q 'tzdata procps lsof' "$CF"; check "$?" "0" "…procps (ps, pgrep) and lsof (pickup's window probe) among them, which hosted ubuntu ships"
 grep -q 'useradd -m -u 1001 -d /runner' "$CF"; check "$?" "0" "…the runner at uid 1001, so an earlier install's volume stays its own"
 grep -q 'userdel -r ubuntu' "$CF"; check "$?" "0" "…the base's own login gone, so a job sees no /home"
 grep -qxF 'OnCalendar=weekly' "$U2/ci-runner-lnx1-rebuild.timer"; check "$?" "0" "…a weekly user timer"
@@ -3305,7 +3305,7 @@ EOF
   mkdir -p "$LT/py/websockets/sync"; echo 'version = "15.0.1"' > "$LT/py/websockets/version.py"
   : > "$LT/py/websockets/__init__.py"; : > "$LT/py/websockets/sync/__init__.py"; echo 'connect = None' > "$LT/py/websockets/sync/client.py"
   export PYTHONPATH="$LT/py"
-  for c in jq ruby sqlite3; do printf '#!/bin/sh\nexit 0\n' > "$LT/stub/$c"; done
+  for c in jq ruby sqlite3 lsof ps pgrep; do printf '#!/bin/sh\nexit 0\n' > "$LT/stub/$c"; done
   chmod +x "$LT/stub/"*
   ltrun() { # ltrun <job>: linux-tools.sh as job <job> of a self-hosted runner, its own RUNNER_TEMP, one tool cache
     mkdir -p "$LT/job$1"
@@ -3333,6 +3333,21 @@ EOF
     grep -q "this runner lacks websockets 14+" "$LT/out4"; check "$?" "0" "…naming it, never a quiet skip of the kick socket's cases"
     check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…and never runs sudo"
   fi
+  # lsof and ps/pgrep, which pickup's window probe and the process suites need: an image without either fails at setup
+  # (runner-lsof). The script runs on a PATH of its own tools (links to what it calls before and around its `need` check)
+  # and the stubs, so a host that ships lsof and ps in /usr/bin still has the case run
+  mkdir -p "$LT/min"
+  for t in bash dirname mkdir readlink ls head cat env sh tr; do ln -sf "$(command -v $t)" "$LT/min/$t"; done
+  for c in lsof ps; do
+    rm -f "$LT/stub/$c"
+    mkdir -p "$LT/job$c"
+    (env HOME="$LH" PATH="$LT/stub:$LT/min" LT_LOG="$LT" RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$LT/job$c" \
+       RUNNER_TOOL_CACHE="$LT/cache" /bin/bash "$LTS" > "$LT/out$c" 2>&1); check "$?" "1" "an image without $c: the job fails"
+    pkg=$c; [ "$c" != ps ] || pkg=procps
+    grep -q "this runner lacks.* $pkg\b.*: add it to the image (ci-provider's RUNNER_CONTAINERFILE) and run --runner install again" "$LT/out$c"; check "$?" "0" "…naming $pkg, and the image it belongs in"
+    check "$(test -e "$LT/sudo" && echo sudo || echo none)" "none" "…and never runs sudo or apt-get"
+    printf '#!/bin/sh\nexit 0\n' > "$LT/stub/$c"; chmod +x "$LT/stub/$c"
+  done
   rm -f "$LT/stub/ruby"
   if env PATH="$LT/stub:/usr/bin:/bin" bash -c 'command -v ruby' > /dev/null; then
     echo "  skip this host has ruby on /usr/bin: the missing-package case needs a host without it"

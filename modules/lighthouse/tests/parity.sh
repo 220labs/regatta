@@ -347,7 +347,10 @@ print(len(pb), len(pa), rest, pa[:2] == pb[:2], repr(pa[2]["matcher"]), len(h), 
   "  the diff: every other event and Orca's and sheep_gate's groups as they were; ours one group, at the first one's place"
 python3 -m json.tool --sort-keys "$T/before.json" > "$T/before.sorted"; python3 -m json.tool --sort-keys "$H2/.codex/hooks.json" > "$T/after.sorted"
 diff "$T/before.sorted" "$T/after.sorted" > "$T/migrate.diff"
-check "$(grep -c '^[<>]' "$T/migrate.diff" | tr -d ' ')" "$(grep '^[<>]' "$T/migrate.diff" | grep -c -v -e orca -e sheep_gate | tr -d ' ')" \
+# Orca's own Codex hooks by their marker, `orca-agent-hook` (their command is `: orca-agent-hook-form=1; …`, the
+# fixture's): a bare `orca` also matched our guards' lines whenever the checkout's path held the word (a worktree
+# named yard-orca-serve, 2026-11-05: 23 against 19), and `orca-hook` (the agy stand-in's) matched none of them
+check "$(grep -c '^[<>]' "$T/migrate.diff" | tr -d ' ')" "$(grep '^[<>]' "$T/migrate.diff" | grep -c -v -e orca-agent-hook -e sheep_gate | tr -d ' ')" \
   "  and no changed line of the diff names Orca's hook or sheep_gate"
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["orca-status"], len(d["regatta"]["PreToolUse"][0]["hooks"]), d["regatta"]["PreToolUse"][0]["hooks"][0]["command"].split()[-2:])' "$H2/.gemini/config/hooks.json")" \
   "{'Stop': [{'type': 'command', 'command': 'orca-hook'}]} 1 ['antigravity', 'guards']" "  agy: Orca's key as it was, ours one handler"

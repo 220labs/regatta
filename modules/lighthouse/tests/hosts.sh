@@ -130,6 +130,25 @@ hasnt "$row" "inside" "  nor the run in a confidential folder's"
 hasnt "$row" "/var/tmp" "a record's log path stays out"
 check "$(echo "$row" | j 'sorted(d["mem"]), d["os"] in ("macOS", "Linux")')" "(['avail', 'rate', 'swap_gb', 'swap_total_gb'], True)" "memory under the schema's keys (swap_gb)"
 check "$(HOSTS_TOOL_DISPATCH_RC="$T/none" python3 "$H" sample | j 'd["runs"], d["fence"].get("runs_unread")')" "(None, True)" "no dispatch-rc to read the records: runs unknown (null), never none"
+# a named node's row carries its scope's marker, never its name (hail's message discovery blocks a row whose marker
+# is no open scope there); a shared node's carries none; a key that does not read marks it unread (node-hail)
+check "$(echo "$row" | j '"scope" in d')" "False" "a host that is no named node puts no scope marker"
+mkdir -p "$REGATTA_CONFIG/wharf-runs/node"; echo vault > "$REGATTA_CONFIG/wharf-runs/node/scope"
+mark=$(python3 "$H" sample | j 'd["scope"]')
+check "$mark" "$(python3 -c "import hashlib; print('confidential:' + hashlib.sha256(b'vault').hexdigest()[:8])")" "a named node's row carries its scope's marker"
+hasnt "$(python3 "$H" sample)" '"vault"' "  and never the scope's name"
+: > "$REGATTA_CONFIG/wharf-runs/node/scope"
+check "$(python3 "$H" sample | j '"scope" in d')" "False" "a shared node (its scope empty) puts none"
+printf '\377\376' > "$REGATTA_CONFIG/wharf-runs/node/scope"
+check "$(python3 "$H" sample | j 'd["scope"]')" "confidential:unread" "a scope key that does not read marks the row unread"
+rm -f "$REGATTA_CONFIG/wharf-runs/node/scope"; ln -s "$T/moved-scope" "$REGATTA_CONFIG/wharf-runs/node/scope"
+check "$(python3 "$H" sample | j 'd["scope"]')" "confidential:unread" "  and so does a scope key whose link's target moved (the core's node reader)"
+rm -rf "$REGATTA_CONFIG/wharf-runs/node"
+# a builder user's row (`wharf-runs/host`) is marked: hail's discovery never takes it as an ssh host
+check "$(python3 "$H" sample | j '"builder" in d')" "False" "a host that is no builder user puts no builder mark"
+echo alpha > "$REGATTA_CONFIG/wharf-runs/host"
+check "$(python3 "$H" sample | j 'd.get("builder")')" "True" "a builder user's row is marked builder"
+rm -f "$REGATTA_CONFIG/wharf-runs/host"
 
 echo "the fence: a torn registry drops every run"
 printf '{"repos": {"open": {}}, "scopes": {"vault": {"confidential": true, "repos": "secret"}}}\n' > "$T/repos-torn.json"

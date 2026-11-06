@@ -830,6 +830,12 @@ check "$(line "$T/out-w" override)" "start (C)" "  C's verdict is not gated (its
 pool 6 6 10 10 7200; AP demo > "$T/out-w" 2>&1
 check "$(line "$T/out-w" a-ok)" "start (A)" "readings two hours old: the dry run judges on them"
 check "$([ -e "$T/probed" ] && echo probed || echo none)" "none" "  and no judging so far probed (--cached): no claude -p from a dry run"
+pool 92 100 10 10
+mkdir -p "$REGATTA_CONFIG/lighthouse"
+printf 'acct-c:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+AP demo > "$T/out-w" 2>&1
+check "$(line "$T/out-w" a-ok)" "start (A)" "the sweep admits a finish at 92% under its 97% finish ceiling (build ceiling 70%)"
+rm -f "$REGATTA_CONFIG/lighthouse/week-max-finish"
 pool 6 6 90 90 21600
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["limits"]["five_hour_resets"]=float(sys.argv[2])-18000; json.dump(d,open(f,"w"))' "$HOME/.acct-c/usage-probe.json" "$NOW"
 AP demo > "$T/out-w" 2>&1

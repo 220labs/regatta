@@ -3,6 +3,7 @@
 #
 #   bin/check [<checkout>] [--ci-wait MIN] [--ci-merge-main|--ci-no-merge] [--out <dir>]
 #   bin/check [<checkout>] [--local] [--only <script>…] [--full] [--fresh] [--out <dir>]
+#   bin/check <worktree> --builder   local suites; landing-only commands (plugin validate, the publish gate) skipped
 #   bin/check --slots    the slot count this host runs by, nothing run (`regatta limit`'s trial read)
 #
 # The local road is scoped (2026-10-23): a module's suite (a script under modules/<m>/tests/) runs only when
@@ -127,7 +128,7 @@ slots_here() {
   [ -n "$v" ] || v="$(sed -n 's/^[[:space:]]*\*:[[:space:]]*//p' "$c/live/wharf-runs/check-slots" "$f" 2>/dev/null | head -1)"
   echo "${v:-2}" | tr -d '[:space:]'
 }
-wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""
+wt=""; out=""; only=(); mode=""; asked_only=""; full=""; fresh=""; builder=""
 ci=1; ci_wait=120; ci_wait_set=""; ci_merge=""; ci_logs=""
 # a refusal (exit 2) also ends <dir>/summary when --out named one, so a caller polling it sees it
 refuse() {
@@ -146,6 +147,7 @@ while [ $# -gt 0 ]; do
     --out) [ $# -ge 2 ] || refuse "--out needs a folder"; out="$2"; mode=""; shift 2; continue ;;
     --full) full=1; mode=""; shift; continue ;;
     --fresh) fresh=1; mode=""; shift; continue ;;
+    --builder) builder=1; mode=""; shift; continue ;;
     --ci) ci=1; mode=""; shift; continue ;;
     --local) ci=""; mode=""; shift; continue ;;
     --ci-wait) [ $# -ge 2 ] || refuse "--ci-wait needs minutes"; ci_wait="$2"; ci_wait_set=1; mode=""; shift 2; continue ;;
@@ -225,7 +227,7 @@ if [ -n "$braw" ] && [ ${#only[@]} -eq 0 ] && [ -n "$(code_of "$braw")" ]; then
 fi
 split_line "$line"
 # CI answers after the contract is read; --local may only reuse an existing exact-tree green.
-if [ -n "$asked_only$full$fresh" ]; then
+if [ -n "$asked_only$full$fresh$builder" ]; then
   [ -z "$ci" ] || echo "check: CI unavailable (local options requested); falling back to local check"
 else
   ci_line=""
@@ -333,6 +335,19 @@ if [ -z "$full" ] && [ ${#only[@]} -eq 0 ] && [ -d "$wt/modules" ] && in_git; th
     scope_line="the whole line: no $base in $wt"
   fi
 elif [ -n "$full" ]; then scope_line="the whole line (--full)"
+fi
+# The isolated vendor user has no Claude login or private publish word list.
+# /finish runs the complete contract on the owner's row. Neither omitted
+# command gets a passed memory entry.
+if [ -n "$builder" ]; then
+  kept=()
+  for c in "${run[@]+"${run[@]}"}"; do
+    case "$c" in
+      'claude plugin validate '*|*'modules/helloworld/bin/helloworld check '*) skipped+=("$c — vendor builder: landing runs this command");;
+      *) kept+=("$c");;
+    esac
+  done
+  run=("${kept[@]+"${kept[@]}"}")
 fi
 total=${#run[@]}
 

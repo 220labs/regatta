@@ -28,9 +28,11 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
                                            a finish run's outcome, from autofinish-run's record() on the host
                                            that ran it: written into the entry's tombstone; a run that never
                                            started takes the tombstone away (the tip may start again)
-    dispatch-queue claim [--event-at T] CTX
+    dispatch-queue claim [--event-at T] [--exit-claim] CTX
                                            claim and start what this host has room for, best first; T is
-                                           when the slot freed (the watcher's word), for G3's event_at
+                                           when the slot freed (the watcher's word), for G3's event_at;
+                                           --exit-claim is dispatch's exit claim: what it starts carries
+                                           DISPATCH_EXIT_CLAIMED (one claim per chain)
     dispatch-queue sweep CTX               the outbox, this host's own entries reconciled, cards, a claim —
                                            every SWEEP seconds from the queue-sweep job (S2); hourly, yard-node
                                            words --all (node-lands D1: the gate's word list to each named node)
@@ -89,7 +91,7 @@ holds the one home of (this host, the cap, the job's script, the label prefix); 
   --skip-hour (enqueue --refused, refused) skips it here an hour even when pinned here: a named login past
   its limits, which the next claim here would meet again.
     dispatch-queue unreserve QID [--label L]   a stale job's reservation given back at its exit
-    dispatch-queue hosts put [--file F] [--refresh] | get
+    dispatch-queue hosts put [--file F] [--refresh] | get [--cached]
                                            the Engine room's rows (S2 of docs/fleet-page-2026-11-01.md): `put` writes
                                            this host's row (lighthouse's `hosts sample`, stdin) to hosts/<host>.json on
                                            refs/regatta/hosts by the queue ref's lease, only when it changed or its copy
@@ -123,8 +125,11 @@ on every Mac before S3 gives the callers their words; the dispatch-queue session
 
 What starts a queued entry (S2, docs/dispatch-queue-kick-2026-10-25.md "The polls, bounded"): the
 dispatch call that enqueues it, with room here; a slot freeing here — the watcher claims when its run
-turns parked (warm or waiting: no longer counted) and the fire path when its run ends (dispatch-rc's
-queue_claim); the queue-sweep job, every SWEEP seconds on every host with a home (`jobs` installs it at
+turns parked (warm or waiting: no longer counted), the fire path when its run ends (dispatch-rc's
+queue_claim), and at the exit of a claimed entry's job that failed before its run started, once this file's
+`failed` word freed its slot (dispatch's cleanup; one claim per chain: a job such a claim started, marked by
+`claim --exit-claim`, claims nothing at its own failed exit; never after a refusal, a start lock given up,
+`waiting` alone or a signal); the queue-sweep job, every SWEEP seconds on every host with a home (`jobs` installs it at
 each dispatch here, beside the tidier; `regatta check` fails a host with a home and no sweep); and the
 pending poll, a POLL-second job loaded only on a host no kick road reaches (`wharf-runs/kick-roads`;
 absent, no road reaches any host; kicklib.reached states the reading), with room, while the fleet ref
@@ -173,6 +178,12 @@ A finish entry needs `finish-queue`: a Mac meets it as before; another host judg
 schedule, publish word list and /finish in every enabled Claude login dir (install.sh --check uses the same probe). No feature
 line is needed on a capable host; `finish-queue` explicitly grants it, `-finish-queue` overrides either grant.
 Peers judge themselves when claiming; the local probe is cached once per pass, never once per entry.
+The landing floor (landing-floor, 2026-11-06; the owner: "landings should take normal slots. But we should have a
+guard to only allow normal+ priority landings to be picked up"): a landing takes a normal run slot, and no host
+claims a finish ranked below normal (floor_refusal in claimable(), so every claim road and the listing agree; the
+sweep's unclaimable card, the kick and may_take judge eligibility alone, so a held finish is reported by the listing).
+A `low` finish stays queued, and the listing says why; a raise lifts it (`autofinish-run <worktree> --priority high`;
+a finish is never lowered). No priority reads as normal. Builds have no floor.
 
 A confidential scope's runs never enter the fleet ref (docs/dispatch-queue-confidential-2026-10-26.md):
 a torn registry refuses the enqueue (the fence trap: torn reads as no scopes), a repo or caller's cwd in
@@ -247,7 +258,8 @@ DIED_MAX = 2               # deaths of one tip before only a person's launch sta
 UNSAID_S = 12 * 3600       # a tombstone with no outcome this old (its finished word lost): a person's launch goes on
 OLD_LAND = "_land"       # the Mac-local landing store this replaced: drained at every sweep (drain_land)
 # a finish entry's rights (`finish`): the words autofinish-run's own flags take, nothing else
-FINISH_BY = ("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship", "handed")   # autofinish-run's BY_WORDS (a case compares)
+FINISH_BY = ("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship", "handed", "lander")   # autofinish-run's BY_WORDS (a case compares)
+FINISH_ROADS = ("refinish", "login", "limit", "stand")   # autofinish-run's ROADS: a --by lander finish names one (stuck-ships S1)
 FINISH_PERSON = ("override", "typed")   # autofinish-run's PERSON_BY: a person's launch may follow a cancel
 HOST_WORD = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")   # common.host_name()'s shape (autofinish-run's HOST_RE)
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -313,11 +325,11 @@ FLAGS = {"--model": r"[A-Za-z0-9.\[\]_-]{1,40}", "--effort": r"low|medium|high|x
          "--needs": r"[a-z0-9][a-z0-9._-]{0,39}(,[a-z0-9][a-z0-9._-]{0,39})*",
          # the CLI the fired run starts (agy-road): agy only; a host whose list predates it skips the entry, so no
          # older host runs an agy entry as a Claude build
-         "--harness": r"agy"}
+         "--harness": r"agy|codex"}
 # DISPATCH_ARM: the builder rotation's draw (dispatch's header, buildercoin.py), made once at enqueue; a host whose
 # list predates it skips the entry, as an unknown flag, so no host runs a drawn arm without recording it
 ENV_OK = re.compile(r"DISPATCH_(DEPTH|MODE|SKIPPER|MANAGER|SKIPPER_ACCOUNT|MANAGER_ACCOUNT|SHIP|PLAN|PLAN_SPACE|SKIPPER_HOST|MANAGER_HOST|ARM)")
-ARM_WORD = re.compile(r"(opus-high|sonnet-high|argon-high):[0-2]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # buildercoin's WORD_GRAMMAR, a case holds it
+ARM_WORD = re.compile(r"(opus-high|sonnet-high|argon-high|gpt-big|gpt-mid):[0-4]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # buildercoin's WORD_GRAMMAR, a case holds it
 BRANCH_OK = re.compile(r"claude/[A-Za-z0-9._/-]{1,200}")
 # The launcher (S7's Linux half): launchd's launchctl on a Mac, as before; elsewhere bin/systemd-launchctl, the
 # same verbs over systemd's user manager (its header says why one shim and not a branch per caller). Every job
@@ -968,7 +980,8 @@ def cmd_hosts(a, ctx):
     """`hosts put [--file F] [--refresh]`: this host's row (stdin, or F) onto refs/regatta/hosts — exit 0 pushed or unchanged
     (one JSON line says which), 2 a row refused before any fetch, 6 not written (the home down, refusing, or the
     lease lost every try). `hosts get`: every row as one JSON object, {rows: {host: row | null}, torn: [host],
-    unreadable: why | null, offline: why | null}; a row that does not parse is null and in `torn`."""
+    unreadable: why | null, offline: why | null}; a row that does not parse is null and in `torn`.
+    --cached reads the local ref without a fetch or lock."""
     url = home()
     if a.hosts_verb == "put":
         if a.host:
@@ -1002,7 +1015,7 @@ def cmd_hosts(a, ctx):
     else:
         s = Hosts(url)
         try:
-            sha = s.fetch()
+            sha = s.cached() if a.cached else s.fetch()
         except Unreachable as x:
             out["offline"] = str(x)
             sha = s.cached()
@@ -1158,6 +1171,11 @@ def tomb_holds(new, cur):
         return None
     if out == "failed" and person:
         return None   # `failed` is a start that never ran (a fetch that failed, an origin without the tip): a person may try again (the finish review)
+    if by == "lander" and out and out != "cancelled" and _low(cur.get("ran_on")) == _low(new.get("from")) != "":
+        # stuck-ships S1: a lander road is the one same-tip relaunch past a stop, judged by autofinish-run on the putting
+        # host's own record of it (lander_refusal: the road's predicate and its cap in that host's lander.json). Only a
+        # stop that ran there: another host's stop is its own (ran_elsewhere), and a cancel holds the tip for a person
+        return None
     if not out and person and now() - _num(cur.get("ended_at")) >= UNSAID_S:
         return None   # its end never written (a waiter killed, a word lost): past a run's longest life, a person's word
     return "ran %s on %s: %s" % ((cur.get("tip") or "")[:7], cur.get("ran_on") or "?",
@@ -2038,7 +2056,10 @@ def eligibility(e, h, feats=None):
         if veto:
             return veto
         grants = feats.get(h, set())
-        miss = [n for n in needs if n not in grants and not builtin_met(n, h)]
+        # A coin arm needs a declared builder host. agy-road's optimistic peer probe is
+        # only for a typed harness run; it cannot keep an orphaned coin arm queued.
+        miss = [n for n in needs if n not in grants
+                and (n == e.get("arm_need") or not builtin_met(n, h))]
         if FINISH_NEED in miss and h == host_name():
             return "finish-queue: " + finish_readiness()["reason"]
         if miss:
@@ -2158,6 +2179,27 @@ def only_refusal(e):
     return None
 
 
+# landing-floor (the owner, 2026-11-06: "a guard to only allow normal+ priority landings to be picked up"): a landing
+# takes a normal slot, so no host claims a finish ranked below normal. Its refusal is fixed by a raise, not a wait, so
+# it keeps off the cap's "the next step waits for a run to end" (helm's CAP_RE, the core's ASK_EXEMPT_RE).
+FINISH_FLOOR = "normal"
+FLOOR_WHY = "a finish below %s is held" % FINISH_FLOOR
+
+
+def floor_refusal(e):
+    """Why E, a finish, is below the landing floor, or None. No priority reads as normal, as rank() reads it; a value
+    outside RANKS is no rank at all and reads as normal too (the put writes only RANKS' keys; this reader does not raise on an
+    unhashable one, data any host with write may put, though rank() still does, as on main). The floor reads the priority as put, not rank()'s
+    LOW_AGE promotion: a low finish waits for a raise or a person's re-put. Builds have no floor."""
+    if e.get("kind") != FINISH:
+        return None
+    p = e.get("priority")
+    if RANKS[p if isinstance(p, str) and p in RANKS else "normal"] <= RANKS[FINISH_FLOOR]:
+        return None
+    return ("%s (priority %s): no host claims a landing below %s; raise it with `autofinish-run <worktree> --priority high`"
+            % (FLOOR_WHY, p, FINISH_FLOOR))
+
+
 def claimable(e, h, t=None, fleet=False):
     """Why this host may not claim E, or None (the S1 filters, and `eligibility`'s: the pin, the berths, the features;
     and this host's own `wharf-runs/only`, a builder host's).
@@ -2166,6 +2208,9 @@ def claimable(e, h, t=None, fleet=False):
     if e.get("state") != "queued":
         return "it is %s" % e.get("state")
     why = eligibility(e, h)   # the pin first, as its text always led the listing
+    if why:
+        return why
+    why = floor_refusal(e)   # every host's rule alike: no release to another host, no wait
     if why:
         return why
     if h == host_name():   # `only` is this host's own config: a peer's verdict on its own claim
@@ -2392,6 +2437,9 @@ def after_said():
     return _jread("after-said.json")
 
 
+OWED_WORD = re.compile(r"[\w./-]{1,200}\.md S\d{1,4}")   # one waived stamp (handover.waived): a doc and its step
+
+
 def finish_bad(e):
     """Why finish entry E's rights do not read, or None: each word one autofinish-run's own flags take. An entry is
     data any host with write may put, so its job reads nothing else (no prompt, no allow list: the claiming host's
@@ -2417,7 +2465,15 @@ def finish_bad(e):
         return "finish.from %r is no host name" % f.get("from")
     if f.get("digest") and not (f["by"] == "ship" and f.get("merge") and re.fullmatch(r"[0-9a-f]{7,64}", str(f["digest"]))):
         return "finish.digest goes with a ship's merge, as a hex digest"
-    extra = set(f) - {"by", "rule", "merge", "hold", "from", "digest"}
+    if (f["by"] == "lander") != ("road" in f) or ("road" in f and f["road"] not in FINISH_ROADS):
+        return "finish.road %r: a --by lander finish names one of %s, and only it" % (f.get("road"), ", ".join(FINISH_ROADS))
+    if "land_by" in f and not (f["by"] == "lander" and f["land_by"] in ("yolo", "dnd")):
+        return "finish.land_by %r is a lander finish's mode flag, yolo or dnd" % f.get("land_by")
+    owed = f.get("owed")
+    if owed is not None and not (f["by"] in ("handed", "lander") and isinstance(owed, list) and len(owed) <= 50
+                                 and all(isinstance(x, str) and OWED_WORD.fullmatch(x) for x in owed)):
+        return "finish.owed goes with a handed finish or its lander relaunch, as a list of `<doc>.md S<n>` stamps its judge waived"
+    extra = set(f) - {"by", "rule", "merge", "hold", "from", "digest", "road", "land_by", "owed"}
     if extra:
         return "finish carries %s, which no finish reads" % ", ".join(sorted(extra))
     return None
@@ -2454,9 +2510,10 @@ def bad_args(e):
         return "--needs and the entry's needs differ"
     if not isinstance(e.get("needs") or [], list) or any(not isinstance(n, str) or not NEED_RE.fullmatch(n) for n in e.get("needs") or []):
         return "needs is not a list of lower-case feature names"
-    if "--harness" in a and AGY_NEED not in (e.get("needs") or []):
+    if "--harness" in a and (flag_values(a, "--harness") or [""])[0] not in (e.get("needs") or []):
         # an agy run claimed by a host without agy would only fail at its start: the need is what keeps it off one
-        return "--harness agy without the agy need"
+        cli = (flag_values(a, "--harness") or [""])[0]
+        return "--harness %s without the %s need" % (cli, cli)
     return None
 
 
@@ -2519,6 +2576,13 @@ def start_job(ctx, store, key, e, label):
     if e.get("event_at"):
         env["DISPATCH_EVENT_AT"] = str(int(e["event_at"]))   # G3's start, for the run's `started` line
     env.update({k: str(v) for k, v in (e.get("env") or {}).items()})
+    # one claim per chain (claim-after-failed-start's landing review, S1): a job a failed job's exit claim starts
+    # carries the mark, and its own failed exit claims nothing, so a host-wide failure (origin down, a broken
+    # worktree add) ends each chain at the slots free when its one exit claim ran, never a cascade through the
+    # queue; the rate while it lasts is about twice main's (dispatch's cleanup). The claim's own word, never an entry's
+    env.pop("DISPATCH_EXIT_CLAIMED", None)
+    if getattr(ctx, "exit_claim", False):
+        env["DISPATCH_EXIT_CLAIMED"] = "1"
     plist = {**(common.launchd_session_keys(domain()) if hasattr(common, "launchd_session_keys") else {}),
              "Label": label, "ProgramArguments": args, "EnvironmentVariables": env, "RunAtLoad": True,
              "StandardOutPath": log, "StandardErrorPath": log}
@@ -2609,7 +2673,8 @@ def _claim(ctx, out=None):
                 # host for the whole grace: let go of it now, as a full host does
                 if e.get("state") == "queued" and not e.get("running_on") and _low(e.get("prefer")) == h \
                         and not e.get("host") and not e.get("prefer_off") and isinstance(s, Fleet) \
-                        and why_not != UNREAD_WHY and "does not read" not in why_not:   # a torn read passes
+                        and why_not != UNREAD_WHY and "does not read" not in why_not \
+                        and not why_not.startswith(FLOOR_WHY):   # a torn read passes; the floor binds every host, a release helps none
                     refused_here.append((why_not, s, k, e, False))
                 continue
             # the outbox may claim only what nobody else can hold: a put still in this host's outbox, its
@@ -3283,7 +3348,8 @@ def cmd_enqueue(a, ctx):
     needs = sorted({n.strip().lower() for n in (a.needs or "").split(",") if n.strip()})
     if any(not NEED_RE.fullmatch(n) for n in needs):
         raise Refused("dispatch-queue: --needs takes lower-case feature names, a,b (%s)" % (a.needs or ""), 2)
-    probe = {"repo": repo_word(repo), "host": pin, "needs": needs}
+    probe = {"repo": repo_word(repo), "host": pin, "needs": needs,
+             "arm_need": getattr(a, "arm_need", "")}
     feats = features()
     cands, why_c = berth_candidates(probe["repo"], h)
     if why_c.get("unreadable"):
@@ -3306,8 +3372,10 @@ def cmd_enqueue(a, ctx):
          "queued_at": qat, "event_at": t, "put_at": t, "by": a.by or "", "from": h, "waiter": (a.wait or "")[:200], "attempts": 0,
          "session": "", "args": args, "env": env, "mode": mode}
     an = (getattr(a, "arm_need", "") or "").strip().lower()
-    if an and an in needs and env.get("DISPATCH_ARM"):
-        e["arm_need"] = an   # the re-draw (redraw_op) drops this need alone; a typed one stays
+    if an and an in needs and (env.get("DISPATCH_ARM") or "--harness" in args):
+        # the re-draw (redraw_op) drops this need alone; a typed one stays. A harness's own need (--harness codex)
+        # is named too, so a pre-flight fallback to Claude drops it (vendor_fallback_fields; S8's finish review)
+        e["arm_need"] = an
     if fin is not None:
         e.update(kind=FINISH, tip=a.tip, finish=fin, mode="", needs=sorted(set(needs) | {FINISH_NEED}))
         if caller_unattended() or os.environ.get("SKIPPER_SCOPE"):
@@ -4419,6 +4487,8 @@ def arm_word(st):
     """The builder rotation's word for a cut run whose record ran its drawn arm (dispatch's chain_record), else
     None: the arm rides on as DISPATCH_ARM and decides again at fire time, never as a typed --model."""
     a = st.get("arm")
+    if st.get("arm_source") == "fallback" or isinstance(a, dict) and a.get("fallback"):
+        return None
     if not isinstance(a, dict) or a.get("model") != st.get("model") or a.get("effort") != st.get("effort"):
         return None
     w = "%s:%s:%s:%d" % (a.get("name"), a.get("coin"), a.get("until"), bool(a.get("forced")))
@@ -4476,11 +4546,21 @@ def entry_of_record(st, h, t):
             env.pop("DISPATCH_MODE")
         env.pop("DISPATCH_ARM", None)
         needs = [AGY_NEED]
-    args = run_flags(["--yolo"] if st.get("yolo") == 1 and not agy else [], st, env.get("DISPATCH_ARM"))
+    # dispatch's vendor road typed (--harness codex, a typed gpt-* model): a codex build again, on a codex builder
+    # host; a coin arm's word above carries its own need, so only a record with no arm word is rebuilt here
+    vendor = (not agy and not env.get("DISPATCH_ARM")
+              and (st.get("mode") == "vendor" or st.get("agent") == "codex" or st.get("cli") == "codex"))
+    if vendor:
+        if env.get("DISPATCH_MODE") in ("yolo", "dnd"):
+            env.pop("DISPATCH_MODE")
+        needs = ["codex"]
+    args = run_flags(["--yolo"] if st.get("yolo") == 1 and not agy and not vendor else [], st, env.get("DISPATCH_ARM"))
     if needs:
         args += ["--needs", ",".join(needs)]
     if agy:
         args += ["--harness", "agy"]
+    if vendor:
+        args += ["--harness", "codex"]
     if st.get("note"):
         args += ["--note", str(st["note"])[:4000]]
     return {"id": uuid.uuid4().hex, "key": key_of(repo, st["branch"]), "repo": repo_word(repo), "branch": st["branch"],
@@ -4873,6 +4953,40 @@ def cmd_mine(a, ctx):
     return 3 if why else 0
 
 
+def vendor_fallback_fields(e):
+    """Pre-flight failed on a builder user: queue its Claude fallback within
+    the existing host constraints. Never start Claude in the vendor user's home. No vendor ran.
+    """
+    env = dict(e.get("env") or {})
+    word = env.get("DISPATCH_ARM")
+    fallback = coin_mod().fallback_word(word) if word else None
+    if fallback:
+        env["DISPATCH_ARM"] = fallback
+    else:
+        env.pop("DISPATCH_ARM", None)
+    args, old, i = [], list(e.get("args") or []), 0
+    while i < len(old):
+        flag = old[i]
+        n = 2 if FLAGS.get(flag) is not None else 1
+        if flag not in ("--harness", "--model", "--effort", "--needs"):
+            args.extend(old[i:i + n])
+        i += n
+    # The arm's added feature goes, and codex with it even where the caller typed it: only a codex builder row
+    # has that feature, and it has no Claude login, so a Claude fallback that kept it would never run (dispatch's
+    # Claude retry drops it the same way).
+    drop = {e.get("arm_need"), "codex"}
+    needs = [n for n in e.get("needs") or [] if n not in drop]
+    if needs:
+        args += ["--needs", ",".join(needs)]
+    if not fallback:
+        args += ["--model", "claude-opus-5-5", "--effort", "high"]
+    # Keep host, pin_kind and pinned_why: a fallback grants no permission to move a hard-pinned build.
+    # A pinned builder that cannot run Claude leaves it queued under only_refusal; an unpinned entry can move.
+    return {"state": "queued", "env": env, "args": args, "needs": needs,
+            "arm_need": None, "running_on": "", "claimed_by": "", "job": "",
+            "session": "", "started": None, "event_at": now()}
+
+
 def cmd_fire(a, ctx):
     """The fire path's word on its own claim (QID): waiting (after() holds it), started (the record exists),
     refused (cap, memory, no account: back to queued, this host skips it an hour), failed (any other end
@@ -4904,6 +5018,12 @@ def cmd_fire(a, ctx):
         # G3 in one line: the seconds from what made the entry startable to its run's record (S7 reads it)
         event("started", key=a.qid, host=h, session=a.session, loaded_at=os.environ.get("DISPATCH_LOADED_AT"),
               event_at=int(ev) if ev.isdigit() else None, wait_s=now() - int(ev) if ev.isdigit() else None)
+    elif a.verb == "vendor-fallback":
+        unreserve(a.qid, label=a.label)
+        e = s.view()[0].get(k) or {}
+        r = s.do([{"op": "set", "key": k, "cond": cond,
+                   "fields": vendor_fallback_fields(e)}], "vendor pre-flight fallback %s" % k)[0]
+        event("vendor-fallback", key=a.qid, host=h, why=a.why)
     elif a.verb == "refused":
         unreserve(a.qid, label=a.label)
         r = s.do([{"op": "refuse", "key": k, "host": h, "at": now(), "why": a.why or "refused", "cond": cond,
@@ -5728,6 +5848,13 @@ def drain_land(h=None):
                 if f["merge"] and (f["hold"] or f["by"] == "ship"):
                     f["merge"] = False   # a ship's merge needs its digest, which the old entry never held: held instead
                     f["hold"] = True
+                if f["by"] == "lander":
+                    # a lander start queued here: its road and mode flag as its state recorded them (stuck-ships S1); one
+                    # with no road read does not move (finish_bad), and the tick's next pass roads its stop again
+                    if st.get("road"):
+                        f["road"] = st["road"]
+                    if st.get("land_by"):
+                        f["land_by"] = st["land_by"]
                 t = now()
                 new = {"id": uuid.uuid4().hex, "key": key_of(repo, branch), "repo": repo_word(repo), "branch": branch,
                        "topic": topic_of(branch), "kind": FINISH, "tip": st.get("tip") or "", "finish": f,
@@ -5872,6 +5999,7 @@ def main(argv=None):
     c = sub.add_parser("claim")
     ctxargs(c)
     c.add_argument("--event-at", type=int)
+    c.add_argument("--exit-claim", action="store_true")   # dispatch's cleanup: what this claim starts carries the mark (start_job)
     for v in ("sweep", "poll", "jobs"):
         ctxargs(sub.add_parser(v))
     li = sub.add_parser("list")
@@ -5903,7 +6031,7 @@ def main(argv=None):
         sp.add_argument("--state", action="append", choices=STATES)
         sp.add_argument("--except-session")
         sp.add_argument("--elsewhere", action="store_true")
-    for v in ("waiting", "started", "refused", "failed"):
+    for v in ("waiting", "started", "refused", "failed", "vendor-fallback"):
         sp = sub.add_parser(v)
         ctxargs(sp)
         sp.add_argument("qid", nargs="?")
@@ -5949,6 +6077,7 @@ def main(argv=None):
     hs = sub.add_parser("hosts")
     ctxargs(hs)
     hs.add_argument("hosts_verb", choices=("put", "get"))
+    hs.add_argument("--cached", action="store_true")
     hs.add_argument("--file")
     hs.add_argument("--refresh", action="store_true")
     fr = sub.add_parser("fresh")

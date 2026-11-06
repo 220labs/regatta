@@ -145,6 +145,48 @@ check "$(qget repo--hi state) $(qget repo--r state) $(qget repo--build state)" "
 python3 "$QB" claim --host buildbox --cap 2 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null
 check "$(qget repo--r state) $(qget repo--build state)" "claimed queued" "  the next slot: the finish, ahead of the build of its priority"
 
+echo "landing-floor: no host claims a finish below normal (the owner, 2026-11-06)"
+qreset
+TL=$(mkbranch lo); TN=$(mkbranch nm)
+fin lo "$TL" "$RIGHTS" --priority low --prefer laptop "${QL2[@]}" > /dev/null; check "$?" "0" "a low finish: put (the floor is the claim's, not the put's)"
+python3 "$QB" enqueue --repo "$T/repo" --branch "$BR-lowbuild" --priority low "${QL2[@]}" > /dev/null
+python3 "$QB" claim "${QL2[@]}" > "$T/out" 2>&1
+check "$(qget repo--lo state)" "queued" "a low finish is not claimed, with room to spare"
+check "$(qget repo--lowbuild state)" "claimed" "  a low build in the same pass still is: builds have no floor"
+python3 "$QB" list "${QL2[@]}" > "$T/out" 2>&1
+has "$T/out" "a finish below normal is held (priority low): no host claims a landing below normal; raise it with \`autofinish-run <worktree> --priority high\`" "  the listing says why and how to lift it"
+hasnt "$T/out" "waits for a run to end" "  in words that are not the cap's (helm's CAP_RE, the core's ASK_EXEMPT_RE)"
+TL2=$(mkbranch lo2)
+fin lo2 "$TL2" "$RIGHTS" --priority low "${QL2[@]}" > /dev/null   # no preference: nothing but the floor holds it from a peer
+python3 "$QB" claim --host buildbox --cap 9 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null   # room to spare: one HOME stands for both hosts
+check "$(qget repo--lo2 state)" "queued" "  no other host takes one either (unpreferred, so the floor alone holds it)"
+check "$(qget repo--lo prefer prefer_off)" "laptop None" "  and, preferring this host as a real put does, the refusal releases nothing to a peer (no prefer_off)"
+fin nm "$TN" "$RIGHTS" "${QL2[@]}" > /dev/null
+python3 "$QB" claim --host laptop --cap 4 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" > /dev/null
+check "$(qget repo--nm state) $(qget repo--lo state)" "claimed queued" "a finish with no flag (normal) is claimed in the pass that leaves the low one"
+cat > "$T/floor.py" <<'PY'
+import sys
+sys.dont_write_bytecode = True
+from importlib.machinery import SourceFileLoader
+q = SourceFileLoader("dq", sys.argv[1]).load_module()
+base = {"state": "queued", "branch": "claude/x/2026-11-06-t", "repo": sys.argv[2], "kind": "finish"}
+for kind in ("finish", None):
+    for p in ("low", "normal", "high", "force", None, "", "bogus", [], {}, ["low"]):
+        e = dict(base, kind=kind) if kind else {k: v for k, v in base.items() if k != "kind"}
+        if p is not None:
+            e["priority"] = p
+        print("%s %s: %s" % (kind or "build", p, "held" if q.floor_refusal(e) else "free"))
+PY
+python3 "$T/floor.py" "$QB" "$T/repo" > "$T/out" 2>&1
+has "$T/out" "finish low: held" "a low finish is under the floor"
+has "$T/out" "finish normal: free" "  a normal one is not"
+has "$T/out" "finish high: free" "  a high one is not"
+has "$T/out" "finish force: free" "  a force one is not"
+has "$T/out" "finish None: free" "  one with no priority reads as normal"
+has "$T/out" "finish bogus: free" "  a value no rank knows reads as normal, as rank() reads it"
+has "$T/out" "finish []: free" "  an empty list reads as normal, and raises nothing"
+has "$T/out" "build low: free" "a low build has no floor"
+
 echo "one run per tip, from the queue alone"
 qreset
 TO=$(mkbranch o)
@@ -239,6 +281,7 @@ git -C "$T/repo" worktree add -q "$T/wt-e" "$BR-e" 2>/dev/null
 cat > "$T/dispatch-start" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "$T/start.args"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import common; print(common.consume_finish_pick(target="dispatch"))' "$B/../../regatta/hooks" > "$T/start.receipt"
 sid=; prev=; for a in "\$@"; do [ "\$prev" = --session-id ] && sid=\$a; prev=\$a; done
 echo "== claude 4242, session \$sid, screen s, Remote Control \"finish · e\""
 EOF
@@ -247,6 +290,16 @@ cat > "$T/api_stub.py" <<'PY'
 def api(method, path, body=None, tok=None, timeout=15):
     return 404, None
 PY
+mkdir -p "$T/h/.acct-queue" "$REGATTA_CONFIG/lighthouse"
+python3 - "$T/finish-accounts.json" "$T/h/.acct-queue" <<'PY'
+import json, sys, time
+json.dump({"accounts": [{"label": "acct-queue", "home": sys.argv[2], "primary": True,
+                         "rules": {"week_max": 90}}]}, open(sys.argv[1], "w"))
+json.dump({"at": time.time(), "limits": {"five_hour": 10, "seven_day": 92}},
+          open(sys.argv[2] + "/usage-probe.json", "w"))
+PY
+printf 'acct-queue:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false
 fin e "$TE" '{"by": "typed", "rule": "C", "merge": true, "from": "laptop"}' "${QL2[@]}" > /dev/null
 python3 "$QB" claim "${QB2[@]}" > /dev/null
 JE=$(qget repo--e job)
@@ -255,9 +308,14 @@ DISPATCH_HOST=buildbox AUTOFINISH_HOST=buildbox DISPATCH_LABEL="$JE" AUTOFINISH_
   "$B/dispatch" "$BR-e" --repo "$T/repo" --finish --from-queue fleet:repo--e > "$T/out" 2>&1; check "$?" "0" "dispatch --finish: the claim's job runs autofinish-run's queued half"
 has "$T/out" "the claimed finish fleet:repo--e: $BR-e at ${TE:0:7}" "  naming the entry and its tip"
 has "$T/start.args" "/finish $BR-e --unattended --merge --from=laptop" "  its prompt carries the entry's rights: the merge, and the host whose yes it is"
+check "$(cat "$T/start.receipt")" True "the queued finish passes a dispatch receipt too"
 check "$(grep -A1 -- '--queued' "$T/start.args" | tr '\n' ' ')" "--queued fleet:repo--e " "  its dispatch --start holds the claim (--queued)…"
 check "$(grep -A1 -- '--job' "$T/start.args" | tail -1)" "$JE" "  …under the job's label (--job)"
 GE=$(git -C "$T/wt-e" rev-parse --absolute-git-dir)
+check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["account"])' "$GE/claude/autofinish.json")" acct-queue \
+  "the claim picked a login at 92%, past its build ceiling of 90, under its finish ceiling of 97"
+export ACCOUNTS_FILE="$T/no-accounts.json"
+rm -f "$REGATTA_CONFIG/lighthouse/week-max-finish"
 check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("queue"), d.get("from"), d.get("tip"))' "$GE/claude/autofinish.json")" \
   "fleet:repo--e laptop $TE" "  its state there names the queue entry, the putting host and the tip"
 check "$(ls "$LA" | grep -c "$JE")" "0" "  its one-shot plist gone: a login never fires it again"
@@ -376,9 +434,9 @@ from importlib.machinery import SourceFileLoader
 def load(n, f):
     ld = SourceFileLoader(n, f); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(n, ld)); ld.exec_module(m); return m
 a = load("afr", sys.argv[1] + "/autofinish-run"); q = load("dq", sys.argv[1] + "/dispatch-queue")
-print(tuple(a.BY_WORDS) == tuple(q.FINISH_BY), set(a.PERSON_BY) == set(q.FINISH_PERSON))
+print(tuple(a.BY_WORDS) == tuple(q.FINISH_BY), set(a.PERSON_BY) == set(q.FINISH_PERSON), tuple(a.ROADS) == tuple(q.FINISH_ROADS))
 PY
-)" "True True" "dispatch-queue's FINISH_BY and FINISH_PERSON are autofinish-run's own words"
+)" "True True True" "dispatch-queue's FINISH_BY, FINISH_PERSON and FINISH_ROADS are autofinish-run's own words"
 qreset
 TW=$(mkbranch w)
 fin w "$TW" "$RIGHTS" "${QL2[@]}" > /dev/null; python3 "$QB" claim "${QB2[@]}" > /dev/null
@@ -483,6 +541,98 @@ PY2
 check "$(python3 "$T/builtin.py" "$QB" 2>&1 | tail -1)" "True True False True False False True" \
   "finish-queue: met on a Mac, not on an unprepared Linux host (peers judge themselves); stamps read as instants"
 
+echo "the lander (stuck-ships S1): a --by lander finish names its road, is pinned to its host, its caps that host's lander.json"
+qreset
+export AUTOFINISH_STATE_DIR="$T/af-state"   # this host's lander.json (the lander's one store)
+LR='{"by": "lander", "rule": "C", "road": "login", "from": "laptop"}'
+TN=$(mkbranch n)
+for bad in '{"by": "lander", "rule": "C", "from": "laptop"}' '{"by": "lander", "rule": "C", "road": "bogus", "from": "laptop"}' \
+           '{"by": "sweep", "rule": "C", "road": "login", "from": "laptop"}' '{"by": "sweep", "rule": "C", "land_by": "dnd", "from": "laptop"}' \
+           '{"by": "lander", "rule": "C", "road": "login", "land_by": "typed", "from": "laptop"}'; do
+  fin n "$TN" "$bad" "${QL2[@]}" > /dev/null 2>&1; check "$?" "2" "refused, never queued: $bad"
+done
+# the stop: a finish of this tip run here, ended at a login failure — its tombstone holds the tip for every other word
+fin n "$TN" "$RIGHTS" "${QL2[@]}" > /dev/null; python3 "$QB" claim "${QL2[@]}" > /dev/null
+python3 "$QB" started fleet:repo--n --label "$(qget repo--n job)" --session s-n "${QL2[@]}" > /dev/null
+python3 "$QB" ended --repo "$T/repo" --branch "$BR-n" --session s-n "${QL2[@]}" > /dev/null
+python3 "$QB" finished fleet:repo--n --session s-n --outcome stopped --gate no-landing "${QL2[@]}" > /dev/null
+fin n "$TN" "$RIGHTS" "${QL2[@]}" > /dev/null; check "$?" "3" "a stop's tombstone: the sweep's put of that tip refused"
+git -C "$T/repo" worktree add -q "$T/wt-n" "$BR-n" 2>/dev/null
+GN=$(git -C "$T/wt-n" rev-parse --absolute-git-dir); GC=$(git -C "$T/wt-n" rev-parse --path-format=absolute --git-common-dir)
+mkdir -p "$GN/claude" "$GC/claude"
+cat > "$T/stop.py" <<'PY'
+import json, sys
+st, af, tip, br = sys.argv[1:5]
+ended = "2026-11-03T21:00:00-08:00"
+json.dump({"started": "2026-11-03T20:40:00-08:00", "session": "s-n", "tip": tip, "by": "sweep", "rule": "C",
+           "window": "finish · n", "account": "acct-pro", "ended": ended, "outcome": "stopped", "pr": None,
+           "gate": "no-landing", "queue": "fleet:repo--n"}, open(st, "w"))
+open(af, "a").write("%s stopped %s no-landing Not logged in · Please run /login\n" % (ended, br))
+PY
+python3 "$T/stop.py" "$GN/claude/autofinish.json" "$GC/claude/autofinished" "$TN" "$BR-n"
+cat > "$T/spend.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("afr_spend", sys.argv[1]).load_module()
+t = m.Tree(sys.argv[2])
+key = m.lander_key(t.primary, t.branch)
+if sys.argv[3] == "show":
+    e = m.lander_read().get(key) or {}
+    print(*[x for x in (e.get("relaunches", {}).get("login", 0), e.get("stop_for")) if x is not None], m.lander_path())
+else:
+    m.lander_update(key, lambda e: m.road_add(e, "login", int(sys.argv[3])))
+PY
+python3 "$T/spend.py" "$B/autofinish-run" "$T/wt-n" 1
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true \
+  "$B/autofinish-run" "$T/wt-n" --by lander --road login > "$T/out" 2>&1; check "$?" "9" "the login road spent in this host's lander.json: STUCK_RC, before any put"
+has "$T/out" "the login road is spent" "  saying so"
+check "$(qget repo--n state outcome)" "ended stopped" "  nothing queued: the tombstone stands"
+python3 "$T/spend.py" "$B/autofinish-run" "$T/wt-n" -1
+AUTOFINISH_PLATFORM=linux AUTOFINISH_END_WARM=true \
+  "$B/autofinish-run" "$T/wt-n" --by lander --road login --dry > "$T/out" 2>&1
+check "$?" "0" "a lander put from a host with no finish-queue feature: its road still judged here"
+has "$T/out" "pinned here: a --by lander start is this host's road, its caps in this host's lander.json" \
+  "  its local cap store keeps it pinned even when this host cannot claim a finish"
+has "$T/out" "--pin laptop" "  the put never sends a lander's caps to another host"
+DISPATCH_MAX_RUNS=0 AUTOFINISH_END_WARM=true \
+  "$B/autofinish-run" "$T/wt-n" --by lander --road login > "$T/out" 2>&1; check "$?" "0" "the road open in this host's store: the lander's put, exit 0"
+has "$T/out" "queued: fleet:repo--n (a finish of ${TN:0:7})" "  queued past the stop's tombstone of its own tip"
+has "$T/out" "pinned here (a --by lander start is this host's road, its caps in this host's lander.json)" "  pinned here, as a hand-over is"
+check "$(qget repo--n kind state host tip)" "finish queued laptop $TN" "  one fleet entry, pinned to the putting host"
+check "$(qget repo--n finish)" '{"by": "lander", "from": "laptop", "hold": false, "merge": false, "road": "login", "rule": "C"}' \
+  "  its rights: by lander, the road, no merge"
+check "$(python3 "$T/spend.py" "$B/autofinish-run" "$T/wt-n" show | cut -d' ' -f1)" "0" "  the put spends nothing: the claim's start does"
+python3 "$QB" claim "${QB2[@]}" > /dev/null
+check "$(claimed_by n)" "queued None" "another host with room never claims it"
+python3 "$QB" claim "${QL2[@]}" > /dev/null
+check "$(claimed_by n)" "claimed laptop" "its own host claims it"
+JN=$(qget repo--n job); rm -f "$T/start.args"
+DISPATCH_LABEL="$JN" AUTOFINISH_DISPATCH="$T/dispatch-start" AUTOFINISH_END_WARM=true \
+  AUTOFINISH_API_STUB="$T/api_stub.py" PICKUP_PRS="$T/none.json" AUTOFINISH_VERDICT_S=10 \
+  "$B/dispatch" "$BR-n" --repo "$T/repo" --finish --from-queue fleet:repo--n > "$T/out" 2>&1; check "$?" "0" "the claim's job starts it"
+has "$T/start.args" "/finish $BR-n --unattended" "  a plain unattended /finish"
+hasnt "$T/start.args" "--merge" "  never a merge"
+check "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d.get("by"), d.get("road"), d.get("queue"))' "$GN/claude/autofinish.json")" \
+  "lander login fleet:repo--n" "  recorded by lander, its road and its entry"
+# the stand-in start never replies, so its waiter records it never-started and gives the road back (S1's refund): the
+# spend and the refund are this host's store's, which names the claimed session as the one its kept stop is for
+SN=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["session"])' "$GN/claude/autofinish.json")
+check "$(python3 "$T/spend.py" "$B/autofinish-run" "$T/wt-n" show)" "0 $SN $AUTOFINISH_STATE_DIR/lander.json" \
+  "  the road spent at the claimed start in this host's lander.json (its stop kept for that session), given back there"
+has "$HL/Logs/claude-weekly/autofinish-$(date +%Y-%m-%d).log" "by=lander via=sweep road=login stopped_on=acct-pro" "  its start line names the road and the stop's login"
+# a lander put on a stop that ran on another host, or on a cancel: refused by the queue (one host roads a stop)
+TN2=$(mkbranch n2)
+fin n2 "$TN2" "$RIGHTS_B" "${QB2[@]}" > /dev/null; python3 "$QB" claim "${QB2[@]}" > /dev/null
+python3 "$QB" started fleet:repo--n2 --label "$(qget repo--n2 job)" --session s-n2 "${QB2[@]}" > /dev/null
+python3 "$QB" ended --repo "$T/repo" --branch "$BR-n2" --session s-n2 "${QB2[@]}" > /dev/null
+python3 "$QB" finished fleet:repo--n2 --session s-n2 --outcome stopped --gate no-landing "${QB2[@]}" > /dev/null
+fin n2 "$TN2" "$LR" "${QL2[@]}" > "$T/out"; check "$?" "3" "a lander put on a stop that ran on another host: refused"
+check "$(python3 "$T/jget.py" result < "$T/out")" "ran ${TN2:0:7} on buildbox: stopped no-landing" "  naming where it ran"
+TN3=$(mkbranch n3)
+fin n3 "$TN3" "$RIGHTS" "${QL2[@]}" > /dev/null; python3 "$QB" cancel --repo "$T/repo" --branch "$BR-n3" "${QL2[@]}" > /dev/null
+fin n3 "$TN3" "$LR" "${QL2[@]}" > /dev/null; check "$?" "3" "  and on a cancel: a cancel holds the tip for a person"
+unset AUTOFINISH_STATE_DIR
+
 echo "the migration: the Mac-local landing queue moved into the fleet"
 qreset
 TL=$(mkbranch l)
@@ -507,6 +657,148 @@ check "$(qget repo--l finish)" '{"by": "typed", "from": "", "hold": false, "merg
 check "$(ls "$HL/Caches/run-seed/queue-local/_land" 2>/dev/null)" "" "  one whose dispatch still waits is moved too: its file gone, its next land-wait poll fails it"
 python3 "$QB" list --json "${QL2[@]}" > "$T/out"
 hasnt "$T/out" "local=_land" "  and the old folder is no store any reader lists"
+TM2=$(mkbranch lm)
+git -C "$T/repo" worktree add -q "$T/wt-lm" "$BR-lm" 2>/dev/null
+GM=$(git -C "$T/wt-lm" rev-parse --absolute-git-dir)
+mkdir -p "$GM/claude" "$HL/Caches/run-seed/queue-local/_land"
+cat > "$T/land_lander.py" <<'PY'
+import json, os, sys
+d, tip, land, br, repo = sys.argv[1:6]
+json.dump({"started": "2026-11-02T11:00:00-08:00", "session": "s-lm", "tip": tip, "by": "lander", "rule": "C",
+           "road": "refinish", "land_by": "dnd", "ended": None, "outcome": None, "gate": None},
+          open(os.path.join(d, "autofinish" + ".json"), "w"))
+json.dump({"id": "x3", "key": "repo--lm", "repo": repo, "branch": br + "-lm", "kind": "landing", "priority": "normal",
+           "state": "queued", "host": "laptop", "queued_at": 1, "waiter_pid": 999999, "waiter_start": "Sat Oct 31 12:00:00 2026"},
+          open(os.path.join(land, "repo--lm.json"), "w"))
+PY
+python3 "$T/land_lander.py" "$GM/claude" "$TM2" "$HL/Caches/run-seed/queue-local/_land" "$BR" "$(cd "$T/repo" && pwd -P)"
+python3 "$QB" sweep "${QL2[@]}" > "$T/out" 2>&1
+has "$T/out" "moved repo--lm from this host's landing queue: queued" "a queued lander start in the old landing queue: moved too"
+check "$(qget repo--lm finish)" '{"by": "lander", "from": "", "hold": false, "land_by": "dnd", "merge": false, "road": "refinish", "rule": "C"}' \
+  "  carrying its road and its mode flag (stuck-ships S1), pinned here as every moved landing"
+
+echo "finish ceiling: direct picks, cached retries and dispatch auto/bound starts"
+qreset
+echo off > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false
+printf 'acct-queue:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+cat > "$T/finish-picks.py" <<'PY'
+import subprocess, sys, types
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("finish_ceiling", sys.argv[1]).load_module()
+t = types.SimpleNamespace(primary=sys.argv[2], branch="claude/laptop/2026-11-02-pick")
+print(m.account_pick(t, cached=True)[2])
+run, calls = m.common.run_group, []
+def timed_out_once(cmd, timeout, **kwargs):
+    result = run(cmd, timeout, **kwargs)
+    calls.append("finish ceiling" in result.stdout)
+    if len(calls) == 1:
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    return result
+m.common.run_group = timed_out_once
+print(m.account_pick(t)[2])
+print(calls)
+PY
+python3 "$T/finish-picks.py" "$B/autofinish-run" "$T/repo" > "$T/out" 2>&1
+check "$?" 0 "the direct account pick accepts a finish past its build ceiling"
+has "$T/out" "week 92% < 97% (finish ceiling)" "the direct pick names the finish ceiling"
+has "$T/out" "[True, True]" "the timed-out attempt and cached retry each receive a fresh receipt"
+cat > "$T/finish-dispatch.py" <<'PY'
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import common
+with common.finish_pick_env(target="dispatch") as (env, fds):
+    result = subprocess.run(sys.argv[2:], env=env, pass_fds=fds)
+sys.exit(result.returncode)
+PY
+cat > "$T/claude-headless" <<EOF
+#!/bin/sh
+env > "$T/finish-env"
+echo ok
+EOF
+chmod +x "$T/claude-headless"
+export DISPATCH_CLAUDE="$T/claude-headless"
+for purpose_pick in auto bound; do
+  DISPATCH_HOST=buildbox DISPATCH_LOG="$T/finish-$purpose_pick.log" \
+    python3 "$T/finish-dispatch.py" "$B/../../regatta/hooks" "$B/dispatch" --start go "$T/repo" finish-test --headless --account "$purpose_pick" > "$T/out" 2>&1
+  check "$?" 0 "a receipt-bearing $purpose_pick finish start runs past the build ceiling"
+  has "$T/finish-$purpose_pick.log" "week 92% < 97% (finish ceiling)" "the $purpose_pick pick receives the finish marker"
+  hasnt "$T/finish-env" "REGATTA_FINISH_PICK_FD=" "the session inherits no receipt from its $purpose_pick start"
+done
+REGATTA_FINISH_PICK_FD=finish DISPATCH_HOST=buildbox DISPATCH_LOG="$T/finish-fake.log" \
+  "$B/dispatch" --start go "$T/repo" finish-test --headless --account auto > "$T/out" 2>&1
+check "$?" 1 "a build start naming the marker by hand is refused at its build ceiling"
+has "$T/finish-fake.log" "week 92% ≥ 90% (week ceiling)" "its refusal names the normal ceiling"
+
+echo "finish ceiling: the sweep and completed-build preflights"
+cat > "$T/finish-preflight.py" <<'PY'
+import contextlib, io, json, os, sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+
+sys.dont_write_bytecode = True
+bin, repo, scratch = map(Path, sys.argv[1:4])
+registry = json.loads(Path(os.environ["ACCOUNTS_FILE"]).read_text())
+registry["accounts"][0]["primary"] = False  # the primary's separate pace gate is not this login's rule
+registry["accounts"][0]["rules"]["overdraw"] = False  # a lifted build reads tight, and this asks of the ceiling alone
+accounts = scratch / "preflight-accounts.json"
+accounts.write_text(json.dumps(registry))
+os.environ["ACCOUNTS_FILE"] = str(accounts)
+m = SourceFileLoader("preflight", str(bin / "autofinish")).load_module()
+for fresh in (False, True):
+    # Cached build and finish verdicts must stay distinct in both orders.
+    for finish in ((False, True) if not fresh else (True, False)):
+        kind, detail = m.week_tight(repo, fresh=fresh, finish=finish)
+        print("fresh=%s finish=%s: %s" % (fresh, finish, kind or "allowed"))
+        if finish:
+            print(detail)
+
+# Run the actual dispatch handover preflight with an ended build's reply, without launching anything.
+common = m.common
+common.autofinish_landings = lambda: True
+common.autofinish_armed = lambda: True
+state = scratch / "preflight-state.json"
+state.write_text(json.dumps({"session": "preflight", "mode": "headless"}))
+transcripts = Path.home() / ".claude/projects/preflight"
+transcripts.mkdir(parents=True, exist_ok=True)
+(transcripts / "preflight.jsonl").write_text(json.dumps({"type": "assistant", "message": {
+    "model": "opus", "content": [{"type": "text", "text": common.HANDOVER_LINE}]}}, separators=(",", ":")) + "\n")
+source = (bin / "dispatch").read_text()
+gate = source.split('  why=$(python3 - "$state" "$here" "$branch" "$repo" "$core" "$m"', 1)[1]
+gate = gate.split("\n", 1)[1].split("\nPY\n", 1)[0]
+for by in ("handed", "yolo"):
+    # dispatch passes the worktree and keel's path after --by: the handed judge reads the build's facts there
+    sys.argv = ["preflight", str(state), str(bin.parent), "branch", str(repo), str(Path(common.__file__).parent), by,
+                str(repo), ""]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            exec(compile(gate, "dispatch-preflight", "exec"), {})
+        except SystemExit:
+            pass
+    print("%s: %s" % (by, out.getvalue().strip() or "allowed"))
+
+# modules/helm/bin/stalls_tick.py preflights landing retries through the same week reader.
+tick = SourceFileLoader("preflight_tick", str(bin.parent.parent / "helm/bin/stalls_tick.py")).load_module()
+tick._AF = m
+tick.run_cap = lambda s: None
+for action in ("relaunch", "retry"):
+    stall = {"action": action, "key": ["preflight", action], "worktree": str(repo), "depth": 1,
+             "host": tick.helmlib.host(), "dispatch": {"repo": str(repo)}}
+    memory = tick.Memory([dict(stall, t=1)])
+    print("tick %s: %s" % (action, tick.decide(stall, memory, 10000, "armed")["action"]))
+PY
+python3 "$T/finish-preflight.py" "$B" "$T/repo" "$T" > "$T/out" 2>&1
+check "$?" 0 "the actual preflights read a login at 92%, build ceiling 90%, finish ceiling 97%"
+for fresh in False True; do
+  has "$T/out" "fresh=$fresh finish=False: none" "the build preflight (fresh=$fresh) keeps the normal ceiling"
+  has "$T/out" "fresh=$fresh finish=True: allowed" "the landing preflight (fresh=$fresh) uses its own verdict"
+done
+has "$T/out" "week 92% < 97% (finish ceiling)" "the preflight verdict names the finish ceiling"
+has "$T/out" "handed: allowed" "a completed handover reaches the finish launcher"
+has "$T/out" "yolo: allowed" "a completed yolo build reaches the finish launcher too"
+has "$T/out" "tick relaunch: go" "Helm's landing retry reaches the finish launcher"
+has "$T/out" "tick retry: refused" "Helm's build retry keeps the normal ceiling"
 
 echo
 [ "$fails" = 0 ] && echo "test_finish_queue: all passed" || { echo "test_finish_queue: $fails failed"; exit 1; }

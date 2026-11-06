@@ -21,23 +21,23 @@ D="$(cd "$(dirname "$0")" && pwd)"
 M="$(dirname "$D")"
 rc=0
 # The line names this script once (a Mac's whole line runs it in lanes); .github/ci/share.sh reads
-# --list-shards and runs each shard as an id of its own: check-linux the seven on the Linux list, the Mac
-# share pickup, queue and macos (`share.sh whole` runs this script once, in lanes). Off macOS a shard runs LINUX_OK's suites only, as the default does (the twin's
+# --list-shards and runs each shard as an id of its own: check-linux the eight on the Linux list, the Mac
+# share queue and macos (`share.sh whole` runs this script once, in lanes). Off macOS a shard runs LINUX_OK's suites only, as the default does (the twin's
 # `check (the rest)` runs queue on ubuntu); WHARF_RUNS_LINUX_PROOF=1 runs the rest too, to prove one.
-SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_check_ci test_build_review test_builder_coin test_builder_host test_headroom test_harness test_agy test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_pickup test_seed_from test_autofinish test_dispatch test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_systemd test_kick_socket test_wharf test_shards"
+SUITES="orca-host orca-serve-agent node peers cold_prompt test_check test_check_ci test_build_review test_builder_coin test_builder_host test_orca_runtime test_headroom test_harness test_agy test_vendor test_hail test_clock test_rc_hosts test_berth test_autofinish_run test_lander test_pickup test_seed_from test_autofinish test_dispatch test_handover test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_systemd test_kick_socket test_wharf test_shards"
 SHARDS="core autofinish dispatch pickup jobs landing wharf queue tools macos"
 shard_suites() {
   case "$1" in
-    core) echo "orca-host orca-serve-agent test_headroom test_systemd test_builder_coin test_builder_host test_kick_socket test_agy test_shards" ;;
+    core) echo "orca-host orca-serve-agent test_orca_runtime test_headroom test_systemd test_builder_coin test_builder_host test_kick_socket test_agy test_shards" ;;
     autofinish) echo "test_autofinish" ;;
     dispatch) echo "test_dispatch" ;;
     pickup) echo "test_pickup test_seed_from" ;;
     jobs) echo "node test_hail test_clock test_berth" ;;
     landing) echo "test_autofinish_run" ;;
     wharf) echo "test_wharf" ;;
-    queue) echo "test_queue test_priority test_after test_rank test_finish_queue test_finish_capable" ;;
+    queue) echo "test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_lander" ;;
     tools) echo "peers cold_prompt test_check test_build_review" ;;
-    macos) echo "test_harness test_rc_hosts test_check_ci" ;;
+    macos) echo "test_harness test_rc_hosts test_check_ci test_vendor test_handover" ;;
     *) return 2 ;;
   esac
 }
@@ -80,19 +80,23 @@ fi
 # name (common.tool) and no file spells out: modules/lighthouse (account, hosts), modules/plumb (usage-report,
 # tier_check.py), modules/aurora (scope-pass), modules/atlas (knowledge-commit), modules/helloworld. Named here
 # for the macOS share's scope; test_check.sh holds the list to it.
-# Off macOS (CI's ubuntu) only the suites proven there run: the seven Linux shards' (test_kick_socket's
+# Off macOS (CI's ubuntu) only the suites proven there run: the eight Linux shards' (test_kick_socket's
 # stub-server cases where python3 has websockets 14.0+, which .github/ci/linux-tools.sh unpacks from
-# PyPI's checked wheel; test_agy, written portable, agy-road, in core). A suite joins this list only after
+# PyPI's checked wheel; test_agy, written portable, agy-road, and test_orca_runtime, the Orca adapter's road per
+# OS, yard-orca-serve, in core). A suite joins this list only after
 # a Linux pass (WHARF_RUNS_LINUX_PROOF=1), never by skipping what it checks, and in the change that puts its
 # shard on .github/ci/linux-ids: a listed shard whose suite is off this list runs nothing there and passes
 # (test_shards holds the two together).
 # test_harness stays on macOS: its research cases exercise the real sandbox-exec seatbelt.
 # test_rc_hosts stays on macOS: it compiles and codesigns the overlay's TCC launcher.
 # test_check_ci (main's, merged after the shard split) waits in `macos` for its Linux proof; then `tools` and this list.
+# test_vendor also waits in `macos` until its Linux proof.
+# test_handover (landing-no-ask, rebased onto the split) waits in `macos` for its Linux proof the same way.
 # Proven on GitHub's ubuntu by #500's check-linux (2026-11-05, run 41984282738): every shard but `queue`, whose
-# finish-queue cases read the Mac's claim and memory floors (4 failed); `queue` and `macos` stay on the Macs,
-# and `pickup` too since the self-hosted Linux runners, which lack lsof (TODO.md [runner-lsof]).
-LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket test_builder_host test_shards test_dispatch node test_hail test_clock test_berth test_autofinish_run test_wharf peers cold_prompt test_check test_build_review test_agy "
+# finish-queue cases read the Mac's claim and memory floors (4 failed); `queue` and `macos` stay on the Macs.
+# `pickup` (test_pickup, test_seed_from) passed there too, failed 19 cases on the self-hosted runners' old image
+# (no lsof, which pickup's `ide_windows` runs) and is back since the runners were reinstalled (runner-lsof, 2026-11-06).
+LINUX_OK=" orca-host orca-serve-agent test_autofinish test_headroom test_systemd test_builder_coin test_kick_socket test_builder_host test_shards test_dispatch node test_hail test_clock test_berth test_autofinish_run test_wharf peers cold_prompt test_check test_build_review test_agy test_orca_runtime test_pickup test_seed_from "
 # Off macOS the rest is left to a Mac, said per suite. WHARF_RUNS_SKIP_LINUX_OK=1 runs only the rest on
 # a Mac, for a hand run: no share sets it since wharf-runs-linux, which runs shards instead.
 LEFT_TO_MAC="not run on this host (a macOS run of this line covers it; where a pull request's check runs on a Mac, pr merge waits for it)"

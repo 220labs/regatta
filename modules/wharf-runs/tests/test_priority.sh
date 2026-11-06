@@ -74,8 +74,8 @@ check "$(python3 -c 'import json,sys; print([e["topic"] for e in json.load(open(
   "  the second force entry is first in line"
 check "$(python3 "$QB" cap --priority force --cap 6) $(python3 "$QB" cap --priority high --cap 6) $(python3 "$QB" cap --cap 6)" "7 6 6" \
   "dispatch-queue cap: force's cap is the host's plus one, every other rank's the host's"
-check "$(grep -c '"$n" -ge "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -lt "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -ge "$scap"' "$B/dispatch") $(grep -c 'c=$(pcap)' "$B/dispatch")" "2 3 3 0" \
-  "  dispatch's fire path, the agy road, its no-queue refusals and --start count against it (pcap; force-any; no landing recount since finish-as-task)"
+check "$(grep -c '"$n" -ge "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -lt "$(pcap)"' "$B/dispatch") $(grep -c '"$n" -ge "$scap"' "$B/dispatch") $(grep -c 'c=$(pcap)' "$B/dispatch")" "3 3 3 0" \
+  "  dispatch's Claude, agy and vendor fire paths, its no-queue refusals and --start count against the priority cap"
 
 echo "a requeued run goes back at force (S10; the owner, 2026-10-30), and force's claim rules apply to it"
 qreset

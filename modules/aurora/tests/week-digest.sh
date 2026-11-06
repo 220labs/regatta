@@ -137,4 +137,66 @@ cp "$P/transcripts/open/n.jsonl" "$L/$(slug "$P/open")/n.jsonl"
 check "$("$W" --days 7 | grep -c NOUUID)" 1 "a line with no uuid in both copies counts once"
 rm -f "$P/transcripts/open/m.jsonl" "$L/$(slug "$P/open")/m.jsonl" "$P/transcripts/open/n.jsonl" "$L/$(slug "$P/open")/n.jsonl"
 
+echo "evolve-readers: a launcher's prompt is not the owner's (the core's transcript.machine_start)"
+M="$T/u/.claude-m/projects/$(slug "$P/open")"; mkdir -p "$M"
+printf '{"accounts": [{"label": "m", "home": "%s"}]}\n' "$T/u/.claude-m" > "$T/accounts-m.json"
+mline() {   # mline <session> <text as a JSON string>
+  printf '{"type": "user", "origin": {"kind": "human"}, "sessionId": "%s", "timestamp": "%s", "message": {"content": %s}}\n' "$1" "$NOW" "$2"
+}
+mline disp-1 '"You are an unattended session started by dispatch on host-a at 2026-11-03 21:59 UTC; nobody is watching. MACHWORD"' > "$M/m1.jsonl"
+{ mline disp-2 '"You are an unattended session started by dispatch on host-a; MACHWORD"'; mline disp-2 '"OWNERWORD typed over Remote Control"'; } > "$M/m2.jsonl"
+mline land-3 '"<command-message>finish is running…</command-message>\n<command-name>/finish</command-name>\n<command-args>claude/h/2026-11-01-x --unattended --merge</command-args>"' > "$M/m3.jsonl"
+mline seed-4 "\"/pickup 'claude/h/2026-10-31-seed' --fresh\"" > "$M/m4.jsonl"
+{ mline own-5 '"You are a great help, OWNERWORD: add a rule for this"'; mline own-5 '"<command-message>finish</command-message>\n<command-name>/finish</command-name>"'; } > "$M/m5.jsonl"
+cp "$M/m1.jsonl" "$P/transcripts/open/m1-copy.jsonl"   # the archive's copy of a launcher's session: one session, counted once
+out=$(ACCOUNTS_FILE="$T/accounts-m.json" "$W" --days 7)
+check "$(echo "$out" | grep -c MACHWORD) $(echo "$out" | grep -c OWNERWORD) $(echo "$out" | grep -c 'claude/h/2026-1')" "0 2 0" \
+  "a dispatch brief, autofinish-run's launch and a seed's pickup tab are left out; the owner's prompts stay"
+check "$(echo "$out" | grep -c '^- /finish$')" 1 "  a /finish the owner typed is the owner's"
+check "$(echo "$out" | grep -o '^_4 prompts a launcher typed, in 4 sessions (autofinish 1, dispatch 2, pickup 1)')" \
+  "_4 prompts a launcher typed, in 4 sessions (autofinish 1, dispatch 2, pickup 1)" "  one line counts them by launcher, the archive's copy once"
+check "$(ACCOUNTS_FILE="$T/accounts-m.json" "$W" --days 7 --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+p = [x["text"] for s in d["sessions"] for x in s["prompts"]]
+print(d["machine"], sum("MACHWORD" in t for t in p), sum("OWNERWORD" in t for t in p), sorted(s["session"] for s in d["sessions"] if s["session"][:4] in ("disp", "land", "seed", "own-")))')" \
+  "{'prompts': 4, 'sessions': 4, 'by': {'autofinish': 1, 'dispatch': 2, 'pickup': 1}} 0 2 ['disp-2', 'own-5']" \
+  "--json: the machine counts; a launcher's session with an owner's prompt keeps that prompt alone"
+check "$("$W" --days 7 --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["machine"])')" \
+  "{'prompts': 1, 'sessions': 1, 'by': {'dispatch': 1}}" "  the archive's copy alone, without the login that ran it: the same session"
+check "$("$W" --days 7 --json --scope node | python3 -c 'import json, sys; print(json.load(sys.stdin)["machine"])')" \
+  "{'prompts': 0, 'sessions': 0, 'by': {}}" "  none read: zero, never absent"
+# a session relaunched after it was archived: the archive holds one launch, the live copy that and a second
+LATER=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc)+d.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')
+mline land-7 '"/finish claude/h/2026-11-01-y --unattended"' > "$P/transcripts/open/m7.jsonl"
+{ mline land-7 '"/finish claude/h/2026-11-01-y --unattended"'
+  printf '{"type": "user", "origin": {"kind": "human"}, "sessionId": "land-7", "timestamp": "%s", "message": {"content": "/finish claude/h/2026-11-01-y --unattended --merge"}}\n' "$LATER"; } > "$M/m7.jsonl"
+cp "$M/m1.jsonl" "$M/m8.jsonl"; sed -i.bak 's/disp-1/fork-8/' "$M/m8.jsonl"; rm -f "$M/m8.jsonl.bak"   # a fork's copy of a brief, another id
+check "$(ACCOUNTS_FILE="$T/accounts-m.json" "$W" --days 7 --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["machine"])')" \
+  "{'prompts': 6, 'sessions': 5, 'by': {'autofinish': 3, 'dispatch': 2, 'pickup': 1}}" \
+  "  the archive's older copy and the live one merge (both launches counted), and a fork's copy of a brief counts once"
+# a repo the archive names by its folder (`_x`) and the live slug by its tail (`-x`): one session, one brief
+mkdir -p "$P/_x" "$P/transcripts/_x" "$T/u/.claude-m/projects/$(slug "$P/_x")"
+mline disp-9 '"You are an unattended session started by dispatch on host-a; in _x"' > "$P/transcripts/_x/m9.jsonl"
+cp "$P/transcripts/_x/m9.jsonl" "$T/u/.claude-m/projects/$(slug "$P/_x")/m9.jsonl"
+check "$(ACCOUNTS_FILE="$T/accounts-m.json" "$W" --days 7 --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["machine"])')" \
+  "{'prompts': 7, 'sessions': 6, 'by': {'autofinish': 3, 'dispatch': 3, 'pickup': 1}}" \
+  "  a repo whose archive name differs from its live slug: its brief counts once"
+
+# weekly-run's and sextant-run's `claude -p "/aurora <section>"`, raw as Claude Code records it: the launcher's, one rule with asks
+mline wk-10 '"<command-message>aurora</command-message>\n<command-name>/aurora</command-name>\n<command-args>dream</command-args>"' > "$M/m10.jsonl"
+mline wk-11 '"/sextant"' > "$M/m11.jsonl"
+check "$(ACCOUNTS_FILE="$T/accounts-m.json" "$W" --days 7 --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(d["machine"]["by"].get("weekly"), [s["session"] for s in d["sessions"] if s["session"].startswith("wk-")])')" "2 []" \
+  "  weekly-run's /aurora and sextant-run's /sextant are a launcher's, as asks' sieve reads them"
+
+echo "an older core (no transcript.machine_start): the read refuses in one line, --promote-tags still runs"
+mkdir -p "$T/old/modules"; cp -R "$D/../regatta" "$T/old/modules/regatta"; cp -R "$D" "$T/old/modules/aurora"
+printf 'TAIL_BYTES = 2_000_000\n' > "$T/old/modules/regatta/hooks/transcript.py"
+out=$("$T/old/modules/aurora/bin/week-digest" --days 7 2>&1); check "$? $out" \
+  "2 week-digest: the regatta core predates transcript.machine_start — update the regatta plugin" "  the week's read: exit 2, the one line"
+"$T/old/modules/aurora/bin/week-digest" --promote-tags > /dev/null 2>&1; check $? 0 "  --promote-tags: exit 0"
+
 [ "$fails" -eq 0 ] && echo "week-digest: all ok" || { echo "week-digest: $fails failed"; exit 1; }

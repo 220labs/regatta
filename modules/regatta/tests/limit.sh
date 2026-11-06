@@ -84,21 +84,52 @@ check "$(HEADROOM_HOST=host-a "$W/bin/headroom" limits 2>/dev/null)" "avail=20,r
 printf '1.5\nlog\n' > "$C/wharf-runs/load-max"
 "$L" limit set --why t load-max host-a:2 > /dev/null 2>&1
 check "$("$W/bin/berth" --load-key wharf-runs/load-max)" 2 "berth's load key: the plain layer replaces 1.5 log"
-check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "opus-high=1,sonnet-high=2,argon-high=2" "the builder coin's odds: no value reads the default, 1:2:2"
+check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1" "the builder coin's odds: no value reads the default, 1:2:2"
 printf 'opus-high=1,\nsonnet-high=2,\nargon-high=2\n' > "$C/wharf-runs/builder-odds"   # the overlay's one word per line
 "$L" limit set --why t builder-odds 'host-a:argon-high=0, opus-high=2,sonnet-high=1' > /dev/null 2>&1
 check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "opus-high=2,sonnet-high=1,argon-high=0" "  set over the config's lines: the draw reads the layer's alone, in the arms' order"
+"$L" limit set --why t builder-odds 'host-a:0:0:0:1:1' > /dev/null 2>&1
+check "$("$W/bin/buildercoin.py" odds 2>/dev/null)" "0:0:0:1:1" "five positional weights override a named base line"
+"$L" limit set --why t builder-odds '0:0:0:1:1' --on host-a > /dev/null 2>&1
+check "$?" 0 "  the same positional value is a bare value with --on"
 check "$("$L" limit set --why t week-max 'acct-x:95' 2>&1 | head -1)" "regatta limit: lighthouse/week-max is a login's: name the hosts it is set on (--on H[,H…] or --all)" \
   "a login's limit names its hosts"
 "$L" limit set --why t week-max 'acct-x:95' '*:88' --on host-a > /dev/null 2>&1
 check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-x 2>/dev/null)" "95 (lighthouse/week-max acct-x:)" "account's week ceiling: the login's own line"
 check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-other 2>/dev/null)" "88 (lighthouse/week-max *:)" "  else the * line"
 
+echo "limit: a finish-only week ceiling"
+"$L" limit set --why t week-max-finish 'acct-x:97' '*:96' --on host-a > "$T/finish-limit.out" 2>&1
+check "$?" 0 "the finish ceiling is a live login limit"
+check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-x --for finish 2>/dev/null)" "97 (lighthouse/week-max-finish acct-x:)" "its trial reader sees the own line"
+check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-other --for finish 2>/dev/null)" "96 (lighthouse/week-max-finish *:)" "its trial reader sees the wildcard"
+check "$("$L" limit get week-max-finish --on host-a | grep -c 'acct-x:97')" 1 "get reports the live finish line"
+check "$(grep -c 'serves only a login whose registry' "$T/finish-limit.out")" 0 "the writer does not claim the normal wildcard rule for a finish"
+out=$("$L" limit set --why t week-max-finish 'acct-x:101' --on host-a 2>&1)
+check "$?" 2 "a finish ceiling above 100 is refused by its reader"
+"$L" limit unset --why t week-max-finish acct-x --on host-a > /dev/null 2>&1
+check "$(cat "$C/live/lighthouse/week-max-finish")" '*:96' "unset keeps other finish lines"
+
+python3 - "$M/hooks" > "$T/receipt.out" <<'PY'
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import common
+code = 'import common, os; print(common.consume_finish_pick(), common.consume_finish_pick(), "REGATTA_FINISH_PICK_FD" in os.environ)'
+with common.finish_pick_env() as (env, fds):
+    subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); " + code, sys.argv[1]],
+                   env=env, pass_fds=fds, check=True)
+with common.finish_pick_env(target="dispatch") as (env, fds):
+    subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); " + code, sys.argv[1]],
+                   env=env, pass_fds=fds, check=True)
+PY
+check "$(cat "$T/receipt.out")" 'True False False
+False False False' "a receipt is consumed once, removed from the environment, and valid only on its own road"
+
 echo "limit: a value the reader refuses"
 before=$(cd "$C/live" && find . -type f -exec cat {} + | sort | tr '\n' ' ')
 for bad in "run-cap host-a:0" "run-cap host-a:abc" "run-cap host-a:1000" "check-slots host-a:0" "check-slots host-a:x" \
            "headroom host-a:avail=x" "headroom host-a:free=10" "load-max host-a:fast" "check-slots host-a:00" \
-           "builder-odds host-a:2:1:2" "builder-odds host-a:3/5" "builder-odds host-a:opus-high=x" "builder-odds host-a:haiku=1" \
+           "builder-odds host-a:2:1" "builder-odds host-a:3/5" "builder-odds host-a:opus-high=x" "builder-odds host-a:haiku=1" \
            "builder-odds host-a:opus-high=1,opus-high=2"; do
   out=$("$L" limit set --why t $bad 2>&1); rc=$?
   check "$rc" 2 "refused: $bad"

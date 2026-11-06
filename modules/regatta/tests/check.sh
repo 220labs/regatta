@@ -1170,6 +1170,131 @@ check "$(TX edge)" "edge" "  a tail that starts at a line start keeps that line"
 check "$(TX time)" "None 1792836000.0" "  a time that does not parse: epoch None; an offset time reads"
 check "$(TX line)" "None None None ('claude-opus-5-5', 123)" "  call_line(): foreign, user or cut lines are None"
 
+echo "transcript: machine_start(), the one rule for a launcher's prompt (plumb's asks, aurora's week-digest)"
+cat > "$T/ms.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import transcript as tx
+for line in sys.stdin.read().split("\n=====\n"):
+    print(tx.machine_start(line))
+PY
+MS() { python3 -I "$T/ms.py" "$M/hooks" 2>&1 | tr '\n' ' '; }
+check "$(printf '%s' "You are an unattended session started by dispatch on host-a at 2026-11-04 02:33 UTC; nobody is watching
+=====
+  You are an unattended session started by dispatch on host-a" | MS)" "dispatch dispatch " "a dispatch brief, leading space or not"
+check "$(printf '%s' "/finish claude/h/2026-11-01-x --unattended --merge
+=====
+<command-message>finish is running…</command-message>
+<command-name>/finish</command-name>
+<command-args>claude/h/2026-11-01-x --unattended --by=handed</command-args>
+=====
+<command-name>/finish</command-name>
+<command-message>finish</command-message>
+<command-args>claude/h/2026-11-01-x --unattended</command-args>" | MS)" "autofinish autofinish autofinish " "autofinish-run's launch prompt, flattened and raw (its tags in either order)"
+check "$(printf '%s' "/pickup 'claude/h/2026-11-01-seed' --fresh
+=====
+<command-message>pickup</command-message>
+<command-name>/pickup</command-name>
+<command-args>'claude/h/2026-11-01-seed' --note 'x' --fresh</command-args>
+=====
+Picked up with /pickup (2026-11-01 10:00): claude/h/2026-11-01-seed.
+=====
+Moved from host-b with /move (2026-11-01 10:00): claude/h/x." | MS)" "pickup pickup pickup pickup " "a seed's pickup tab (its quoted prefill, raw and flat) and the orientation it sends"
+check "$(printf '%s' "Picked up with /pickup (2026-11-01 10:00): claude/h/2026-11-01-seed. Read its last commits, then say what is next. Then: let's add a rule that the digest never counts seeds" | MS)" "None " "  an orientation that carries the owner's --note (\`. Then: <note>\`) stays the owner's"
+check "$(printf '%s' "You are skipper · regatta, the skipper of scope regatta on host-a: you hold the leases
+=====
+You are one arm of a council on a design question." | MS)" "skipper council " "helm's skipper brief and a council arm"
+check "$(printf '%s' "You are a great help — let's add a rule for this
+=====
+You are the best, now rename it
+=====
+you are an unattended session? then why did you ask me
+=====
+/finish
+=====
+/finish --local
+=====
+/finish --local --unattended
+=====
+You are wrong, the skipper of scope regatta should have asked me
+=====
+/pickup claude/h/x
+=====
+Please read: You are an unattended session started by dispatch on host-a
+=====
+Unattended runs should never merge without asking me
+=====
+read first: docs/x.md, then fix the digest
+=====
+task: rename the file
+=====
+" | MS)" "None None None None None None None None None None None None None " "  an owner's prompt that only looks like one is the owner's (a typed /finish, a flag where the branch goes, a sentence naming the skipper, a typed /pickup, a quote mid-prompt, a sentence opening like an old brief frame, empty)"
+
+echo "  each launcher's real prompt, rendered from its own template, reads as that launcher's"
+# a launcher that rewords its prompt breaks this, never the readers quietly (the landing review's ask, 2026-11-05)
+cat > "$T/tpl.py" <<'PY'
+import re
+import sys
+
+sys.dont_write_bytecode = True   # a loaded tool never leaves a cache beside it (the tree scans)
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+hooks, root = sys.argv[1], Path(sys.argv[2])
+sys.path.insert(0, hooks)
+import transcript as tx  # noqa: E402
+
+b = {"name": "claude/h/2026-11-05-x", "dirty": 0, "caught_up": 0, "incoming": 0, "unpushed": 0, "behind_main": 0}
+
+
+def load(rel, name):
+    path = root / rel
+    if not path.is_file():
+        return None
+    sys.path.insert(0, str(path.parent))
+    return SourceFileLoader(name, str(path)).load_module()
+
+
+def src(rel, pattern):
+    path = root / rel
+    if not path.is_file():
+        return None
+    m = re.search(pattern, path.read_text(encoding="utf-8"))
+    return m.group(1) if m else "(the template's line is gone)"
+
+
+def rendered():
+    """(launcher, its real prompt, or None when its module is not in this tree)"""
+    af = load("modules/wharf-runs/bin/autofinish-run", "tpl_autofinish_run")
+    yield "autofinish-run", af and af.finish_prompt(b["name"], by="handed", merge=True, sent_from="host-b")
+    pk = load("modules/wharf-runs/bin/pickup", "tpl_pickup")
+    yield "pickup orientation", pk and pk.orientation(b, "/w/x", None, "")
+    yield "pickup move", pk and pk.orientation(b, "/w/x", None, "", how="Moved from host-b with /move")
+    yield "pickup cloud brief", pk and pk.cloud_brief(b, Path("/p/regatta"), "")
+    hl = load("modules/wharf-runs/bin/hail", "tpl_hail")
+    yield "hail", hl and hl.frame("report", "the check is green", None, "skipper · regatta")
+    rc = load("modules/wharf-runs/bin/dispatch-rc", "tpl_dispatch_rc")
+    yield "dispatch-rc nudge", rc and rc.NUDGE_FRAME % ("overloaded_error", "529")
+    ck = load("modules/wharf-runs/bin/clock", "tpl_clock")
+    yield "clock", ck and ck.PROMPT_HEAD + "\n\n    regatta check"
+    sk = load("modules/helm/bin/skipperlib.py", "tpl_skipperlib")
+    yield "skipper brief", sk and sk.BRIEF.format(holder=sk.holder("regatta"), scope="regatta", host="host-a",
+                                                  helm="helm", ask="ask", screen="skipper-regatta")
+    yield "dispatch brief", src("modules/wharf-runs/bin/dispatch", r'prompt="(You are an unattended session [^$"]*)')
+    yield "dispatch probe", src("modules/wharf-runs/bin/dispatch", r'probe_prompt="([^"]*)"')
+
+
+got = [(name, text) for name, text in rendered() if text is not None]   # a module absent here (the twin's tree) is not judged
+print([name for name, text in got if not tx.machine_start(text)], len(got))
+PY
+n=0
+for f in wharf-runs/bin/autofinish-run:1 wharf-runs/bin/pickup:3 wharf-runs/bin/hail:1 wharf-runs/bin/dispatch-rc:1 \
+         wharf-runs/bin/clock:1 helm/bin/skipperlib.py:1 wharf-runs/bin/dispatch:2; do
+  [ -f "$ROOT/modules/${f%:*}" ] && n=$((n + ${f##*:}))
+done
+check "$(python3 "$T/tpl.py" "$M/hooks" "$ROOT" 2>&1 | tail -1)" "[] $n" \
+  "  autofinish-run's finish_prompt, pickup's orientation, move and cloud brief, hail's frame, dispatch-rc's nudge, clock's head, the skipper brief, dispatch's brief and probe"
+
 echo "module files not yet public (a note: every module targets the twin, none is forced)"
 out=$(notpublic "$ROOT")
 printf '%s\n' "$out" | sed -n 's/^COUNT /  --   /p'

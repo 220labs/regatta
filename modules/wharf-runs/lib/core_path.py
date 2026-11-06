@@ -22,7 +22,8 @@ from pathlib import Path
 
 
 def candidates():
-    out = [Path(__file__).resolve().parents[2] / "regatta" / "hooks"]
+    # A source bundle has no checkout path: only the receiving host's install locations apply.
+    out = [Path(__file__).resolve().parents[2] / "regatta" / "hooks"] if "__file__" in globals() else []
     cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
     try:
         home = (cfg / "home").read_text(encoding="utf-8").split("\n")[0].strip()

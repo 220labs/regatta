@@ -142,6 +142,12 @@ cat > "$T/account-stub" <<'EOF'
 import os, sys
 t = os.environ["T_ACCT"]
 open(t + "/acct-args", "w").write(" ".join(sys.argv[1:]))
+# the receipt as account's consume_finish_pick reads it: the pipe, not the word
+try:
+    receipt = os.read(int(os.environ.get("REGATTA_FINISH_PICK_FD", "")), 64).decode()
+except (OSError, ValueError):
+    receipt = ""
+open(t + "/acct-receipt", "w").write(receipt)
 a = sys.argv[1:]
 if a[:1] != ["pick"] or "--repo" not in a or "--json" not in a or a.index("--repo") + 1 >= len(a):
     print("account: usage", file=sys.stderr); sys.exit(2)
@@ -169,7 +175,10 @@ has "$T/plan6.txt" "principal: the week is tight, and the top tier holds — nev
 # S6: the hold routes through `account pick --repo`, on pick's own room: both reviews run on Opus (principal-s6-close)
 route() { python3 "$B/review-gate" plan --repo "$T/r50" --principal --json | python3 -c "import json,sys; r=json.load(sys.stdin)['principal']['route']; print(r and (r['account'], r['here'], r['waits'], r['reread']))"; }
 check "$(route)" "None" "  no account answer (no registry): no route, the plain advice"
-check "$(cat "$T/acct-args")" "pick --repo $T/r50 --json --overdraw" "  …asked with the repo and --overdraw (a landing may be on an overdrawn login), never --room fable"
+check "$(cat "$T/acct-args")" "pick --for finish --repo $T/r50 --json --overdraw" "  …asked with the repo, as a finish, and --overdraw (a landing may be past its bar), never --room fable"
+check "$(cat "$T/acct-receipt")" "regatta-finish:account" "  …with the receipt, or account reads a build at the build ceiling and routes off the landing's login"
+python3 "$B/review-gate" plan --repo "$T/r50" --principal --phase build --json > /dev/null
+check "$(cat "$T/acct-args") [$(cat "$T/acct-receipt")]" "pick --repo $T/r50 --json --overdraw []" "  …a build round's plan asks a plain pick: the band is a landing's"
 echo 0 > "$T/acct-rc"; printf '{"account": "acct-spare", "env": {"CLAUDE_CONFIG_DIR": "%s/spare"}, "reason": "week 10%% < 70%% (week ceiling), 5h 10%% ≤ 50%%", "skipped": []}' "$T" > "$T/acct-json"
 check "$(route)" "('acct-spare', False, False, False)" "  a login with room that is not this session's: routed there"
 python3 "$B/review-gate" plan --repo "$T/r50" --principal > "$T/plan6.txt" 2>&1

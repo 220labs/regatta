@@ -99,15 +99,28 @@ a = ap.parse_args()
 if a.ref.startswith("-") or not os.path.isfile(a.file):
     sys.exit("pickup seed: a ref and a readable --file")
 EOF
+# Starts in one pass run concurrently. Keep the log's ordinal and that call's brief together:
+# counting lines after an unlocked append lets two stubs overwrite the same numbered brief.
+cat > "$T/bin/pickup-record" <<'PYREC'
+import fcntl, os, shutil, sys
+from pathlib import Path
+root, args = Path(sys.argv[1]), sys.argv[2:]
+with (root / "pickup-record.lock").open("w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with (root / "pickup.log").open("a") as log:
+        log.write(" ".join([args[0]] + args[4:8]) + "\n")
+    with (root / "seed-args.log").open("a") as log:
+        log.write(" ".join(args) + "\n")
+    with (root / "seed-cwd.log").open("a") as log:
+        log.write(os.getcwd() + "\n")
+    n = len((root / "pickup.log").read_text().splitlines())
+    shutil.copyfile(args[3], root / ("brief-%d.md" % n))
+PYREC
 cat > "$T/bin/pickup" <<EOF
 #!/usr/bin/env bash
 python3 "$T/bin/pickup-args" "\$@" || exit 2
 [ -f "$T/pickup-hold" ] && for _ in \$(seq 1 300); do [ -f "$T/pickup-go" ] && break; sleep 0.1; done
-printf '%s\n' "\$1 \$5 \$6 \$7 \$8" >> "$T/pickup.log"
-printf '%s\n' "\$*" >> "$T/seed-args.log"
-pwd -P >> "$T/seed-cwd.log"
-n=\$(wc -l < "$T/pickup.log" | tr -d ' ')
-cp "\$4" "$T/brief-\$n.md"
+python3 "$T/bin/pickup-record" "$T" "\$@" || exit 2
 [ -f "$T/pickup-taken" ] && { echo "pickup seed: \$2 is already open as claude/laptop/2026-10-21-\$2" >&2; exit 1; }
 rc=\$(cat "$T/pickup-rc" 2>/dev/null || echo 0)
 s="\$6-seed"; [ "\$5" = --beside ] || s="claude/laptop/2026-10-21-\$2"

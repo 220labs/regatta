@@ -43,7 +43,8 @@ classifier added; the cheap and permanent ones first, the live reads last):
                    a launch: autofinish armed here, and autofinish-run's own lock_refusal()
     the run cap    a step on this Mac: `dispatch-rc live --no-reap` under dispatch's cap, else wait
     the week       bin/autofinish's week_tight() with cached readings: its verdict "tight" refuses
-                   (the week), "none" refuses (`account pick` found no login with room)
+                   (the week), "none" refuses (`account pick` found no login with room); only a
+                   landing relaunch asks for the finish ceiling
     the tools      dispatch and autofinish-run keep every guard of their own; a refusal is a
                    line, never a loop: it moves the backoff, and REFUSALS of them raise the stall —
                    bar a relaunch this Mac's own pick refused (`no_account`), which the week
@@ -395,9 +396,9 @@ def autofinish_mod():
     return _AF
 
 
-def week_refusal(repo):
+def week_refusal(repo, finish=False):
     try:
-        verdict, detail = autofinish_mod().week_tight(repo)
+        verdict, detail = autofinish_mod().week_tight(repo, finish=finish)
     except Exception as e:  # an odd answer is no account, never a crashed tick (bin/autofinish's rule)
         verdict, detail = "none", "the pick could not be read (%s)" % type(e).__name__
     if verdict == "tight":
@@ -497,7 +498,7 @@ def decide(s, mem, t, mode_now, label=None):
         cap = run_cap(s)
         if cap and cap[0] >= cap[1]:
             return {"action": "wait", "why": "the run cap is full here (%d of %d)" % cap}
-    why = week_refusal(local_repo(s) or Path(s.get("worktree") or "."))
+    why = week_refusal(local_repo(s) or Path(s.get("worktree") or "."), finish=what == "relaunch")
     if why:
         return {"action": "refused", "why": why}
     return {"action": "go", "what": what, "attempt": n + 1}
@@ -515,13 +516,15 @@ def skipper_road(s):
     return {k: d[k] for k in DISPATCH_KEYS if d.get(k)}
 
 
-ARM_WORD = re.compile(r"(opus-high|sonnet-high|argon-high):[0-2]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # buildercoin's WORD_GRAMMAR (wharf-runs' test_builder_coin.sh holds it)
+ARM_WORD = re.compile(r"(opus-high|sonnet-high|argon-high|gpt-big|gpt-mid):[0-4]:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]")   # buildercoin's WORD_GRAMMAR (wharf-runs' test_builder_coin.sh holds it)
 
 
 def arm_word(d):
     """The builder rotation's word for a stopped run whose recorded pair is its drawn arm (dispatch's record), else
     None (dispatch-queue's arm_word, for helm's own retry)."""
     a = d.get("arm")
+    if d.get("arm_source") == "fallback" or isinstance(a, dict) and a.get("fallback"):
+        return None
     if not isinstance(a, dict) or a.get("model") != d.get("model") or a.get("effort") != d.get("effort"):
         return None
     w = "%s:%s:%s:%d" % (a.get("name"), a.get("coin"), a.get("until"), bool(a.get("forced")))
