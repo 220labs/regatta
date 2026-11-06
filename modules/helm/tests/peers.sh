@@ -35,6 +35,12 @@ check "$(py 'import helmlib; print(helmlib.peer("keel"), helmlib.peer("dispatch-
       "None None None" "peer() and harness_adapter(): None for keel, dispatch-rc and the adapter"
 check "$(py 'import helmlib; print(helmlib._sheep_gate, helmlib.GUARDED)')" \
       "None ('transcripts',)" "no keel: the guarded list is the core's (regatta/guarded)"
+mkdir -p "$T/config/wharf-runs"
+echo buildbox:buildbox-ssh > "$T/config/wharf-runs/ssh"
+check "$(py 'import asklib; print(asklib.peer_hosts(), asklib.peer_alias("buildbox"))')" \
+      "{'buildbox': 'buildbox-ssh'} buildbox-ssh" "no wharf-runs: message relays retain the configured alias"
+check "$(py 'import asklib; asklib._MESSAGE_PEERS[:] = [object()]; print(asklib.peer_hosts())')" \
+      "{'buildbox': 'buildbox-ssh'}" "an older message reader without discovery keeps the configured roads"
 mkdir -p "$T/home/.claude/projects/p"; printf '{"type":"assistant","message":{"model":"m","usage":{"output_tokens":5}}}\n' > "$T/home/.claude/projects/p/s1.jsonl"
 check "$(py 'import helmlib; print(helmlib.session_cost("s1"))')" "None" "G26: no usage-report (plumb) — no cost, no crash"
 check "$(py 'import helm_render; print(helm_render.week_line())')" "None" "G26: no tier_check (plumb) — no week line"

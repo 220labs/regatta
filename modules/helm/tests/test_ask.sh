@@ -4,7 +4,7 @@
 # sessions with one name), K13 (a forged unprefixed line never becomes an answer), the answer's
 # one-writer rule and its roads, the poll's bell and the seam switch; and the fixes after the
 # launch review (2026-10-10, findings 2–4, 6, 12–14, 16, 18). No network, no model.
-#   bash modules/helm/tests/test_ask.sh
+#   bash modules/helm/tests/test_ask.sh [--message-peers]  # the shared fleet discovery only
 set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"   # the module's bin/; helm itself is in libexec/, off PATH (C1)
 LX="$(cd "$B/../libexec" && pwd)"
@@ -119,6 +119,127 @@ a=\$1; shift
 exec env -u ASK_SESSIONS_DIR -u ASK_QUEUE_DIR HOME="$T/peers/\$a" sh -c "\$*"
 EOF
 chmod +x "$T/ssh"; export ASK_SSH="$T/ssh"
+
+echo "  Talk relays share hail's fleet message discovery, without changing placement peers"
+cat > "$T/message-peers.py" <<'PY'
+import json, subprocess, sys, types, time, os
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import asklib
+asklib.peer_hosts()   # load only the shared reader, never the harness
+h = asklib._MESSAGE_PEERS[0]
+assert h is not None and hasattr(h, "message_peers")
+assert "harness_mod" not in sys.modules
+h._ROWS.clear()
+calls = []
+def get(argv, **kw):
+    assert argv == [sys.executable, str(asklib._peer("dispatch-queue")), "hosts", "get", "--cached"]
+    calls.append(argv)
+    return subprocess.CompletedProcess(argv, 0, json.dumps({"rows": {k: {"at": time.time() - 1} for k in ("laptop", "buildbox", "node-a")}}))
+h.subprocess = types.SimpleNamespace(run=get, TimeoutExpired=subprocess.TimeoutExpired)
+registry = Path(sys.argv[2]).parents[1] / "wharf" / "repos.json"
+registry.parent.mkdir(parents=True, exist_ok=True)
+registry.write_text('{"repos": {}, "scopes": {}}')
+Path(sys.argv[2]).write_text("org/fleet\n")
+assert h.message_peers(asklib._common(), "laptop", {"buildbox": "buildbox-ssh"}) == {"buildbox": "buildbox-ssh", "node-a": "node-a"}
+print(asklib.peer_hosts())
+print(asklib.peer_alias("NODE-A"), asklib.peer_alias("laptop"))
+print(len(calls))
+# Linux uses the core's host_name() fallback, so relays can see their remote skipper.
+os.environ.pop("PLAN_HOST", None); os.environ.pop("DISPATCH_HOST", None)
+asklib._common().host_name = lambda: "node-a"
+assert asklib.this_host() == "node-a" and asklib.elsewhere({"manager_host": "laptop"})
+# Both a failed call and a broken import are quiet; a broken import is not retried.
+asklib._MESSAGE_PEERS[:] = [types.SimpleNamespace(message_peers=lambda *a: (_ for _ in ()).throw(RuntimeError("bad read")))]
+assert asklib.peer_hosts() == {"buildbox": "buildbox-ssh"}
+broken = Path(sys.argv[2]).parent / "broken-reader.py"
+broken.write_text("raise RuntimeError('bad import')")
+asklib._MESSAGE_PEERS.clear()
+asklib._peer = lambda name: broken
+assert asklib.peer_hosts() == {"buildbox": "buildbox-ssh"}
+broken.write_text("raise AssertionError('retried import')")
+assert asklib.peer_hosts() == {"buildbox": "buildbox-ssh"} and asklib._MESSAGE_PEERS == [None]
+# All Stop-hook ssh reads share one budget, asked at once: each peer may take the whole budget left,
+# however large the fleet grows (a fair share in turn cut a slow live first peer short on every refresh).
+clock = [0]
+asklib.time = types.SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
+asklib.peer_hosts = lambda: {"a": "a", "b": "b", "c": "c", "d": "d"}
+timeouts = []
+def ssh(*a, timeout):
+    timeouts.append(timeout)
+    return "[]", None
+asklib.peer_ssh = ssh
+assert asklib._peer_runs_read(Path(sys.argv[2]).parent / "runs.json") == []
+assert timeouts == [asklib.PEER_RUNS_WAIT] * 4, timeouts
+# A first peer that spends its whole timeout never hides a later live one, on any refresh.
+asklib.peer_hosts = lambda: {"a-slow": "slow-ssh", "b-live": "live-ssh"}
+calls = []
+def slow_then_live(alias, argv, script, timeout):
+    calls.append((alias, timeout))
+    if alias == "slow-ssh":
+        return None, "timed out"
+    return '[{"manager":"skipper-1","topic":"build"}]', None
+asklib.peer_ssh = slow_then_live
+cache = Path(sys.argv[2]).parent / "fair-cache"
+expected = [{"manager": "skipper-1", "topic": "build", "host": "b-live"}]
+for refresh in range(2):
+    calls.clear()
+    assert asklib.peer_runs(cache) == expected
+    assert sorted(calls) == [("live-ssh", 10), ("slow-ssh", 10)], calls
+    assert asklib.peer_runs(cache) == expected and len(calls) == 2   # cached for the next Stop
+    (cache / "peer-runs.json").unlink()
+# Real time: a live first peer slower than an even share (a quarter of the budget) is still seen,
+# and the refresh ends within the budget although one peer never answers.
+asklib.time = time
+saved_wait, asklib.PEER_RUNS_WAIT = asklib.PEER_RUNS_WAIT, 1
+asklib.peer_hosts = lambda: {"a": "a", "b": "b", "c": "c", "d": "d"}
+def timed(alias, argv, script, timeout):
+    if alias == "a":
+        time.sleep(0.6)
+        return '[{"manager":"skipper-a","topic":"slow"}]', None
+    if alias == "d":
+        time.sleep(timeout)
+        return None, "timed out"
+    return "[]", None
+asklib.peer_ssh = timed
+t0 = time.monotonic()
+got = asklib._peer_runs_read(Path(sys.argv[2]).parent / "timed.json")
+assert got == [{"manager": "skipper-a", "topic": "slow", "host": "a"}], got
+assert time.monotonic() - t0 < 1.8, time.monotonic() - t0
+# A dead alias sorted first never hides the live peer after it (one at a time, the dead one took it all).
+asklib.peer_hosts = lambda: {"a-dead": "a-dead", "b-live": "b-live"}
+def dead_first(alias, argv, script, timeout):
+    if alias == "a-dead":
+        time.sleep(timeout)
+        return None, "timed out"
+    time.sleep(0.2)
+    return '[{"manager":"skipper-b","topic":"live"}]', None
+asklib.peer_ssh = dead_first
+t0 = time.monotonic()
+got = asklib._peer_runs_read(Path(sys.argv[2]).parent / "dead-first.json")
+assert got == [{"manager": "skipper-b", "topic": "live", "host": "b-live"}], got
+assert time.monotonic() - t0 < asklib.PEER_RUNS_WAIT + 0.8, time.monotonic() - t0
+# Two dead aliases cost one budget, not one each (main's one-at-a-time road took twice it).
+asklib.peer_hosts = lambda: {"a-dead": "a-dead", "c-dead": "c-dead"}
+asklib.peer_ssh = lambda alias, argv, script, timeout: (time.sleep(timeout), (None, "timed out"))[1]
+t0 = time.monotonic()
+assert asklib._peer_runs_read(Path(sys.argv[2]).parent / "two-dead.json") == []
+assert time.monotonic() - t0 < asklib.PEER_RUNS_WAIT + 0.8, time.monotonic() - t0
+asklib.PEER_RUNS_WAIT = saved_wait
+asklib.peer_hosts = lambda: (_ for _ in ()).throw(RuntimeError("bad read"))
+assert asklib.peer_runs(Path(sys.argv[2]).parent / "new-cache") == []
+
+PY
+out=$(HARNESS_HOST=laptop PLAN_HOST=laptop python3 "$T/message-peers.py" "$B" "$REGATTA_CONFIG/wharf-runs/queue-repo")
+check "$out" "{'buildbox': 'buildbox-ssh', 'node-a': 'node-a'}
+node-a None
+1" "  node relays use fleet names, aliases win, self excluded, discovery cached; Linux, import failure and the total Stop budget checked"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo" "$REGATTA_CONFIG/wharf/repos.json"   # later cases judge "no registry file"
+
+if [ "${1:-}" = --message-peers ]; then
+  if [ "$fails" -eq 0 ]; then echo "test_ask (message peers, $HELM_NAMES): all passed"; else echo "test_ask (message peers, $HELM_NAMES): $fails failed"; fi
+  [ "$fails" -eq 0 ]; exit $?
+fi
 
 # a repo with one open D-item, committed
 R="$T/repo"; mkdir -p "$R/docs"; git -C "$R" init -q -b claude/laptop/2026-10-10-demo

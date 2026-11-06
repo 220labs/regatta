@@ -22,6 +22,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -186,15 +187,15 @@ def pid_alive(pid):
 
 
 def this_host():
-    """The host this runs on, as dispatch names it (laptop, buildbox, a Linux node): PLAN_HOST,
-    DISPATCH_HOST, else macOS's LocalHostName, else the kernel's short name — dispatch's local_host()
-    and the core's host_name(), so a node's relay knows it is not on its skipper's Mac. Until 2026-10-31
-    there was no fallback: off macOS this read None, elsewhere() read False, and every relay from the
-    Linux node to a skipper on the laptop said "no live skipper" (three runs, 2026-10-31, each ending
-    on a WAITING line the skipper never saw). ASK_SCUTIL stands in for scutil (tests)."""
+    """This host as the fleet names it, including Linux nodes; explicit run names win.
+    The core also reads a builder host's configured identity. Without it, use macOS's
+    LocalHostName, else the kernel's short name. ASK_SCUTIL stands in for scutil (tests)."""
     h = os.environ.get("PLAN_HOST") or os.environ.get("DISPATCH_HOST")
     if h:
-        return h
+        return h.lower()
+    c = _common()
+    if c and not os.environ.get("ASK_SCUTIL"):
+        return c.host_name()
     name = ""
     try:
         r = subprocess.run([os.environ.get("ASK_SCUTIL") or "/usr/sbin/scutil", "--get", "LocalHostName"],
@@ -204,7 +205,7 @@ def this_host():
         pass
     import socket
     name = name or socket.gethostname().split(".")[0]
-    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or None
+    return re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or "host"
 
 
 def elsewhere(ctx):
@@ -220,7 +221,7 @@ def elsewhere(ctx):
 # Talk's alone, and a skipper with no plan page had no road at all: board-cleanup's D2 parked as "no
 # skipper live" on the build box while its skipper on the laptop was live (peer-manager-relay,
 # 2026-10-26). Now one ssh to the skipper's host reads its registry there: the hosts this Mac reaches
-# are the config dir's `wharf-runs/ssh` (`<host>:<alias>`, as stalls and harness read them). ssh runs
+# come from hail's cached fleet discovery and configured aliases (a discovered confidential yard or node skipped). ssh runs
 # one way: a host with no alias here stays `remote`, as before.
 PEER_CONNECT = 6    # ssh's ConnectTimeout, seconds (hail uses 6; stalls 10)
 PEER_TIMEOUT = 30
@@ -270,8 +271,8 @@ print(p)
 
 
 def peer_alias(host):
-    """The ssh alias this Mac reads HOST over (the config dir's `wharf-runs/ssh`), or None: no host, this
-    Mac, no line for it, no core."""
+    """The message alias for HOST (fleet name or configured ssh alias), or None for an unknown
+    host or this host."""
     return peer_hosts().get(host.lower()) if host else None
 
 
@@ -289,20 +290,37 @@ def peer_ssh(alias, argv, script, timeout=PEER_TIMEOUT):
     return r.stdout, None
 
 
+_MESSAGE_PEERS = []
+
+
 def peer_hosts():
-    """{host: alias} of the peers `wharf-runs/ssh` names, this Mac left out; {} without the key or a core."""
-    c = _common()
-    try:
-        lines = (c.config_lines("wharf-runs/ssh") if c else None) or []
-    except Exception:
-        return {}
-    here = (this_host() or "").lower()
+    """Automatic message peers: configured aliases, plus discovered names that are no confidential yard or node. Without wharf-runs, configured
+    placement aliases survive. Neither discovery nor import failure may raise in the Stop hook."""
     out = {}
-    for line in lines:
-        name, _, alias = line.partition(":")
-        if alias.strip() and name.strip() and name.strip().lower() != here:
-            out[name.strip().lower()] = alias.strip()
-    return out
+    try:
+        c = _common()
+        here = (this_host() or "").lower()
+        for line in (c.config_lines("wharf-runs/ssh") if c else None) or []:
+            name, _, alias = line.partition(":")
+            if alias.strip() and name.strip() and name.strip().lower() != here:
+                out[name.strip().lower()] = alias.strip()
+        if not _MESSAGE_PEERS:
+            from importlib.machinery import SourceFileLoader
+            from importlib.util import module_from_spec, spec_from_loader
+            mod = None
+            try:
+                path = _peer("message_peers.py")
+                if path:
+                    loader = SourceFileLoader("ask_message_peers", str(path))
+                    mod = module_from_spec(spec_from_loader(loader.name, loader))
+                    loader.exec_module(mod)
+            except (Exception, SystemExit):
+                mod = None
+            _MESSAGE_PEERS.append(mod)   # a broken load is tried only once per process
+        mod = _MESSAGE_PEERS[0]
+        return mod.message_peers(c, here, out) if mod and hasattr(mod, "message_peers") else out
+    except (Exception, SystemExit):
+        return out
 
 
 # Runs on a peer: its live dispatched runs that relay over Talk (a skipper, a plan page, not ended, a pid
@@ -327,7 +345,7 @@ for f in glob.glob(str(Path.home() / "Library/Logs/claude-weekly/run-seed-runs" 
 print(json.dumps(out))
 '''
 PEER_RUNS_TTL = 600   # keel's Stop hook asks every turn of every session; one ssh a peer per 10 minutes
-PEER_RUNS_WAIT = 10   # …and waits at most this long for one, once a TTL
+PEER_RUNS_WAIT = 10   # total refresh budget, including discovery and every peer, once a TTL
 
 
 def peer_runs(cache_dir):
@@ -358,6 +376,8 @@ def peer_runs(cache_dir):
         pass
     try:
         return _peer_runs_read(p)
+    except (Exception, SystemExit):
+        return []   # an optional peer must never block a Stop on a traceback
     finally:
         try:
             lock.unlink()
@@ -367,8 +387,25 @@ def peer_runs(cache_dir):
 
 def _peer_runs_read(p):
     runs = []
-    for host, alias in sorted(peer_hosts().items()):
-        out, _ = peer_ssh(alias, [], PEER_RUNS_PROBE, timeout=PEER_RUNS_WAIT)
+    deadline = time.monotonic() + PEER_RUNS_WAIT
+    peers = sorted(peer_hosts().items())
+    left = deadline - time.monotonic()
+    answers = {}
+    if peers and left > 0:
+        # Ask every peer at once, each bounded by the whole budget left: a slow live peer is never cut
+        # short for a later one's share, nor a dead first alias left to hide the live ones after it.
+        def ask(alias):
+            try:
+                answers[alias] = peer_ssh(alias, [], PEER_RUNS_PROBE, timeout=left)[0]
+            except Exception:   # noqa: BLE001 — one peer's failure is its own
+                answers[alias] = None
+        threads = [threading.Thread(target=ask, args=(alias,), daemon=True) for _, alias in peers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(max(0.0, deadline - time.monotonic()) + 1)   # peer_ssh's own timeout ends each first
+    for host, alias in peers:
+        out = answers.get(alias)
         try:
             got = json.loads(out.strip().splitlines()[-1]) if out and out.strip() else []
         except ValueError:
@@ -413,7 +450,7 @@ def skipper_state(ctx):
     2026-10-10): a record in this Mac's registry with a live pid is live, with a dead pid gone; no
     record on the skipper's own Mac is gone too — a leftover plan dir is not a skipper. A skipper
     on another Mac (DISPATCH_MANAGER_HOST names it) is judged by that Mac's registry, read over the
-    ssh alias `wharf-runs/ssh` names (peer-manager-relay): live, or gone on a dead pid. With no alias, a
+    message alias hail shares (peer-manager-relay): live, or gone on a dead pid. With no alias, a
     peer that does not answer, or no record there, it is 'remote', and only Talk can reach it. No host recorded and no
     record here reads as gone."""
     m = ctx.get("manager")
@@ -428,7 +465,7 @@ def skipper_state(ctx):
     if elsewhere(ctx):
         peer = peer_skipper(ctx)
         if not peer:
-            return "remote", "on %s: its registry is not readable here (no ssh road to it in wharf-runs/ssh)" % mh
+            return "remote", "on %s: its registry is not readable here (no message peer road to it)" % mh
         alias, ans, why = peer
         if ans is None:
             return "remote", "on %s: its registry is not readable here (%s)" % (mh, why)
@@ -841,7 +878,7 @@ class File:
         return [json.loads(x) for x in lines if x.strip().startswith("{")]
 
     def describe(self):
-        return "file — a line the skipper's next prompt prints; this Mac, or a peer `wharf-runs/ssh` reaches"
+        return "file — a line the skipper's next prompt prints; this Mac, or an automatic message peer"
 
 
 BACKENDS = {b.name: b for b in (Talk(), SendMessage(), File())}

@@ -1355,7 +1355,7 @@ def skipper_findings(session: str, env=None, runs=None, listening=None, cwd: str
     more (second review, 2026-10-11) — and a skipper that never starts one hears it once.
 
     A run on a peer Mac counts too (peer-manager-relay, 2026-10-26: a laptop skipper of a build-box run
-    was never told to listen): asklib.peer_runs() reads every peer `wharf-runs/ssh` names, one ssh a
+    was never told to listen): asklib.peer_runs() reads hail's automatic message peers, one ssh a
     peer, cached 10 minutes, its liveness judged there. Only on the hook's own read (no `runs` given)
     or when PEER_RUNS is handed in (tests)."""
     import glob, os
