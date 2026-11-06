@@ -891,7 +891,22 @@ af --dry --by chain > "$T/out" 2>&1; check "$?" "3" "the G4 stop just above: no 
 has "$T/out" "ended stopped at G4, not stopped by the network — no chain relaunch" "  saying why"
 printf 'API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)\n' > "$T/net.txt"
 next_tip "chain: a network stop"; NTIP=$(git -C "$W" rev-parse HEAD)
-STUB_REPLY="$T/net.txt" af --rule D --by sweep > /dev/null 2>&1; ended
+# Establish the stop before testing the chain policy. An initial never-started/refused caused
+# nine downstream failures (keel-ui-round round 2). Retry only dispatch's confirmed pre-start
+# refusal (5) on this tip, at most twice. A start or an unconfirmed start returns 0: wait for it
+# without starting another. Every refusal keeps its original words in the suite's output.
+net_rc=5
+for net_try in 1 2 3; do
+  STUB_REPLY="$T/net.txt" af --rule D --by sweep > "$T/network-start.$net_try" 2>&1; net_rc=$?
+  if [ "$net_rc" = 0 ]; then ended || net_rc=1; break; fi
+  echo "  (network-stop fixture, attempt $net_try: exit $net_rc)"
+  cat "$T/network-start.$net_try"
+  [ "$net_rc" = 5 ] || break
+  ended || { net_rc=1; break; }
+  [ "$(field tip)/$(field outcome)/$(field gate)" = "$NTIP/never-started/refused" ] || break
+  [ "$net_try" = 3 ] || sleep 1
+done
+check "$net_rc" "0" "the network-stop fixture starts before the chain policy is tested"
 check "$(field outcome)/$(field gate)" "stopped/no-landing" "a network stop: stopped at no-landing"
 af --dry > "$T/out" 2>&1; check "$?" "3" "  every other caller: no retry on the same tip, as before"
 STUB_REPLY="$T/net.txt" af --rule D --by chain > "$T/out" 2>&1; check "$?" "0" "--by chain relaunches it"
