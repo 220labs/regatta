@@ -63,6 +63,9 @@ unset CLAUDE_UNATTENDED REGATTA_UNATTENDED
 # Nor the launcher: every SessionEnd below would leave a detached bin/autofinish behind, judging
 # these throwaway repos into the real dated log. The autofinish cases lift it, against a stub.
 export CLAUDE_HOOK_NO_AUTOFINISH=1
+# Nor the mid-turn push (midturn_push): a detached push behind every Bash case would race the
+# push cases. Its own cases below lift it and wait for the child (CLAUDE_HOOK_MIDTURN_WAIT).
+export CLAUDE_HOOK_NO_MIDTURN_PUSH=1
 R=$(pwd -P)
 WA="$R/.claude/worktrees/a"
 WB="$R/.claude/worktrees/b"
@@ -465,6 +468,58 @@ case("L19", again == [] and not any("landed-later" in p for _, p in gh.calls)
 os.environ["CLAUDE_HOOK_NO_GITHUB"] = "1"; gh = GH([MERGED]); quiet = sync.settle_landed(Path(repo), "main")
 os.environ.pop("CLAUDE_HOOK_NO_GITHUB")
 case("L20", quiet == [] and gh.calls == [])
+# the push verb's ready-PR brake (round 5's review): a run ended unfinished never pushes an unheld ready PR
+import contextlib, io
+Path(repo, ".claude").mkdir(exist_ok=True); Path(repo, ".claude", "workflow.json").write_text('{"checkpoint": true}')
+def verb(*a):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cp.push_verb([repo] + list(a))
+    cp.ROOT, cp.MAIN = repo, "main"
+    return rc, out.getvalue()
+READY = {"number": 180, "state": "open", "merged_at": None, "draft": False, "labels": []}
+b = "claude/x/2026-11-02-ready"; branch(b, upstream=True)
+gh = GH([READY]); rc, out = verb("--end", "--session", "sess")
+case("P1", rc == 3 and "#180 is ready" in out and "stay in" in out and tip(b) != git("rev-parse", "HEAD"))
+gst = Path(git("rev-parse", "--absolute-git-dir"), "claude")
+held = cp.push_held(gst, "sess") or ""; gh = GH([]); rc, out = verb("--session", "sess")   # SessionEnd's and push_later's road
+case("P2", "push --end held it back" in held and rc == 3 and tip(b) != git("rev-parse", "HEAD"))
+gh = GH([dict(READY, labels=[{"name": "hold"}])]); rc, out = verb("--end", "--session", "sess")
+case("P3", rc == 0 and tip(b) == git("rev-parse", "HEAD"))
+commit(); gh = GH([READY], status=502); rc, out = verb("--end", "--session", "sess")
+case("P4", rc == 3 and "did not say" in out and tip(b) != git("rev-parse", "HEAD")
+     and "push --end held it back" in (cp.push_held(gst, "sess") or ""))
+gh = GH([]); cp.publish(gst, b, "sess", force=True, hold=lambda: cp.end_held(gst))   # the Stop's road
+case("P7", tip(b) != git("rev-parse", "HEAD"))
+gh = GH([]); cp.ROOT = repo; sync.push_left(cp, gst, b, "sess")
+case("P8", tip(b) != git("rev-parse", "HEAD"))
+with contextlib.redirect_stderr(io.StringIO()):   # together, --spaced's side-ref road would skip --end's hold
+    rc, out = verb("--spaced", "--end", "--session", "sess")
+case("P9", rc == 2 and tip(b) != git("rev-parse", "HEAD"))
+pk = Path(cp.__file__).resolve().parents[2] / "wharf-runs" / "bin" / "pickup"   # /move's two pushes hold too
+pk = pk.read_text() if pk.exists() else ""   # wharf alone: no pickup to judge
+case("P10", pk.count("cp.publish(") == pk.count("lambda: cp.end_held(state)"))
+import re as _re   # P12: each /move road reads the hold before its commit, and carries it to the new HEAD
+_cps = [m.start() for m in _re.finditer(r"cp\.checkpoint\(", pk)]
+_reads = [m.start() for m in _re.finditer(r"held = cp\.end_held\(state\)", pk)]
+_moves = [m.start() for m in _re.finditer(r"\(state / cp\.END_HELD\)\.write_text\(", pk)]
+case("P12", not pk or (len(_cps) == len(_reads) == len(_moves)
+                       and all(r < c < m for r, c, m in zip(_reads, _cps, _moves))))
+_own = gst / "owner.json"; _was = _own.read_text() if _own.exists() else None
+_before = (gst / cp.END_HELD).read_text()   # P11: an --end refused before it judged the PR keeps the earlier hold
+_own.write_text(json.dumps({"session": "someone-else", "seen": __import__("time").time()}))
+gh = GH([]); rc, out = verb("--end", "--session", "sess")
+_own.write_text(_was) if _was is not None else _own.unlink()
+case("P11", rc == 3 and "holds this checkout" in out and (gst / cp.END_HELD).read_text() == _before
+     and tip(b) != git("rev-parse", "HEAD"))
+(gst / cp.END_HELD).unlink()   # P5: a mid-turn child asks GitHub nothing, whatever the PR, and writes the side ref only
+gst = Path(git("rev-parse", "--absolute-git-dir"), "claude"); (gst / "pushed").unlink(missing_ok=True)
+gh = GH([READY], status=0); rc, out = verb("--spaced", "--session", "sess")
+wip = subprocess.run(["git", "-C", origin, "rev-parse", "--verify", "-q", "refs/wip/" + b], capture_output=True, text=True).stdout.strip()
+case("P5", rc == 0 and gh.calls == [] and wip == git("rev-parse", "HEAD") and tip(b) != git("rev-parse", "HEAD")
+     and not (gst / "pushed").exists())
+gh = GH([]); rc, out = verb("--end", "--session", "sess")
+case("P6", rc == 0 and tip(b) == git("rev-parse", "HEAD"))
 PY
 python3 "$T/landed.py" "$MOD/hooks" "$L" "$L-origin.git" "$T/landed-states" > "$T/landed.out" 2>&1
 lcase() { lc=$1; ok "$2" 'grep -qx "$lc pass" "$T/landed.out"'; }
@@ -488,6 +543,18 @@ lcase L17 "sync's settle_landed: a stop whose PR merged after it gets its launch
 lcase L18 "  only a stop whose GitHub copy is gone is asked; an open one costs no request"
 lcase L19 "  once: a settled branch is not asked again, no second line"
 lcase L20 "  CLAUDE_HOOK_NO_GITHUB: nothing asked, nothing written"
+lcase P1 "push --end (a run ended unfinished) on an unheld ready PR: not pushed, exit 3, where the commits stay said"
+lcase P2 "  ...and what --end held stays held: SessionEnd's hold reads it, a plain push (push_later's) leaves origin alone"
+lcase P3 "  ...a ready PR labelled hold (automerge never merges it): pushed"
+lcase P4 "  ...GitHub not answering: not pushed, exit 3 (a brake against automerge fails closed)"
+lcase P7 "  ...the Stop's publish and stale_link_block's read the hold too: origin left alone at the held HEAD"
+lcase P8 "  ...and sync's push_left (a dead run's leftovers): origin left alone"
+lcase P9 "  push --spaced --end together: usage, exit 2, nothing pushed (the spaced return would skip --end's hold)"
+lcase P10 "  ...and pickup's /move pushes read the hold: every cp.publish call there passes end_held"
+lcase P11 "  push --end refused on another session's lock: the earlier end-held mark stands, nothing pushed"
+lcase P12 "  ...and each /move road reads the hold before committing the run's leftovers, and moves it to the new HEAD"
+lcase P5 "  a mid-turn child asks GitHub nothing (a ready PR, a PR that does not answer): the side ref written, the branch and its pushed marker not"
+lcase P6 "  push --end with no PR open: pushed"
 grep -q "Traceback" "$T/landed.out" && { echo "  FAIL landed.py raised:"; sed 's/^/    /' "$T/landed.out"; fails=$((fails+1)); }
 
 echo "checkpoints (continued)"
@@ -1017,6 +1084,153 @@ ok "the commit is made and the failure is reported" \
   'echo "$out" | grep -q "push of claude/test-b failed" && [ -z "$(git -C "$WB" status --porcelain)" ]'
 ok "  the next turn does not retry inside the spacing" '! ev B Stop "" "$WB" | grep -q "push of"'
 git remote set-url origin "$T/origin.git"
+
+echo "mid-turn: a commit made inside a long turn reaches origin before the turn ends, on a side ref (run-push-midturn, D1-B)"
+# An unattended run is one turn: Stop's push never comes until it ends (S6, 2026-11-01: 22 commits,
+# 8 h, none on GitHub). The next Bash call's PreToolUse starts the push, spaced by PUSH_EVERY, onto
+# refs/wip/<branch>: never the branch, so a later rewrite strands nothing and no PR hears of it.
+WM="$R/.claude/worktrees/m"; git worktree add -q "$WM" -b claude/test-m main
+git -C "$WM" push -q -u origin claude/test-m 2>/dev/null
+GM="$(git -C "$WM" rev-parse --absolute-git-dir)/claude"; mkdir -p "$GM"
+wtip() { git -C "$T/origin.git" rev-parse --verify -q "refs/wip/$1"; }
+# mtool <env assignment or ""> <command> [cwd] — a Bash PreToolUse with the mid-turn push on, waited for.
+# Each call clears the once-a-minute check marker first (midturn-checked), but for the case on it.
+mtool() { [ -n "${KEEP_CHECKED:-}" ] || rm -f "$(git -C "${3:-$WM}" rev-parse --absolute-git-dir)/claude/midturn-checked"
+  jq -nc --arg c "$2" --arg c2 "${3:-$WM}" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c},session_id:"sessA-0000",cwd:$c2}' \
+  | env -u CLAUDE_HOOK_NO_MIDTURN_PUSH CLAUDE_HOOK_MIDTURN_WAIT=1 $1 python3 "$HOOK"; }
+M0=$(otip claude/test-m); REFS0=$(git -C "$T/origin.git" for-each-ref refs/heads)
+echo m1 > "$WM/m"; git -C "$WM" add m && git -C "$WM" commit -q -m "m1"
+touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "a session's own commit reaches origin's side ref at its next Bash call, mid-turn" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+ok "  ...and says so in the state dir's push.log" 'grep -q "pushed claude/test-m to refs/wip/claude/test-m: " "$GM/push.log"'
+ok "  ...the branch itself untouched on origin, its pushed marker never written" \
+  '[ "$(otip claude/test-m)" = "$M0" ] && [ ! -e "$GM/pushed" ]'
+ok "  ...and the side ref is no branch: origin's refs/heads are as they were" '[ "$(git -C "$T/origin.git" for-each-ref refs/heads)" = "$REFS0" ]'
+echo m2 >> "$WM/m"; git -C "$WM" commit -q -am "m2"; mtool "" "ls" >/dev/null
+ok "  a second commit inside PUSH_EVERY waits" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+touch -t 202001010000 "$GM/wip-pushed"; touch "$GM/midturn-checked"; KEEP_CHECKED=1 mtool "" "ls" >/dev/null
+ok "  the full check runs once a minute at most (a session with nothing to push pays two stats a call, no git)" \
+  '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+touch -t 202001010000 "$GM/wip-pushed"; mtool CLAUDE_HOOK_NO_PUSH=1 "ls" >/dev/null
+ok "  CLAUDE_HOOK_NO_PUSH holds it too" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+ok "  (git branch -D of a claude/* branch is denied by handle_bash, the road the next case takes)" \
+  '[ "$(tool A Bash "{\"command\":\"git branch -D claude/test-zz\"}" "$WM")" = deny ]'
+touch -t 202001010000 "$GM/wip-pushed"; mtool "" "git branch -D claude/test-zz" >/dev/null
+ok "  a denied Bash call starts no push" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+touch -t 202001010000 "$GM/wip-pushed"; mtool "" "git push -u origin claude/test-m" >/dev/null
+ok "  a call that pushes itself starts none" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  once the spacing is up, the next call pushes it" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+# the finding this design exists for (the fifth landing review's S2): an amend after a mid-turn push
+git -C "$WM" commit -q --amend -m "m2, rewritten"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  a rewrite after it (an amend, a rebase) is no obstacle: the side ref follows the new head, forced" \
+  '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+ok "  ...and the branch is still a fast-forward for the Stop's push (origin never held the old head)" \
+  'git -C "$WM" merge-base --is-ancestor "$(otip claude/test-m)" HEAD'
+touch "$GM/finishing"; echo m3 >> "$WM/m"; git -C "$WM" commit -q -am "m3"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  nothing while /finish rewrites the branch" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+touch -t 202001010000 "$GM/finishing"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  a /finish marker past FINISHING_TTL (an abandoned /finish) holds nothing" \
+  '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+rm -f "$GM/finishing"
+ev A Stop "" "$WM" >/dev/null
+ok "  the turn's Stop pushes the branch itself (the child left the spacing and upstream as they were)" \
+  '[ "$(otip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+echo m3b >> "$WM/m"; git -C "$WM" commit -q -am "m3b"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  ...a later commit goes to the side ref again, the branch waiting for its Stop" \
+  '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ] && [ "$(otip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+python3 -c 'import fcntl, sys, time; f = open(sys.argv[1], "w"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(14)' \
+  "$GM/push.lock" "$T/held" & HOLD=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$T/held" ] && break; sleep 0.25; done
+echo m3c >> "$WM/m"; git -C "$WM" commit -q -am "m3c"; rm -f "$GM/push.log"; touch -t 202001010000 "$GM/pushed"
+out=$(ev A Stop "" "$WM")
+wait "$HOLD" 2>/dev/null; rm -f "$T/held"
+for _ in $(seq 1 120); do grep -q "claude/test-m" "$GM/push.log" 2>/dev/null && break; sleep 0.5; done
+ok "  a Stop whose push steps back for another's hands the rest to a detached verb, which pushes once the lock frees" \
+  '[ "$(otip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+ev A Stop "" "$WM" >/dev/null
+WN="$R/.claude/worktrees/n"; git worktree add -q "$WN" -b claude/test-n main
+echo n > "$WN/n"; git -C "$WN" add n && git -C "$WN" commit -q -m n
+GN="$(git -C "$WN" rev-parse --absolute-git-dir)/claude"; mkdir -p "$GN"; touch -t 202001010000 "$GN/wip-pushed"
+mtool "" "ls" "$WN" >/dev/null
+ok "  a branch origin never had is left to Stop (its first push opens the WIP PR)" '[ -z "$(otip claude/test-n)" ] && [ -z "$(wtip claude/test-n)" ]'
+echo m6 >> "$WM/m"; git -C "$WM" commit -q -am "m6"; touch -t 202001010000 "$GM/wip-pushed"; rm -f "$GM/midturn-checked"
+jq -nc --arg c "$WM" --arg f "$WM/m" '{hook_event_name:"PreToolUse",tool_name:"Edit",tool_input:{file_path:$f},session_id:"sessA-0000",cwd:$c}' \
+  | env -u CLAUDE_HOOK_NO_MIDTURN_PUSH CLAUDE_HOOK_MIDTURN_WAIT=1 python3 "$HOOK" >/dev/null
+ok "  an Edit call starts one too (a commit, then a long stretch of edits)" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+printf '{"branch": "claude/test-m", "number": 7, "url": "https://github.com/o/r/pull/7"}\n' > "$GM/spent.json"
+echo m7 >> "$WM/m"; git -C "$WM" commit -q -am "m7"; touch -t 202001010000 "$GM/wip-pushed"; rm -f "$GM/push.log"; mtool "" "ls" >/dev/null
+ok "  a branch kept as landed (spent.json) starts no child: its note is the Stop's, once a commit" \
+  '[ ! -e "$GM/push.log" ] && [ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD~1)" ]'
+rm -f "$GM/spent.json"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+git -C "$WN" push -q origin claude/test-n 2>/dev/null   # on origin, no upstream: dispatch's --no-track shape
+echo n2 >> "$WN/n"; git -C "$WN" commit -q -am n2; touch -t 202001010000 "$GN/wip-pushed"; mtool "" "ls" "$WN" >/dev/null
+ok "  a --no-track branch origin has (a run's branch on the receiving host): pushed mid-turn, from origin's ref" \
+  '[ "$(wtip claude/test-n)" = "$(git -C "$WN" rev-parse HEAD)" ] && [ "$(otip claude/test-n)" = "$(git -C "$WN" rev-parse HEAD~1)" ]'
+# the repos' pre-push (wharf's template): the side ref is the one namespace beside claude/** it lets an agent push
+PP="$MOD/templates/code/git-hooks/pre-push"
+sed 's#refs/heads/claude/\*|refs/wip/claude/\*)#refs/heads/claude/*)#' "$PP" > "$T/pre-push-old"   # the template as it was: no side ref
+ok "  (the stand-in for a repo whose pre-push predates the side ref differs from the template)" '! cmp -s "$T/pre-push-old" "$PP"'
+HOOKS="$(git -C "$WM" rev-parse --git-common-dir)/hooks"; mkdir -p "$HOOKS"
+cp "$T/pre-push-old" "$HOOKS/pre-push"; chmod +x "$HOOKS/pre-push"
+echo m8 >> "$WM/m"; git -C "$WM" commit -q -am "m8"; touch -t 202001010000 "$GM/wip-pushed"; rm -f "$GM/push.log"; w0=$(wtip claude/test-m); mtool "" "ls" >/dev/null
+ok "  a repo whose pre-push predates it refuses the child: logged, the side ref and the branch as they were" \
+  '[ "$(wtip claude/test-m)" = "$w0" ] && grep -q "side ref failed" "$GM/push.log"'
+touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  ...tried once per HEAD, not every PUSH_EVERY for a turn" '[ "$(grep -c "side ref failed" "$GM/push.log")" = 1 ]'
+cp "$PP" "$HOOKS/pre-push"; echo m9 >> "$WM/m"; git -C "$WM" commit -q -am "m9"; touch -t 202001010000 "$GM/wip-pushed"; mtool "" "ls" >/dev/null
+ok "  ...and the current template lets it through" '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ]'
+rm -f "$HOOKS/pre-push"
+
+echo "the push verb: dispatch's lifetime end (checkpoint.py push <worktree>)"
+echo m4 >> "$WM/m"; git -C "$WM" commit -q -am "m4"; touch "$GM/pushed"
+out=$(python3 "$HOOK" push "$WM" --session sessA-0000); rc=$?
+ok "pushes now, inside PUSH_EVERY (the run is about to end), and says so" \
+  '[ $rc = 0 ] && [ "$(otip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ] && echo "$out" | grep -q "^pushed claude/test-m: "'
+out=$(python3 "$HOOK" push "$WM"); rc=$?
+ok "  nothing to push: said, exit 0" '[ $rc = 0 ] && echo "$out" | grep -q "^nothing to push: origin has claude/test-m"'
+before=$(otip claude/test-m); git -C "$WM" commit -q --amend -m "m4, rewritten"
+out=$(python3 "$HOOK" push "$WM"); rc=$?
+ok "a rebased branch: the push is refused as non-fast-forward, logged, never forced (exit 3, not a crash's 1)" \
+  '[ $rc = 3 ] && [ "$(otip claude/test-m)" = "$before" ] && echo "$out" | grep -q "non-fast-forward" && echo "$out" | grep -q "not forced"'
+touch -t 202001010000 "$GM/wip-pushed"; rm -f "$GM/push.log"; mtool "" "ls" >/dev/null
+ok "  the mid-turn push is no part of it: the side ref follows the rewritten head, the branch as the verb left it" \
+  '[ "$(wtip claude/test-m)" = "$(git -C "$WM" rev-parse HEAD)" ] && [ "$(otip claude/test-m)" = "$before" ]'
+out=$(ev A Stop "" "$WM")
+ok "  the turn's Stop does not force it either" '[ "$(otip claude/test-m)" = "$before" ]'
+out=$(ev A Stop "" "$WM")
+ok "  ...and the next Stop does not retry it inside the spacing" '! echo "$out" | grep -q "push of"'
+printf '{"session": "sessB-0000", "branch": "claude/test-m", "seen": %s}\n' "$(date +%s)" > "$GM/owner.json"
+out=$(python3 "$HOOK" push "$WM" --session sessA-0000); rc=$?
+ok "  a checkout another session holds: named, not pushed" '[ $rc = 3 ] && echo "$out" | grep -q "sessB-00 holds this checkout"'
+out=$(python3 "$HOOK" push "$WM" --session sessA-0000 --vendor codex); rc=$?
+ok "  ...but not to another CLI's run, which no lock holds out (VENDOR, passed to the child)" \
+  '! echo "$out" | grep -q "holds this checkout"'
+rm -f "$GM/owner.json"
+out=$(python3 "$HOOK" push "$T/plain"); rc=$?
+ok "  not a checkout: said, exit 3" '[ $rc = 3 ] && echo "$out" | grep -q "is not a git checkout"'
+out=$(python3 "$HOOK" push "$T/no-such-dir" 2>&1); rc=$?
+ok "  a path that is not there: said, exit 3, no traceback" '[ $rc = 3 ] && echo "$out" | grep -q "is not a git checkout" && ! echo "$out" | grep -q Traceback'
+python3 -c 'import fcntl, sys, time; f = open(sys.argv[1], "w"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(10)' \
+  "$GM/push.lock" "$T/held" & HOLD=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$T/held" ] && break; sleep 0.25; done
+mk=$(cat "$GM/pushed"); echo m5 >> "$WM/m"; git -C "$WM" commit -q -am "m5"; out=$(python3 "$HOOK" push "$WM" --wait 1); rc=$?
+kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null; rm -f "$T/held"
+ok "  a push while another holds the lock past its wait: steps back, said, the marker untouched" \
+  '[ $rc = 0 ] && echo "$out" | grep -q "stepped back: another push from this checkout is under way" && [ "$(cat "$GM/pushed")" = "$mk" ] && [ "$(otip claude/test-m)" = "$before" ]'
+ok "  ...and never reads as \"nothing to push\" (the last push's offer proves nothing about this one)" '! echo "$out" | grep -q "nothing to push"'
+NP="$T/never-opted"; git init -q -b claude/x "$NP" && git -C "$NP" commit -q --allow-empty -m x
+out=$(python3 "$HOOK" push "$NP"); rc=$?
+ok "  a repo that never opted in: not pushed, exit 3 (the hook pushes only where asked)" '[ $rc = 3 ] && echo "$out" | grep -q "never opted in"'
+git -C "$WM" reset -q --hard HEAD~1
+python3 -c 'import fcntl, sys, time; f = open(sys.argv[1], "w"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(20)' \
+  "$GM/midturn.lock" "$T/held" & HOLD=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$T/held" ] && break; sleep 0.25; done
+touch -t 202001010000 "$GM/wip-pushed"; out=$(python3 "$HOOK" push "$WM" --spaced); rc=$?
+kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null; rm -f "$T/held"
+ok "  a second mid-turn child while one runs: steps back, says so" \
+  '[ $rc = 0 ] && echo "$out" | grep -q "a mid-turn push of claude/test-m from here is under way" && [ "$(otip claude/test-m)" = "$before" ]'
+git worktree remove --force "$WM"; git worktree remove --force "$WN"; git branch -D claude/test-m claude/test-n >/dev/null
 
 echo "a repo that must never join the workflow (.claude/no-workflow)"
 # The 2026-09-17 accident: `/new-project . --adopt` takes "." from whichever session is open,

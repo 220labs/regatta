@@ -80,8 +80,19 @@ Events:
                     branch to bin/autofinish — see autofinish_at_stop().
   SessionEnd        release the lock; push; on a claude/* branch, bin/autofinish judges the
                     worktree a minute later, detached (autofinish design E3).
+  (mid-turn)        a Bash or write call's PreToolUse, on a claude/* branch origin has and with commits
+                    origin lacks, starts a detached `checkpoint.py push … --spaced` once
+                    PUSH_EVERY has passed: a long turn (an unattended run is one) is on
+                    GitHub as it goes, not only at its end — on the side ref refs/wip/<branch>,
+                    never on the branch itself — see midturn_push().
   (autofinish)      while its runner holds the lock, a prompt is told so once and a write is
                     refused with the same words; afterwards the outcome is said once.
+
+Verb: `checkpoint.py push <worktree> [--session S] [--spaced | --end] [--vendor CLI] [--wait S]`
+pushes that checkout's claude/* branch through publish() and prints one line; dispatch runs it with
+--end before it ends a run (its lifetime, `dispatch --end`), which holds an unheld ready PR back.
+Never --force on a branch: a refused push is reported, not retried. The one forced push is the mid-turn
+child's, onto its own side ref (WIP_NS).
 
 Checkpoints: prompts queue in .git/claude/prompts.json (per session id), so a discussion
 turn that changed nothing still goes into the commit its changes eventually produce. A turn
@@ -165,9 +176,11 @@ OWNER_TTL = common.OWNER_TTL if common else None  # an owner idle this long has 
 # Every claude/* branch is pushed to origin as it grows, so the work is visible off this
 # machine — GitHub is the hub between the laptop and the other Mac (docs/record/repo-sync-2026-09-22.md,
 # flow A). The first push opens a `WIP:` pull request. Pushes are spaced by PUSH_EVERY per
-# branch (a chatty session is not a push storm) and always happen at SessionEnd; a failure
+# branch (a chatty session is not a push storm) — at Stop, mid-turn (midturn_push) — and are
+# tried at SessionEnd whatever the spacing (inside its 1.5 s budget; a detached verb when another
+# push holds the lock); a failure
 # (offline, a branch of the same name pushed from the other machine) is one note, never a
-# retry loop and never --force. The Bash guard below is for Claude's commands; this push is
+# retry loop and never --force (bar the side ref the mid-turn child writes, WIP_NS). The Bash guard below is for Claude's commands; this push is
 # the hook's own subprocess and goes through the repo's pre-push like any other.
 PUSH_EVERY = 600
 PUSH_TIMEOUT = 30
@@ -2251,10 +2264,16 @@ def spent_context(branch, held):
             + ", then EnterWorktree. Tell the user; do not push this branch by hand.")
 
 
-def publish(state, branch, session, force=False):
+def publish(state, branch, session, force=False, lock_wait=PUSH_TIMEOUT + 5, hold=None):
     """Push this claude/* branch to origin (see PUSH_EVERY). Returns a note or None.
     Never a branch whose PR already merged (landed()): the push would put its checkpoint history
-    back on origin and the first-push path would open a WIP PR of work main has (regatta#171)."""
+    back on origin and the first-push path would open a WIP PR of work main has (regatta#171).
+    One push of a checkout at a time (PUSH_LOCK): a push that cannot have the lock in `lock_wait`
+    steps back, its marker untouched, rather than push the same ref beside another (git's ref lock
+    would refuse one, a false failure). `hold`: a callable re-judged under the lock (the plain verb's
+    push_held; the Stop's, sync's and /move's end_held); a reason it returns stops it. The mid-turn
+    child's side-ref push (publish_wip) shares the lock though it writes another ref: a Stop meeting it
+    waits, a delay and no loss."""
     if not branch.startswith("claude/") or os.environ.get("CLAUDE_HOOK_NO_PUSH"):
         return None
     if git("remote", "get-url", "origin", check=False).returncode != 0:
@@ -2266,23 +2285,32 @@ def publish(state, branch, session, force=False):
             return None
         if git("rev-list", "--count", f"{branch}@{{u}}..HEAD", check=False).stdout.strip() in ("", "0"):
             return None
-    # Before the attempt: a failing origin is retried in PUSH_EVERY, not every turn. The marker
-    # holds the HEAD it was written at, so a Stop can tell a commit no push has been offered yet
-    # (offered(), below) from one a failing origin already refused.
-    head = git("rev-parse", "HEAD", check=False).stdout.strip()
-    told = offered(state) == head
-    marker.write_text(head + "\n")
-    spent = landed(state, branch)
-    if spent:  # said once per new commit it strands; a forced push (session end, sync) always hears it
-        return None if told and not force else spent_note(branch, spent)
+    lock = push_lock(state, lock_wait)
+    if lock is None:
+        return f"↷ push of {branch} stepped back: another push from this checkout is under way"
     try:
-        r = subprocess.run(["git", "push", "-q", "-u", "origin", branch], cwd=ROOT,
-                           capture_output=True, text=True, timeout=PUSH_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return f"⚠ push of {branch} timed out — origin unreachable?"
+        # Before the attempt: a failing origin is retried in PUSH_EVERY, not every turn. The marker
+        # holds the HEAD it was written at, so a Stop can tell a commit no push has been offered yet
+        # (offered(), below) from one a failing origin already refused.
+        head = git("rev-parse", "HEAD", check=False).stdout.strip()
+        told = offered(state) == head
+        spent = landed(state, branch)
+        if spent:  # said once per new commit it strands; a forced push (session end, sync) always hears it
+            marker.write_text(head + "\n")
+            return None if told and not force else spent_note(branch, spent)
+        why = hold() if hold else None  # last, so a rewrite begun during landed()'s lookup still stops it
+        if why:  # nothing offered: the marker stays, so the spacing and the next Stop's fresh are untouched
+            return f"not pushed: {branch} — {why}"
+        marker.write_text(head + "\n")
+        try:
+            r = subprocess.run(["git", "push", "-q", "-u", "origin", branch], cwd=ROOT,
+                               capture_output=True, text=True, timeout=PUSH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return f"⚠ push of {branch} timed out — origin unreachable?"
+    finally:
+        lock.close()
     if r.returncode:
-        err = (r.stderr.strip().splitlines() or ["?"])[-1]
-        return f"⚠ push of {branch} failed: {err[:160]}"
+        return f"⚠ push of {branch} failed: {push_error(r.stderr)[:160]}"
     # The WIP PR once per worktree, not only on the first push: a branch that arrives with an
     # upstream — a seed (`pickup seed` pushes it), or one `pickup` checked out with --track on
     # the other machine — never has a "first" push here (review 2026-09-29, the real seed
@@ -2295,6 +2323,448 @@ def publish(state, branch, session, force=False):
             return f"↑ {branch} is on origin" + (f" — PR {url}" if url else "")
         return f"↑ {branch}: PR {url}" if url else None
     return None
+
+
+def push_lock(state, wait=PUSH_TIMEOUT):
+    """An exclusive lock on the state dir's PUSH_LOCK, waited for up to `wait` s, or None when it
+    could not be had in time (publish then steps back). Closing frees it."""
+    import fcntl
+    try:
+        fh = open(state / PUSH_LOCK, "w")
+    except OSError:
+        return open(os.devnull, "w")  # an unwritable state dir: no lock to take, the push goes ahead
+    deadline = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.time() >= deadline:
+                fh.close()
+                return None
+            time.sleep(0.2)
+
+
+def push_error(stderr):
+    """The line of a failed push that says why: git ends a refused push with `hint:` lines, so the
+    last line alone read "hint: (e.g., 'git pull ...') before pushing again" for a non-fast-forward."""
+    lines = [ln.strip() for ln in (stderr or "").strip().splitlines() if ln.strip()]
+    why = next((ln for ln in lines if "rejected]" in ln), None) \
+        or next((ln for ln in lines if ln.startswith(("error:", "fatal:"))), None)
+    if why and ("non-fast-forward" in why or "fetch first" in why):
+        why += " — not forced"
+    return why or (lines or ["?"])[-1]
+
+
+# ---- mid-turn: a long turn's commits reach origin before it ends ------------------------------
+# Why (2026-11-01): publish() ran at Stop and SessionEnd only, and an unattended run is one turn —
+# the principal tier's S6 run built 22 commits over 8 h, pushed none, and dispatch ended it at
+# DISPATCH_MAX_H with its branch on GitHub still at the seed; a dead host would have lost the work.
+# The overlay wires this hook to UserPromptSubmit, PreToolUse, Stop and SessionEnd, no PostToolUse,
+# so a commit made mid-turn goes out at the next Bash or write call's PreToolUse: the cheap checks
+# here (the checkout read from `.git` with no fork, then the WIP_PUSHED marker and a
+# once-a-MIDTURN_CHECK_EVERY marker, so between full checks a call pays two stats and no git; the
+# full check, about eight git calls, runs once a minute), the push itself in a detached
+# `checkpoint.py push … --spaced`, so no tool call waits on origin and a slow origin never trips the
+# guard's fail-closed timeout.
+# WHERE it goes (run-push-midturn, D1-B, the owner 2026-11-06): a side ref, `refs/wip/<branch>`
+# (WIP_NS), never the branch. The first design pushed the branch itself, and then (1) a later rewrite
+# in the turn (`--amend`, a rebase) left origin non-fast-forward and every push after refused until
+# /finish, the session never told; (2) a ready PR's automerge or a `hold` PR's CI started on every
+# half-done head, so a build whose `check --ci` had readied its PR got no mid-turn push at all; and
+# (3) a rewrite's race with the child had to be fenced by reading command text (REWRITE_RE). A side
+# ref is none of a branch: no PR, no automerge, no CI, and not a name branch scanners (autofinish,
+# pickup, sync, helm's board) read as work. The child force-pushes it (`+<sha>:refs/wip/<branch>`):
+# it holds only this checkout's newest head, which a rewrite is allowed to replace. The branch itself
+# is pushed by the Stop, SessionEnd and `push --end` alone, as before, never forced, and the
+# `pushed` marker and `@{u}` stay the real branch's, so the Stop's paging of the answer docs needs no
+# memory of the mid-turn push. Every repo's pre-push template allows `refs/wip/claude/**` (a push,
+# never a deletion); a repo whose copy predates that refuses the child, which logs it once per HEAD.
+# A rebase or merge under way, /finish, /move and another session's lock still stop the child
+# (push_held, re-judged under the push lock).
+# Recovering from a side ref (nothing reads it back; the branch is the Stop's): after a host's death,
+# `git fetch origin +refs/wip/<branch>:refs/remotes/wip/<branch>` and branch from it. Nothing prunes
+# it, and it keeps the last mid-turn head, one a later amend dropped too (TODO.md [run-push-followups] (ab)).
+WIP_NS = "refs/wip/"
+WIP_PUSHED = "wip-pushed"   # the HEAD the side ref was last offered at (its mtime: the PUSH_EVERY spacing)
+MIDTURN_OFF_ENV = "CLAUDE_HOOK_NO_MIDTURN_PUSH"   # the suites: no detached push behind every Bash case
+MIDTURN_WAIT_ENV = "CLAUDE_HOOK_MIDTURN_WAIT"     # the suites' own cases: wait for the child
+MIDTURN_CHECKED = "midturn-checked"   # touched when the full check ran; another waits MIDTURN_CHECK_EVERY
+MIDTURN_CHECK_EVERY = 60
+PUSH_LOG = "push.log"
+PUSH_LOG_MAX = 64 * 1024
+PUSH_LOCK = "push.lock"          # held around the git push itself (publish)
+MIDTURN_LOCK = "midturn.lock"    # held by a mid-turn child for its whole run
+# The HEAD `push --end` held back for an unheld ready PR (a run ended unfinished). push_held reads it, so
+# the SessionEnd that dispatch's own SIGTERM sets off, a push_later child and any later Stop at that same
+# HEAD leave origin alone too; a new commit moves HEAD past it (the finish review of run-push-midturn: the
+# brake was undone by SessionEnd's forced publish, reproduced in a scratch repo).
+END_HELD = "end-held"
+
+
+def end_held(state):
+    """Why HEAD must stay off origin because `push --end` held it back there, or None. Every road that
+    pushes reads it: push_held's callers, the Stop's publish, stale_link_block's, sync's push_left and
+    pickup's two /move pushes (run-push-midturn's landing reviews: the Stop, sync and /move pushed a held HEAD)."""
+    try:
+        held = (state / END_HELD).read_text().strip()
+    except OSError:
+        return None
+    if held and held == git("rev-parse", "HEAD", check=False).stdout.strip():
+        # the hook's own path, spelt whole: checkpoint.py is on no PATH (the fifth landing review)
+        top = git("rev-parse", "--show-toplevel", check=False).stdout.strip() or "<worktree>"
+        return (f"its run ended with a ready PR at {held[:8]}, half-done (push --end held it back) — label the PR "
+                f"hold or make it a draft and run `python3 {Path(__file__).resolve()} push {top} --end`, or commit on")
+    return None
+
+
+def push_held(state, session):
+    """Why this checkout's branch must not be pushed now, or None: the same holds SessionEnd's
+    push keeps (a rebase or merge under way, /finish rewriting it, the branch moved on, another
+    session's lock). `session` None skips the lock."""
+    gitdir = state.parent
+    busy = next((m for m in BUSY_MARKERS if (gitdir / m).exists()), None)
+    if busy:
+        return f"a {busy} is under way"
+    try:  # one older than FINISHING_TTL is an abandoned /finish, as main() reads it (not removed here)
+        if time.time() - (state / "finishing").stat().st_mtime <= FINISHING_TTL:
+            return "/finish is rewriting it"
+    except OSError:
+        pass
+    if common.moved(state):
+        return "it moved on elsewhere (/move)"
+    why = end_held(state)
+    if why:
+        return why
+    owner = read_owner(state)
+    if session is not None and held_by_other(owner, session):
+        return f"session {str(owner.get('session'))[:8]} holds this checkout"
+    return None
+
+
+def origin_ref(branch):
+    """The ref naming origin's copy of `branch`: its upstream, else `refs/remotes/origin/<branch>` (a branch
+    made `--no-track` from it, as dispatch makes a run's on the receiving host), else None (never pushed)."""
+    if has_upstream(branch):
+        return f"{branch}@{{u}}"
+    ref = f"refs/remotes/origin/{branch}"
+    return ref if git("rev-parse", "--verify", "-q", ref, check=False).returncode == 0 else None
+
+
+def checkout_of(root):
+    """(top, git dir) of the checkout holding `root`, read from the `.git` dir or a worktree's `.git`
+    file with no git call (a Bash call's PreToolUse pays for every fork), or None."""
+    try:
+        here = Path(root).resolve()
+    except OSError:
+        return None
+    for d in (here, *here.parents):
+        g = d / ".git"
+        try:
+            if g.is_dir():
+                return d, g
+            if g.is_file():
+                txt = g.read_text().strip()
+                if txt.startswith("gitdir:"):
+                    gd = Path(txt[len("gitdir:"):].strip())
+                    return d, gd if gd.is_absolute() else (d / gd).resolve()
+                return None
+        except OSError:
+            return None
+    return None
+
+
+PR_UNKNOWN = "unknown"   # ready_pr: GitHub was asked and did not answer
+
+
+def ready_pr(branch):
+    """This branch's open pull request when it is ready (not a draft), None when it has none or a draft, and
+    PR_UNKNOWN when GitHub was asked and did not answer: automerge.yml merges an unheld ready PR on any push
+    once its check passes, so a push of a run's half-done head would land it, and a `hold` one starts CI on
+    every push, CircleCI's Linux share included (round 3's and 4's reviews). A brake against automerge fails
+    closed (round 5's review): only no token, no GitHub origin or CLAUDE_HOOK_NO_GITHUB (nothing to ask) read
+    as no PR."""
+    if os.environ.get("CLAUDE_HOOK_NO_GITHUB"):
+        return None
+    try:
+        slug = common.repo_slug(git("remote", "get-url", "origin", check=False).stdout.strip())
+        tok = common.token() if slug else None
+        if not tok:
+            return None
+        from urllib.parse import quote
+        st, prs = common.api("GET", f"/repos/{slug}/pulls?state=open&per_page=5&head="
+                                    f"{slug.split('/')[0]}:{quote(branch, safe='')}", tok=tok)
+    except Exception:
+        return PR_UNKNOWN
+    if st != 200 or not isinstance(prs, list):
+        return PR_UNKNOWN
+    pr = prs[0] if prs else None
+    return pr if isinstance(pr, dict) and not pr.get("draft") else None
+
+
+def pr_held(pr):
+    """A PR labelled `hold`: automerge never merges it."""
+    return any((lb or {}).get("name") == "hold" for lb in (pr.get("labels") or []))
+
+
+def midturn_push(session, command=""):
+    """From a Bash or write call's PreToolUse: start a detached spaced push of this checkout's claude/*
+    branch's head to its side ref (WIP_NS) when it holds commits origin lacks. True when one was started.
+    `command`: a Bash call's own text; one that pushes starts none."""
+    if os.environ.get("CLAUDE_HOOK_NO_PUSH") or os.environ.get(MIDTURN_OFF_ENV):
+        return False
+    found = checkout_of(ROOT)
+    if not found:
+        return False
+    top, state = found[0], found[1] / "claude"
+    try:
+        if time.time() - (state / WIP_PUSHED).stat().st_mtime < PUSH_EVERY:
+            return False
+    except OSError:
+        pass  # no side-ref push offered from here yet
+    if not state.is_dir():
+        return False
+    checked = state / MIDTURN_CHECKED
+    try:
+        if time.time() - checked.stat().st_mtime < MIDTURN_CHECK_EVERY:
+            return False
+    except OSError:
+        pass
+    # after the two stats, which turn away almost every call: a big heredoc pays these scans once a minute
+    if PUSH_ANY_RE.search(command):
+        return False
+    checked.touch()
+    if load_workflow(top) is None:
+        return False
+    branch = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False).stdout.strip()
+    ref = origin_ref(branch) if branch.startswith("claude/") else None
+    if not ref or push_held(state, session) or landed(state, branch, ask=False):
+        return False  # a kept "it landed" (no network): its note is the Stop's, once a commit
+    if git("rev-list", "--count", f"{ref}..HEAD", check=False).stdout.strip() in ("", "0"):
+        return False
+    if wip_offered(state) == git("rev-parse", "HEAD", check=False).stdout.strip():
+        return False  # offered at this very HEAD (sent or refused): the next commit tries again
+    log = state / PUSH_LOG
+    try:
+        if log.stat().st_size > PUSH_LOG_MAX:
+            log.write_text("")
+    except OSError:
+        pass
+    with open(log, "a") as fh:
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "push", str(top),
+                                  "--session", session or "unknown", "--spaced"] + (["--vendor", VENDOR] if VENDOR else []),
+                                 stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                                 cwd="/", start_new_session=True)
+    if os.environ.get(MIDTURN_WAIT_ENV):
+        child.wait(PUSH_TIMEOUT + 30)
+    return True
+
+
+def push_verb(argv):
+    """`checkpoint.py push <worktree> [--session S] [--spaced] [--vendor CLI] [--wait S]`: push that checkout's claude/* branch
+    now, through publish() — never --force, never a branch that landed — and print one line saying
+    what happened. --spaced is the mid-turn child: it pushes the head to the side ref (publish_wip),
+    never the branch, so no PR is asked about; WIP_PUSHED's PUSH_EVERY holds, and each line is stamped
+    for the state dir's push.log. Without it the branch is pushed and the spacing is skipped. --end is dispatch's, before it stops
+    a run (its lifetime, `dispatch --end`): an unheld ready PR holds it back too, exit 3, since a run ended
+    unfinished has a half-done head; a `hold` one is pushed. Either fails closed when GitHub does not answer
+    (PR_UNKNOWN). A repo that never opted in is not pushed (the hook
+    pushes only where it was asked to). --vendor: the CLI the spawning call came from (held_by_other's
+    VENDOR); --wait: how long to wait for another push of this checkout (PUSH_LOCK) before stepping back. Exit 0 when origin
+    holds the branch's HEAD afterwards, or when it stepped back (another push of this checkout under
+    way, or for a --spaced child the spacing not up: nothing was tried); 3 when it did not push (held, refused, not a checkout); 2 on usage;
+    any other code, Python's 1 included, is a crash: could not tell (AGENTS.md, "a probe's refuse exit")."""
+    global ROOT, MAIN, VENDOR
+    import fcntl
+    args, session, spaced, end = list(argv), None, False, False
+    if "--spaced" in args:
+        args.remove("--spaced")
+        spaced = True
+    if "--end" in args:
+        args.remove("--end")
+        end = True
+    wait = PUSH_TIMEOUT + 5
+    if "--wait" in args:
+        i = args.index("--wait")
+        try:
+            wait = float((args[i + 1:i + 2] or ["x"])[0])
+        except ValueError:
+            print("usage: --wait takes seconds", file=sys.stderr)
+            return 2
+        del args[i:i + 2]
+    if "--vendor" in args:
+        i = args.index("--vendor")
+        VENDOR = (args[i + 1:i + 2] or [""])[0]
+        del args[i:i + 2]
+    if "--session" in args:
+        i = args.index("--session")
+        session = (args[i + 1:i + 2] or [""])[0] or None
+        del args[i:i + 2]
+    if len(args) != 1 or (spaced and end):  # together, --spaced's side-ref road would skip --end's PR judgement and END_HELD
+        print("usage: checkpoint.py push <worktree> [--session S] [--spaced | --end] [--vendor CLI] [--wait S]", file=sys.stderr)
+        return 2
+
+    def say(line):
+        print((time.strftime("%Y-%m-%d %H:%M:%S ") if spaced else "") + line, flush=True)
+
+    ROOT = str(Path(args[0]).expanduser())
+    if not Path(ROOT).is_dir():
+        say(f"not pushed: {args[0]} is not a git checkout")
+        return 3
+    r = git("rev-parse", "--show-toplevel", "--absolute-git-dir", check=False)
+    out = r.stdout.splitlines()
+    if r.returncode or len(out) < 2:
+        say(f"not pushed: {args[0]} is not a git checkout")
+        return 3
+    top, state = Path(out[0]), Path(out[1]) / "claude"
+    wf = load_workflow(top)
+    if wf is None:
+        say(f"not pushed: {top} never opted in to the workflow (or says .claude/no-workflow)")
+        return 3
+    MAIN = wf.get("main") or "main"
+    state.mkdir(parents=True, exist_ok=True)
+    branch = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False).stdout.strip()
+    if not branch.startswith("claude/"):
+        say(f"not pushed: {branch or 'a detached HEAD'} is no claude/* branch")
+        return 3
+    if spaced:  # one mid-turn child per checkout: a second one started meanwhile has nothing to add
+        child = open(state / MIDTURN_LOCK, "w")
+        try:
+            fcntl.flock(child, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            say(f"not pushed: a mid-turn push of {branch} from here is under way")
+            return 0
+    earlier = None
+    if end:  # --end judges the ready PR afresh (a hold label since, the PR closed); it writes END_HELD again if it holds
+        try:
+            earlier = (state / END_HELD).read_text()
+        except OSError:
+            pass
+        (state / END_HELD).unlink(missing_ok=True)
+    why = push_held(state, session)
+    if why:
+        if earlier:  # refused before it judged the PR: the earlier hold stands (the fourth landing review)
+            (state / END_HELD).write_text(earlier)
+        say(f"not pushed: {branch} — {why}")
+        return 3
+    ref = origin_ref(branch)
+    if spaced:  # the side ref: no PR is asked about, since no branch moves (D1-B)
+        code, line = publish_wip(state, branch, session, wait)
+        say(line)
+        return code
+    if end and ref:
+        pr = ready_pr(branch)
+        if pr == PR_UNKNOWN:  # a brake against automerge fails closed; nothing marked, so the next check asks again
+            # the run is about to end: SessionEnd's forced push must not undo the brake (the landing review)
+            (state / END_HELD).write_text(git("rev-parse", "HEAD", check=False).stdout.strip() + "\n")
+            say(f"not pushed: {branch} — GitHub did not say whether its PR is ready")
+            return 3
+        if pr and not pr_held(pr):  # a run ended unfinished: its head is half-done by definition (round 5's review)
+            head = git("rev-parse", "HEAD", check=False).stdout.strip()
+            (state / END_HELD).write_text(head + "\n")   # SessionEnd and push_later then hold it too
+            say(f"not pushed: {branch}'s PR #{pr.get('number')} is ready — a half-done head would arm its automerge; "
+                f"its commits stay in {top} at {head[:8]}")
+            return 3
+    before = git("rev-parse", "--verify", "-q", ref, check=False).stdout.strip() if ref else ""
+    was = offer_stamp(state)
+    note = publish(state, branch, session or "unknown", force=True, lock_wait=wait,
+                   hold=lambda: push_held(state, session))
+    line = note.splitlines()[0] if note else None   # one line: dispatch logs it whole
+    head = git("rev-parse", "HEAD", check=False).stdout.strip()
+    after = git("rev-parse", "--verify", "-q", f"{branch}@{{u}}", check=False).stdout.strip()
+    if note and note.startswith("↷"):   # stepped back: nothing was offered, whatever origin holds
+        if end:  # the session is about to stop: a detached verb pushes what the other push did not carry
+            push_later(top, state, session or "unknown")
+            line += "; a detached push takes the rest"
+        say(line)
+        return 0
+    if note and note.startswith("not pushed:"):   # held under the lock
+        say(line)
+        return 3
+    # the HEAD publish offered under the lock, if this call offered one: a commit made during the push is
+    # no refusal, and an older offer (the last push's) proves nothing about this one
+    sent = offered(state) if offer_stamp(state) != was else ""   # the marker rewritten: this call offered it
+    if after and after in (head, sent):
+        say((f"pushed {branch}: {before[:8] or 'new'}..{after[:8]}" if before != after
+             else f"nothing to push: origin has {branch} at {after[:8]}")
+            + (f"; HEAD moved on to {head[:8]} since" if after != head else "") + (f" ({line})" if line else ""))
+        return 0
+    say(line or f"not pushed: {branch} at {head[:8]}, origin at {after[:8] or 'nothing'}")
+    return 3
+
+
+def wip_ref(branch):
+    """origin's side ref for a branch's mid-turn pushes: `refs/wip/claude/<host>/<date>-<topic>`."""
+    return WIP_NS + branch
+
+
+def wip_offered(state):
+    """The HEAD the side ref was last offered at ('' before any), sent or refused alike."""
+    try:
+        return (state / WIP_PUSHED).read_text().strip()
+    except OSError:
+        return ""
+
+
+def publish_wip(state, branch, session, lock_wait):  # session None: push_held skips the lock check, as on the other road
+    """The mid-turn child's push (D1-B): this checkout's HEAD onto origin's `refs/wip/<branch>`, forced (the
+    side ref holds the newest head only, which a rewrite may replace), never the branch, its upstream or
+    its `pushed` marker. Returns (exit code, one line). 0 when it pushed, had nothing to add or stepped back
+    (WIP_PUSHED inside PUSH_EVERY, another push of this checkout under way); 3 when it did not push (held,
+    refused, timed out). The HEAD is marked offered before the attempt, so a refusing origin (a repo whose
+    pre-push predates the side ref) is tried again at the next commit, not every PUSH_EVERY for a turn."""
+    ref = origin_ref(branch)
+    head = git("rev-parse", "HEAD", check=False).stdout.strip()
+    if not ref or not head:
+        return 3, f"not pushed: {branch} is not on origin"
+    marker = state / WIP_PUSHED
+    try:
+        if time.time() - marker.stat().st_mtime < PUSH_EVERY:
+            return 0, f"not pushed: {branch} was offered within PUSH_EVERY"
+    except OSError:
+        pass
+    if git("rev-list", "--count", f"{ref}..HEAD", check=False).stdout.strip() in ("", "0"):
+        return 0, f"nothing to push: origin has {branch} at {head[:8]}"
+    lock = push_lock(state, lock_wait)
+    if lock is None:
+        return 0, f"↷ push of {branch} stepped back: another push from this checkout is under way"
+    try:
+        why = push_held(state, session)  # last, under the lock: a rebase or /finish begun since still stops it
+        if why:
+            return 3, f"not pushed: {branch} — {why}"
+        marker.write_text(head + "\n")
+        try:
+            r = subprocess.run(["git", "push", "-q", "origin", f"+{head}:{wip_ref(branch)}"], cwd=ROOT,
+                               capture_output=True, text=True, timeout=PUSH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return 3, f"⚠ push of {branch} to its side ref timed out — origin unreachable?"
+    finally:
+        lock.close()
+    if r.returncode:
+        return 3, f"⚠ push of {branch} to its side ref failed: {push_error(r.stderr)[:160]}"
+    return 0, f"pushed {branch} to {wip_ref(branch)}: {head[:8]}"
+
+
+def offer_stamp(state):
+    """The `pushed` marker as (HEAD offered, mtime in ns): a retry of the HEAD the last attempt offered still
+    rewrites the marker, so the stamp tells this call's offer from an older one at the same HEAD."""
+    try:
+        return offered(state), (state / "pushed").stat().st_mtime_ns
+    except OSError:
+        return offered(state), None
+
+
+def push_later(top, state, session):
+    """After a push stepped back for another one of this checkout (↷): a detached verb that waits that
+    push out and pushes what is left, so neither the Stop nor SessionEnd (which has 1.5 s by default)
+    waits, and the turn's last commits are not stranded. Output to push.log."""
+    try:
+        with open(state / PUSH_LOG, "a") as fh:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "push", str(top), "--session", session]
+                             + (["--vendor", VENDOR] if VENDOR else []), stdin=subprocess.DEVNULL, stdout=fh,
+                             stderr=subprocess.STDOUT, cwd="/", start_new_session=True)
+    except OSError:
+        pass
 
 
 # ---- a doc that asks the owner something ------------------------------------------------------
@@ -3026,8 +3496,17 @@ def main():
             out = handle_bash((data.get("tool_input") or {}).get("command", ""), ROOT, session)
             if out:
                 print(json.dumps(out, ensure_ascii=False))
+            if ((out or {}).get("hookSpecificOutput") or {}).get("permissionDecision") != "deny":
+                try:  # a commit made earlier in this turn goes out now (the mid-turn section above)
+                    midturn_push(session, (data.get("tool_input") or {}).get("command", ""))
+                except Exception:
+                    pass  # a push is never worth a tool call
             return
         if data.get("tool_name") in WRITE_TOOLS:
+            try:  # a commit followed by a long stretch of edits goes out too (the mid-turn section)
+                midturn_push(session)
+            except Exception:
+                pass
             ti = data.get("tool_input") or {}
             if in_force(ti.get("file_path") or ti.get("notebook_path")):
                 print(json.dumps(deny(force_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
@@ -3098,9 +3577,11 @@ def main():
     if event == "SessionEnd":
         if owner and owner.get("session") == session:
             (state / "owner.json").unlink(missing_ok=True)
-        if not locked_out and not went and not any((state.parent / m).exists() for m in BUSY_MARKERS) \
-                and not (state / "finishing").exists():
-            publish(state, branch, session, force=True)  # whatever the last turn left unpushed
+        if not push_held(state, session):
+            # whatever the last turn left unpushed; a SessionEnd hook has seconds, not the Stop's minute
+            note = publish(state, branch, session, force=True, lock_wait=0)  # no wait: SessionEnd has 1.5 s by default
+            if (note or "").startswith("↷"):  # another push holds the lock: a detached verb waits it out
+                push_later(toplevel, state, session)
             if branch.startswith("claude/"):
                 # The launcher's second trigger (D8): a minute on, this worktree is judged once
                 # more and, armed, started. SessionEnd cannot wait, hence the detached child.
@@ -3316,13 +3797,23 @@ def main():
             unpushed = ({} if not branch.startswith("claude/") or not fresh else
                         answer_docs(f"{branch}@{{u}}..HEAD") if has_upstream(branch) else
                         answer_docs("HEAD") if committed else {})
-            notes.append(publish(state, branch, session, force=bool(unpushed) or af_declared or af_now or af_live))
+            pnote = publish(state, branch, session, lock_wait=10,
+                            force=bool(unpushed) or af_declared or af_now or af_live,
+                            hold=lambda: end_held(state))
+            notes.append(pnote)
+            stepped = (pnote or "").startswith("↷")  # a child holds the lock: a second wait would pass the Stop's minute
             _, sheep_note = sheep_pages(branch, list(unpushed))  # its pin is what the line's page is checked against
             notes.append(sheep_note)
+            # once a turn, pushed or refused: a refused push is not retried every Stop for it. A push that stepped
+            # back for a child's hands the rest to a detached verb (a one-turn run has no next Stop).
+            if stepped:
+                push_later(toplevel, state, session)
             asked = answer_docs("HEAD") if committed and unpushed else {}
             block = answer_link_block(branch, [d for d, asks in asked.items() if asks], data)
             try:  # a check, not the checkpoint: never let it cost the Stop's notes and queue
-                block = block or stale_link_block(branch, data, lambda: publish(state, branch, session, force=True))
+                block = block or stale_link_block(branch, data, lambda: publish(state, branch, session, force=True,
+                                                                                    lock_wait=0 if stepped else 10,
+                                                                                    hold=lambda: end_held(state)))
             except Exception as exc:
                 notes.append(f"⚠ link check failed: {exc}")
             if not block and (af_declared or af_now or af_live):  # one block a Stop; the next comes back here
@@ -3414,6 +3905,11 @@ def core_missing(exc):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["push"]:  # a verb, not a hook event: dispatch's lifetime end, the mid-turn child
+        if core_error is not None:
+            print(f"not pushed: {CORE_MISSING} ({core_error})", flush=True)
+            sys.exit(3)  # a refusal's code: 1 is a crash's
+        sys.exit(push_verb(sys.argv[2:]))
     if core_error is not None:
         try:
             core_missing(core_error)

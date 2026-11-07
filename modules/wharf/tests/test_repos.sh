@@ -609,7 +609,20 @@ echo "repos --branches: the fence (knowledge-layers S4)"
     ck "$(run "refs/heads/claude/x $a refs/heads/main $z\n" push)" "1" "$SH: Sync landing a claude/* branch on main refused"
     ck "$(grep -c '^  refs/heads/claude/x -> refs/heads/main$' "$T/pp.err")" "1" "$SH:   naming the ref"
     ck "$(run "refs/heads/claude/x $a refs/heads/claude/x $z\n" push)" "0" "$SH: Sync of a claude/* branch onto itself passes"
+    # the side refs checkpoint.py's mid-turn push writes (run-push-midturn, D1-B): the one namespace beside claude/**
+    ck "$(run "$a $a refs/wip/claude/x $z\n")" "0" "$SH: a push to refs/wip/claude/** passes (a sha or HEAD as the source, a first push)"
+    ck "$(run "refs/heads/claude/x $a refs/wip/claude/x $a\n")" "0" "$SH:   ...and an update of it"
+    ck "$(run "$a $a refs/wip/other/x $z\nrefs/wip/claude/y $z refs/wip/claude/y $a\n")" "1" "$SH: another wip name and a deletion of a side ref refused"
+    ck "$(sed -n '/^Not allowed here:/,/^Allowed/p' "$T/pp.err" | sed -n '2,3p' | tr '\n' '|')" "  refs/wip/other/x|  refs/wip/claude/y (deletion)|" "$SH:   each named"
+    ck "$(run "$a $a refs/tags/claude/x $z\n")" "1" "$SH: a tag under the same name refused"
+    ck "$(run "refs/wip/claude/x $a refs/wip/claude/x $z\n" push)" "0" "$SH: Sync of such a ref onto itself passes (it matches no claude/* branch)"
   done
+  # the knowledge repos' variant takes the same side refs
+  K="$B/../templates/code/git-hooks/pre-push-knowledge"
+  krun() { printf "$1" | env -u GIT_PUSH_OK -u VSCODE_GIT_COMMAND sh "$K" 2>"$T/ppk.err"; echo $?; }
+  ck "$(krun "$a $a refs/wip/claude/x $z\n")" "0" "knowledge: a push to refs/wip/claude/** passes"
+  ck "$(krun "$a $a refs/wip/other/x $z\n")" "1" "knowledge: another wip name refused"
+  ck "$(krun "refs/wip/claude/x $z refs/wip/claude/x $a\n")" "1" "knowledge: a deletion of a side ref refused"
   # the road the change exists for: a loop that never reaches its sentinel (here: an echo that prints nothing) refuses
   out=$(printf "refs/heads/claude/x $a refs/heads/claude/x $z\n" | env -u GIT_PUSH_OK -u VSCODE_GIT_COMMAND sh -c 'echo() { :; }; . "$0"' "$H" 2>&1); rc=$?
   ck "$rc" "1" "a loop that does not finish refuses the push (fails closed)"

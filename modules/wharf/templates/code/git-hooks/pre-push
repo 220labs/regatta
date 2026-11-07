@@ -26,6 +26,10 @@
 # Everything else is an agent. An agent may push ONLY:
 #   * to refs/heads/claude/**  — the namespace the worktree workflow already mints, so the
 #     permission follows the convention rather than adding a second thing to remember;
+#   * to refs/wip/claude/**    — the side refs checkpoint.py's mid-turn push writes (a long turn's
+#     commits reach origin before it ends, without moving the branch, so no PR, automerge or CI
+#     sees a half-done head and a later amend leaves nothing non-fast-forward; not a branch, so no
+#     branch scanner reads one as work: run-push-midturn, the owner 2026-11-06);
 #   * never a deletion — a deleted branch takes its open PR's review context with it, and
 #     an agent has no reason to remove a branch the owner may still be reading.
 # main, other branches, tags and notes are refused (the owner, 2026-09-19, replacing "never push
@@ -90,7 +94,7 @@ agent_refused() {  # stdin: the refs; stdout: each ref an agent may not push, th
 		case "$local_sha" in
 			*[!0]*)
 				case "$remote_ref" in
-					refs/heads/claude/*) ;;
+					refs/heads/claude/*|refs/wip/claude/*) ;;
 					*) printf '  %s\n' "$remote_ref" ;;
 				esac
 				;;
@@ -116,7 +120,7 @@ refused=$(verdict "$(printf '%s\n' "$refs" | agent_refused)") || refused='  (the
 
 printf 'refusing this push: an agent may push only its own branches.\n\n' >&2
 printf 'Not allowed here:\n%s\n\n' "$refused" >&2
-printf 'Allowed: refs/heads/claude/** , never a deletion.\n\n' >&2
+printf 'Allowed: refs/heads/claude/** and refs/wip/claude/** , never a deletion.\n\n' >&2
 printf 'To change main, push the claude/* branch and open a pull request — the owner merges it\n' >&2
 printf 'on github.com. Do not retry, and do not look for another way to move main.\n' >&2
 printf 'The owner pushes anything with:  GIT_PUSH_OK=1 git push  — or VS Code'"'"'s Push button.\n' >&2
