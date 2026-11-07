@@ -127,7 +127,10 @@ which the walk would take on a guess, waits for the pass: a row before it with c
 be, and with no key every row may be but the primary, whose routines break when its week runs out, so a host's
 registry without the key never lifts it; any other value lifts nothing, said on stderr (may_overdraw). A
 login's own live `lighthouse/week-max` line holds too (the owner's newest word on that seat); a `*:` line
-does not. The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
+does not. `lighthouse/overdraw-max` (`<login>:N`, else `*:N`; a value that does not read is no line) caps a
+lifted row's week bar in place of 100, never above 100 (the owner, 2026-11-06: allow high and force builds
+through overdraw on a seat with a ceiling for them), and binds lifted rows alone (finishes keep
+`lighthouse/week-max-finish`, and a finish-ceiling row is still never lifted). The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
 the other rows, the repo and `--job`): the caller hands that object to `account overdraw-log` once its job
 has started (dispatch once its session began, in the foreground, on both roads), so a job refused after the pick, a dry
 run or a second pick for a room is never an incident, and no pick waits on GitHub. overdraw-log writes one
@@ -2566,9 +2569,12 @@ def when(t):
 
 
 WEEK_MAX_KEY = "lighthouse/week-max"
+OVERDRAW_MAX_KEY = "lighthouse/overdraw-max"
 WEEK_MAX_FINISH_KEY = "lighthouse/week-max-finish"
 _WEEK_MAX = None
 _WEEK_MAX_SAID = set()
+_OVERDRAW_MAX = None
+_OVERDRAW_MAX_SAID = set()
 _WEEK_MAX_FINISH = None
 _WEEK_MAX_FINISH_SAID = set()
 _OVERDRAW_SAID = set()
@@ -2583,20 +2589,23 @@ def ceiling_value(v):
     return None if n != n or not 0 < n <= 100 else n
 
 
-def live_week_max(label, finish=False):
+def live_week_max(label, finish=False, overdraw=False):
     """(ceiling, where from, bad line) from the config's `lighthouse/week-max` (live-limits, 2026-11-01): lines
     `<login>:<pct>`, `*:<pct>` for any login without one, a number above 0 and at most 100. `regatta limit` writes it
     in the config dir's live layer, so a ceiling changes on the next pick, with no registry edit and no landing.
     The login's own line first; none naming it is (None, None, None). A line that is no ceiling reads as none, said
     on stderr once and returned as the bad line, never a crash of every pick (AGENTS.md's optional-key trap). The
-    table is read once per run: a pick judges every row, some twice. FINISH reads `lighthouse/week-max-finish`, which
+    table is read once per run: a pick judges every row, some twice. OVERDRAW reads `lighthouse/overdraw-max` the same
+    way for lift(). FINISH reads `lighthouse/week-max-finish`, which
     widens, so it fails closed: an unreadable read leaves the table empty, and a line that is no ceiling (it may be a
     login's own, mistyped, which `*:` would then serve) takes `*:` out of it; good own lines stand."""
-    global _WEEK_MAX, _WEEK_MAX_FINISH
-    key = WEEK_MAX_FINISH_KEY if finish else WEEK_MAX_KEY
-    table = _WEEK_MAX_FINISH if finish else _WEEK_MAX
-    said = _WEEK_MAX_FINISH_SAID if finish else _WEEK_MAX_SAID
-    fallback = "the week ceiling judges" if finish else "the registry's rules.week_max judges"
+    global _WEEK_MAX, _OVERDRAW_MAX, _WEEK_MAX_FINISH
+    if finish:
+        key, table, said, fallback = WEEK_MAX_FINISH_KEY, _WEEK_MAX_FINISH, _WEEK_MAX_FINISH_SAID, "the week ceiling judges"
+    elif overdraw:
+        key, table, said, fallback = OVERDRAW_MAX_KEY, _OVERDRAW_MAX, _OVERDRAW_MAX_SAID, "the overdraw lifts to 100"
+    else:
+        key, table, said, fallback = WEEK_MAX_KEY, _WEEK_MAX, _WEEK_MAX_SAID, "the registry's rules.week_max judges"
     if table is None:
         try:
             c = core()
@@ -2644,6 +2653,8 @@ def live_week_max(label, finish=False):
             print(f"account: {key} holds a line that does not read; its `*:` line raises nothing", file=sys.stderr)
         if finish:
             _WEEK_MAX_FINISH = table
+        elif overdraw:
+            _OVERDRAW_MAX = table
         else:
             _WEEK_MAX = table
     for name in (str(label).lower(), "*"):
@@ -2772,11 +2783,11 @@ def no_five_hour(a, lim):
             and set(kinds) <= {"weekly_all", "weekly_scoped"})
 
 
-def judge(a, lim, t, allow_overage=False, at=None, bar=None, finish=False):
+def judge(a, lim, t, allow_overage=False, at=None, bar=None, bar_why=None, finish=False):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
     whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
     the window as it stood then (header, "Pace"). bar: a week ceiling that replaces the row's, the
-    overdraw pass's 100 (header, "Overdraw")."""
+    overdraw pass's ceiling or 100 (header, "Overdraw")."""
     if a.get("same_as"):
         other, email = a["same_as"]
         return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
@@ -2787,7 +2798,7 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None, finish=False):
         return False, "limits unknown (no probe answered, none cached)"
     if overage_on(lim) and not allow_overage:
         return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
-    week_max, why = (bar, "overdraw: no login was under its bar") if bar else ceiling(a, lim, t, finish)
+    week_max, why = (min(bar, 100), bar_why or "overdraw: no login was under its bar") if bar is not None else ceiling(a, lim, t, finish)
     m = margin(a, t)
     win_max = a["rules"].get("window_max", 100) - m
     wk, fh = lim.get("seven_day"), lim.get("five_hour")
@@ -3112,7 +3123,8 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
 
 def lift(over, t, allow_overage, skipped):
     """The overdraw pass (header, "Overdraw"): (row, reason, skipped) for the first of OVER, in walk order, that
-    may be lifted and is eligible with its week ceiling at 100, else None. OVER holds only rows that got past
+    may be lifted and is eligible with its week ceiling at `lighthouse/overdraw-max` (else 100, never above 100),
+    else None. OVER holds only rows that got past
     every scope, tenant, confine, room and cooldown refusal and were refused by their week ceiling first.
     A row refused by its lend bar goes last, after every other (header, "The lend bar"): lifting it spends the
     tenant's own room on another repo's work, so it lends only when no other row can be lifted (sorted is stable:
@@ -3130,12 +3142,17 @@ def lift(over, t, allow_overage, skipped):
             # a login's own live line is the owner's newest word on that seat (ceiling()'s "set low on purpose"),
             # so it holds; a fleet-wide `*:` line does not (both reviews of overdraw, 2026-11-04)
             continue
-        ok, why = judge(a, lim, t, allow_overage, at, bar=100)
+        cap, _, _ = live_week_max(a.get("label"), overdraw=True)
+        bar = min(cap, 100) if cap is not None else 100
+        od_why = ("overdraw: no login was under its bar" if cap is None
+                  else f"overdraw: no login was under its bar, to the overdraw ceiling {bar}%")
+        ok, why = judge(a, lim, t, allow_overage, at, bar=bar, bar_why=od_why)
         if ok:
             rest = [s for s in skipped if s[0] != a["label"]]
             info = {"account": a["label"], "bar": bar_why, "week": lim.get("seven_day"),
                     "resets": lim.get("seven_day_resets"), "reason": f"{why}; past its own bar: {bar_why}", "skipped": rest}
             return {**a, "overdraw": info}, info["reason"], rest
+        skipped[:] = [(l, why if l == a["label"] else w) for l, w in skipped]
     return None
 
 
@@ -5196,8 +5213,8 @@ def main(argv):
     sub.add_parser("overdraw-log", help="the pick's overdraw object on stdin, logged once its job started (header, \"Overdraw\")")
     p = sub.add_parser("week-max", help="a login's live week ceiling (lighthouse/week-max), or none; exit 2 on a line that is no ceiling")
     p.add_argument("label")
-    p.add_argument("--for", dest="purpose", choices=("build", "finish"), default="build",
-                   help="finish reads week-max-finish for regatta limit's trial, without granting a pick")
+    p.add_argument("--for", dest="purpose", choices=("build", "finish", "overdraw"), default="build",
+                   help="finish reads week-max-finish and overdraw reads overdraw-max for regatta limit's trial")
     p = sub.add_parser("doctor")
     p.add_argument("--local", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -5206,7 +5223,7 @@ def main(argv):
     if args.cmd == "overdraw-log":   # needs no registry: what the pick decided is on stdin
         return cmd_overdraw_log()
     if args.cmd == "week-max":   # `regatta limit`'s trial read: needs no registry
-        v, src, bad = live_week_max(args.label, finish=args.purpose == "finish")
+        v, src, bad = live_week_max(args.label, finish=args.purpose == "finish", overdraw=args.purpose == "overdraw")
         print("none" if v is None else f"{v} ({src})")
         return 2 if bad else 0
     if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
