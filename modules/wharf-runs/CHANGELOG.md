@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `yard-node up` asks no Claude login on a vendor-only node (a fence that names only the walk's
+  non-Claude rows, a Codex builder) and prints that node a sign-in line without `claude auth login`;
+  a node where no signed-in login meets the fence is refused before anything reaches it.
 - Antigravity builds use the shared vendor launcher: stdin stream-json turns in
   one conversation, fresh vendor reviews and verifier, checks and fix rounds
   through a clean end or the cap, with no Claude process. Every typed or drawn
