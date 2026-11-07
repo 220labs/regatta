@@ -5774,6 +5774,7 @@ git -C "$SLR" worktree add -q "$SL/wt-win" claude/t/2026-11-02-win-lim
 cat > "$SL/dq-cool" <<'SH'
 #!/bin/sh
 [ "$*" = "list --all --json" ] || { echo "dispatch-queue: bad call: $*" >&2; exit 2; }
+[ -z "$DQ_CALLS" ] || echo read >> "$DQ_CALLS"
 cat <<'JSON'
 {"entries": [
   {"qid": "q-cool", "repo": "demo", "branch": "claude/t/2026-11-02-cool-step", "state": "queued", "queued_at": 1700000000, "args": ["--priority", "normal", "--account", "acct-cool"]},
@@ -5793,7 +5794,16 @@ cat <<'JSON'
 ]
 JSON
 SH
-chmod +x "$SL/dq-cool" "$SL/acct-cool"
+cat > "$SL/acct-none" <<'SH'
+#!/bin/sh
+[ "$*" = "limits --all --parked --json --cached" ] || { echo "account: bad call: $*" >&2; exit 2; }
+echo '[{"label": "acct-ok", "enabled": true, "eligible": true, "limits": {"locked": []}, "why": "week 20%"}]'
+SH
+chmod +x "$SL/dq-cool" "$SL/acct-cool" "$SL/acct-none"
+# part (d) runs only where dispatch-queue has a home: the suite's config gains `wharf-runs/queue-repo` in a copy
+# (plain -R: links stay links), and the cases below run on it; one runs without it (the landing review, 2026-11-07)
+SLC="$SL/cfg"; cp -R "$REGATTA_CONFIG" "$SLC"; mkdir -p "$SLC/wharf-runs"; echo "example/queue" > "$SLC/wharf-runs/queue-repo"
+SLN="$SL/cfg-noqueue"; cp -R "$REGATTA_CONFIG" "$SLN"; rm -f "$SLN/wharf-runs/queue-repo"
 cat > "$SL/check_s2.py" <<'PY'
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
@@ -5842,14 +5852,22 @@ qrows[0]["title"] = stalls.title(qrows[0], 1700000600)
 print("queue-acct:", len(qrows), qrows[0]["class"], qrows[0]["topic"], qrows[0]["action"], qrows[0]["raise_to"],
       qrows[0]["suggested"], qrows[0]["key_kind"])
 PY
-check "$(STALLS_REPOS="$SLR" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost python3 "$SL/check_s2.py" "$B" "$SLR")" \
+check "$(REGATTA_CONFIG="$SLC" STALLS_REPOS="$SLR" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost python3 "$SL/check_s2.py" "$B" "$SLR")" \
 "launches: ('S5', 'limit') ('S5', 'limit') ('S4', 'stopped: the network, sleep or a usage limit') ('S5', 'WAITING line') ('S5', 'login')
 s1-limit: True None True True True bound True
 queue-acct: 1 S6 cool-step raise owner dispatch claude/t/2026-11-02-cool-step --account auto queue-account" \
   "S5 files limit stops outside NET_RE as limit; S1 limit stops re-dispatch unpinned with --account auto; queued cooling-down --account listed as owner S6"
+qa() { DQ_CALLS="$SL/dq-calls" STALLS_DISPATCH_QUEUE="$SL/dq-cool" SURFACES_HOST=testhost python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls; print(len(stalls.judge_queue_accounts("testhost", stalls.QueueRead(), 1700000600)))' "$B"; }
+rm -f "$SL/dq-calls"
+check "$(REGATTA_CONFIG="$SLN" STALLS_ACCOUNT="$SL/acct-cool" qa) $(cat "$SL/dq-calls" 2>/dev/null | wc -l | tr -d ' ')" "0 0" \
+  "  no wharf-runs/queue-repo: part (d) lists nothing and reads no queue, whatever STALLS_DISPATCH_QUEUE says"
+check "$(REGATTA_CONFIG="$SLC" STALLS_ACCOUNT="$SL/acct-none" qa) $(cat "$SL/dq-calls" 2>/dev/null | wc -l | tr -d ' ')" "0 0" \
+  "  a queue home but no login cooling: nothing listed, the queue not fetched"
+check "$(REGATTA_CONFIG="$SLC" STALLS_ACCOUNT="$SL/acct-cool" qa) $(cat "$SL/dq-calls" 2>/dev/null | wc -l | tr -d ' ')" "1 1" \
+  "  a queue home and a login cooling: one read, the bound entry listed"
 SL_STATE="$SL/stalls-state"; mkdir -p "$SL_STATE" "$SL/hdir" "$SL/empty" "$SL/plans"
 printf '{"by": "Sam", "ts": "x", "t": %s}\n' "$(( $(date +%s) - 4 * 3600 ))" > "$SL_STATE/armed"
-SL_ENV() { HOME="$SL/hdir" PLANS_DIR="$SL/plans" PLAN_NO_WHARF=1 STALLS_REPOS="$SL/empty" STALLS_PEERS="" STALLS_ORCA=0 STALLS_CANARY=0 STALLS_STATE_DIR="$SL_STATE" STALLS_LOG="$SL/tick.jsonl" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost "$@"; }
+SL_ENV() { REGATTA_CONFIG="$SLC" HOME="$SL/hdir" PLANS_DIR="$SL/plans" PLAN_NO_WHARF=1 STALLS_REPOS="$SL/empty" STALLS_PEERS="" STALLS_ORCA=0 STALLS_CANARY=0 STALLS_STATE_DIR="$SL_STATE" STALLS_LOG="$SL/tick.jsonl" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost "$@"; }
 t1=$(SL_ENV "$HM" tick)
 t2=$(SL_ENV "$HM" tick)
 has "$t1" "S6 testhost demo cool-step: raised — queued on acct-cool, which is cooling down" "  first tick raises the queued cooling-down --account entry"

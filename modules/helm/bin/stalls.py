@@ -505,7 +505,8 @@ class QueueRead:
     words, S2's start beside it. So a branch the queue holds is `queued`, never a stall; a queue that cannot
     be read holds every branch, and one store that cannot be read the branches routed to it (the readers'
     rule, queue_holds). Read once per pass, and only when a run's line asks: most passes judge no pending
-    run, and a read fetches the home."""
+    run, and a read fetches the home. The one other asker is `judge_queue_accounts`, and only on a pass
+    where some login is cooling down (stuck-ships S2 (d))."""
 
     def __init__(self):
         self.reader, self.made, self.bad, self.last_bad = None, False, None, None
@@ -954,13 +955,15 @@ def judge_after_cards(host, now, queued=None):
 
 
 def _has_queue_home():
-    if os.environ.get("STALLS_DISPATCH_QUEUE") or os.environ.get("DISPATCH_QUEUE_HOME"):
-        return True
+    """The key dispatch-queue's `home()` reads: `wharf-runs/queue-repo`, its first line, not `off`. Never an
+    environment variable: a suite's `STALLS_DISPATCH_QUEUE` names a stand-in tool, not a home (the landing review,
+    2026-11-07: the guard read a key nothing writes, so part (d) never ran on a live host)."""
     try:
-        vals, _ = helmlib._common().config_read("wharf-runs/queue-home")
-        return bool(vals)
+        lines = helmlib._common().config_lines("wharf-runs/queue-repo") or []
     except Exception:
         return False
+    v = lines[0].strip() if lines else ""
+    return bool(v) and v.lower() != "off"
 
 
 def _entry_account(args):
@@ -979,17 +982,6 @@ def judge_queue_accounts(host, queued, now):
     """S6, raised (stuck-ships S2, revision 10): a queued build entry bound by `--account LABEL` to a login that is
     cooling down, listed once per (host, qid, label) as the owner's, suggesting `dispatch <branch> --account auto`."""
     if queued is None or (not queued.made and not _has_queue_home()):
-        return []
-    cands = []
-    for e in queued.entries() or []:
-        if not isinstance(e, dict) or e.get("state") != "queued" or e.get("kind") == "finish":
-            continue
-        if e.get("host") and str(e.get("host")).lower() != host.lower():
-            continue
-        acct = _entry_account(e.get("args"))
-        if acct and acct not in ("auto", "bound"):
-            cands.append((e, acct))
-    if not cands:
         return []
     acct_exe = os.environ.get("STALLS_ACCOUNT") or os.environ.get("AUTOFINISH_ACCOUNT") or helmlib.peer("account")
     if not acct_exe:
@@ -1011,6 +1003,19 @@ def judge_queue_accounts(host, queued, now):
         if lim.get("locked") or "cooling down" in why.lower():
             lbl = str(a["label"]).strip()
             cooling[lbl] = cooling[re.sub(r"\s+", "_", lbl)] = why or "cooling down"
+    if not cooling:
+        return []   # no login cooling: the queue is not fetched this pass (QueueRead reads only when asked)
+    cands = []
+    for e in queued.entries() or []:
+        if not isinstance(e, dict) or e.get("state") != "queued" or e.get("kind") == "finish":
+            continue
+        if e.get("host") and str(e.get("host")).lower() != host.lower():
+            continue
+        acct = _entry_account(e.get("args"))
+        if acct and acct not in ("auto", "bound"):
+            cands.append((e, acct))
+    if not cands:
+        return []
     out = []
     for e, acct in cands:
         norm = re.sub(r"\s+", "_", acct)
