@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- agy-pick-orca (2026-11-06): for an Antigravity row (`"provider": "antigravity"`), `account`'s `limits()` (live and
+  `--cached`) reads Orca's `antigravity` card on this host (`session.usedPercent`, `weekly.usedPercent`, resets, and
+  `updatedAt` as the reading's sample time, settled as percent used against Orca 1.4.245's `1 - remaining_fraction`),
+  and `judge()` applies the row's week ceiling, window rules (`pace()` at sample time) and lock check as for a Codex
+  row, so `account pick --provider antigravity` answers the row and wharf-runs' `harness run --harness agy` needs no
+  stand-in. Reads only where the row's home exists and is `run_home("antigravity")` and at most one Antigravity row is
+  enabled there (Orca's card names no account: two enabled rows refuse); a card over 1 h old (`ORCA_MAX_AGE_S`, matching
+  `orca_wake`) or a headless Orca fails closed as unknown, and a live pick never runs such a row through the tenant's or
+  the primary's unknown-limits fallback (a `--cached` pick, the vendor fence's ownership read, still does). `account
+  check` marks an Antigravity row with no fresh card ⚠. `dispatch --harness agy` still has no registry or Orca reading on a
+  builder host, which the builder arm owns. Cases in `tests/account.sh` and wharf-runs' `tests/test_agy.sh`.
+  On a fenced repo the fence's `--cached` check now refuses an Antigravity row whose fresh cached card is past its
+  ceiling or window rules, while a stale or missing card still passes through the tenant fallback, and the council's
+  Gemini arm has no live pick after it. A lock's skip line names the latest reset among the locked windows, a Codex row's too.
+
 - `lighthouse/overdraw-max` (`<login>:<pct>`, `*:<pct>`, set live via `regatta limit`) caps the week bar `account`'s `lift()` judges a lifted row at in place of 100, naming `to the overdraw ceiling N%` (absent or invalid, 100, a login's bad own line leaving `*:` to serve it, an unreadable file said on stderr; finishes keep `lighthouse/week-max-finish` and own `week-max` or finish-ceiling rows stay unlifted).
 - The lend bar (2026-11-05): `rules.lend_max`, in the registry or budgets.json, is a week ceiling for every repo
   that is not the login's own (its scope's or its tenant's); its own work keeps `week_max`. Past it, `pick` and
