@@ -71,7 +71,7 @@ git -C "$P/film-prod" add -A; git -C "$P/film-prod" commit -qm "film anchor prof
 
 mkdir -p "$P/secret-node/.claude" "$P/secret-node/dreams" "$P/secret-node/evolve"
 printf 'ACMECORP\nPROJECTZETA\n' > "$P/secret-node/.claude/words.txt"
-cat > "$P/secret-node/.claude/evolve-scope.json" <<'J'
+cat > "$REGATTA_CONFIG/aurora/scopes/clientx.json" <<'J'
 {"outcome_classes": {"secret_milestone": {"observation_days": 14}}}
 J
 git -C "$P/secret-node" add -A; git -C "$P/secret-node" commit -qm "secret init"
@@ -407,16 +407,31 @@ check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["meta"]
   "skipped unsent" "a guarded scope's findings never reach the critic's model without the owner's quote (gate.vet, every vendor)"
 CLAUDE_BIN="$T/claude-stub.py" "$E" critic "$T/reg-good.json" --scope regatta --require-model > /dev/null 2>&1
 check "$?" 2 "  with --require-model the guarded scope is refused"
+rm -f "$T/critic-guarded2.json"
+CLAUDE_BIN="$T/claude-stub.py" STUB_LOG="$T/critic-guarded2.json" "$E" critic "$T/reg-good.json" --json > /dev/null
+check "$([ -f "$T/critic-guarded2.json" ] && echo sent || echo unsent)" unsent "  with no --scope the file's own scope is judged, and its guarded source is not sent"
+CLAUDE_BIN="$T/claude-stub.py" "$E" critic "$T/reg-good.json" --scope film --json > /dev/null 2>&1
+check "$?" 2 "  a --scope other than the file's own is refused"
 cp "$T/guarded.keep" "$REGATTA_CONFIG/regatta/guarded"
 GATE_LOG="$T/gate-critic.jsonl" CLAUDE_BIN="$T/claude-stub.py" "$E" critic "$T/reg-good.json" --scope regatta --json > /dev/null
 check "$(grep -c '"site": "evolve.critic"' "$T/gate-critic.jsonl" 2>/dev/null)" 1 "  each critic call writes one gate.jsonl row, so the meters see its spend"
 
-cp "$P/secret-node/.claude/evolve-scope.json" "$T/secret-prof.json"
-g1=$("$E" coverage --json --no-record 2>/dev/null | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["surface"], sort_keys=True))')
+# a confidential scope's profile is the config dir's alone, in every run (the round-2 leak: a global run that
+# skipped the anchor's copy left its {log} file unfenced and named it). Declared there, the file is fenced, never named;
+# a torn copy in the anchor is never read, by the scope's own run either.
+cp "$REGATTA_CONFIG/aurora/scopes/clientx.json" "$T/clientx-prof.keep"
+cat > "$REGATTA_CONFIG/aurora/scopes/clientx.json" <<'J'
+{"outcome_classes": {"secret_milestone": {"observation_days": 14}},
+ "sources": [{"id": "secret-ledger", "lens": "product", "kind": "path", "at": "{log}/ACMECORP-ledger.jsonl", "fresh_days": 14, "reader": "pass"}]}
+J
+printf '{"time": "%s"}\n' "$(now)" > "$L/ACMECORP-ledger.jsonl"
+"$E" coverage --no-record > "$T/glob-cov.txt" 2>&1
+check "$(grep -c ACMECORP "$T/glob-cov.txt")" 0 "a global coverage run fences, never names, a file a confidential scope's profile declares"
 printf '{"sources": "not a list"}\n' > "$P/secret-node/.claude/evolve-scope.json"
-g2=$("$E" coverage --json --no-record 2>/dev/null | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["surface"], sort_keys=True))')
-cp "$T/secret-prof.json" "$P/secret-node/.claude/evolve-scope.json"
-check "$([ -n "$g1" ] && [ "$g1" = "$g2" ] && echo same)" same "a global coverage run never opens a confidential scope's anchor profile (a torn one changes nothing)"
+"$E" coverage --scope clientx --no-record > "$T/own-cov.txt" 2>&1
+check "$(grep -c 'cannot be read' "$T/own-cov.txt")" 0 "  a torn profile in the confidential anchor is never read, by its own run either"
+rm -f "$P/secret-node/.claude/evolve-scope.json" "$L/ACMECORP-ledger.jsonl"
+cp "$T/clientx-prof.keep" "$REGATTA_CONFIG/aurora/scopes/clientx.json"
 
 cat > "$T/vcommit-noop.sh" <<'SH'
 #!/usr/bin/env bash

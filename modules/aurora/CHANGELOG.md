@@ -77,10 +77,11 @@
   (≤ 180 lines; `dream --scope` aliased) runs a scope's pass in three ordered steps — reconcile carried findings
   and due benefit checks first, inspect the fourteen lenses of `lenses.json` with one deterministic rotating deep
   lens and tonight's research (`outside: stale` when absent or incomplete), and propose at most five validated
-  findings after a cold blinded critic (`evolve critic`, gate row `evolve.critic` on Sonnet `high`, Anthropic-only
-  on guarded and confidential scopes, `when_off: skip`). Scope profiles load from `<config>/aurora/scopes/<scope>.json`
-  with fallback to `<anchor>/.claude/evolve-scope.json` only where the anchor is neither fenced nor the knowledge
-  layer (a profile placed in the layer is refused as `profile_error`), adding `outcome_classes` (wired into
+  findings after a cold blinded critic (`evolve critic`, gate row `evolve.critic` on Sonnet `high`, `when_off: skip`;
+  a guarded scope's findings never reach it without the owner's quote, a confidential scope's go to Anthropic only,
+  each call a gate.jsonl row). Scope profiles load from `<config>/aurora/scopes/<scope>.json`
+  with fallback to `<anchor>/.claude/evolve-scope.json` only where the anchor is neither fenced, confidential (its
+  profile is the config dir's alone) nor the knowledge layer (a profile placed in the layer is refused as `profile_error`), adding `outcome_classes` (wired into
   `evolve validate`), `observation_windows`, `bars` and `radar_queries`. `evolve where` and `evolve open` run the
   zero-token collectors, write verb run receipts and earn a `quiet` receipt at `$0` (exit 3 under `--quiet-exit`)
   only when `quiet_ok` holds and no benefit check is due. `evolve record` commits `atlas`'s records from external
@@ -90,7 +91,10 @@
   `asks` matcher (never confidential ones), and promotes the opening manifest. `skills/aurora/templates/meeting.md`
   and `evolve meetings` read repo-committed meeting pre-briefs and dated if-then commitments only. `evolve replay`
   scores hidden-future recall and lead time with post-cutoff canary leak detection; `evolve shadow` runs the pass
-  non-destructively across code, knowledge and non-code scopes. New suite: `tests/evolve-pass.sh`.
+  non-destructively across code, knowledge and non-code scopes. `open` and `record` take the pass's own session from
+  `CLAUDE_CODE_SESSION_ID`; `weekly-run --scope` runs `evolve open --quiet-exit` before any session (exit 3 is the
+  quiet week landed, any refusal ends the night with one FAILED line) and `evolve record --if-drafted` before its
+  scope-pass record fallback. New suite: `tests/evolve-pass.sh`.
 - Evolve S2 (docs/self-improvement-2026-10-30.md): `scope-pass record` is the export gate. The dream goes on
   the anchor's records branch (`claude/<host>/<day>-scope-pass`, git plumbing, pushed; kl-s5 D1-B), whose
   pull request record opens and readies, so the anchor's own merge lands it; `dreams/` in the anchor's
