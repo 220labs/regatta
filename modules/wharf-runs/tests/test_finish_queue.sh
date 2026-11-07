@@ -800,5 +800,200 @@ has "$T/out" "yolo: allowed" "a completed yolo build reaches the finish launcher
 has "$T/out" "tick relaunch: go" "Helm's landing retry reaches the finish launcher"
 has "$T/out" "tick retry: refused" "Helm's build retry keeps the normal ceiling"
 
+echo "queue-entry-vanish: every departure is audited by the store, including the sweep and outbox replay"
+qreset
+# The finish ceiling case above turned the queue home off; this case needs it on.
+echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+export ACCOUNTS_FILE="$T/no-accounts.json"; unset ACCOUNT_CLAUDE DISPATCH_CLAUDE
+cat > "$T/departures.py" <<'PY'
+import argparse, importlib.machinery, json, sys, types
+sys.dont_write_bytecode = True
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+url, repo = sys.argv[2:4]
+ctx = argparse.Namespace(host=None, cap=0, launchctl=sys.argv[4], prefix="org.example.claude", jobbin="unused", rch="", event_at=None)
+q.kick_hold = lambda *a: None
+q.drain_land = lambda *a: []
+q.kl = lambda: types.SimpleNamespace(watchdog=lambda *a: None)
+q.claim = lambda *a: []
+q.poll_tend = q.words_tend = lambda *a: None
+q.eligibility = lambda *a, **k: None
+q.tomb_line = lambda *a: None
+q.tomb_spent = lambda *a: True
+q.rec_alive = lambda *a: False
+log = q.logdir() / "queue.jsonl"
+
+def events():
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+def entry(key, **fields):
+    return dict(dict(id=key, key=key, branch="claude/laptop/2026-11-05-" + key.split("--")[-1],
+                     repo=q.repo_word(repo), topic=key.split("--")[-1], state="queued", queued_at=q.now(),
+                     priority="high", session="", host="buildbox", pin_kind="typed", needs=["chrome"],
+                     args=["--needs", "chrome"], env={}), **fields)
+
+def put(store, e):
+    return store.do([dict(op="put", key=e["key"], entry=e)], "test put", defer=False)[0]
+
+def audited(store, key, action, why):
+    rows = [e for e in events() if e.get("key") == store.name + ":" + key and e.get("event") == action]
+    assert rows and why in rows[-1]["why"], (action, key, rows)
+    assert any(e.get("event") == "removal-prepared" and e.get("key") == rows[-1]["key"]
+               and e.get("id") == rows[-1]["id"] and e.get("commit") == rows[-1]["commit"] for e in events())
+
+for store in (q.Fleet(url), q.Local("departures")):
+    q.stores = lambda: [store]
+    key = "repo--vanish"
+    qid = store.name + ":" + key
+    old = entry(key, id="old-finish", kind="finish", state="ended", session="s-finish", tip="1" * 40,
+                ended_at=q.now() - q.ENDED_TTL - 1, outcome="stopped", gate="G4", ran_on="buildbox")
+    put(store, old)
+    expired = dict(op="remove", key=key, cond=dict(id=old["id"], state="ended"), why="expired tombstone")
+    build = entry(key, id="new-build")
+    assert put(store, build) == "queued"
+    audited(store, key, "replaced", "test put")
+    assert store.do([expired], "stale sweep", defer=False) == ["moved"]
+    q.cmd_finished(argparse.Namespace(qid=qid, session="s-finish", outcome="never-started", gate="refused", pr=None, line=None), ctx)
+    q.cmd_branch_word(argparse.Namespace(repo=repo, branch=build["branch"], verb="ended", session="s-old-build"), ctx)
+    q.records = lambda: [dict(queue=qid, session="s-old-build", repo=repo, branch=build["branch"], started=1, ended=2)]
+    q.cmd_sweep(ctx, ctx)
+    assert store.entries()[key] == build
+    print("  ok   %s: a pinned build replaces a G4 finish tombstone and survives old outcomes, end words and sweeps" % store.name)
+
+    # A cleanup op built from the prior entry and replayed after a replacement must not delete it.
+    # Before the fix end_op carried only the host and second, so this op removed the newer entry.
+    prior = entry("repo--race", id="prior", state="claimed", claimed_by="laptop", running_on="laptop", claimed_at=q.now())
+    cleanup = q.end_op(prior["key"], prior, dict(running_on="laptop", claimed_at=prior["claimed_at"]), why="old claim ended")
+    newer = dict(prior, id="newer")
+    put(store, newer)
+    assert store.do([cleanup], "delayed cleanup", defer=False) == ["moved"]
+    assert store.entries()[prior["key"]]["id"] == "newer"
+    print("  ok   %s: delayed claim cleanup cannot remove a replacement" % store.name)
+
+    # The silent road: _sweep used to remove an ended build without any event or card.
+    for state, ended in (("claimed", True), ("running", False)):
+        k = "repo--sweep-" + state
+        live = entry(k, state=state, session="s-" + state, running_on="laptop", claimed_by="laptop", claimed_at=q.now())
+        put(store, live)
+        rec = dict(queue=store.name + ":" + k, session=live["session"], repo=repo, branch=live["branch"], started=q.now())
+        if ended:
+            rec["ended"] = q.now()
+        q.records = lambda: [rec]
+        q.cmd_sweep(ctx, ctx)
+        assert k not in store.entries()
+        audited(store, k, "removed", "its run ended" if ended else "no end recorded")
+    print("  ok   %s: ended and crashed builds leave through logged sweep roads" % store.name)
+
+    k = "repo--expire"
+    put(store, dict(old, key=k, id=k))
+    q.records = lambda: []
+    q.cmd_sweep(ctx, ctx)
+    assert k not in store.entries()
+    audited(store, k, "removed", "tombstone expired")
+
+    # Cancel, failed start and a finish that never launched use the same audit boundary.
+    q.cmd_cancel(argparse.Namespace(qid=None, repo=repo, branch=build["branch"], no_fleet=False, fleet_only=False, for_session=None), ctx)
+    audited(store, key, "removed", "cancelled")
+    k = "repo--failed"
+    live = entry(k, state="claimed", claimed_by="laptop", running_on="laptop", job="job-failed")
+    put(store, live)
+    q.cmd_fire(argparse.Namespace(qid=store.name + ":" + k, label="job-failed", verb="failed", why="test start failure"), ctx)
+    audited(store, k, "removed", "test start failure")
+    k = "repo--finish"
+    live = entry(k, state="running", kind="finish", session="s-never", running_on="laptop")
+    put(store, live)
+    # The end word can land after finished reads its entry but before it writes the outcome.
+    # The id/session guard must allow this state transition, or the outcome is lost for good.
+    original_split, original_do = q.split_qid, store.do
+    q.split_qid = lambda qid: (store, k)
+    def finish_end_race(ops, why, defer=True):
+        if why.startswith("finished "):
+            original_do([q.end_op(k, live, dict(session="s-never"))], "run ended", defer=False)
+        return original_do(ops, why, defer)
+    store.do = finish_end_race
+    try:
+        q.cmd_finished(argparse.Namespace(qid=store.name + ":" + k, session="s-never", outcome="stopped", gate="G4", pr=None, line=None), ctx)
+    finally:
+        q.split_qid, store.do = original_split, original_do
+    assert store.entries()[k]["outcome"] == "stopped"
+    audited(store, k, "tombstoned", "its run ended")
+    q.cmd_finished(argparse.Namespace(qid=store.name + ":" + k, session="s-never", outcome="never-started", gate="refused", pr=None, line=None), ctx)
+    audited(store, k, "removed", "never started")
+    print("  ok   %s: tombstone expiry, cancel, failed start and finish outcomes name their removal reason" % store.name)
+
+    # An unavailable queue.jsonl never holds a departure (main's best-effort log): the write lands, the batch's
+    # other ops with it, and stderr names the queue id and entry id the log could not.
+    import contextlib, io
+    k = "repo--unlogged"
+    put(store, entry(k))
+    other = entry("repo--other")
+    put(store, other)
+    remove = dict(op="remove", key=k, cond=dict(id=k))   # no why of its own: the write's reason stands
+    seen = dict(op="set", key=other["key"], fields=dict(by_seen=7), cond=dict(id=other["id"], state="queued"))
+    n = len(events())
+    q.apply_all(store.entries(), [remove])
+    assert len(events()) == n  # a speculative view never logs a departure
+    real_logdir = q.logdir
+    blocked = q.qdir() / "not-a-directory"
+    blocked.write_text("blocked")
+    q.logdir = lambda: blocked
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            assert store.do([remove, seen], "explicit removal", defer=False) == ["removed", "set"]
+    finally:
+        q.logdir = real_logdir
+    assert k not in store.entries() and store.entries()[other["key"]]["by_seen"] == 7
+    said = err.getvalue()
+    assert "preparing removed %s:%s (entry %s, queued, commit " % (store.name, k, k) in said, said
+    assert "explicit removal" in said and "done: removed" in said, said
+    # and a stderr that will not write either never holds it
+    put(store, entry(k))
+    class Full:
+        def write(self, *a):
+            raise OSError(28, "No space left on device")
+    q.logdir = lambda: blocked
+    real_stderr, sys.stderr = sys.stderr, Full()
+    try:
+        assert store.do([remove], "explicit removal", defer=False) == ["removed"]
+    finally:
+        sys.stderr, q.logdir = real_stderr, real_logdir
+    assert k not in store.entries()
+    assert len(events()) == n
+    k2 = "repo--replayed"
+    put(store, entry(k2))
+    if isinstance(store, q.Fleet):
+        q.outbox_add(dict(op="remove", key=k2, cond=dict(id=k2)))  # an old op without any new audit fields
+        q.flush(store)
+    else:
+        store.do([dict(op="remove", key=k2, cond=dict(id=k2))], "outbox of laptop", defer=False)
+    assert k2 not in store.entries()
+    audited(store, k2, "removed", "outbox of")
+    print("  ok   %s: an unwritable log never holds a departure, stderr names it; a replay logs it, views log nothing" % store.name)
+
+# A lost lease is a prepared attempt only. No completion is logged until the write actually lands.
+store = q.Fleet(url)
+k = "repo--lost"
+put(store, entry(k))
+real_push, real_sleep = store.push, q.time.sleep
+store.push = lambda *a: ("lost", "stale info")
+q.time.sleep = lambda *a: None
+try:
+    store.do([dict(op="remove", key=k, cond=dict(id=k), why="lost lease")], "lost lease", defer=False)
+except q.Unreachable:
+    pass
+else:
+    raise AssertionError("a lost lease reported success")
+finally:
+    store.push, q.time.sleep = real_push, real_sleep
+assert k in store.entries()
+rows = [e for e in events() if e.get("key") == "fleet:" + k]
+assert sum(e["event"] == "removal-prepared" for e in rows) == q.TRIES
+assert not any(e["event"] == "removed" for e in rows)
+print("  ok   fleet: a lost lease never logs a completed removal")
+PY
+python3 "$T/departures.py" "$QB" "$T/queue.git" "$T/repo" "$T/launchctl" > "$T/out" 2>&1
+check "$?" "0" "departure audit and stale cleanup regressions"
+cat "$T/out"
+
 echo
 [ "$fails" = 0 ] && echo "test_finish_queue: all passed" || { echo "test_finish_queue: $fails failed"; exit 1; }

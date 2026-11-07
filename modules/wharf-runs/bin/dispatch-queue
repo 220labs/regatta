@@ -156,6 +156,12 @@ runs; any other offline view is unreadable to it (the second review's items 4 an
 the cache clone, and the ref it moves after a push, holds the clone's lock: two fetches at once raced
 on the ref and read as the home being down (items 3 and 8).
 
+Every entry leaving by removal, replacement or a finish's end is audited at the store's write boundary,
+including outbox replays: `removal-prepared` in queue.jsonl before the write, then `removed`, `replaced` or
+`tombstoned` once it lands, with the queue id, entry id, prior state and reason. A fleet event also names the
+candidate commit. Preparation alone says the write was attempted, not that it landed (a lost lease, a killed
+writer); an unwritable log never holds the write: it lands, said on stderr. Speculative views emit no departure events.
+
 Finishes (finish-as-task, 2026-11-02; the owner's D3 of docs/node-lands-2026-10-31.md: "The finish should be handled
 like any other task … the dispatch/pick-up logic should be the same for everything"): a `/finish` is an entry of
 kind `finish`, put by autofinish-run (its enqueue half) under the branch's own key, so a branch has one entry
@@ -355,13 +361,14 @@ def logdir():
 
 def event(kind, **kw):
     """One line in claude-weekly/queue.jsonl: what the queue did, for --status, the cards and G3's
-    measures (`event_at` to `started`). Never raises."""
+    measures (`event_at` to `started`). True when written; never raises."""
     try:
         logdir().mkdir(parents=True, exist_ok=True)
         with open(logdir() / "queue.jsonl", "a") as f:
             f.write(json.dumps(dict(at=now(), event=kind, **kw), sort_keys=True) + "\n")
+        return True
     except OSError:
-        pass
+        return False
 
 
 class Unreachable(Exception):
@@ -700,18 +707,20 @@ class Fleet:
             except Unreachable as e:
                 last = str(e)
                 break
-            res = [apply_op(entries, op) for op in ops]
+            res, departures = apply_changes(entries, ops)
             if not any(c for c, _ in res):
                 _FRESH[self.url] = (time.monotonic(), json.dumps(entries))
                 return [r for _, r in res]
             try:
                 commit = self.write(entries, why)
+                audit_departures(self.name, departures, why, commit=commit, prepared=True)
             except Unreachable as e:   # the clone itself: no write, and never an empty push
                 last = self.offline = str(e)
                 break
             st, text = self.push(commit, base)
             if st == "ok":
                 _FRESH[self.url] = (time.monotonic(), json.dumps(entries))
+                audit_departures(self.name, departures, why, commit=commit)
                 return [r for _, r in res]
             last = text
             if st in ("down", "refused"):
@@ -775,7 +784,8 @@ class Local:
             # as text: apply_op changes an entry in place, so a copy of the dict would hold the same
             # objects and every claim, set and refuse would compare equal and never be written
             before = {k: json.dumps(v, sort_keys=True) for k, v in entries.items()}
-            res = [apply_op(entries, op) for op in ops]
+            res, departures = apply_changes(entries, ops)
+            audit_departures(self.name, departures, why, prepared=True)
             for k in set(before) | set(entries):
                 p = self.dir / ("%s.json" % k)
                 if k not in entries:
@@ -784,6 +794,7 @@ class Local:
                     tmp = p.with_suffix(".tmp")
                     tmp.write_text(json.dumps(entries[k], indent=1, sort_keys=True) + "\n")
                     os.replace(tmp, p)
+            audit_departures(self.name, departures, why)
         return [r for _, r in res]
 
 
@@ -1269,8 +1280,18 @@ def tomb_spent(e):
 def end_op(k, e, cond, outcome=None, why=None, at=None):
     """The op that takes entry E off the queue: removed, but a finish leaves its tombstone (state ended, the host it
     ran on, OUTCOME when known), so no host starts its tip again unasked (finish-as-task)."""
+    # A delayed end (including an outbox replay) belongs to this entry, never to a newer build or
+    # finish of the same key, even if its host, claim time or session happen to match.
+    cond = dict(cond, id=e.get("id"))
+    reason = why or ("its run ended: %s" % outcome if outcome else "its run ended")
     if e.get("kind") != FINISH:
-        return {"op": "remove", "key": k, "cond": cond}
+        # the state it was read in, only where the caller names no claim of its own: a claim's host, job or
+        # session stands across claimed -> waiting -> running, and a view one state behind would drop the word
+        if not any(c in cond for c in ("running_on", "claimed_by", "claimed_at", "job", "session", "state")):
+            cond["state"] = e.get("state")
+        return {"op": "remove", "key": k, "cond": cond, "why": reason}
+    # A finish's outcome may arrive beside its run's end word: LIVE -> ended on this same id/session
+    # must still take the outcome. A requeue clears its session and host, so the caller's cond bars it.
     f = {"state": "ended", "ended_at": at or now(), "ran_on": e.get("running_on") or e.get("claimed_by") or None,
          "running_on": None, "claimed_by": None, "claimed_at": None, "job": None}
     if outcome:
@@ -1279,7 +1300,7 @@ def end_op(k, e, cond, outcome=None, why=None, at=None):
         f["died_n"] = int(_num(e.get("died_n"))) + 1
     if why:
         f["end_why"] = str(why)[:200]
-    return {"op": "set", "key": k, "fields": f, "cond": cond}
+    return {"op": "set", "key": k, "fields": f, "cond": cond, "why": reason}
 
 
 def apply_op(entries, op):
@@ -1527,6 +1548,45 @@ def apply_all(entries, ops):
     for op in ops:
         apply_op(entries, op)
     return entries
+
+
+def apply_changes(entries, ops):
+    """Apply a write's ops and collect entries leaving by removal, replacement or a finish's end.
+    Pure views still use apply_all: reading an outbox must never log a removal that has not landed."""
+    res, departures = [], []
+    for op in ops:
+        k = op.get("key")
+        before = dict(entries.get(k) or {})
+        changed, result = apply_op(entries, op)
+        res.append((changed, result))
+        after = entries.get(k)
+        action = "removed" if after is None else "replaced" if before.get("id") != after.get("id") else \
+                 "tombstoned" if before.get("state") != "ended" and after.get("state") == "ended" else None
+        if changed and before and action:
+            departures.append({"key": k, "id": before.get("id"), "state": before.get("state"),
+                               "session": before.get("session"), "entry_kind": before.get("kind") or "build",
+                               "action": action, "op": op.get("op"), "why": op.get("why"),
+                               "next_id": after.get("id") if after else None})
+    return res, departures
+
+
+def audit_departures(store, departures, why, commit=None, prepared=False):
+    """Every destructive write has a local event before it can land, then a completion event. A killed
+    writer or a log failure after the push still leaves the prepared event and the candidate commit to
+    investigate. A lost lease logs only preparation; offline ops log their departure when replayed.
+    A log that will not append never holds the write (main's best-effort log; the landing review's round 2: a
+    held departure was read as landed, refused or lost by every caller): it writes anyway, said on stderr with
+    each departing queue id and entry id, so the departure is still named where the log could not name it."""
+    for departure in departures:
+        fields = dict(departure, key="%s:%s" % (store, departure["key"]), host=host_name(),
+                      why=departure.get("why") or why, commit=commit)
+        if not event("removal-prepared" if prepared else departure["action"], **fields):
+            try:   # never raises, as event(): a stderr that will not write either must not hold the write
+                sys.stderr.write("dispatch-queue: the queue log would not write; %s %s %s (entry %s, %s, commit %s): %s\n"
+                                 % ("preparing" if prepared else "done:", departure["action"], fields["key"],
+                                    fields.get("id"), fields.get("state"), fields.get("commit") or "-", fields["why"]))
+            except Exception:
+                pass
 
 
 def outbox_dir():
@@ -2831,7 +2891,9 @@ def _claim(ctx, out=None):
             # the claimer's sweep past its lease, which claims and judges it again (the third landing review, item 6)
             unreserve(qid, tag)
             try:
-                gone = s.do([{"op": "remove", "key": k, "cond": {"claimed_by": h, "claimed_at": t}}], "drop %s by %s" % (k, h))[0]
+                gone = s.do([{"op": "remove", "key": k, "why": "confidential-reach S6: %s" % why,
+                              "cond": {"id": e.get("id"), "state": "claimed", "claimed_by": h, "claimed_at": t}}],
+                            "drop %s by %s" % (k, h))[0]
             except (Unreachable, Torn) as x:
                 gone = "unreachable: %s" % x
             if gone != "removed":
@@ -3716,7 +3778,8 @@ def _sweep(a, ctx):
                 tomb_line(e, h)
                 # a finish's tombstone: kept ENDED_TTL for one run per tip, then gone at any host's sweep
                 if t - _num(e.get("ended_at")) >= ENDED_TTL and tomb_spent(e):
-                    ops.append({"op": "remove", "key": k, "cond": {"id": e.get("id"), "state": "ended"}})
+                    ops.append({"op": "remove", "key": k, "cond": {"id": e.get("id"), "state": "ended"},
+                                "why": "finish tombstone expired and origin left its tip"})
                 continue
             if st in LIVE and mine:
                 rec = run_of(qid, e, recs)
@@ -5779,7 +5842,8 @@ def cmd_finished(a, ctx):
         return 0
     cond = {"id": e.get("id"), "session": a.session}
     if a.outcome in NOTHING_RAN and a.gate in ("refused", "not-launched"):
-        op = {"op": "remove", "key": k, "cond": cond}
+        op = {"op": "remove", "key": k, "cond": cond,
+              "why": "finish never started (%s)" % a.gate}
     elif e.get("state") == "ended":
         op = {"op": "set", "key": k, "cond": dict(cond, state="ended"),
               "fields": {"outcome": a.outcome, "gate": a.gate or None, "pr": a.pr or None}}

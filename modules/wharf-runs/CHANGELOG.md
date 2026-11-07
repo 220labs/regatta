@@ -166,6 +166,14 @@
   keeps its exception. Mail pulls reserve their settle time; the generated ssh bundle carries the core locator, and its
   peer half judges the sender's transmitted fence verdict (a typed `--peer-half` still judges its own cwd).
 
+- Queue departures are logged by both stores before they can land, then confirmed with `removed`, `replaced`
+  or `tombstoned`, including sweep cleanup and outbox replay (queue-entry-vanish). Each event names the entry,
+  its prior state and why; fleet events carry the candidate commit. A log that cannot be appended never holds
+  the write: it lands, named on stderr. A lost lease logs preparation alone. Delayed run cleanup built from an older entry
+  (an outbox replay) also checks the entry id, so it cannot delete a replacement; the sweep's and a fired job's
+  own cleanups read the entry at their write and still can, on the same host in the same second, as before. The finish queue suite covers
+  these roads and a pinned build replacing a stopped finish tombstone.
+
 - A capable non-Mac host now meets `finish-queue` without a feature line: the loaded autofinish schedule,
   publish gate's word list and `/finish` in every login dir are checked by the same function as `install.sh --check`,
   once per queue pass. Claims and queue rows name missing prerequisites. Darwin keeps its grant; an explicit
