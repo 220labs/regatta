@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- builder-host check no longer crashes run as a builder on a Mac with a second
+  builder or a CI user: another home's deny entry refuses even its stat, which
+  raised PermissionError in the wall's loop; it now reads as the wall holding
+  (run as that builder) or a FAIL naming who to run check as.
+
 - run-vendor no longer reads a builder's wait on the launcher's own next stage
   as a hold: three Codex builds ended "WAITING FOR launcher checks and review."
   (the prompt says the launcher runs them), and each stopped before its review
