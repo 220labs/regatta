@@ -51,11 +51,49 @@ An event is also dropped when its raw text names a private path (a confidential 
 slug form, the folder its transcripts and memory sit under in any login dir, an Orca profile's
 included) or an auto-memory file (`~/.claude/projects/<slug>/memory/…` links into
 the vault/memory): a household session reading
-or writing there still reports, but not those tool events. What this cannot reach (residual,
+or writing there stops reporting from its first dropped event. What this cannot reach (residual,
 proposal section 5h): at tier 2 sessionpipe's worker reads the turn's text from the transcript
 file at Stop, so a non-private session's own words *about* the vault content leave, redacted
-for secrets only. A session that `cd`s into the vault stops reporting from that event on;
+for secrets only. A session that `cd`s into the vault stays blocked even after it leaves;
 what it sent before stays sent — `sheep forget-private` is the deletion path.
+
+Verified privacy drops are remembered under $XDG_STATE_HOME/regatta/sheep-gate (default: the
+home folder's .local/state/regatta/sheep-gate), keyed by harness and sessionpipe's safe
+session id in lower case. Case aliases share a denial on every platform, because
+sessionpipe's facts filenames alias on case-insensitive filesystems.
+Every later event of that session is dropped, including Stop, Interrupt and SessionEnd:
+all three can read transcript text from an older `transcript_line`, and heavy events read
+transcript facts. This chooses the later-Stop drop of
+docs/sheep-teams-2026-11-03.md, S2,
+over editing every instance's facts: a worker can overwrite an edited cursor or read it
+before the gate advances it, and a new instance starts at zero. The gate's markers are
+shared across SESSIONPIPE_STATE/CONFIG/SOCKET choices on Macs and Linux; no facts store
+is opened and no platform-specific sessionpipe path is assumed. Empty directories are
+atomic, contain no transcript text, and are never expired or reset at SessionStart (a
+resumed session can still replay its history). A fresh session follows the current
+scope flag; no `sheep` block is read. Keep the gate state when moving sessionpipe state.
+Relative XDG_STATE_HOME values are ignored, so a cwd change cannot move the marker store.
+The gate repairs its own store's owner permissions (a chmod, never a creation); a read of a
+store that does not exist yet, or that a file in its path makes impossible, finds no marker and
+creates nothing. An unreadable
+or symlinked store, or a write that still fails, drops the current event but cannot promise a lasting
+fence; neither can a hook killed before recording its decision. Events without a session
+id cannot be remembered; sessionpipe's supported adapters produce no session for them.
+Not closed here (residual): a fork or a transcript copied to another host gets a new id
+with no marker and a cursor of 0; a Stop job sessionpipe queued before the drop reads to
+the transcript's end when it runs; Codex's ungated `notify` entry never meets the gate.
+Policy-unreadable drops (including a core import failure or another policy exception) leave
+no marker: the next event is judged afresh (B, the owner, 2026-11-04). During that unreadable
+moment sessionpipe's cursor replay is not blocked. A verified private path or text match
+still fences the session for good on the roads that pass a hook: its Stop-block Session-tab
+delivery and its permission requests (phone approvals). sessionpipe's daemon also reaches a
+session with no hook between: its resume road (`claude -p --resume <id>` in the session's start
+folder) and its waiter road (`sessionpipe wait`, which reads the answer from the transcript) post
+the answer back unjudged, and its fork road is the fork residual above. Closing those needs
+sessionpipe to refuse a session by id (an upstream ask). A root named only as the start of a
+longer name (`know.`, `know-wt/…`, a Codex cwd `know-topic`) drops that event, as before this
+branch, with no lasting marker: a later open Stop sends its turns, as main did.
+Changing HOME or an absolute XDG_STATE_HOME moves the store: carry the markers with it.
 
 A council arm sends nothing either (wharf's bin/council): an event whose hook runs with
 REGATTA_COUNCIL_ARM set, or whose folder lies under a council run dir (its `.council-run` marker): the
@@ -82,7 +120,7 @@ fork too) and the Orca terminal worker (orca.py's _codex_terminal, `codex --appr
 This is telemetry only, never an approval answer (sessionpipe answers no Codex permission).
 Unattended alone says nothing about who approves; every other harness and a hand-started
 Codex keep theirs.
-Tests: tests/sheep_gate.sh; the overlay's hooks/test_hooks.sh, "sheep".
+Tests: modules/keel/tests/sheep_gate.sh; the overlay's hooks/test_hooks.sh, "sheep".
 """
 import functools
 import hashlib
@@ -251,9 +289,9 @@ def _text_reason(raw):
     home, subtree, _ = _roots()
     for r in subtree:
         for root in {r, _real(r)}:
-            if _fold(root) in low:
+            if re.search(re.escape(_fold(root)) + r"(?![\w.-])", low):
                 return f"the event names {root}"
-        if home in r.parents and ("~/" + _fold(r.relative_to(home))) in low:
+        if home in r.parents and re.search(re.escape("~/" + _fold(r.relative_to(home))) + r"(?![\w.-])", low):
             return f"the event names {r}"
     for r in confidential_roots() or ():
         if _fold(slug(r)) in low:   # its transcripts and memory, under any login dir's projects/
@@ -262,6 +300,23 @@ def _text_reason(raw):
         return "the event names Drive's _secrets"
     if MEMORY.search(text):
         return "the event names an auto-memory file (it lives in the vault)"
+    return None
+
+
+def _text_prefix(raw):
+    """A private root named only as the start of a longer name (`know.`, `know-wt/…`, a Codex cwd
+    `know-topic`): main's plain substring rule, kept so no denial main had is lost. Such an event is
+    dropped, as on main, but leaves no lasting marker: `knowledge-base` matches it too, and a session
+    that only names a sibling must not go dark for good. A Claude Code session started in the
+    sibling is still fenced by its transcript slug's substring (`_text_reason`), as main dropped it."""
+    low = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)).casefold()
+    home, subtree, _ = _roots()
+    for r in subtree:
+        for root in {r, _real(r)}:
+            if _fold(root) in low:
+                return f"the event names a path starting {root}"
+        if home in r.parents and ("~/" + _fold(r.relative_to(home))) in low:
+            return f"the event names a path starting {r}"
     return None
 
 
@@ -354,6 +409,76 @@ def council_arm(folders):
     return False
 
 
+def _state_root():
+    xdg = os.environ.get("XDG_STATE_HOME", "")
+    return Path(xdg) if os.path.isabs(xdg) else Path.home() / ".local" / "state"
+
+
+def session_dropped(name, event, dropped):
+    """Read a lasting denial, or record a verified privacy drop, across sender instances.
+
+    Match the supported adapters' id precedence (sessionpipe 0.5.0 fromHook) and
+    facts' safeId spelling, including case aliases on case-insensitive filesystems,
+    so two ids sharing facts cannot bypass a marker. Do not use the cwd or transcript
+    path: both can change during a session.
+    """
+    keys = {"antigravity": ("conversationId", "session_id", "sessionId"),
+            "claude-code": ("session_id", "sessionId")}.get(name, ("session_id",))
+    sid = next((event[k] for k in keys if event.get(k) is not None), None)
+    if sid is None:
+        return dropped   # no session for the adapter to send
+    if not isinstance(sid, str):
+        return True      # no supported hook needs a non-string id (and {} is truthy in JS)
+    if not sid:
+        return dropped   # empty string is falsy in JS too
+    # JS's non-Unicode regexp replaces each UTF-16 unit, then slice truncates to 160.
+    safe = lambda s: re.sub(r"[^A-Za-z0-9_.-]", lambda m: "__" if ord(m[0]) > 0xffff else "_", s)[:160]
+    # safeId is ASCII; fold its case before hashing, even on case-sensitive hosts,
+    # so moving the store between platforms cannot separate these aliases.
+    key = hashlib.sha256((safe(name) + "/" + safe(sid).lower()).encode()).hexdigest()
+    root = _state_root() / "regatta" / "sheep-gate"
+    try:
+        if not dropped:
+            # A read: a store that does not exist holds no marker, so this session is not fenced;
+            # creating it here would let a store that cannot be made silence every session.
+            try:
+                st = root.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                return False   # no store, or one that a file in its path makes impossible
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+                return True   # something else sits where the store goes: fail closed
+            if not os.access(root, os.X_OK):
+                root.chmod(stat.S_IMODE(st.st_mode) | 0o700)   # the owner's own store: repair, create nothing
+            if not os.access(root, os.X_OK):
+                return True   # it exists and cannot be searched: it may hold this session's denial
+            try:
+                (root / key).lstat()   # any entry, even a broken link, is a denial
+                return True
+            except FileNotFoundError:
+                return False
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = root.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            return True
+        if not os.access(root, os.W_OK | os.X_OK):
+            root.chmod(stat.S_IMODE(st.st_mode) | 0o700)
+            if not os.access(root, os.W_OK | os.X_OK):
+                return True
+        marker = root / key
+        try:
+            marker.lstat()   # any entry, even a broken link, is a denial
+            return True
+        except FileNotFoundError:
+            pass
+        try:
+            marker.mkdir(mode=0o700)
+        except FileExistsError:
+            pass        # another event already marked this session
+        return True
+    except OSError:
+        return True
+
+
 ACTIVITY_EVERY = 60   # seconds; hook.js throttles a tier-0 tool beat the same
 
 
@@ -368,8 +493,7 @@ def codex_activity(event):
     sid, turn = event.get("session_id"), event.get("turn_id")
     if not isinstance(sid, str) or not sid or not isinstance(turn, str) or not turn:
         return None
-    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    stamp = state / "keel" / "sheep-beats" / hashlib.sha256(sid.encode("utf-8")).hexdigest()[:32]
+    stamp = _state_root() / "keel" / "sheep-beats" / hashlib.sha256(sid.encode("utf-8")).hexdigest()[:32]
     try:
         if time.time() - stamp.stat().st_mtime < ACTIVITY_EVERY:
             return None
@@ -393,15 +517,24 @@ def main(argv, data):
         return
     if not isinstance(event, dict) or not argv:
         return
-    if confidential_roots() is None or PRIVATE_UNREAD:
-        return
     name = harness(argv)
+    if session_dropped(name, event, False):
+        return   # a fenced session needs no policy read (which can be slow or broken)
     transcript = event.get("transcript_path") if name == "claude-code" else None
-    if council_arm(places(name, event)):
-        return
-    if any(private_reason(p) for p in places(name, event)) \
+    try:
+        if confidential_roots() is None or PRIVATE_UNREAD:
+            return   # B: an unreadable policy drops this event only
+        folders = places(name, event)
+        dropped = council_arm(folders) \
+            or any(private_reason(p) for p in folders) \
             or private_reason(None, transcript, os.environ.get("CLAUDE_PROJECT_DIR")) \
-            or _text_reason(data):
+            or _text_reason(data)
+        if not dropped and _text_prefix(data):
+            return   # main's substring denial: this event only, no lasting marker
+    except Exception:
+        return   # B also covers a policy evaluation that raises
+    # Another hook may have fenced the session while this event read its policy.
+    if session_dropped(name, event, bool(dropped)):
         return
     if name == "codex" and argv[-1] == "PermissionRequest" and os.environ.get("PLAN_HARNESS") == "codex":
         return   # the run's own approver answers; no owner attention, no approval decision here
@@ -411,7 +544,7 @@ def main(argv, data):
     # on every path (antigravity.ts fromHook), so its stdout goes nowhere: a second answer is noise.
     out = subprocess.DEVNULL if name == "antigravity" else None
     subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out).communicate(data)
-    if name == "codex" and argv[-1] == "PreToolUse":
+    if name == "codex" and argv[-1] == "PreToolUse" and not session_dropped(name, event, False):
         activity = codex_activity(event)
         if activity is not None:
             subprocess.Popen([*argv[:-1], "UserPromptSubmit"], stdin=subprocess.PIPE,

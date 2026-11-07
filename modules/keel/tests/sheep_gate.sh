@@ -12,9 +12,11 @@ fails=0
 check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expected [$2] got [$1]"; fails=$((fails+1)); fi; }
 
 unset CLAUDE_REPOS_JSON CLAUDE_PROJECT_DIR REGATTA_HOME ACCOUNTS_FILE CODEX_HOME GEMINI_CLI_HOME
-unset XDG_STATE_HOME PLAN_HARNESS REGATTA_COUNCIL_ARM REGATTA_UNATTENDED CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+unset PLAN_HARNESS REGATTA_COUNCIL_ARM REGATTA_UNATTENDED CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+unset SESSIONPIPE_STATE SESSIONPIPE_CONFIG SESSIONPIPE_SOCKET
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 export HOME="$T/home" REGATTA_CONFIG="$T/config"
+export XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/xdg-config"
 P="$HOME/projects"; mkdir -p "$REGATTA_CONFIG/regatta"; printf 'vault\n' > "$REGATTA_CONFIG/regatta/guarded"; mkdir -p "$REGATTA_CONFIG/wharf" "$P/know/.claude/worktrees/x" "$P/open"
 printf '#!/bin/sh\ncat > /dev/null; echo ran > "%s"\n' "$T/ran" > "$T/hook"; chmod +x "$T/hook"
 reg() {   # reg <confidential: true|false>
@@ -199,6 +201,359 @@ check "$(shp 'print([k for k, _ in s.private_sessions()], s.split_key("codex:c1"
   "['codex:c1'] ('codex', 'c1') ('claude-code', 'abc-1')" \
   "  forget-private: a Codex session in a confidential repo found, forgotten by its harness"
 
+# A stand-in for sessionpipe 0.5.0: each instance has facts with a per-session line
+# cursor, and Stop/Interrupt/SessionEnd read every transcript line after it (worker.js).
+# It validates the harness/event/identity it consumes; no real sender or HOME is used.
+reg true
+cat > "$T/pipe.js" <<'JS'
+// Identity and filename spelling from sessionpipe 0.5.0's worker.js, in its own
+// language: a Python copy would hide differences in JS truthiness and UTF-16.
+const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert');
+const [name, event] = process.argv.slice(2);
+assert(['claude-code', 'codex', 'antigravity'].includes(name));
+assert(['Stop', 'Interrupt', 'SessionEnd', 'PreToolUse', 'UserPromptSubmit', 'SessionStart'].includes(event));
+const s = JSON.parse(fs.readFileSync(0, 'utf8'));
+const id = name === 'antigravity' ? s.conversationId ?? s.session_id ?? s.sessionId
+         : name === 'claude-code' ? s.session_id ?? s.sessionId : s.session_id;
+if (!id) process.exit(0);
+const state = process.env.SESSIONPIPE_STATE;
+fs.mkdirSync(state, {recursive: true});
+fs.appendFileSync(path.join(state, 'calls'), event + '\n');
+if (!['Stop', 'Interrupt', 'SessionEnd'].includes(event)) process.exit(0);
+const safeId = (s) => String(s).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 160);
+const facts = path.join(state, 'facts', safeId(name), safeId(id) + '.json');
+fs.mkdirSync(path.dirname(facts), {recursive: true});
+const cur = fs.existsSync(facts) ? JSON.parse(fs.readFileSync(facts, 'utf8')) : {};
+const lines = fs.readFileSync(s.transcript_path, 'utf8').trimEnd().split('\n');
+fs.appendFileSync(path.join(state, 'sent'), lines.slice(Number(cur.transcript_line) || 0).map(l => l + '\n').join(''));
+fs.writeFileSync(facts, JSON.stringify({transcript_line: lines.length}));
+JS
+cat > "$T/cursor.py" <<'PY'
+import hashlib, importlib.util, json, os, shutil, stat, subprocess, sys
+from pathlib import Path
+t, hooks, projects = map(Path, sys.argv[1:])
+env = dict(os.environ, SESSIONPIPE_STATE=str(t / "instance-a"))
+registry = Path(env["REGATTA_CONFIG"]) / "wharf/repos.json"
+good = registry.read_text()
+failures = 0
+node = shutil.which("node")
+assert node, "sessionpipe requires Node"
+def check(ok, label):
+    global failures
+    print(("  ok   " if ok else "  FAIL ") + label, flush=True)
+    failures += not ok
+def send(sid, cwd="open", event="Stop", text=None, name="claude-code", field="session_id", transcript=None):
+    transcript = transcript or t / (str(sid) + ".jsonl")
+    if text is not None:
+        with transcript.open("a") as f:
+            f.write(text + "\n")
+    payload = {field: sid, "cwd": str(projects / cwd), "transcript_path": str(transcript)}
+    if name == "antigravity":
+        payload["workspacePaths"] = [str(projects / cwd)]
+    p = subprocess.run([sys.executable, str(hooks / "sheep_gate.py"), node,
+                        str(t / "pipe.js"), name, event], input=json.dumps(payload).encode(),
+                       env=env, cwd=projects / cwd, capture_output=True)
+    check(p.returncode == 0 and not p.stderr and p.stdout == (b"{}\n" if name == "antigravity" else b""),
+          str(sid) + ": hook succeeds with expected stdout and no stub errors")
+def sent():
+    return "".join(p.read_text() for p in sorted(t.glob("instance-*/sent")))
+
+# Reproduce the cursor leak directly against the stand-in: dropping an event alone
+# leaves transcript_line behind, so the next allowed Stop sends the dropped turn too.
+repro_tx = t / "repro.jsonl"
+repro_tx.write_text("open-turn-1\n")
+subprocess.run([node, str(t / "pipe.js"), "claude-code", "Stop"],
+               input=json.dumps(dict(session_id="repro", cwd=str(projects / "open"),
+                                     transcript_path=str(repro_tx))).encode(), env=env, check=True)
+with repro_tx.open("a") as f:
+    f.write("dropped-confidential-turn\nopen-turn-2\n")
+subprocess.run([node, str(t / "pipe.js"), "claude-code", "Stop"],
+               input=json.dumps(dict(session_id="repro", cwd=str(projects / "open"),
+                                     transcript_path=str(repro_tx))).encode(), env=env, check=True)
+check(sent() == "open-turn-1\ndropped-confidential-turn\nopen-turn-2\n",
+      "stand-in reproduces the cursor leak when an intermediate turn's event was dropped alone")
+before = sent()
+
+send("cross", text="open-before")
+send("cross", "know", "PreToolUse", "confidential-turn")
+send("cross", text="open-after")
+check(sent() == before + "open-before\n", "open -> confidential -> open never replays dropped turns")
+before = sent()
+send("clean", text="clean-one")
+send("clean", text="clean-two")
+check(sent() == before + "clean-one\nclean-two\n", "a never-dropped session sends every turn once")
+
+before = sent()
+registry.write_text('{"scopes":')
+send("torn", text="unreadable-registry-turn")
+check(sent() == before, "a torn registry drops everything")
+registry.write_text(good)
+send("torn", text="repaired-registry-turn")
+check(sent() == before + "unreadable-registry-turn\nrepaired-registry-turn\n",
+      "B: registry repair sends the next event; cursor replay during the gap is accepted")
+
+before = sent()
+cfg = Path(env["REGATTA_CONFIG"]) / "regatta"
+guarded = cfg / "guarded"
+guarded_text = guarded.read_text()
+guarded.unlink()
+guarded.mkdir()   # unreadable as text, even for root
+(cfg / "overlay").write_text(str(t / "overlay"))
+send("guarded-unread", text="guarded-unreadable-turn")
+check(sent() == before, "an unreadable guarded key drops the event")
+guarded.rmdir()
+guarded.write_text(guarded_text)
+(cfg / "overlay").unlink()
+send("guarded-unread", text="guarded-repaired-turn")
+check(sent() == before + "guarded-unreadable-turn\nguarded-repaired-turn\n",
+      "B: repairing guarded sends the next event without a lasting marker")
+
+before = sent()
+(cfg / "overlay").write_text(str(t / "incomplete-overlay"))
+send("core-unread", text="core-unreadable-turn")
+check(sent() == before, "a core import failure drops the event")
+(cfg / "overlay").unlink()
+send("core-unread", text="core-repaired-turn")
+check(sent() == before + "core-unreadable-turn\ncore-repaired-turn\n",
+      "B: a repaired core sends the next event without a lasting marker")
+before = sent()
+
+env["SESSIONPIPE_STATE"] = str(t / "instance-b")
+env["SESSIONPIPE_CONFIG"] = str(t / "second-config.json")
+send("cross", event="SessionEnd", text="end-after-switch")
+check(sent() == before, "a second instance cannot replay the session at SessionEnd")
+registry.write_text(good.replace('"confidential": true', '"confidential": false'))
+send("cross", event="SessionStart")
+send("cross", text="scope-now-open")
+check(sent() == before, "resume and a scope switch to open keep the old session fenced")
+send("new-open", "know", text="new-session-in-open-scope")
+check(sent() == before + "new-session-in-open-scope\n", "a new session follows the current scope flag")
+registry.write_text(good)
+before = sent()
+send("new-open", "know", text="scope-private-again")
+registry.write_text(good.replace('"confidential": true', '"confidential": false'))
+send("new-open", "know", text="scope-open-again")
+check(sent() == before, "switching the scope private and back cannot replay the private interval")
+registry.write_text(good)
+for name, field in (("codex", "session_id"), ("antigravity", "conversationId"),
+                    ("antigravity", "sessionId"), ("claude-code", "sessionId")):
+    sid = name + "-" + field
+    before = sent()
+    send(sid, text="before-" + sid, name=name, field=field)
+    check(sent() == before + "before-" + sid + "\n", name + ": an open Stop with " + field + " is sent")
+    before = sent()
+    send(sid, "know", "PreToolUse", "private-" + sid, name, field)
+    send(sid, text="after-" + sid, name=name, field=field)
+    check(sent() == before, name + ": dropped session remains fenced with " + field)
+
+# A tool event may be dropped for its text while the session stays in an open cwd.
+# No transcript field is needed to remember the denial; it may not exist yet.
+before = sent()
+payload = dict(session_id="text-drop", cwd=str(projects / "open"),
+               tool_input=dict(file_path=str(projects / "know" / "notes.md")))
+subprocess.run([sys.executable, str(hooks / "sheep_gate.py"), node,
+                str(t / "pipe.js"), "claude-code", "PreToolUse"],
+               input=json.dumps(payload).encode(), env=env, cwd=projects / "open", check=True)
+send("text-drop", text="turn-after-private-tool")
+check(sent() == before, "a raw-text drop without a transcript blocks the later Stop")
+
+# Marker contents are never parsed: even a damaged entry is a denial. The store
+# itself failing to open also denies, and restoring it keeps earlier denials.
+root = Path(env["XDG_STATE_HOME"]) / "regatta/sheep-gate"
+marker = root / hashlib.sha256(b"claude-code/cross").hexdigest()
+marker.rmdir()
+marker.symlink_to(root / "absent")
+send("cross", text="damaged-marker")
+check(sent() == before, "a dangling marker still denies the session")
+saved = root.with_name("saved-gate")
+root.rename(saved)
+root.write_text("not a directory")
+send("unavailable", text="gate-store-unavailable")
+check(sent() == before, "an unavailable gate store fails closed")
+root.unlink()
+root.symlink_to(saved)
+send("symlink-store", text="gate-store-symlink")
+check(sent() == before, "a symlinked gate store fails closed")
+root.unlink()
+saved.rename(root)
+send("cross", text="store-restored")
+check(sent() == before, "restoring the store preserves an existing denial")
+send("codex-int", text="before-int", name="codex")
+check(sent() == before + "before-int\n", "codex Interrupt case: the initial open Stop is sent")
+before = sent()
+send("codex-int", "know", "PreToolUse", "private-int", "codex")
+send("codex-int", event="Interrupt", text="after-int", name="codex")
+check(sent() == before, "codex: Interrupt on a dropped session cannot replay private turns")
+for bad_id in ({}, [], 123, True):
+    send(bad_id, "know", "PreToolUse", "private-nonstring", transcript=t / "nonstring.jsonl")
+    send(bad_id, text="public-nonstring", transcript=t / "nonstring.jsonl")
+check(sent() == before, "non-string session ids (truthy in JS) are dropped")
+send("readonly", text="before-readonly")
+check(sent() == before + "before-readonly\n", "read-only case: the initial open Stop is sent")
+before = sent()
+root.chmod(0o500)
+send("readonly", "know", "PreToolUse", "private-readonly")
+root.chmod(0o700)
+send("readonly", text="public-readonly")
+check(sent() == before, "a drop in a read-only store stays fenced after mode 0700 is restored")
+check((root / hashlib.sha256(b"claude-code/readonly").hexdigest()).is_dir(),
+      "the read-only store was repaired and the verified drop recorded")
+send("same_fact", text="before-alias")
+check(sent() == before + "before-alias\n", "alias case: the initial open Stop is sent")
+before = sent()
+send("same:fact", "know", "PreToolUse", "private-alias")
+send("same_fact", text="public-alias")
+check(sent() == before, "ids sharing a sessionpipe facts filename share a denial")
+
+# Case-insensitive filesystems also alias safe ids that differ only in case.
+# Use one explicit transcript so this replay regression runs on Linux as well.
+for name, field in (("claude-code", "session_id"), ("claude-code", "sessionId"),
+                    ("codex", "session_id"), ("antigravity", "conversationId"),
+                    ("antigravity", "session_id"), ("antigravity", "sessionId")):
+    for private_id, alias in (("ABC", "abc"), ("def", "DEF")):
+        prefix = name + "-" + field + "-case-"
+        private_id, alias = prefix + private_id, prefix + alias
+        transcript = t / (alias + ".jsonl")
+        before = sent()
+        send(alias, text="before-case-alias", name=name, field=field, transcript=transcript)
+        check(sent() == before + "before-case-alias\n", name + ": the initial case-alias Stop is sent")
+        before = sent()
+        send(private_id, "know", "PreToolUse", "private-case-alias", name, field, transcript)
+        for event in ("Stop", "SessionEnd"):
+            send(alias, event=event, text="after-case-alias", name=name, field=field, transcript=transcript)
+            check(sent() == before, name + ": " + event + " with a case alias cannot replay private turns (" + field + ")")
+
+before = sent()
+for private_id, alias in (("astral😀", "astral__"), ("u" * 159 + "😀", "u" * 159 + "_")):
+    send(alias, text="before-unicode-alias")
+    check(sent() == before + "before-unicode-alias\n", "Unicode alias: the initial open Stop is sent")
+    before = sent()
+    send(private_id, "know", "PreToolUse", "private-unicode")
+    send(alias, text="public-unicode")
+    check(sent() == before, "UTF-16 replacements and truncation share sessionpipe's marker")
+
+# XDG's relative values must not make the marker store depend on the process cwd.
+env["XDG_STATE_HOME"] = "relative-state"
+send("relative-state", text="before-relative-state")
+check(sent() == before + "before-relative-state\n", "relative XDG: the initial open Stop is sent")
+before = sent()
+send("relative-state", "know", "PreToolUse", "private-relative-state")
+send("relative-state", text="after-relative-state")
+check(sent() == before, "a relative XDG value uses the home fallback for the lasting denial")
+check((Path(env["HOME"]) / ".local/state/regatta/sheep-gate" /
+       hashlib.sha256(b"claude-code/relative-state").hexdigest()).is_dir(), "relative XDG marker is at the home fallback")
+env["XDG_STATE_HOME"] = str(t / "state")
+
+send("prefix", text="before-prefix")
+check(sent() == before + "before-prefix\n", "prefix case: the initial open Stop is sent")
+before = sent()
+payload = dict(session_id="prefix", cwd=str(projects / "open"),
+               tool_input=dict(command="cat " + str(projects / "knowledge-base" / "notes.md")))
+subprocess.run([sys.executable, str(hooks / "sheep_gate.py"), node, str(t / "pipe.js"), "claude-code", "PreToolUse"],
+               input=json.dumps(payload).encode(), env=env, cwd=projects / "open", check=True)
+send("prefix", text="after-prefix")
+check(sent() == before + "after-prefix\n", "a sibling path named in a tool input with the confidential root as a prefix does not fence a session")
+
+# A root named only as a prefix (`know.`, `know-wt/…`, a Codex cwd `know-topic`) is main's
+# substring denial: that event is dropped, with no lasting marker.
+def calls():
+    return "".join(p.read_text() for p in sorted(t.glob("instance-*/calls")))
+for tag, text in (("wt", "cat " + str(projects / "know-wt" / "secret.md")),
+                  ("dot", "see " + str(projects / "know") + "."),
+                  ("bak", "cat " + str(projects / "know.bak" / "notes.md")),
+                  ("tilde", "see ~/" + str((projects / "know").relative_to(Path(env["HOME"]))) + ".")):
+    sid = "loose-" + tag
+    payload = dict(session_id=sid, cwd=str(projects / "open"), tool_input=dict(command=text))
+    c0 = calls()
+    subprocess.run([sys.executable, str(hooks / "sheep_gate.py"), node, str(t / "pipe.js"), "claude-code", "PreToolUse"],
+                   input=json.dumps(payload).encode(), env=env, cwd=projects / "open", check=True)
+    check(calls() == c0, tag + ": a prefix-only name drops the event, as main did")
+    check(not (root / hashlib.sha256(("claude-code/" + sid).encode()).hexdigest()).exists(),
+          tag + ": a prefix-only name leaves no lasting marker")
+before = sent()
+(projects / "know-topic").mkdir(exist_ok=True)
+c0 = calls()
+send("codex-know-topic", "know-topic", text="codex-outside-worktree", name="codex")
+check(sent() == before and calls() == c0, "codex: a cwd named <root>-<topic> is dropped, as main did")
+
+# Check policy exceptions and the fast path independently of the sender stub.
+spec = importlib.util.spec_from_file_location("gate", hooks / "sheep_gate.py")
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+def unread(*args):
+    reads.append(True)
+    raise OSError("policy read failed")
+reads = []
+policy = g.confidential_roots
+g.confidential_roots = unread
+g.main(["unused", "claude-code", "Stop"], json.dumps(dict(session_id="cross")).encode())
+check(not reads, "an existing marker is checked before a broken policy")
+g.main(["unused", "claude-code", "Stop"], json.dumps(dict(session_id="policy-exception")).encode())
+check(not (root / hashlib.sha256(b"claude-code/policy-exception").hexdigest()).exists(),
+      "a policy exception leaves no lasting marker")
+g.confidential_roots = policy
+send("policy-exception", text="after-policy-exception")
+check(sent() == before + "after-policy-exception\n", "the event after a policy exception is sent")
+
+payload = dict(session_id="concurrent-drop", cwd=str(projects / "open"))
+recorded = []
+def fence_during_policy(raw):
+    g.session_dropped("claude-code", payload, True)
+    recorded.append(True)
+    return None
+text_reason = g._text_reason
+g._text_reason = fence_during_policy
+check(g.confidential_roots() is not None, "the concurrent-drop case starts with readable policy")
+forwarded = []
+class Sender:
+    def __init__(self, argv, *args, **kwargs):
+        forwarded.append(argv[-1])
+    def communicate(self, raw):
+        if forwarded[-1] == "PreToolUse":
+            g.session_dropped("codex", codex_payload, True)
+popen = g.subprocess.Popen
+g.subprocess.Popen = Sender
+try:
+    g.main(["unused", "claude-code", "Stop"], json.dumps(payload).encode())
+    check(recorded and not forwarded, "a denial recorded during policy evaluation is rechecked before forwarding")
+    g._text_reason = text_reason
+    codex_payload = dict(session_id="concurrent-codex", turn_id="t1", cwd=str(projects / "open"))
+    g.main(["unused", "codex", "PreToolUse"], json.dumps(codex_payload).encode())
+    check(forwarded == ["PreToolUse"],
+          "a denial recorded while PreToolUse sends blocks Codex's synthetic UserPromptSubmit")
+finally:
+    g.subprocess.Popen = popen
+    g._text_reason = text_reason
+
+# A store that does not exist and cannot be made holds no marker: open sessions still send.
+locked = t / "locked-state"
+locked.mkdir()
+locked.chmod(0o500)
+env["XDG_STATE_HOME"] = str(locked)
+before = sent()
+send("no-store", text="open-without-store")
+check(os.geteuid() == 0 or sent() == before + "open-without-store\n",
+      "a store that cannot be created does not silence an open session")
+locked.chmod(0o700)
+# A file in the store's path makes the store impossible: no marker, open sessions send.
+(t / "state-file").write_text("not a directory")
+env["XDG_STATE_HOME"] = str(t / "state-file")
+before = sent()
+send("file-in-path", text="open-file-in-path")
+check(sent() == before + "open-file-in-path\n", "a file in the store's path does not silence an open session")
+env["XDG_STATE_HOME"] = str(t / "state")
+# The owner's store at 0600 is repaired on read: open sessions send, fences still hold.
+root.chmod(0o600)
+before = sent()
+send("unsearchable", text="open-unsearchable")
+check(sent() == before + "open-unsearchable\n", "an unsearchable owner store is repaired and does not silence an open session")
+check(os.geteuid() == 0 or stat.S_IMODE(root.stat().st_mode) & 0o700 == 0o700, "the unsearchable store's owner mode is repaired")
+send("cross", text="cross-after-repair")
+check(sent() == before + "open-unsearchable\n", "the repaired store keeps an existing denial")
+sys.exit(bool(failures))
+PY
+python3 "$T/cursor.py" "$T" "$H" "$P" || fails=$((fails+1))
+
 # sessionpipe 0.5.0's Codex adapter accepts these hook names, not `heartbeat` or
 # `attention.cleared`. A peer stub must validate its argv (AGENTS.md, Traps).
 export SP_LOG="$T/sp.jsonl"
@@ -226,7 +581,9 @@ PY
 chmod +x "$T/sessionpipe-hook"
 export XDG_STATE_HOME="$T/state"
 sp_run() {   # the hook's stdout is kept too: telemetry must never answer an approval
-  : > "$SP_LOG"; [ -n "${KEEP_BEATS:-}" ] || rm -rf "$T/state/keel"   # each case starts unthrottled
+  : > "$SP_LOG"
+  [ -n "${KEEP_BEATS:-}" ] || rm -rf "$T/state/keel"              # each case starts unthrottled
+  [ -n "${KEEP_GATES:-}" ] || rm -rf "$T/state/regatta/sheep-gate"  # and unfenced unless testing persistence
   printf '%s' "$3" | (cd "$P/open" && python3 "$H/sheep_gate.py" "$T/sessionpipe-hook" "$1" "$2") > "$T/sp.stdout"
   python3 -c 'import json,sys; print(" ".join(x.get("event", "BAD_ARGV") for x in map(json.loads, open(sys.argv[1]))))' "$SP_LOG"
 }
@@ -282,13 +639,36 @@ check "$(sp_run codex PreToolUse "$(sp_payload "$P/open" "cat $P/know/notes.md")
 check "$(sp_run codex PreToolUse "$(sp_payload "$CR/docs")")" "" "codex: council run sends no activity"
 check "$(REGATTA_COUNCIL_ARM=1 sp_run codex PreToolUse "$ce")" "" "codex: council arm marker sends no activity"
 check "$(sp_run codex PreToolUse 'not json')" "" "codex: malformed input sends no activity"
+fenced_open=$(printf '%s' "$ce" | sed 's/"build-1"/"build-fenced"/')
+fenced_know=$(sp_payload "$P/know" | sed 's/"build-1"/"build-fenced"/')
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$fenced_open")" "PreToolUse UserPromptSubmit" \
+  "codex fence: open tool and activity send before any confidential drop"
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$fenced_know")" "" \
+  "  confidential tool drops and records the session marker"
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$fenced_open")" "" \
+  "  after returning to open, neither PreToolUse nor synthetic UserPromptSubmit sends"
+check "$(KEEP_GATES=1 sp_run codex Stop "$fenced_open")" "" \
+  "  nor does a later open Stop"
+perm_open=$(printf '%s' "$ce" | sed 's/"build-1"/"build-perm"/')
+perm_know=$(sp_payload "$P/know" | sed 's/"build-1"/"build-perm"/')
+check "$(KEEP_GATES=1 PLAN_HARNESS=codex sp_run codex PermissionRequest "$perm_open")" "" \
+  "  auto-approved open PermissionRequest suppresses attention without fencing the session"
+check "$(KEEP_GATES=1 PLAN_HARNESS=codex sp_run codex PreToolUse "$perm_open")" "PreToolUse UserPromptSubmit" \
+  "  …next open tool and activity still send"
+check "$(KEEP_GATES=1 PLAN_HARNESS=codex sp_run codex PermissionRequest "$perm_know")" "" \
+  "  confidential PermissionRequest under PLAN_HARNESS=codex records the session marker"
+check "$(KEEP_GATES=1 PLAN_HARNESS=codex sp_run codex PreToolUse "$perm_open")" "" \
+  "  …and blocks later open tools and activity"
+torn_ce=$(printf '%s' "$ce" | sed 's/"build-1"/"build-torn"/')
 cp "$REGATTA_CONFIG/wharf/repos.json" "$T/sp-good.json"
 printf '{"scopes":' > "$REGATTA_CONFIG/wharf/repos.json"
-check "$(sp_run codex PreToolUse "$ce")" "" "codex: torn registry drops original and synthetic activity"
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$torn_ce")" "" "codex: torn registry drops original and synthetic activity"
 rm "$REGATTA_CONFIG/wharf/repos.json"
 ln -s "$T/missing-registry.json" "$REGATTA_CONFIG/wharf/repos.json"
-check "$(sp_run codex PreToolUse "$ce")" "" "codex: dangling registry link drops original and synthetic activity"
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$torn_ce")" "" "codex: dangling registry link drops original and synthetic activity"
 rm "$REGATTA_CONFIG/wharf/repos.json"
 cp "$T/sp-good.json" "$REGATTA_CONFIG/wharf/repos.json"
+check "$(KEEP_GATES=1 sp_run codex PreToolUse "$torn_ce")" "PreToolUse UserPromptSubmit" \
+  "  B: once the registry reads again, the session's tool and activity send"
 
 [ $fails -eq 0 ] && echo "sheep_gate: all ok" || { echo "sheep_gate: $fails failing"; exit 1; }
