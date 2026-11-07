@@ -1,4 +1,8 @@
-# Dream, one scope — the per-scope pass (`/aurora dream --scope <scope>`)
+# Dream, one scope — the per-scope pass (`/aurora dream --scope <scope>`, alias of `sections/evolve-scope.md`)
+
+> **Replaced by `sections/evolve-scope.md` (Evolve S5).** `/aurora dream --scope <scope>` is an alias of
+> `/aurora evolve --scope <scope>`: read `sections/evolve-scope.md` beside this file and follow it instead.
+> The five-question dream shape below is kept as reference until S8/S10 retire the legacy copy.
 
 The dream bounded to one scope of the registry (the layer's knowledge-layers design, D2-A and D4-B,
 step S5). A **scope** is a group of repos in the registry; its first repo is its **anchor**, the

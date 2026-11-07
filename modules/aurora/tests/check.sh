@@ -4,7 +4,7 @@
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"
 rc=0
-for s in aurora week-digest scope-pass evolve evolve-schemas; do
+for s in aurora week-digest scope-pass evolve evolve-schemas evolve-pass; do
   echo "== $s"
   bash "$D/$s.sh" || rc=1
 done
