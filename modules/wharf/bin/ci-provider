@@ -87,7 +87,9 @@ like any other, --force drops it, and --runner never reads or writes its variabl
 check.yml is self-hosted when its runs-on is the variable form, a literal of `self-hosted`, `macOS`
 and no label of a runner's own (`[self-hosted, macOS]`), or a literal naming one of the labels key's
 own labels (`[self-hosted, macOS, <label>]`, `[macOS, <label>]`, the label alone); on a Mac without
-the key, only the first two say so.
+the key, only the first two say so. Status also reads a repo's own `${{ fromJSON(vars.X ||
+'["self-hosted","macOS","box"]') }}` (a JSON label list as the default) for its runner warning: the
+variable's labels when set, the default's when unset; it stays a hand edit to every other verb.
 
 What a provider is, all of it in the repo except the last line:
   .github/ci.json                     {"provider": "actions"|"self-hosted"|"circleci", "check": "<command>"},
@@ -984,6 +986,28 @@ _NAME = "([A-Za-z_][A-Za-z0-9_]*)"
 VAR_FORM = re.compile(re.escape(var_runs_on("@NAME@")).replace("@NAME@", _NAME))
 VAR_FORM_FULL = re.compile(re.escape(var_runs_on("@NAME@", full=True))
                            .replace("@NAME@_FULL", _NAME + "_FULL", 1).replace("@NAME@", r"\1", 1))
+
+
+# A repo's own variable form with a JSON label list as the default, `${{ fromJSON(vars.X ||
+# '["self-hosted","macOS","box"]') }}` (an overlay repo's check.yml `suites` job, coding-ci-linux, 2026-11-06):
+# unset, the job asks for the default's labels, not a hosted image's. Never this tool's to write, so
+# var_form, runs_on_var and every writer leave it alone; status alone reads it, for its runner warning.
+LIST_DEFAULT = re.compile(r"\$\{\{\s*fromJSON\(\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\|\|\s*'(\[[^']*\])'\s*\)\s*\}\}", re.I)
+
+
+def list_default(value):
+    """(variable, its default's labels) when value is LIST_DEFAULT's form with a non-empty JSON list of
+    strings as the default, else None: a default that will not read leaves the line unread."""
+    m = LIST_DEFAULT.fullmatch(value or "")
+    if not m:
+        return None
+    try:
+        labels = json.loads(m.group(2))
+    except ValueError:
+        return None
+    if not (isinstance(labels, list) and labels and all(isinstance(l, str) for l in labels)):
+        return None
+    return m.group(1), tuple(labels)
 
 
 def yaml_value(raw):
@@ -2199,10 +2223,10 @@ def status(repo):
     if provider == SELF:
         # the runners API only here: it needs admin rights, and an actions repo has no runner
         runners = show_runners(s)
-        want = wanted_labels(repo, s, labels)
-        if runners is not None and want and not any(runs_check(r, want) for r in runners):
-            print("  ⚠ no online runner labelled %s: the check queues and never reports; "
-                  "`ci-provider %s --runner install`" % (", ".join(want), repo))
+        for want in wanted_labels(repo, s, labels):
+            if runners is not None and not any(runs_check(r, want) for r in runners):
+                print("  ⚠ no online runner labelled %s: the check queues and never reports; "
+                      "`ci-provider %s --runner install`" % (", ".join(want), repo))
         try:
             if not is_private(s):
                 print("  ⚠ %s is public and runs on the runner Mac: a fork's PR would run there; "
@@ -2217,9 +2241,11 @@ def status(repo):
 # --- the runner on the runner Mac -----------------------------------------------------------
 
 def wanted_labels(repo, s, labels):
-    """The labels the repo's check asks for, said as status reads them: its check.yml's literal
-    runs-on, or the repository variable it reads (unset: hosted, nothing to ask for), else the
-    labels key's (labels, None when absent); None when none is known."""
+    """Each label set the repo's check asks for, said as status reads them, a list of tuples: its
+    check.yml's literal runs-on, or the repository variable it reads in this tool's form (unset:
+    hosted, nothing to ask for), else the labels key's (labels, none when absent); and beside a
+    literal, each LIST_DEFAULT runs-on's variable, its default's labels while unset. Empty when none
+    is known."""
     wf = p(repo, ".github", "workflows", "check.yml")
     text = read(wf) if os.path.isfile(wf) else None
     var = runs_on_var(text)
@@ -2250,11 +2276,11 @@ def wanted_labels(repo, s, labels):
         value, err = variable(s, var)
         if err:
             print("  runs-on variable %s: (unread: %s)" % (var, err))
-            return None
+            return []
         if value is None:
             print("  ⚠ runs-on variable %s is unset: the check runs on ubuntu-latest, hosted; "
                   "`ci-provider %s --runner install` sets it" % (var, repo))
-            return None
+            return []
         print("  runs-on variable %s: %s" % (var, value))
         try:
             asked = json.loads(value)
@@ -2266,18 +2292,45 @@ def wanted_labels(repo, s, labels):
             # 2026-10-21, 10)
             print("  runs-on variable %s is one name, not a label list: a hosted runner, none of "
                   "the runner Mac's" % var)
-            return None
-        if not isinstance(asked, list) or not all(isinstance(l, str) for l in asked):
+            return []
+        if not isinstance(asked, list) or not asked or not all(isinstance(l, str) for l in asked):
             print("  ⚠ runs-on variable %s is not a JSON label list: check.yml's fromJSON fails" % var)
-            return None
-        return tuple(asked)
+            return []
+        return [tuple(asked)]
     # a literal naming no `self-hosted`, or a block list, before the key: a runner carrying
     # capabilities no longer carries the key's own label
-    lists = literal_runs_on([("check.yml", text or "")])
+    defaults = [d for d in (list_default(v) for _, v in runs_on_lines(text)) if d]
+    lists = [x for x in literal_runs_on([("check.yml", text or "")]) if not list_default(x[1])]
     if any(l is None for _, _, l, _ in lists) or any(by_variable(v) for _, v in runs_on_lines(text)):
-        return None   # a shape read here, or a variable this tool did not write: nothing claimed
+        return []   # a shape read here, or a variable this tool did not write: nothing claimed
     other = next((l for _, _, l, _ in lists if l and not hosted_name(l)), None)
-    return literal_labels(text, labels) or other or labels
+    found = literal_labels(text, labels) or other
+    # the key's labels stand in only for a file that names none: a LIST_DEFAULT job names its own
+    wants = [found or labels] if (found or labels) and (found or not defaults) else []
+    for var, default in dict.fromkeys(defaults):
+        value, err = variable(s, var)
+        if err:
+            print("  runs-on variable %s: (unread: %s)" % (var, err))
+            continue
+        if value is None:
+            print("  runs-on variable %s is unset: its jobs take the default, %s" % (var, ", ".join(default)))
+            if not hosted_name(default):   # a hosted image's name asks no runner here, as a literal's does not
+                wants.append(default)
+            continue
+        print("  runs-on variable %s: %s" % (var, value))
+        try:
+            asked = json.loads(value)
+        except ValueError:
+            asked = None
+        if isinstance(asked, str):
+            print("  runs-on variable %s is one name, not a label list: a hosted runner, none of "
+                  "the runner Mac's" % var)
+        elif not isinstance(asked, list) or not asked or not all(isinstance(l, str) for l in asked):
+            print("  ⚠ runs-on variable %s is not a JSON label list: its jobs' fromJSON fails" % var)
+        else:
+            wants.append(tuple(asked))
+    # one warning per set, however many jobs ask for it
+    return list({tuple(sorted(lowered(w))): w for w in wants}.values())
 
 
 def automerge_runner(repo, s, var):

@@ -930,6 +930,11 @@ grep -q 'no online runner labelled self-hosted, macOS, othermac' "$T/out"; check
 check "$(grep -c -- '-X PATCH repos/acme/demo/actions/variables/CI_RUNS_ON' "$T/gh/calls")" "1" "…is PATCHed"
 grep -q 'rollback: gh api -X PATCH repos/acme/demo/actions/variables/CI_RUNS_ON' "$T/out"; check "$?" "0" "…and the PATCH that undoes it printed"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "status: the variable's labels online, no warning"
+cp "$T/gh/vars/CI_RUNS_ON.json" "$T/ci_runs_on.json"; echo '{"name":"CI_RUNS_ON","value":"[]"}' > "$T/gh/vars/CI_RUNS_ON.json"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'runs-on variable CI_RUNS_ON is not a JSON label list' "$T/out"; check "$?" "0" "status: the variable an empty list, said"
+grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "…and no warning naming no labels"
+mv "$T/ci_runs_on.json" "$T/gh/vars/CI_RUNS_ON.json"
 echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"; : > "$T/gh/calls"
 "$CP" "$R" --runner remove > "$T/out" 2>&1; check "$?" "0" "--runner remove"
 grep -q 'gh api -X DELETE repos/acme/demo/actions/variables/CI_RUNS_ON' "$T/out"; check "$?" "0" "…prints the variable's DELETE"
@@ -1176,6 +1181,45 @@ R="$T/x10"; newrepo "$R"; mkdir -p "$R/.helloworld"; "$CP" "$R" --to self-hosted
 mkdir -p "$T/gh/vars"; echo '{"name":"CI_RUNS_ON","value":"\"ubuntu-latest\""}' > "$T/gh/vars/CI_RUNS_ON.json"
 echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 "$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "a variable holding a JSON string: hosted, no runner warning (10)"
+rm -rf "$T/gh/vars"
+
+echo "a repo's own fromJSON(vars.X || '[labels]') runs-on: status reads its default (ci-provider-fromjson-list)"
+# an overlay repo's check.yml since coding-ci-linux: a `suites` job on a variable whose default is a JSON label list,
+# and a gather job's literal beside it; the status warning read neither until 2026-11-06
+R="$T/xl"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+LD="\${{ fromJSON(vars.CI_LINUX_RUNS_ON || '[\"self-hosted\",\"macOS\",\"box\"]') }}"
+printf 'jobs:\n  suites:\n    runs-on: %s\n  check:\n    runs-on: [self-hosted, macos, BOX]   # literal\n' "$LD" > "$R/.github/workflows/check.yml"
+BOX='{"total_count":1,"runners":[{"id":5,"name":"box","status":"online","labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"box"}]}]}'
+mkdir -p "$T/gh/vars"; echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+"$CP" "$R" > "$T/out" 2>&1
+grep -q 'runs-on variable CI_LINUX_RUNS_ON is unset: its jobs take the default, self-hosted, macOS, box' "$T/out"; check "$?" "0" "the variable unset: its default's labels, said"
+check "$(grep -c 'no online runner labelled' "$T/out")" "1" "…warned once, no runner online, for the default and the literal alike (case aside)"
+echo "$BOX" > "$T/gh/runners.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "…a runner carrying them online: no warning"
+echo '{"name":"CI_LINUX_RUNS_ON","value":"[\"self-hosted\",\"Linux\",\"node\"]"}' > "$T/gh/vars/CI_LINUX_RUNS_ON.json"
+"$CP" "$R" > "$T/out" 2>&1
+grep -q 'runs-on variable CI_LINUX_RUNS_ON: \["self-hosted","Linux","node"\]' "$T/out"; check "$?" "0" "the variable set: read"
+grep -q 'no online runner labelled self-hosted, Linux, node:' "$T/out"; check "$?" "0" "…its labels asked of the runners, not the default's"
+grep -q 'no online runner labelled self-hosted, macOS, box' "$T/out"; check "$?" "1" "…and the literal's, online, not warned"
+echo '{"name":"CI_LINUX_RUNS_ON","value":"\"ubuntu-latest\""}' > "$T/gh/vars/CI_LINUX_RUNS_ON.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "…a JSON string: hosted, no warning"
+echo '{"name":"CI_LINUX_RUNS_ON","value":"box"}' > "$T/gh/vars/CI_LINUX_RUNS_ON.json"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'runs-on variable CI_LINUX_RUNS_ON is not a JSON label list' "$T/out"; check "$?" "0" "…a bare value: fromJSON fails, said"
+touch "$T/gh/vars/CI_LINUX_RUNS_ON.unread"; echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+"$CP" "$R" > "$T/out" 2>&1
+grep -q 'runs-on variable CI_LINUX_RUNS_ON: (unread' "$T/out"; check "$?" "0" "…unread: said, never taken for unset"
+check "$(grep -c 'no online runner labelled' "$T/out")" "1" "…and only the literal's labels warned"
+rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"; echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+printf 'jobs:\n  suites:\n    runs-on: %s\n' "$LD" > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1
+check "$(grep -c 'no online runner labelled' "$T/out")" "1" "the form alone, no runner online: one warning"
+grep -q 'no online runner labelled self-hosted, macOS, box:' "$T/out"; check "$?" "0" "…for the default's labels, never the key's"
+printf 'jobs:\n  suites:\n    runs-on: %s\n' "\${{ fromJson(vars.CI_LINUX_RUNS_ON || '[\"self-hosted\",\"macOS\",\"box\"]') }}" > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled self-hosted, macOS, box:' "$T/out"; check "$?" "0" "…fromJson in any case: read alike"
+printf 'jobs:\n  suites:\n    runs-on: %s\n' "\${{ fromJSON(vars.CI_LINUX_RUNS_ON || '[\"ubuntu-latest\"]') }}" > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled' "$T/out"; check "$?" "1" "a hosted image as the default, unset: no runner asked for"
+printf 'jobs:\n  suites:\n    runs-on: %s\n' "\${{ fromJSON(vars.CI_LINUX_RUNS_ON || '[\"self-hosted\",]') }}" > "$R/.github/workflows/check.yml"
+"$CP" "$R" > "$T/out" 2>&1; grep -q 'no online runner labelled\|CI_LINUX_RUNS_ON' "$T/out"; check "$?" "1" "a default that is no JSON: unread, nothing claimed"
 rm -rf "$T/gh/vars"
 R="$T/x11"; newrepo "$R"
 "$CP" "$R" --to self-hosted --runs-on-var $'X\n' > /dev/null 2>&1; check "$?" "2" "a variable name with a trailing newline: refused (11)"

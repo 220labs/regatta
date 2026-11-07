@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ci-provider's status reads a repo's own `${{ fromJSON(vars.X || '["self-hosted",…]') }}` runs-on (a JSON label list as
+  the default; an overlay repo's `suites` job since coding-ci-linux): the variable's labels when set, the default's when unset,
+  so `no online runner labelled` warns again there, once per label set, beside a literal job's (ci-provider-fromjson-list,
+  2026-11-06). Every other verb still holds that form as a hand edit.
 - review-gate's principal route picks as a finish, with the receipt, so it names the login a landing started on under
   lighthouse's `week-max-finish`; `plan --phase build`, which a build round's prompt passes, keeps a plain pick
   (finish-ceiling's landing review, 2026-11-06).
