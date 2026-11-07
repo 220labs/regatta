@@ -20,13 +20,20 @@ def clean(text):
     return text.strip().split("\n")[0].strip() == "NO_FINDINGS"
 
 
-def review(wt, cli, out, base="origin/main", origin="", model=v.MODEL, effort="high",
+def review(wt, cli, out, base="origin/main", origin="", model=None, effort="high",
            on_pid=None, on_usage=None, timeout=7200):
     wt, out = Path(wt).resolve(), Path(out).resolve()
-    v.fence(wt, cli, origin)
-    why = v.preflight(cli, model, effort)
+    model = model or v.model_for(cli)
+    v.fence(wt, cli, origin, paths=True)
+    why = v.preflight(cli, model, effort, wt, review=True)
     if why:
-        raise (v.Held if why.startswith("held") else v.Refused)(why)
+        # a declared reviewer that is not ready holds the loop (README): the build is done, never a vendor failure
+        raise v.Held(why if why.startswith("held") else "held: declared %s reviewer not ready: %s" % (cli, why))
+    with v.vendor_home(cli, wt) as home:
+        return _review(wt, cli, out, base, origin, model, effort, on_pid, on_usage, timeout, home)
+
+
+def _review(wt, cli, out, base, origin, model, effort, on_pid, on_usage, timeout, home):
     gate = v.common.tool("review-gate")
     if not gate:
         raise v.Refused("review-gate is absent")
@@ -54,7 +61,7 @@ def review(wt, cli, out, base="origin/main", origin="", model=v.MODEL, effort="h
                   % (base, wt, "If you find no defects, answer NO_FINDINGS. " if key == "reviewer"
                      else "Return your JSON findings list, [] when clean. "))
         result = v.turn(cli, wt, prompt, review=True, origin=origin, model=model,
-                        on_pid=on_pid, on_usage=on_usage, timeout=timeout,
+                        on_pid=on_pid, on_usage=on_usage, timeout=timeout, home=home,
                         effort=((p.get(key) or {}).get("effort") if (p.get(key) or {}).get("effort") in ("high", "xhigh")
                                 else (p.get(key) or {}).get("level") or effort))
         text = result["last_answer"]
@@ -67,7 +74,7 @@ def review(wt, cli, out, base="origin/main", origin="", model=v.MODEL, effort="h
             # matcher deciding a report is clean (the Traps). The template's trailer after the word stays allowed.
             if not seen and not clean(text):
                 again = v.turn(cli, wt, REFORMAT + text, review=True, origin=origin, model=model, effort="high",
-                               on_pid=on_pid, on_usage=on_usage, timeout=timeout)
+                               on_pid=on_pid, on_usage=on_usage, timeout=timeout, home=home)
                 text = again["last_answer"]
                 v.fence(wt, cli, origin, text)
                 v.add_cost(cost, again["cost"])
@@ -104,7 +111,7 @@ def review(wt, cli, out, base="origin/main", origin="", model=v.MODEL, effort="h
                   "failure introduced by this diff; intended behavior and defects on the base are OK-BUT. "
                   "Do not fix or edit.\n\n%s" % (base, items))
         result = v.turn(cli, wt, prompt, review=True, origin=origin, model=model, effort="high",
-                        on_pid=on_pid, on_usage=on_usage, timeout=timeout)
+                        on_pid=on_pid, on_usage=on_usage, timeout=timeout, home=home)
         v.add_cost(cost, result["cost"])
         v.fence(wt, cli, origin, result["last_answer"])
         verdict.write_text(result["last_answer"])

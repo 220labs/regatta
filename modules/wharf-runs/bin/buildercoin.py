@@ -70,6 +70,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 
@@ -94,7 +95,7 @@ AGENT_NEED = {"antigravity": "agy", "codex": "codex"}
 # the agents dispatch's fire path runs: Codex's since S8 (run_vendor); any other vendor arm weighs 0 at the draw until
 # its road lands (Antigravity's build loop, S4 of docs/argon-builder-arm-2026-11-03.md; road_weights), and a carried
 # word of it fires as its Opus fallback
-ROADS = ("claude", "codex")
+ROADS = ("claude", "codex", "antigravity")
 # a fleet limit (wharf-runs' limits file): a whole weight per arm by its name, `opus-high=1,sonnet-high=2,argon-high=2`,
 # an arm left out weighing 0. Positional live values read ahead of a named base.
 # An arm added later reads 0 in a value written before it.
@@ -298,7 +299,9 @@ def has_road(agent, at_draw=False):
     return agent in ROADS or agent in extra
 
 
-FRESH_TIMEOUT = 90   # s: the hosts ref's fetch at the draw; past it, no host is known fresh and the draw falls back
+# s: `fresh` may wait 45 s for the hosts clone's lock and 30 s for its fetch, then answers from its cached copy; a
+# shorter bound killed a draw a busy queue only delayed and fell it to Opus (the landing review, 2026-11-06)
+FRESH_TIMEOUT = 90
 
 
 def builder_host(primary, need, needs=(), pin=""):
@@ -308,9 +311,19 @@ def builder_host(primary, need, needs=(), pin=""):
     q = os.path.join(HERE, "dispatch-queue")
     want = ",".join(sorted({need} | {n for n in needs if n}))
     try:
-        r = subprocess.run([sys.executable, q, "fresh", "--repo", primary, "--needs", want] + (["--pin", pin] if pin else []),
-                           capture_output=True,
-                           text=True, timeout=FRESH_TIMEOUT, stdin=subprocess.DEVNULL)
+        with subprocess.Popen([sys.executable, q, "fresh", "--repo", primary, "--needs", want] +
+                              (["--pin", pin] if pin else []), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, stdin=subprocess.DEVNULL, start_new_session=True) as child:
+            try:
+                stdout, stderr = child.communicate(timeout=FRESH_TIMEOUT)
+            except BaseException:
+                # git's fetch inherits these pipes. Killing the queue process
+                # alone leaves communicate waiting for its network child.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(child.pid, signal.SIGKILL)
+                child.communicate()
+                raise
+            r = subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "the hosts ref did not answer (%s)" % type(e).__name__
     try:

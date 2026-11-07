@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scratch HOME, local git origins, and a Codex stand-in that validates real CLI
+# Scratch HOME, local git origins, and vendor stand-ins that validate real CLI
 # flags. Never starts a real vendor, Claude, launchd, or a network connection.
 set -eu
 B="$(cd "$(dirname "$0")/../bin" && pwd)"

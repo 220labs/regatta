@@ -1,10 +1,11 @@
 """Vendor build turns. The launcher owns network steps and the dispatch record;
-the CLI owns one conversation. Antigravity's turn seam is filled by S4.
+the CLI owns one conversation. Both vendors share the same launch/review loop.
 
 No Claude process here. Every fire, including a typed model, meets the same
 origin and scope gates; every turn and every review repeats them.
 """
 import json
+import contextlib
 import importlib.machinery
 import os
 import re
@@ -20,11 +21,16 @@ import core_path
 core_path.require()
 import common
 import buildercoin
+import agybuild
 from harness_adapters import codex
 
-MESSAGE_CAP = 64 * 1024
+MESSAGE_CAP = agybuild.MESSAGE_CAP
 MODEL = "gpt-6.1-sol"  # codex debug models --bundled, recorded with S8
 CLIS = {"codex": "codex", "antigravity": "agy"}
+
+
+def model_for(cli):
+    return agybuild.MODEL if cli == "antigravity" else MODEL
 
 
 class Refused(RuntimeError):
@@ -36,8 +42,14 @@ class Held(Refused):
     in the text: git's stderr names the branch, and a branch may hold any word (the landing review, item 11)."""
 
 
+class Tainted(Held):
+    """A held turn after which the launcher must not run git in the worktree again (a push would run a planted
+    pre-push hook, or carry a reviewer's commit): agybuild.Held."""
+
+
 def git(wt, *args):
-    r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True)
+    # fsmonitor off: a vendor turn may write the git dir, and this git runs outside its sandbox (agybuild.git_trust)
+    r = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(wt), *args], capture_output=True, text=True)
     if r.returncode:
         raise Refused("git %s failed: %s" % (args[0], r.stderr.strip()[-800:]))
     return r.stdout.strip()
@@ -50,7 +62,9 @@ def _harness():
     """bin/harness, loaded once per process: a reload re-runs its top level and repeats its once-only warnings."""
     if not _HARNESS:
         _HARNESS.append(importlib.machinery.SourceFileLoader("vendor_harness", str(HERE / "harness")).load_module())
-    return _HARNESS[0]
+    h = _HARNESS[0]
+    h.PUBLIC = tuple(h.config_lines("wharf-runs/public-repos"))
+    return h
 
 
 def main_name(wt):
@@ -76,9 +90,10 @@ def fence(wt, cli, origin="", text=None, paths=False):
     primary = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
     if origin or os.environ.get("DISPATCH_ORIGIN_MARK"):
         raise Held("an origin marker: no vendor build")
-    why = buildercoin.rotation_fence(str(primary))
-    if not why:
-        why = common.vendor_refusal(str(wt), cli)
+    # A typed harness/model and a coin arm meet the same provider refusal.
+    why = common.vendor_refusal(str(wt), cli)
+    rotation_why, fields = buildercoin.rotation_gate(str(primary))
+    why = why or rotation_why or ("a confidential scope never runs a vendor build" if fields.get("confidential") else None)
     if why:
         raise Held("vendor fence: %s" % why)
     harness = _harness()
@@ -92,10 +107,11 @@ def fence(wt, cli, origin="", text=None, paths=False):
     if any(Path(p).parent == Path("docs/handoff") and p.endswith(".review")
            and common.branch_topic(Path(p).stem) == topic for p in tracked):
         raise Held("an origin marker in a reviewed brief: no vendor build")
-    # The hook-trust bypass a turn passes must trust regatta's handler alone: a project's own .codex/ (hooks or
-    # config the builder could write in one turn and the next would load) never reaches a vendor turn.
-    if git(wt, "ls-files", "--", ".codex") or git(wt, "status", "--porcelain", "--ignored", "--", ".codex"):
-        raise Held("vendor fence: the checkout holds a .codex/ path")
+    # The hook-trust / permission bypass a turn passes must trust regatta's handler alone: a project's own .codex/ or
+    # .gemini/ (hooks or config the builder could write in one turn and the next would load) never reaches a vendor turn.
+    for dot in (".codex", ".gemini"):
+        if git(wt, "ls-files", "--", dot) or git(wt, "status", "--porcelain", "--ignored", "--", dot):
+            raise Held("vendor fence: the checkout holds a %s/ path" % dot)
     f = codex._fence()
     if paths and f.leave_paths(str(wt)):
         raise Held("vendor fence: checkout holds a protected path")
@@ -112,16 +128,20 @@ def fence(wt, cli, origin="", text=None, paths=False):
                 raise Held("vendor verdict holds a confidential scope name")
 
 
-def preflight(cli, model=MODEL, effort="high"):
+def preflight(cli, model=None, effort="high", wt=None, review=False):
     """No model call. Only a configured builder user starts a vendor build.
     A missing login/catalog/model is a pre-flight fallback, never a vendor failure.
     """
-    if cli == "antigravity":
-        return "held: antigravity build turns await S4"
+    model = model or model_for(cli)
     only, bad = common.config_read("wharf-runs/only")
     feature = CLIS[cli]
-    if bad or feature not in {x.strip() for l in (only or []) for x in l.split(",")}:
+    allowed = {x.strip() for l in (only or []) for x in l.split(",")}
+    if bad or not (allowed.intersection(CLIS.values()) if review else feature in allowed):
         return "no %s builder user configured here (wharf-runs/only)" % cli
+    if feature not in features_here():
+        return "no %s feature declared on this builder host" % feature
+    if cli == "antigravity":
+        return agybuild.preflight(wt, model)
     why = codex_guards()
     if why:
         return why
@@ -172,13 +192,10 @@ def codex_guards():
     return None
 
 
-def reviewer_cli(builder):
-    """Cross-vendor where this builder row declares a second vendor; no silent
-    same-vendor substitute if the declared second road is not ready.
-    """
+def features_here():
     rows, bad = common.config_read("wharf-runs/features")
     if bad:
-        raise Refused("builder features do not read")
+        raise Refused("the builder features file does not read")  # FOR_NOW's words: a wait, never for good
     host = os.environ.get("DISPATCH_HOST") or common.host_name()
     features, last = set(), None
     for line in rows or []:
@@ -189,17 +206,43 @@ def reviewer_cli(builder):
             names = line  # bootstrap's one word per line continues the host
         if last == host.lower():
             features.update(n.strip().lower() for n in names.split(","))
+    return features
+
+
+def reviewer_cli(builder):
+    """Cross-vendor where declared; an unavailable second road holds the loop."""
+    features = features_here()
     other = "antigravity" if builder == "codex" else "codex"
     return other if CLIS[other] in features else builder
 
 
-def turn(cli, wt, prompt, *, model=MODEL, effort="high", conversation=None,
-         review=False, origin="", on_pid=None, on_thread=None, on_usage=None, timeout=7200):
-    fence(wt, cli, origin, prompt)
-    if cli == "antigravity":
-        raise Held("held: antigravity turn seam awaits S4")
+@contextlib.contextmanager
+def vendor_home(cli, wt):
+    try:
+        with agybuild.home(wt) if cli == "antigravity" else contextlib.nullcontext(None) as home:
+            yield home
+    except agybuild.Error as ex:
+        raise Refused(str(ex)) from ex
+
+
+def turn(cli, wt, prompt, *, model=None, effort="high", conversation=None,
+         review=False, origin="", on_pid=None, on_thread=None, on_usage=None, timeout=7200, home=None):
+    model = model or model_for(cli)
+    # Repeat the path scan after the launcher's merge, and for reviews/fixes:
+    # the tree may have gained a protected file since the first pre-flight.
+    fence(wt, cli, origin, prompt, paths=True)
     if conversation and review:
         raise Refused("a reviewer always starts a fresh conversation")
+    if cli == "antigravity":
+        try:
+            with vendor_home(cli, wt) if home is None else contextlib.nullcontext(home) as agy_home:
+                return agybuild.turn(wt, prompt, model=model, effort=effort, conversation=conversation,
+                                     home=agy_home, on_pid=on_pid, on_thread=on_thread, on_usage=on_usage, timeout=timeout,
+                                     review=review)
+        except agybuild.Held as ex:
+            raise Tainted(str(ex)) from ex
+        except agybuild.Error as ex:
+            raise Refused(str(ex)) from ex
     why = codex_guards()
     if why:
         raise Refused(why)

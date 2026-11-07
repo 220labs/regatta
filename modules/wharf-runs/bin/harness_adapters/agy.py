@@ -428,9 +428,14 @@ def _fenced_why(repo):
                                            for n in fenced)) if fenced else None
 
 
-def _argv(req, log, run_mode, conversation=None):
-    argv = [exe(), "--input-format", "stream-json", "--output-format", "stream-json", "--mode", run_mode,
-            "--sandbox", "--log-file", log]
+def _argv(req, log, run_mode, conversation=None, add_dirs=()):
+    argv = [exe(), "--input-format", "stream-json", "--output-format", "stream-json"]
+    # A dispatched build must run shell tools headlessly. The interactive harness
+    # retains its configured mode; a builder uses the explicit permission flag.
+    argv += ["--mode", run_mode] if run_mode else ["--dangerously-skip-permissions", "--print-timeout", "0"]
+    argv += ["--sandbox", "--log-file", log]
+    for directory in add_dirs:
+        argv += ["--add-dir", str(directory)]
     if req.get("model"):
         argv += ["--model", req["model"]]
     if req.get("effort"):

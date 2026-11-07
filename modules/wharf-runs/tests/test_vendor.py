@@ -1,6 +1,8 @@
 """run_vendor's offline integration cases. Called through test_vendor.sh only."""
 import importlib.machinery
 import fcntl
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -144,11 +146,13 @@ HOLD_RE = _hold_re()
 class VendorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        (T / "bin").mkdir()
+        (T / "bin").mkdir(exist_ok=True)
         cli = T / "bin/codex"
         cli.write_text(STUB); cli.chmod(0o755)
         claude = T / "bin/claude"
         claude.write_text('#!/bin/sh\necho called >> "$CLAUDE_AUDIT"\nexit 91\n'); claude.chmod(0o755)
+        screen = T / "bin/screen"
+        screen.write_text('#!/bin/sh\nexit 95\n'); screen.chmod(0o755)
         check = T / "bin/check"
         check.write_text('#!/bin/sh\n[ "$2" = --builder ] || exit 98\n'
                          '[ "$CLAUDE_UNATTENDED" = vendor-build ] || exit 97\n'
@@ -168,15 +172,17 @@ class VendorTests(unittest.TestCase):
         (T / "gitconfig").write_text('[user]\nname = test\nemail = test@example.invalid\n[init]\ndefaultBranch = main\n')
         os.environ.update(PATH=str(T / "bin") + ":" + os.environ["PATH"], GIT_CONFIG_GLOBAL=str(T / "gitconfig"),
                           HARNESS_CODEX=str(cli), VENDOR_CHECK=str(check), CLAUDE_AUDIT=str(T / "claude.calls"),
+                          HARNESS_AGY=str(T / "no-agy"), GEMINI_CLI_HOME=str(T / "no-gemini"),
+                          DISPATCH_CLAUDE=str(claude),
                           CLAUDE_REPOS_JSON=str(T / "registry.json"), ACCOUNTS_FILE=str(T / "no-accounts"),
                           BUILD_REVIEW_LOG=str(T / "build-review.jsonl"), REVIEW_GATE_LOG=str(T / "review-gate.jsonl"),
                           DISPATCH_HOST="laptop")
         vh=importlib.machinery.SourceFileLoader("fixture_vendor_hooks",str(v.common.tool("vendor-hooks"))).load_module()
-        home=Path(os.environ["CODEX_HOME"]); home.mkdir(parents=True)
+        home=Path(os.environ["CODEX_HOME"]); home.mkdir(parents=True, exist_ok=True)
         (home / "hooks.json").write_text(json.dumps({"hooks":{"PreToolUse":[{"matcher":"","hooks":[vh.handler("codex")]}]}}))
 
     def setUp(self):
-        self.root = T / self._testMethodName
+        self.root = T / (type(self).__name__ + "-" + self._testMethodName)
         self.root.mkdir()
         self.repo = self.root / "repo"
         self.assertEqual(cmd("git", "init", "--bare", self.root / "origin.git").returncode, 0)
@@ -792,14 +798,14 @@ sys.exit(m.main())
         self.assertTrue(rc.same(state))
         self.assertFalse(rc.parked(state))
 
-    def test_declared_cross_vendor_review_holds_at_s4_seam(self):
+    def test_declared_cross_vendor_review_needs_a_ready_login(self):
         p=Path(os.environ["REGATTA_CONFIG"]) / "wharf-runs/features"
         text=p.read_text(); p.write_text("laptop:codex,agy\n")
         try:
             r=self.launch(); self.assertEqual(r.returncode,1,r.stdout+r.stderr)
             state=json.loads(self.record.read_text())
             self.assertEqual(state["outcome"],"held")
-            self.assertIn("await S4",state["end_reason"])
+            self.assertIn("agy",state["end_reason"])
             self.assertFalse(Path(os.environ["CLAUDE_AUDIT"]).exists())
         finally:
             p.write_text(text)
@@ -1007,12 +1013,17 @@ sys.exit(m.main())
         self.assertEqual(f["args"],["--needs","mac"])
         self.assertIsNone(q.bad_args(dict(e,**f)))
         self.assertEqual(f["state"],"queued")
-        # A typed codex need goes too: only a codex builder row has it, and that row has no Claude login.
+        # A typed vendor need (codex or agy) goes too: only a builder row has it, and that row has no Claude login.
         e["arm_need"] = ""
         f = q.vendor_fallback_fields(e)
         self.assertEqual(f["needs"], ["mac"])
         self.assertEqual(f["args"], ["--needs", "mac"])
         self.assertIsNone(q.bad_args(dict(e, **f)))
+        e_agy = {"env": {}, "needs": ["agy", "mac"], "arm_need": "", "args": ["--needs", "agy,mac", "--harness", "agy"]}
+        f_agy = q.vendor_fallback_fields(e_agy)
+        self.assertEqual(f_agy["needs"], ["mac"])
+        self.assertEqual(f_agy["args"], ["--needs", "mac", "--model", "claude-opus-5-5", "--effort", "high"])
+        self.assertIsNone(q.bad_args(dict(e_agy, **f_agy)))
         with patch.object(q, "berth_candidates", return_value=(["laptop"], {})), \
                 patch.object(q, "builtin_met", return_value=False):
             self.assertIsNone(q.eligibility(dict(e, **f), "laptop", {"laptop": {"mac"}}))
@@ -1162,8 +1173,36 @@ sys.exit(m.main())
         self.assertIn("--harness", e["args"]); self.assertEqual(e["args"][e["args"].index("--harness") + 1], "codex")
         self.assertNotIn("DISPATCH_MODE", e["env"], "a vendor build takes no landing mode")
         self.assertIsNone(q.bad_args(e))
+        agy_rec = q.entry_of_record(dict(st, cli="agy", agent="antigravity", model="gemini-4-argon-high"), "laptop", 0)
+        self.assertEqual(agy_rec["needs"], ["agy"])
+        self.assertEqual(agy_rec.get("arm_need"), "agy")
+        self.assertIn("--harness", agy_rec["args"]); self.assertEqual(agy_rec["args"][agy_rec["args"].index("--harness") + 1], "agy")
+        self.assertNotIn("DISPATCH_MODE", agy_rec["env"])
+        self.assertIsNone(q.bad_args(agy_rec))
         claude = q.entry_of_record(dict(st, mode="headless", cli="", agent="claude", model="claude-opus-5-5"), "laptop", 0)
         self.assertEqual(claude["needs"], [])
+
+    def test_started_vendor_retry_is_never_redrawn(self):
+        q=importlib.machinery.SourceFileLoader('vendor_retry_queue',str(B/'dispatch-queue')).load_module()
+        for arm in ('argon-high:2:2099-01-01:0','gpt-mid:4:2099-01-01:0'):
+            need=v.buildercoin.need_of(arm)
+            old={'id':'old','state':'ended','session':'started-session','started':100,'branch':'claude/laptop/build',
+                 'repo':'repo','env':{'DISPATCH_ARM':arm}}
+            new=dict(old,id='new',state='queued',session='',started=None,put_at=1,queued_at=1,
+                     needs=[need],arm_need=need,by='')
+            entries={'key':old}
+            q.apply_op(entries,{'op':'put','key':'key','entry':new})
+            self.assertTrue(entries['key']['vendor_started'])
+            self.assertIsNone(q.redraw_op('fleet:key','key',entries['key'],10**9))
+            replay=q.redraw_op('fleet:key','key',new,10**9)
+            self.assertIsNotNone(replay)
+            self.assertFalse(q.apply_op(entries,replay)[0],'an outbox replay cannot redraw a started retry')
+            q.apply_op(entries,{'op':'put','key':'key','entry':dict(new,id='another-retry')})
+            self.assertTrue(entries['key']['vendor_started'],'a repeated stall retry keeps the marker')
+            # The old run's own next step gets a fresh chance at the vendor.
+            entries={'key':old}
+            q.apply_op(entries,{'op':'put','key':'key','entry':dict(new,by='started-session')})
+            self.assertFalse(entries['key'].get('vendor_started'))
 
     def test_dispatch_reserves_slot_during_launcher_preflight(self):
         v.git(self.wt, "push", "-q", "origin", "HEAD:refs/heads/claude/laptop/build")
@@ -1209,6 +1248,338 @@ sys.exit(m.main())
             except subprocess.TimeoutExpired:
                 first.kill(); first.wait()
         self.assertEqual(first.returncode, 0, log.read_text())
+
+
+AGY_STUB = r'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys, time
+a=sys.argv[1:]
+if a==['--help']:
+    print('--sandbox --dangerously-skip-permissions --print-timeout'); sys.exit(0)
+if len(a)==3 and a[0]=='--log-file' and a[2]=='models':
+    pathlib.Path(a[1]).write_text('OAuth: authenticated successfully as '+os.environ.get('NATIVE_EMAIL','test@example.invalid')+'\n')
+    print('gemini-4-argon-high' if not os.environ.get('MISSING_MODEL') else 'gemini-other'); sys.exit(0)
+flags={}; i=0
+while i<len(a):
+    f=a[i]; assert f not in flags, a
+    if f in ('--sandbox','--dangerously-skip-permissions','-p='): flags[f]=True; i+=1
+    elif f in ('--input-format','--output-format','--model','--effort','--conversation','--log-file','--print-timeout','--add-dir'):
+        flags[f]=a[i+1]; i+=2
+    else: raise AssertionError('unknown real agy flag '+f)
+assert flags['--input-format']==flags['--output-format']=='stream-json'
+assert flags['--model']=='gemini-4-argon-high' and flags['--effort'] in ('high','xhigh')
+assert flags['--sandbox'] and flags['--dangerously-skip-permissions'] and flags['--print-timeout']=='0'
+assert a[-1]=='-p='
+assert not any(k.startswith('DISPATCH_') and k not in ('DISPATCH_DEPTH','DISPATCH_MAX_DEPTH') for k in os.environ)
+assert os.environ.get('DISPATCH_DEPTH','').isdigit() and int(os.environ['DISPATCH_DEPTH'])>=1
+assert not os.environ.get('CLAUDE_CODE_SESSION_ID') and not os.environ.get('CLAUDE_CONFIG_DIR')
+assert os.environ['PLAN_HARNESS']=='agy' and os.environ['CLAUDE_UNATTENDED']=='vendor-build'
+home=pathlib.Path(os.environ['HOME']); gemini=pathlib.Path(os.environ['GEMINI_CLI_HOME'])
+assert gemini==home/'.gemini'
+assert set(json.loads((gemini/'config/hooks.json').read_text()))=={'regatta'}
+assert (home/'Library/Keychains/login.keychain-db').is_file()
+pathlib.Path(flags['--log-file']).write_text('OAuth: authenticated successfully as '+os.environ.get('TURN_EMAIL','test@example.invalid')+'\n')
+conv=flags.get('--conversation') or 'conv-'+str(time.time_ns())
+state=gemini/'antigravity-cli/conversations'; state.mkdir(exist_ok=True)
+if '--conversation' in flags: assert (state/conv).is_file(), 'lost builder conversation'
+(state/conv).touch()
+def out(x): print(json.dumps(x),flush=True)
+if os.environ.get('NO_INIT'): time.sleep(30); sys.exit(0)
+out({'event':'init','conversation_id':conv})
+line=sys.stdin.readline()
+if not line: sys.exit(1)
+assert len(line.encode())<=65536, 'serialized message exceeded the byte guard'
+event=json.loads(line)
+assert event['event']=='user' and event['message']['role']=='user'
+prompt=event['message']['content']; assert len(prompt.encode())<=65536
+review='name: reviewer' in prompt or 'name: code-reviewer' in prompt or 'You reformat a review' in prompt
+mode='review' if review else ('resume' if '--conversation' in flags else 'build')
+# a reviewer gets no git dir to write; the builder's commits in a linked worktree need the common dir
+assert ('--add-dir' not in flags) if review else pathlib.Path(flags['--add-dir']).is_dir(), (mode, flags)
+wt=pathlib.Path(os.getcwd()); f=wt/'f.py'
+with open(os.environ['AUDIT'],'a') as audit: audit.write(json.dumps({'mode':mode,'prompt':prompt,'conversation':conv,'home':str(home)})+'\n')
+if review and os.environ.get('REVIEW_WRITES'): f.write_text('reviewer wrote\n')
+if mode=='build' and os.environ.get('PLANT_HOOK'):
+    gd=subprocess.run(['git','rev-parse','--path-format=absolute','--git-common-dir'],capture_output=True,text=True).stdout.strip()
+    hook=pathlib.Path(gd)/'hooks/pre-push'; hook.parent.mkdir(exist_ok=True); hook.write_text('#!/bin/sh\nexit 0\n')
+if review:
+    if 'name: code-reviewer' in prompt: text='[]'
+    elif 'You reformat a review' in prompt: text='NO_FINDINGS'
+    elif 'fresh verifier' in prompt or f.read_text().strip()=='bad' or os.environ.get('ALWAYS_FIND'):
+        text='f.py:1 — [S2] bad result\nverdict: WRONG\nevidence: bad input produces bad output\nfix: write fixed'
+    else: text='NO_FINDINGS'
+else:
+    f.write_text('bad\n' if mode=='build' else 'fixed\n')
+    subprocess.run(['git','add','f.py'],check=True)
+    subprocess.run(['git','commit','--allow-empty','-qm','fixture: '+mode],check=True)
+    text='built' if mode=='build' else 'fixed'
+if os.environ.get('HOLD_STDOUT'):
+    # a tool outside agy's process group keeps stdout open after the turn (the landing review's case)
+    subprocess.Popen(['sleep','20'],start_new_session=True,stdin=subprocess.DEVNULL)
+if os.environ.get('FENCE_AFTER_BUILD') and mode=='build':
+    pathlib.Path(os.environ['CLAUDE_REPOS_JSON']).write_text(json.dumps({'repos':{},'scopes':{'open':{'repos':['*'],'rotation':False}}}))
+out({'event':'result','result':{'status':'ERROR' if os.environ.get('FAIL_EXEC') else 'SUCCESS',
+     'response':text,'usage':{'input_tokens':10,'output_tokens':5},'num_turns':1}})
+'''
+
+
+class AntigravityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        VendorTests.setUpClass()
+
+    def setUp(self):
+        VendorTests.setUp(self)
+        self.cli = self.root / 'agy'
+        self.cli.write_text(AGY_STUB); self.cli.chmod(0o755)
+        account = self.root / 'account'
+        account.write_text('#!/usr/bin/env python3\nimport json,sys\n'
+                          'a=sys.argv[1:]; assert a[:3]==["pick","--provider","antigravity"]\n'
+                          'assert a[3]=="--repo" and a[5:]==["--json"]\n'
+                          'print(json.dumps({"account":"agy-x","provider":"antigravity","primary":False,"env":{},"reason":"fixture"}))\n')
+        account.chmod(0o755)
+        security = self.root / 'security'
+        security.write_text('#!/usr/bin/python3\nimport os,pathlib,shlex,sys\n'
+                            'a=sys.argv[1:]\n'
+                            'if a==["-i"]: a=shlex.split(sys.stdin.read())\n'
+                            'assert a[0] in ("find-generic-password","unlock-keychain","create-keychain","set-keychain-settings","add-generic-password","delete-keychain"),a\n'
+                            'if a[0]=="find-generic-password": print("fixture")\n'
+                            'if a[0]=="create-keychain": pathlib.Path(a[-1]).touch()\n'
+                            'if a[0]=="delete-keychain": pathlib.Path(a[-1]).unlink()\n')
+        security.chmod(0o755)
+        self.security = security
+        self.f = v.codex._fence(); self.f.SECURITY = str(security)
+        kc = Path.home() / self.f.BUILDER_KC
+        kc.parent.mkdir(parents=True, exist_ok=True); kc.touch()
+        pw = Path.home() / self.f.BUILDER_PW; pw.write_text('a'*32)
+        cfg = Path(os.environ['REGATTA_CONFIG'])
+        (cfg / 'wharf-runs/only').write_text('agy,codex\n')
+        (cfg / 'wharf-runs/features').write_text('laptop:agy\n')
+        (cfg / 'wharf-runs/agy-domain').write_text('example.invalid\n')
+        gemini = self.root / 'gemini'
+        (gemini / 'config').mkdir(parents=True)
+        vh=importlib.machinery.SourceFileLoader('agy_fixture_vh',str(v.common.tool('vendor-hooks'))).load_module()
+        (gemini / 'config/hooks.json').write_text(json.dumps(vh.plan_ag({})[0]))
+        self.env = patch.dict(os.environ, HARNESS_AGY=str(self.cli), HARNESS_ACCOUNT=str(account), GEMINI_CLI_HOME=str(gemini))
+        self.env.start(); self.addCleanup(self.env.stop)
+        self.fence_patch = patch.object(v.codex, '_fence', return_value=self.f)
+        self.fence_patch.start(); self.addCleanup(self.fence_patch.stop)
+        self.record.write_text(json.dumps({'session':'agy-'+self._testMethodName,'repo':str(self.repo),'topic':'build',
+                                          'arm':v.buildercoin.arm_of('argon-high:2:2099-01-01:0')}))
+
+    def launch(self, *flags, **env):
+        launcher=importlib.machinery.SourceFileLoader('agy_fixture_launcher',str(B/'run-vendor')).load_module()
+        out, err = io.StringIO(), io.StringIO()
+        args=['run-vendor',str(self.wt),'--cli','antigravity','--record',str(self.record),'--brief',str(self.brief),*flags]
+        old_handler = __import__('signal').getsignal(__import__('signal').SIGTERM)
+        try:
+            with patch.dict(os.environ, env), patch.object(sys,'argv',args), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc=launcher.main()
+        finally:
+            __import__('signal').signal(__import__('signal').SIGTERM,old_handler)
+        return subprocess.CompletedProcess(args,rc,out.getvalue(),err.getvalue())
+
+    def test_build_review_fix_clean(self):
+        r=self.launch(); self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        state=json.loads(self.record.read_text())
+        self.assertEqual((state['agent'],state['cli'],state['outcome'],state['turns'],state['rounds']),
+                         ('antigravity','agy','clean',2,2))
+        calls=[json.loads(l) for l in self.audit.read_text().splitlines()]
+        self.assertEqual([x['mode'] for x in calls],['build','review','review','review','resume','review','review'])
+        self.assertEqual(calls[0]['conversation'],calls[4]['conversation'])
+        self.assertEqual(calls[0]['home'],calls[4]['home'])
+        self.assertEqual(len({x['conversation'] for x in calls if x['mode']=='review'}),5)
+        self.assertEqual(state['pid'],os.getpid()); self.assertIsNone(state['turn_pid'])
+        self.assertEqual(state['cost']['google'],{'input_tokens':70,'output_tokens':35})
+        self.assertEqual(state['cost']['anthropic'],{'input_tokens':0,'output_tokens':0})
+        self.assertTrue(all(not Path(x['home']).exists() for x in calls),'per-run keychains cleaned up')
+        self.assertEqual(v.git(self.wt,'rev-parse','HEAD'),self.git('rev-parse','refs/remotes/origin/claude/laptop/build'))
+        self.assertFalse(Path(os.environ['CLAUDE_AUDIT']).exists())
+        rows=[json.loads(l) for l in (Path.home()/'Library/Logs/claude-weekly/builder-rotation.jsonl').read_text().splitlines()]
+        row=next(r for r in reversed(rows) if r['session']=='agy-'+self._testMethodName)
+        self.assertEqual((row['agent'],row['outcome'],row['cost']),('antigravity','clean',state['cost']))
+
+    test_round_cap = VendorTests.test_round_cap
+    test_confidential_refused = VendorTests.test_confidential_refused
+    test_origin_refused = VendorTests.test_origin_refused
+    test_coin_fence_preflight_falls_back_without_a_vendor_turn = VendorTests.test_coin_fence_preflight_falls_back_without_a_vendor_turn
+    test_recent_owner_refuses_a_new_run = VendorTests.test_recent_owner_refuses_a_new_run
+
+    def test_cross_vendor_in_both_directions(self):
+        cfg=Path(os.environ['REGATTA_CONFIG'])/'wharf-runs/features'
+        cfg.write_text('laptop:agy,codex\n')
+        (cfg.parent/'only').write_text('agy\n')
+        r=self.launch(); self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        state=json.loads(self.record.read_text())
+        self.assertEqual(state['cost']['google']['input_tokens'],20)
+        self.assertEqual(state['cost']['openai']['input_tokens'],50)
+        self.audit.unlink()
+        import vendorreview
+        # Codex builder's declared other vendor is agy, also from a fresh conversation.
+        self.assertEqual(v.reviewer_cli('codex'),'antigravity')
+        report=vendorreview.review(self.wt,'antigravity',self.root/'cross-review')
+        self.assertEqual(report['found'],0)
+        self.assertEqual(report['cost']['google']['input_tokens'],20)
+
+    def test_preflight_failures_send_no_build(self):
+        for env in ({'NATIVE_EMAIL':'acct-b@other.invalid'},{'MISSING_MODEL':'1'}):
+            with self.subTest(env=env):
+                r=self.launch('--preflight',**env)
+                self.assertEqual(r.returncode,3,r.stdout+r.stderr)
+                self.assertFalse(self.audit.exists())
+        (Path(os.environ['REGATTA_CONFIG'])/'wharf-runs/agy-domain').write_text('other.invalid\n')
+        self.assertEqual(self.launch('--preflight').returncode,3)
+        self.assertFalse(self.audit.exists())
+
+    def test_open_repo_needs_no_accounts_registry(self):
+        # a builder host keeps no lighthouse/accounts.json: the real pick exits 4 with no stdout
+        nopick=self.root/'account-none'
+        nopick.write_text('#!/bin/sh\necho "account: no registry" >&2\nexit 4\n'); nopick.chmod(0o755)
+        r=self.launch('--preflight',HARNESS_ACCOUNT=str(nopick))
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertFalse(self.audit.exists())
+
+    def test_a_tool_holding_stdout_does_not_hang_the_turn(self):
+        start=time.monotonic()
+        with patch.object(v.agybuild,'RESULT_GRACE',2), patch.dict(os.environ,HOLD_STDOUT='1'):
+            result=v.turn('antigravity',self.wt,'name: code-reviewer\nhello',review=True,timeout=40)
+        self.assertEqual(result['last_answer'],'[]')
+        self.assertLess(time.monotonic()-start,25,'the turn ends at its grace, not at the holder\'s exit')
+
+    def test_reviewer_write_is_held(self):
+        r=self.launch(REVIEW_WRITES='1'); self.assertEqual(r.returncode,1,r.stdout+r.stderr)
+        state=json.loads(self.record.read_text())
+        self.assertEqual(state['outcome'],'held',r.stdout+r.stderr)
+        self.assertIn('reviewer changed the worktree',state['end_reason'])
+        self.assertFalse(Path(os.environ['CLAUDE_AUDIT']).exists())
+
+    def test_planted_git_hook_is_held_before_the_launcher_pushes(self):
+        r=self.launch(PLANT_HOOK='1'); self.assertEqual(r.returncode,1,r.stdout+r.stderr)
+        state=json.loads(self.record.read_text())
+        self.assertEqual(state['outcome'],'held',r.stdout+r.stderr)
+        self.assertIn('config or hooks',state['end_reason'])
+        self.assertEqual([json.loads(l)['mode'] for l in self.audit.read_text().splitlines()],['build'])
+        pushed=subprocess.run(['git','-C',str(self.wt),'rev-parse','--verify','-q','refs/remotes/origin/claude/laptop/build'],
+                              capture_output=True,text=True).stdout.strip()
+        self.assertNotEqual(pushed,v.git(self.wt,'rev-parse','HEAD'),'nothing pushed after the held turn')
+
+    def test_unreadable_features_file_waits(self):
+        real=v.common.config_read
+        def read(key):
+            return (None,'fixture: Drive not downloaded') if key=='wharf-runs/features' else real(key)
+        with patch.object(v.common,'config_read',side_effect=read):
+            r=self.launch('--preflight')
+        self.assertEqual(r.returncode,4,r.stdout+r.stderr)
+        self.assertFalse(self.audit.exists())
+
+    def test_runtime_failure_belongs_to_antigravity(self):
+        r=self.launch(FAIL_EXEC='1'); self.assertEqual(r.returncode,1,r.stdout+r.stderr)
+        state=json.loads(self.record.read_text())
+        self.assertEqual((state['agent'],state['outcome']),('antigravity','failed'))
+        self.assertEqual(state['cost']['google']['input_tokens'],10)
+        self.assertFalse(state['retry_claude'])
+        self.assertFalse(Path(os.environ['CLAUDE_AUDIT']).exists())
+
+    def test_fence_rechecked_before_review(self):
+        r=self.launch(FENCE_AFTER_BUILD='1'); self.assertEqual(r.returncode,1,r.stdout+r.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['outcome'],'held')
+        self.assertEqual(len(self.audit.read_text().splitlines()),1)
+
+    def test_size_verdict_and_native_identity_before_input(self):
+        with self.assertRaisesRegex(v.Refused,'64 KB'):
+            v.turn('antigravity',self.wt,'x'*65537)
+        with self.assertRaisesRegex(v.Refused,'credential'):
+            v.fence(self.wt,'antigravity',text='-----BEGIN '+'PRIVATE KEY-----')
+        dot=self.wt/'.gemini/config'; dot.mkdir(parents=True); (dot/'hooks.json').write_text('{}')
+        try:
+            with self.assertRaisesRegex(v.Held,r'\.gemini/'):
+                v.fence(self.wt,'antigravity')
+        finally:
+            __import__('shutil').rmtree(self.wt/'.gemini')
+        with patch.dict(os.environ,TURN_EMAIL='acct-b@other.invalid'):
+            with self.assertRaisesRegex(v.Refused,'nothing sent'):
+                v.turn('antigravity',self.wt,'hello')
+        self.assertFalse(self.audit.exists())
+
+    def test_per_run_guards_are_rechecked_before_each_turn(self):
+        with v.vendor_home('antigravity',self.wt) as home:
+            (Path(home['GEMINI_CLI_HOME'])/'config/hooks.json').write_text('{}')
+            with self.assertRaisesRegex(v.Refused,'per-run guards changed'):
+                v.turn('antigravity',self.wt,'hello',home=home)
+        self.assertFalse(self.audit.exists())
+
+    def test_unicode_message_stays_below_the_serialized_byte_guard(self):
+        result=v.turn('antigravity',self.wt,'name: code-reviewer\n'+'é'*32700,review=True)
+        self.assertEqual(result['last_answer'],'[]')
+
+    def test_json_escaping_cannot_bypass_the_byte_guard(self):
+        pids=[]
+        with self.assertRaisesRegex(v.Refused,'64 KB'):
+            v.turn('antigravity',self.wt,'"'*40000,on_pid=pids.append)
+        self.assertEqual(pids,[],'guard the encoded stdin message before starting a CLI')
+        self.assertFalse(self.audit.exists())
+
+    def test_review_verb_uses_antigravity_without_a_claude_process(self):
+        br=importlib.machinery.SourceFileLoader('agy_review_verb',str(B/'build-review')).load_module()
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc=br.main(['review',str(self.wt),'--cli','antigravity','--out',str(self.root/'verb-review')])
+        self.assertEqual(rc,0,out.getvalue())
+        result=json.loads(out.getvalue())
+        self.assertEqual((result['cli'],result['found']),('antigravity',0))
+        self.assertEqual(result['cost']['google']['input_tokens'],20)
+        self.assertFalse(Path(os.environ['CLAUDE_AUDIT']).exists())
+
+    def test_dispatch_typed_harness_model_and_coin_use_the_vendor_fence(self):
+        # Copy the shell entrypoint; every peer is real except the keychain
+        # command, patched in its Python child. No live state or network.
+        module=self.root/'module'; bins=module/'bin'; bins.mkdir(parents=True)
+        (module/'lib').symlink_to(B.parent/'lib',target_is_directory=True)
+        for peer in B.iterdir():
+            if peer.name not in ('dispatch','run-vendor','__pycache__'):
+                (bins/peer.name).symlink_to(peer,target_is_directory=peer.is_dir())
+        dispatch=bins/'dispatch'; dispatch.write_text((B/'dispatch').read_text()); dispatch.chmod(0o755)
+        wrapper=bins/'run-vendor'
+        wrapper.write_text('import os,sys,runpy\nsys.path.insert(0,%r)\nimport vendorlib as v\n'
+                           'f=v.codex._fence(); f.SECURITY=%r\nv.codex._fence=lambda:f\n'
+                           'original=v.common.vendor_refusal\n'
+                           'def refusal(repo,cli):\n'
+                           '    open(os.environ["FIRE_FENCE"],"a").write(cli+"\\n")\n'
+                           '    return original(repo,cli)\n'
+                           'v.common.vendor_refusal=refusal\n'
+                           'runpy.run_path(%r,run_name="__main__")\n' % (str(B),str(self.security),str(B/'run-vendor')))
+        self.brief.write_text('Tier: worker\nBuild it.\n')
+        v.git(self.wt,'commit','-qam','fixture: a coin-eligible brief')
+        v.git(self.wt,'push','-q','origin','HEAD:refs/heads/claude/laptop/build')
+        lc=self.root/'launchctl'; lc.write_text('#!/bin/sh\nexit 0\n'); lc.chmod(0o755)
+        cfg=Path(os.environ['REGATTA_CONFIG'])/'wharf-runs'
+        (cfg/'builder-rotation').write_text('until 2099-01-01\n')
+        (cfg/'builder-odds').write_text('opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1\n')
+        for selection in ('harness','model','coin'):
+            with self.subTest(selection=selection):
+                # Restore the seed so each fire builds independently.
+                fence_log=self.root/(selection+'.fence')
+                log=self.root/(selection+'.log')
+                env=dict(os.environ,DISPATCH_LOG=str(log),DISPATCH_LAUNCHCTL=str(lc),DISPATCH_DEFAULT_ON='',
+                         DISPATCH_LABEL='org.example.claude.dispatch.repo.build.202611040000',FIRE_FENCE=str(fence_log))
+                flags=['--harness','agy'] if selection=='harness' else ['--model','gemini-4-argon-high'] if selection=='model' else []
+                if selection=='coin': env['DISPATCH_ARM']='argon-high:2:2099-01-01:0'
+                r=cmd(dispatch,'claude/laptop/build','--repo',self.repo,*flags,env=env,timeout=90)
+                text=log.read_text() if log.exists() else r.stdout+r.stderr
+                self.assertEqual(r.returncode,0,text)
+                self.assertIn('vendor end: clean',text)
+                self.assertEqual(set(fence_log.read_text().splitlines()),{'antigravity'})
+                gd=Path(v.git(self.wt,'rev-parse','--absolute-git-dir'))/'claude'
+                (gd/'owner.json').unlink(missing_ok=True)
+        self.assertFalse(Path(os.environ['CLAUDE_AUDIT']).exists())
+
+    def test_no_init_is_bounded_and_reaps_the_cli(self):
+        pids=[]
+        with patch.dict(os.environ,NO_INIT='1'):
+            with self.assertRaisesRegex(v.Refused,'nothing sent'):
+                v.turn('antigravity',self.wt,'hello',timeout=.2,on_pid=pids.append)
+        self.assertTrue(pids)
+        with self.assertRaises(ProcessLookupError): os.kill(pids[0],0)
+        self.assertFalse(self.audit.exists())
 
 
 unittest.main(verbosity=2)
