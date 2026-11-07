@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- yard-node: a node runs Codex's sandbox (node-codex-sandbox, 2026-11-05). Ubuntu 24.04's AppArmor refuses an unconfined
+  program a user namespace (`kernel.apparmor_restrict_unprivileged_userns=1`), so every command under Codex's own bwrap
+  failed "bwrap: loopback: Failed RTM_NEWADDR" on the Azure node, Ubuntu's bubblewrap too. The guest's new
+  `yard-codex-userns USER`, run after Codex's install, loads `/etc/apparmor.d/yard-codex`: `userns` for Codex's native
+  binary and what it runs (its bwrap; a path its user owns, who has sudo in the guest anyway), the restriction kept
+  for every other program; a second run rewrites nothing. node-up's verdict probes
+  `codex sandbox -P :workspace` with a write in its folder (no model) and names the fix on bwrap's failure. Probed on the
+  Azure node: a write in the workspace runs, one in the home and the network are refused. `yard-node up` sends the same
+  script as root (`sudo -n sh -s USER`) before node-up, so a node rendered before it gets it too. The `codex` feature in
+  the host's `wharf-runs/features` line, the need dispatch-queue gives a GPT arm's entry, is node-up's own: added where
+  the sandbox runs and the vendor road's own pre-flight (`vendorlib.preflight("codex")`: a codex builder user, regatta's
+  guards, a login, the model) passes, taken off where it does not unless `--feature` typed it, and the verdict fails a
+  line that disagrees. A node's own user is no builder user (the Argon design's D1), so a node's own row never carries
+  it: a builder row's own line does (TODO.md [codex-row]); a claim with the feature and no road fell each GPT entry back
+  to Opus (the landing review). The line is the claim side only: a draw reads the drawing host's own features file.
 - `builder-host`: add the `codex` vendor (`<host>-codex`, feature `codex`, `only=codex`, the builder's `.codex` hooks and `AGENTS.md`, written again by the sweep after a fast-forward that moves the clone, another `CODEX_HOME` refused, `codex login status` with missing login `owed`, no model call in `probe`, its own sweep LaunchDaemon label, and a shared slot folder across builders on one Mac).
 - `dispatch-queue`: no host claims a landing (a `finish` entry) below `normal` priority (landing-floor, 2026-11-06).
   A `low` finish stays queued and the listing says why and how to lift it (`autofinish-run <worktree> --priority
