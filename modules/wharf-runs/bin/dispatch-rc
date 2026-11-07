@@ -17,7 +17,7 @@
                                — no prompt in its transcript within
                                DISPATCH_START_WAIT, though it may read busy (a seeded dispatch
                                retries once, visible; --start and --probe do not), 4: ended at the
-                               maximum lifetime. A run not busy yet has its screen read every
+                               maximum lifetime, its branch pushed first (push_run). A run not busy yet has its screen read every
                                DISPATCH_SNAP_EVERY (60 s; `hardcopy -h`), so the log of a run that
                                never started shows the last screen it had, even if its window closed.
                                Where a queue home is set, it claims (`dispatch --claim`) when its
@@ -64,6 +64,11 @@
     dispatch-rc ask-guard STATE
                                a headless run's end (bin/dispatch run_headless): store on its record
                                whether it handed the owner an ask past a live skipper (session-asks R2)
+    dispatch-rc push STATE     push the run's branch now, through wharf's `checkpoint.py push` (never
+                               --force), and log the outcome: what both lifetime ends do before they
+                               stop a run (watch's here, the headless watchdog in bin/dispatch) as
+                               `push --end`: an unheld ready PR is not pushed (a half-done head); exit 3
+                               when it did not push
     dispatch-rc arrange        even out the tiles on the claude desktop (yabai's --balance)
     dispatch-rc kick-listen install|remove|status [--shared DIR]
                                the sheep road's listener on this host (S8 of docs/dispatch-queue-2026-10-25.md;
@@ -1694,6 +1699,65 @@ def end_session(st):
     return True
 
 
+def checkpoint_hook():
+    """wharf's checkpoint.py, whose `push` verb pushes a run's branch: DISPATCH_CHECKPOINT (the suites'
+    stand-in), the copy beside this module in this tree, else the core's tool() lookup."""
+    env = os.environ.get("DISPATCH_CHECKPOINT")
+    if env is not None:
+        return env or None   # set but empty: not installed
+    # this tree's own copy first, anchored on this script: tool() reads the config dir's home, the main
+    # checkout, and a suite run from a worktree would push through main's hook, not the one it tests
+    mine = os.path.normpath(os.path.join(HERE, "..", "..", "wharf", "hooks", "checkpoint.py"))
+    if os.path.isfile(mine):
+        return mine
+    found = common.tool("checkpoint.py") if common else None
+    return str(found) if found else None
+
+
+def drop_end_held(st):
+    """Remove the `end-held` mark `push --end` left in the run's worktree (wharf's checkpoint.END_HELD): the run
+    was not ended after all, so its HEAD is no half-done end (run-push-midturn's third landing review)."""
+    wt = st.get("wt")
+    if not wt or not os.path.isdir(wt):
+        return
+    r = subprocess.run(["git", "-C", wt, "rev-parse", "--absolute-git-dir"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            os.unlink(os.path.join(r.stdout.strip(), "claude", "end-held"))
+        except OSError:
+            pass
+
+
+def push_run(st, timeout=120, wait=None):
+    """Push the run's branch before its end (DISPATCH_MAX_H, `dispatch --end`), and log what happened: an unattended run
+    is one turn, so the checkpoint hook's Stop push never came, and the S6 run of 2026-11-01 was ended
+    with 22 commits GitHub never saw (run-push-midturn; the wharf-runs CHANGELOG entry). The hook's own push
+    verb: publish(), never --force, never a branch that landed; a refused push (a rebased branch, a
+    non-fast-forward) is one line here and the end goes on. `timeout`: under every caller's own (harness
+    stop gives `dispatch --end` 120 s). True when the verb exited 0 (pushed, nothing to push, or it stepped
+    back for another push of the checkout)."""
+    wt, branch = st.get("wt"), st.get("branch") or "?"
+    if not wt or not os.path.isdir(wt):
+        say("not pushing %s before its end: no worktree on the record" % branch)
+        return False
+    hook = checkpoint_hook()
+    if not hook:
+        say("not pushing %s before its end: wharf's checkpoint.py is not installed" % branch)
+        return False
+    # --end: an unheld ready PR is not pushed (a run ended unfinished would arm its automerge; round 5's review)
+    argv = [sys.executable, hook, "push", wt, "--end"] + (["--session", st["session"]] if st.get("session") else []) \
+        + (["--wait", str(wait)] if wait is not None else [])
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except Exception as exc:  # never let the push cost the end itself (the window, the session, the record)
+        say("push of %s before its end did not finish: %s" % (branch, exc))
+        return False
+    line = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1]
+    say("push before its end: %s" % line)
+    return r.returncode == 0
+
+
 def free_lock(st):
     """The worktree lock checkpoint.py wrote for this run's session: a dead run's lock held the
     next step out until it aged out (2 h; the next-step-autostart run of 2026-10-04)."""
@@ -2206,6 +2270,7 @@ def watch_loop(path, st, start, busy, started):
                 if cut:
                     st["cut"] = cut   # what the cap cut, for helm's S3 stall and whoever picks the run up
                     say("cut: %s" % cut_line(cut))
+                push_run(st)   # while the session lives: a one-turn run never reached its Stop push
                 close_window(st)   # before the process: see close_window
                 end_session(st)
                 finish(path, st, "max lifetime %.1f h" % (MAX_S / 3600))
@@ -2909,7 +2974,7 @@ def end(topic, repo=None):
         return 2
     path, st = runs[0]
     status = (session_record(st) or {}).get("status") or st.get("mode")
-    return end_run(path, st, "ended by dispatch --end (was %s)" % status)
+    return end_run(path, st, "ended by dispatch --end (was %s)" % status, push=True)
 
 
 def end_warm(branch, repo, dry=False):
@@ -2933,17 +2998,25 @@ def end_warm(branch, repo, dry=False):
     return 0
 
 
-def end_run(path, st, reason):
-    """End one live run now: the reason in its record first, the window, the process, the rest."""
+def end_run(path, st, reason, push=False):
+    """End one live run now: its branch pushed when `push` (`dispatch --end`: a busy one-turn run ended by
+    hand never reached its Stop push either), the reason in its record, the window, the process, the rest.
+    No push by default: end_warm's warm runs were pushed at their Stop and their landing pushes again, and a
+    requeue pushes the branch itself and may have a sleeping lid's seconds."""
+    if push:   # before `ending`, so a caller's timeout during the push leaves no reason to misname a later exit
+        push_run(st, timeout=60, wait=5)   # the verb's worst case is about 55 s (api 15 + landed 5 + lock 5 + push 30); under harness stop's 120 s
     cur = load(path)
     cur["ending"] = reason   # the watcher sees claude go and finishes first, with this reason
     save(path, cur)
     close_window(st)   # before the process: see close_window
     if not end_session(st):
-        # not ended: the reason must not outlive the attempt, or a later exit of its own reads as it
+        # not ended: the reason must not outlive the attempt, or a later exit of its own reads as it; nor the
+        # hold `push --end` wrote, or the live run's own Stop refuses its finished work as "ended half-done"
         cur = load(path)
         cur.pop("ending", None)
         save(path, cur)
+        if push:
+            drop_end_held(st)
         return 1
     finish(path, load(path), reason)
     return 0
@@ -3019,6 +3092,8 @@ if __name__ == "__main__":
         sys.exit(0 if RC.trusted(sys.argv[2], cj) else 1)
     if verb == "ask-guard" and len(sys.argv) == 3:
         sys.exit(store_ask_guard(sys.argv[2]))
+    if verb == "push" and len(sys.argv) == 3:   # the headless watchdog's push before its end (push_run)
+        sys.exit(0 if push_run(load(sys.argv[2])) else 3)   # 3: not pushed; 1 stays a crash's
     if verb == "kick-listen" and len(sys.argv) in (3, 5) and sys.argv[2] in ("install", "remove", "status") \
             and (len(sys.argv) == 3 or sys.argv[3] == "--shared"):
         sys.exit(kick_listen(sys.argv[2], sys.argv[4] if len(sys.argv) == 5 else None))

@@ -17,6 +17,11 @@
 
 - `wharf-runs-pickup` is back on the Linux list (runner-lsof, 2026-11-06): the self-hosted runners' image has `lsof` (reinstalled by hand, read back on all 13), so `test_pickup` and `test_seed_from` rejoin `LINUX_OK`, the shard rejoins `.github/ci/linux-ids` and CircleCI's matrix, and test_shards expects eight Linux shards.
 
+- dispatch pushes a run's branch before it ends it at DISPATCH_MAX_H (run-push-midturn: the S6 run of 2026-11-01 was
+  ended with 22 commits GitHub never saw): `dispatch-rc push STATE`, wharf's `checkpoint.py push`, never --force, on
+  all three roads (watch's end, the headless watchdog, `dispatch --end`) as `push --end` (an unheld ready PR is not pushed), the outcome logged; a refused push is
+  a line and the end goes on; a `dispatch --end` that cannot end the session drops the hold it wrote. pickup's /move
+  pushes neither a HEAD `push --end` held back (its commit of a held run's leftovers carries the hold to the new HEAD) nor, on a peer older than the hold, fails on it. end-warm (a landing ending warm runs) does not push: their Stop did, the landing does.
 - A `--next` no longer inherits a login that lends to its repo (lighthouse's lend bar, 2026-11-05): where `account
   limits LABEL --repo`'s `lends` is true, the step walks (auto), on both roads, so past the bar another repo's work
   moves on rather than wait there for the week's reset. A typed `--account` rides as typed.

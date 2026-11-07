@@ -66,6 +66,9 @@ git init -q -b main "$T/repo"; cd "$T/repo" || exit 1
 git config user.email t@t; git config user.name t
 git remote add origin "$T/origin.git"
 echo x > f; git add f; git commit -qm init
+# opted in to the workflow, untracked and excluded in the main checkout (which load_workflow reads for every
+# worktree): wharf's `checkpoint.py push`, which the lifetime-end cases run for real, pushes only a repo that asked
+mkdir -p .claude && echo '{"checkpoint": true}' > .claude/workflow.json && echo ".claude/workflow.json" >> .git/info/exclude
 BR=claude/laptop/2026-10-02-demo
 git checkout -q -b $BR
 mkdir -p docs/handoff; echo "# demo brief" > docs/handoff/2026-10-02-demo.md
@@ -1138,6 +1141,14 @@ has "$T/err" "the next step waits for a run to end" "  for now, in the cap's wai
 (cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-10-02-nosuchbranch --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "1" \
   "  a branch origin answers it has not: the not-on-origin refusal, as before"
 has "$T/err" "is not on origin" "  in its words"
+# a branch that origin holds only as wharf's mid-turn side ref (the branch itself deleted after its landing) is not on origin
+# seeded from a branch origin holds (its own HEAD is unborn here), and proved to exist before the dispatch call
+git -C "$T/origin.git" update-ref refs/wip/claude/laptop/2026-11-06-wiponly refs/heads/claude/laptop/2026-10-02-nobrief
+check "$(git -C "$T/origin.git" for-each-ref --count=1 --format=x refs/wip/claude/laptop/2026-11-06-wiponly)" "x" "  (the fixture: the side ref exists on origin)"
+check "$(git -C "$T/repo" ls-remote --exit-code origin claude/laptop/2026-11-06-wiponly > /dev/null 2>&1; echo $?)" "0" "  (…and a bare-name probe, as the old line ran it, finds it: the case tells the two apart)"
+(cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" "$B/dispatch" claude/laptop/2026-11-06-wiponly --repo "$T/repo" --at "$FUT 04:10" > /dev/null 2> "$T/err"); check "$?" "1" \
+  "  a branch origin holds only as refs/wip/<branch> (the mid-turn side ref): the not-on-origin refusal"
+has "$T/err" "is not on origin" "  in its words"
 # item 9: a fired one-shot's first judgement refusing for good writes a FAILED line to its log, which helm's
 # follow-up reads as a spent retry (FOR_GOOD_RE); the stderr line alone left the retry pending for ever
 (cd "$T/repo" && CLAUDE_REPOS_JSON="$T/origin-repos.json" DISPATCH_LABEL=org.example.claude.dispatch.repo.demo.209901010410 \
@@ -1540,11 +1551,44 @@ grep -q "spared while its check runs" "$HOME/maxh-lim.log"; check "$?" "1" "a ru
 has "$HOME/maxh-lim.log" "its last turn hit a usage limit: You've hit your weekly limit" "  its cut names the limit"
 check "$(field end_reason)" "max lifetime 0.0 h" "  and it ends at the cap as before"
 kill "$(cat "$T/ck.pid")" 2>/dev/null
+grep -qE "push before its end: (pushed|nothing to push: origin has) $BR" "$HOME/maxh.log"; check "$?" "0" "  its branch pushed first, through wharf's checkpoint push, the outcome logged (run-push-midturn)"
+# the stand-in is run as dispatch-rc runs the real one, `python3 <hook> push <worktree> …`
+# checks the arguments the real verb validates (push <existing dir> [--end] [--session S] [--wait N]) and exits as it
+# refuses, 3 — never 1, a crash's (AGENTS.md: a stub that takes any argument hides the tool's refusal)
+cat > "$T/ckpt-refused.py" <<'PY'
+import os, sys
+a = sys.argv[1:]
+open(os.environ["CKPT_ARGS"], "w").write(" ".join(a))
+v = [x for x in a[2:] if x != "--end"]
+if len(a) < 2 or a[0] != "push" or not os.path.isdir(a[1]) or any(x not in ("--session", "--wait") for x in v[0::2]):
+    print("usage: checkpoint.py push <worktree> [--end] [--session S] [--wait S]", file=sys.stderr)
+    sys.exit(2)
+print("push of claude/x failed: ! [rejected] claude/x -> claude/x (non-fast-forward) \u2014 not forced")
+sys.exit(3)
+PY
+CKPT_ARGS="$T/ckpt.args" DISPATCH_CHECKPOINT="$T/ckpt-refused.py" STUB_RUN=busy DISPATCH_MAX_H=0.001 DISPATCH_HOST=buildbox DISPATCH_LOG="$T/maxh3.log" "$B/dispatch" $BR --repo "$T/repo"
+has "$T/maxh3.log" "push before its end: push of claude/x failed: ! [rejected]" "  a refused push (a rebased branch) is logged…"
+check "$(field end_reason)" "max lifetime 0.0 h" "  …and the end goes on"
+has "$T/ckpt.args" "push $T/repo/" "  the verb is checkpoint's push, on the run's worktree"
+grep -q -- "--force" "$T/ckpt.args"; check "$?" "1" "  never --force"
+grep -q -- " --end" "$T/ckpt.args"; check "$?" "0" "  as the run's end (--end: an unheld ready PR is not pushed)"
+# a run `dispatch --end` could not end keeps no `end-held`: its own later Stop would refuse its finished work
+GD="$(git -C "$T/repo" rev-parse --absolute-git-dir)"; mkdir -p "$GD/claude"; echo deadbeef > "$GD/claude/end-held"
+cat > "$T/drop-held.py" <<'PY2'
+import sys
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+sp = spec_from_loader("drc", SourceFileLoader("drc", sys.argv[1])); m = module_from_spec(sp); sp.loader.exec_module(m)
+m.drop_end_held({"wt": sys.argv[2]}); m.drop_end_held({"wt": None}); m.drop_end_held({"wt": sys.argv[2] + "/gone"})
+PY2
+python3 "$T/drop-held.py" "$B/dispatch-rc" "$T/repo"; check "$?" "0" "a run not ended after all: drop_end_held runs, a missing worktree is no error"
+[ -e "$GD/claude/end-held" ]; check "$?" "1" "  and its end-held mark is gone (run-push-midturn's third landing review)"
 
 : > "$T/claude.calls"
 STUB_HANG=1 DISPATCH_MAX_H=0.0005 DISPATCH_LOG="$HOME/maxh2.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 has "$HOME/maxh2.log" "still running after 0.0005 h (DISPATCH_MAX_H)" "  a headless one too"
 has "$T/claude.calls" "TERM -p" "  its claude -p got SIGTERM"
+grep -qE "push before its end: (pushed|nothing to push: origin has) $BR" "$HOME/maxh2.log"; check "$?" "0" "  its branch pushed before the TERM, the outcome logged"
 
 echo "a finished run that reads shell or sits in another login's registry is ended (S13)"
 STUB_RUN=listen DISPATCH_HOST=buildbox DISPATCH_LOG="$HOME/listen.log" "$B/dispatch" $BR --repo "$T/repo" &
@@ -1816,6 +1860,7 @@ EP3=$(await_stub busy); check "$?" "0" "  the watched run's claude started"
 # the watcher has looped (it writes last_status each pass): --end must find a watched run, not race it
 end=$((SECONDS + 30)); while [ "$SECONDS" -lt "$end" ] && [ -z "$(field last_status 2>/dev/null)" ]; do sleep 0.2; done
 "$B/dispatch" --end demo --repo "$T/repo" > "$T/out" 2>&1; check "$?" "0" "--end on a watched, busy run"
+grep -qE "push before its end: (pushed|nothing to push: origin has) $BR" "$T/out"; check "$?" "0" "  its branch pushed before the end, as at the lifetime's (run-push-midturn)"
 wait_run "$RS" "$EP3"
 check "$(field end_reason)" "ended by dispatch --end (was busy)" "  the reason is --end's, not the watcher's"
 check "$(grep -c 'ended session' "$HOME/end.log")" "1" "  ended once"
