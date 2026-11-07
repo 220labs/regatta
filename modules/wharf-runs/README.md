@@ -272,6 +272,7 @@ handler (`vendor-hooks apply`); the launcher checks it before trusting it
 headlessly. Reviews grant the worktree read access, keeping the run fence.
 Host installation and real-user probes remain the owner's steps; the
 builder-host installer includes S9's hardening.
+`sudo builder-host make codex` (`check codex`, `probe codex`) wires `<host>-codex` (`codex` feature and `only`), its `CODEX_HOME` hooks and `AGENTS.md`, its own sweep LaunchDaemon, and the Mac's shared slot folder, checking `codex login status` as the builder with no model call.
 
 `check WORKTREE --builder` keeps module suites and TODO lint, leaving
 `claude plugin validate` and the private publish gate to the landing. Omitted
