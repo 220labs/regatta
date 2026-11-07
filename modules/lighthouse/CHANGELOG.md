@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `lighthouse/overdraw-max` (`<login>:<pct>`, `*:<pct>`, set live via `regatta limit`) caps the week bar `account`'s `lift()` judges a lifted row at in place of 100, naming `to the overdraw ceiling N%` (absent or invalid, 100; finishes keep `lighthouse/week-max-finish` and own `week-max` or finish-ceiling rows stay unlifted).
 - The lend bar (2026-11-05): `rules.lend_max`, in the registry or budgets.json, is a week ceiling for every repo
   that is not the login's own (its scope's or its tenant's); its own work keeps `week_max`. Past it, `pick` and
   `limits --repo` refuse another's repo in judge's week wording, and a ship pinned there moves to another login;

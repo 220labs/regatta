@@ -489,6 +489,66 @@ check "$(ACCOUNT_NOW=$WED ODLOG) $(cat "$T/olog")" \
 check "$(wc -l < "$ODL" | tr -d ' ')" 5 "…its line in overdraw.jsonl kept all the same (five logged so far)"
 rm -f "$T/od.calls" "$T/od-open" "$ODL" "$ACCOUNTS_FILE.od" "$ACCOUNTS_FILE.odx" "$REGATTA_CONFIG/helm/mention"
 
+echo "overdraw-max — per-login ceiling on lifted rows (lighthouse/overdraw-max)"
+OX="$HOME/.claude-acct-x"; OY="$HOME/.claude-acct-y"; mkdir -p "$OX" "$OY"
+cat > "$ACCOUNTS_FILE.odm" <<'EOF'
+{"accounts": [
+  {"label": "acct-x", "provider": "claude", "home": "~/.claude-acct-x", "rules": {"week_max": 40, "window_max": 50}},
+  {"label": "acct-y", "provider": "claude", "home": "~/.claude-acct-y", "rules": {"week_max": 40, "window_max": 50}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}}]}
+EOF
+OM="$REGATTA_CONFIG/lighthouse/overdraw-max"
+ODM() { ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED python3 "$B/account" "$@" > "$T/out" 2> "$T/odm.err"; echo $?; }
+odm_reset() { rm -f "$OX/usage-probe.json" "$OY/usage-probe.json" "$P1/usage-probe.json" "$OX/exhaustion.jsonl" "$OY/exhaustion.jsonl" "$P1/exhaustion.jsonl" "$T/probes"; }
+rm -f "$OM"; odm_reset; use "$OX" "10 55"; use "$OY" "10 100"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "with no overdraw-max line, a lifted row reads 100 as before"
+check "$(field "['reason'].split('; past')[0]")" "week 55% < 100% (overdraw: no login was under its bar), 5h 10% ≤ 50%" "…with the exact reason text unchanged"
+printf 'acct-x:60\n' > "$OM"
+odm_reset; use "$OX" "10 55"; use "$OY" "10 100"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "acct-x:60 lifts a row at 55%"
+has "$T/out" "week 55% < 60% (overdraw: no login was under its bar, to the overdraw ceiling 60%)" "…naming the overdraw ceiling"
+odm_reset; use "$OX" "10 60"; use "$OY" "10 100"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json)" 3 "acct-x:60 refuses a row at 60%"
+has "$T/out" "week 60% ≥ 60% (overdraw: no login was under its bar, to the overdraw ceiling 60%)" "…with the overdraw ceiling named"
+odm_reset; use "$OX" "10 60"; use "$OY" "10 75"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-y" "past acct-x's overdraw ceiling, the next row without one lifts to 100"
+has "$T/out" "week 60% ≥ 60% (overdraw: no login was under its bar, to the overdraw ceiling 60%)" "…recording acct-x's ceiling refusal in skipped"
+printf 'acct-x:80\n*:60\n' > "$OM"
+odm_reset; use "$OX" "10 80"; use "$OY" "10 55"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-y" "*:60 applies to a row without its own line under 60%"
+has "$T/out" "week 55% < 60% (overdraw: no login was under its bar, to the overdraw ceiling 60%)" "…naming *:60 as the overdraw ceiling"
+odm_reset; use "$OX" "10 80"; use "$OY" "10 60"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json)" 3 "*:60 refuses a row without its own line at 60%"
+has "$T/out" "week 60% ≥ 60% (overdraw: no login was under its bar, to the overdraw ceiling 60%)" "…naming *:60 in the refusal"
+odm_reset; use "$OX" "10 70"; use "$OY" "10 60"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "a login's own overdraw-max line wins over *:60"
+for bad in "acct-x:bad" "acct-x:0" "acct-x:101" "*:nan"; do
+  printf '%s\n' "$bad" > "$OM"; odm_reset; use "$OX" "10 75"; use "$OY" "10 100"; use "$P1" "10 97"
+  check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "a value that does not read ($bad) lifts to 100"
+  has "$T/out" "week 75% < 100% (overdraw: no login was under its bar)" "…keeping the uncapped reason text ($bad)"
+  has "$T/odm.err" "is no ceiling" "…said on stderr ($bad)"
+done
+printf 'acct-x:60\n*:75\n' > "$OM"
+check "$(ODM week-max acct-x --for overdraw) $(cat "$T/out")" "0 60 (lighthouse/overdraw-max acct-x:)" "week-max --for overdraw reads the login's line"
+check "$(ODM week-max acct-y --for overdraw) $(cat "$T/out")" "0 75 (lighthouse/overdraw-max *:)" "…and the * line"
+printf 'acct-x:101\n' > "$OM"
+check "$(ODM week-max acct-x --for overdraw) $(cat "$T/out")" "2 none" "…exiting 2 on a value above 100"
+printf 'acct-x:80\n' > "$OM"; printf 'acct-x:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+odm_reset; use "$OX" "10 55"; use "$OY" "10 100"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json)" 3 "a row with an own live week-max line is still never lifted"
+rm -f "$REGATTA_CONFIG/lighthouse/week-max"
+printf 'acct-x:20\n' > "$OM"; odm_reset; use "$OX" "10 30"; use "$OY" "10 100"; use "$P1" "10 97"
+check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "overdraw-max binds lifted rows alone: a row under its week ceiling still runs"
+hasnt "$T/out" '"overdraw"' "…without overdrawing"
+printf 'acct-x:60\n' > "$OM"; printf 'acct-x:97\n' > "$FC"
+odm_reset; use "$OX" "10 92"; use "$OY" "10 100"; use "$P1" "10 100"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED F --overdraw --job b) $(field "['account']")" "0 acct-x" "finishes keep week-max-finish past a lower overdraw-max"
+has "$T/out" "week 92% < 97% (finish ceiling)" "…judged by the finish ceiling"
+printf 'acct-x:99\n' > "$OM"
+odm_reset; use "$OX" "10 97"; use "$OY" "10 100"; use "$P1" "10 100"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED F --overdraw --job b)" 3 "a finish-ceiling row is still never lifted, even under a higher overdraw-max"
+rm -f "$OM" "$FC" "$ACCOUNTS_FILE.odm" "$T/odm.err"; rm_own "$OX" "$OY"
+
 echo "exhaustion — cooldown and margin (D6)"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
 mkdir -p "$S1"; echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED + 3600)")}" > "$S1/exhaustion.jsonl"
