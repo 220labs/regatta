@@ -140,8 +140,9 @@ echo "== vendor-hooks on a stand-in HOME"
 VHK="$LH/bin/vendor-hooks"
 export VENDOR_HOOKS_ROOT="$(dirname "$MODS")"
 mkdir -p "$HOME/.claude/rules/sub" "$HOME/me"
-printf '# login dir\n@~/me/core.md\n@~/me/private.md\n@~/me/gone.md\n' > "$HOME/.claude/CLAUDE.md"; echo core > "$HOME/me/core.md"; echo p > "$HOME/me/private.md"
-echo r1 > "$HOME/.claude/rules/a.md"; echo r2 > "$HOME/.claude/rules/sub/b.md"
+printf '# login dir\n@~/me/core.md\n@~/me/private.md\n@~/me/gone.md\n' > "$HOME/.claude/CLAUDE.md"
+echo core-text-only-in-the-file > "$HOME/me/core.md"; echo p > "$HOME/me/private.md"
+echo rules-text-only-in-the-file > "$HOME/.claude/rules/a.md"; echo r2 > "$HOME/.claude/rules/sub/b.md"
 ORCA='{"type":"command","command":"orca-hook","timeout":10}'
 printf '{"hooks":{"PreToolUse":[{"hooks":[%s]}],"Stop":[{"hooks":[%s]}]}}\n' "$ORCA" "$ORCA" > "$HOME/.codex/hooks.json"
 printf '{"orca":{"PreToolUse":[{"matcher":"*","hooks":[%s]}]}}\n' "$ORCA" > "$HOME/.gemini/config/hooks.json"
@@ -197,7 +198,18 @@ check "$rc" 1 "an adapter from before the one entry (no ENTRIES line): apply ref
 has "$out" "predates the \`guards\` entry" "  and says why: that adapter allows every \`guards\` call"
 has "$(VENDOR_HOOKS_ROOT="$T/oldroot" python3 "$VHK" check)" "every entry of ours allows every call" "  check reports it too"
 rm -f "$REGATTA_CONFIG/lighthouse/vendor-layer"
-case "$(cat "$HOME/.codex/AGENTS.md")" in *core*r1*) check copied pointer "  no file's text copied in";; *) check pointer pointer "  no file's text copied in";; esac
+# tokens no path holds: a bare `*core*r1*` matched whenever mktemp's folder held `r1` after `core.md`
+pointer_kind() {
+  case "$1" in
+    *core-text-only-in-the-file*|*rules-text-only-in-the-file*) echo copied;;
+    *) echo pointer;;
+  esac
+}
+check "$(pointer_kind "$(cat "$HOME/.codex/AGENTS.md")")" pointer "  no file's text copied in"
+P_R1=$(printf '# The global layer\n\n- /tmp/tmp.core-r1/me/core.md\n- /tmp/tmp.core-r1/.claude/rules/a.md\n')
+check "$(pointer_kind "$P_R1")" pointer "  a pointer whose path holds r1 after core still reads as a pointer"
+check "$(pointer_kind "$(printf '%s\ncore-text-only-in-the-file\n' "$P_R1")") $(pointer_kind "$(printf '%s\nrules-text-only-in-the-file\n' "$P_R1")")" \
+  "copied copied" "  and either fixture's text in it reads as copied"
 out=$(python3 "$VHK" apply)
 check "$(printf '%s\n' "$out" | grep -c 'up to date')" 8 "a second apply: every file up to date"
 # a reviewed entry keeps its review: the table Codex keys by position still names ours after a re-apply
