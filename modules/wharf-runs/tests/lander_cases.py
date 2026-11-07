@@ -391,6 +391,45 @@ check(judge("lander", "refinish")[0], m.STUCK_RC, "  once it ended, the spent ca
 
 print("the login road (b): the stop's class, never the logged-out row")
 clear_store()
+acct_home = os.path.join(T, "acct-pro-home")
+os.makedirs(acct_home, exist_ok=True)
+lo_calls = os.path.join(T, "logged-out.calls")
+stub = os.path.join(T, "account-stub")
+with open(stub, "w") as f:
+    f.write("#!/bin/sh\n"
+            "if [ \"$*\" = 'limits --all --parked --json --cached' ]; then\n"
+            "  printf '%%s\\n' '[{\"label\": \"acct-pro\", \"home\": \"%s\"}, "
+            "{\"label\": \"acct spaced\", \"home\": \"%s\"}]'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = 'logged-out' ] && [ \"$2\" = '--set' ] && [ $# -eq 3 ] && [ -n \"$3\" ]; then\n"
+            "  printf '%%s\\n' \"$3\" >> '%s'\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo \"account: bad call: $*\" >&2; exit 2\n" % (acct_home, acct_home, lo_calls))
+os.chmod(stub, 0o755)
+m.ACCOUNT = stub
+real_ro, real_comment = m.read_outcome, m.comment
+try:
+    m.comment = lambda *a: (None, "")
+    m.read_outcome = lambda t, sid, lf: ("stopped", None, "no-landing", ["Not logged in · Please run /login"])
+    st_rec = set_prev(outcome=None, ended=None, gate=None, account="acct-pro")
+    with redirect_stdout(io.StringIO()):
+        m.record(tree(), st_rec, 0, 0, None, [])
+    check(open(lo_calls).read().splitlines() if os.path.exists(lo_calls) else [], ["acct-pro"],
+          "record() marks a login stop's registry login logged-out (account logged-out --set)")
+    st_tok = set_prev(outcome=None, ended=None, gate=None, account="oauth-token")
+    with redirect_stdout(io.StringIO()):
+        m.record(tree(), st_tok, 0, 0, None, [])
+    m.read_outcome = lambda t, sid, lf: ("stopped", None, "no-landing", ["API Error: 500 Internal server error"])
+    st_net = set_prev(outcome=None, ended=None, gate=None, account="acct-pro")
+    with redirect_stdout(io.StringIO()):
+        m.record(tree(), st_net, 0, 0, None, [])
+    check(open(lo_calls).read().splitlines(), ["acct-pro"],
+          "  oauth-token and non-login stops leave logged-out untouched")
+finally:
+    m.read_outcome, m.comment = real_ro, real_comment
+clear_store()
 set_prev(outcome="stopped", gate="no-landing")
 set_last("no-landing", "Not logged in · Please run /login")
 check(judge("lander", "login"), (0, ""), "a login stop is lifted on the same tip (its row already cleared: no row read)")
@@ -406,68 +445,151 @@ set_last("G1", "⚠ step 1 — the /login route's test failed")
 check(judge("lander", "login")[0], 3, "a G1 stop naming /login is no login road's (a no-landing stop only)")
 check(judge("lander", "stand")[0], 3, "  nor the stand road's")
 
-print("the limit road (c): after the recorded reset of the login the run ran on")
+print("the limit road (c): any login with room (revision 10), one per login per 5h window (S2)")
 clear_store()
-acct_home = os.path.join(T, "acct-pro-home")
-os.makedirs(acct_home, exist_ok=True)
-stub = os.path.join(T, "account-stub")
-with open(stub, "w") as f:
-    f.write("#!/bin/sh\n[ \"$*\" = 'limits --all --parked --json --cached' ] || { echo \"account: bad call: $*\" >&2; exit 2; }\n"
-            "printf '%%s\\n' '[{\"label\": \"acct-pro\", \"home\": \"%s\"}, "
-            "{\"label\": \"acct spaced\", \"home\": \"%s\"}]'\n" % (acct_home, acct_home))
-os.chmod(stub, 0o755)
-m.ACCOUNT = stub
 ex = os.path.join(acct_home, "exhaustion.jsonl")
+try:
+    os.remove(ex)
+except OSError:
+    pass
+# Revision 10(a): with another login (`acct-new`) having room, a limit stop migrates at once even with no exhaustion
+# row, before the stopped login's reset, on a weekly limit, or from oauth-token / an unknown login; an Opus limit never does.
 set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
 set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
-r = judge("lander", "limit")
-check(r[0], m.DEAD_ROAD_RC, "a limit stop with no exhaustion row for its login: DEAD_ROAD_RC")
-with open(ex, "w") as f:   # an older window's row (before the run) is not its own
-    f.write(json.dumps({"at": time.time() - 9000, "window": "five_hour", "resets_at": time.time() - 5400}) + "\n")
-check(judge("lander", "limit")[0], m.DEAD_ROAD_RC, "  a row written before the run started is not its window's")
-with open(ex, "a") as f:
-    f.write(json.dumps({"at": time.time() - 1800, "window": "five_hour", "resets_at": time.time() + 600}) + "\n")
-r = judge("lander", "limit")
-check(r[0], 3, "refused before its reset (exit 3)")
-check("resets at" in r[1], True, "  saying when")
-with open(ex, "a") as f:
-    f.write(json.dumps({"at": time.time() - 900, "window": "seven_day", "resets_at": time.time() + 86400}) + "\n")
-    f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
-check(judge("lander", "limit"), (0, ""), "once the newest five_hour row's reset passed: it starts")
-with open(ex, "w") as f:   # the window's one row, written by a probe before the run started; reset since
-    f.write(json.dumps({"at": time.time() - 5400, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
-check(judge("lander", "limit"), (0, ""), "  a row written before the run, for the window it ran in, counts too")
-check(start("lander", "limit")[0], 0, "  started")
-end_run(gate="no-landing", account="acct-new")
-set_last("no-landing", "You've hit your 5-hour limit · resets 2am")
-check(judge("lander", "limit")[0], m.STUCK_RC, "  a second limit relaunch on the branch: STUCK_RC")
-clear_store()
-set_prev(outcome="stopped", gate="no-landing", account="acct-gone", started=iso(3600))
-set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
-check(judge("lander", "limit")[0], m.DEAD_ROAD_RC, "a login no registry row names: DEAD_ROAD_RC")
-with open(ex, "a") as f:
-    f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
-set_prev(outcome="stopped", gate="no-landing", account="acct spaced", started=iso(3600))
-set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
-check(judge("lander", "limit"), (0, ""), "a label with a space, as pick records it, is read")
+check(judge("lander", "limit"), (0, ""), "another login (`acct-new`) has room: migrates with no exhaustion row")
 set_last("no-landing", "You've hit your weekly limit · resets Mon 9am")
-check(judge("lander", "limit")[0], 3, "a weekly limit is no 5-hour road's")
+check(judge("lander", "limit"), (0, ""), "  weekly limit migrates to another login with room too")
 set_prev(outcome="stopped", gate="no-landing", account="oauth-token", started=iso(3600))
 set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
-check(judge("lander", "limit")[0], m.DEAD_ROAD_RC, "  nor a caller's token")
-# an Orca profile's log holds another seat's rows copied in: only the login's own seat's rows judge (round 3)
-with open(os.path.join(acct_home, ".claude.json"), "w") as f:
-    json.dump({"oauthAccount": {"accountUuid": "aaaaaaaa-1111", "organizationUuid": "oooooooo-2222"}}, f)
-with open(ex, "w") as f:
-    f.write(json.dumps({"at": time.time() - 1200, "window": "five_hour", "resets_at": time.time() + 7200,
-                        "account": "aaaaaaaa"}) + "\n")
-    f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60,
-                        "account": "bbbbbbbb"}) + "\n")
-set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
-set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
-r = judge("lander", "limit")
-check((r[0], "resets at" in r[1]), (3, True), "a newer row of another seat (copied into the profile) never lifts the road: its own reset waits")
-os.remove(os.path.join(acct_home, ".claude.json"))
+check(judge("lander", "limit"), (0, ""), "  a caller's token migrates to a registry login with room")
+set_last("no-landing", "You've hit your Opus limit · resets 9pm")
+check(judge("lander", "limit")[0], 3, "an Opus model limit is outside the limit road (exit 3, never DEAD_ROAD_RC)")
+
+# When NO other login has room, the stopped login is eligible only once its recorded `resets_at` has passed;
+# no login with room (or no exhaustion row) is always a plain wait (exit 3), never DEAD_ROAD_RC.
+POOL = []
+
+
+def pool_pick(t, cached=False, skip=()):
+    sk = {m._norm_acct(s) for s in (skip or ())}
+    for cand in POOL:
+        if m._norm_acct(cand) not in sk:
+            return cand, None, "pool picked %s" % cand
+    raise m.NoAccount("no eligible login with room")
+
+
+real_pick_stub = m.account_pick
+real_limit_now = m.limit_now
+m.account_pick = pool_pick
+try:
+    POOL[:] = ["acct-pro"]
+    set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    r = judge("lander", "limit")
+    check(r[0], 3, "no other login has room and acct-pro has no exhaustion row: plain wait (exit 3, never DEAD_ROAD_RC)")
+    with open(ex, "w") as f:   # an older window's row (before the run) is not its own
+        f.write(json.dumps({"at": time.time() - 9000, "window": "five_hour", "resets_at": time.time() - 5400}) + "\n")
+    check(judge("lander", "limit")[0], 3, "  a row written before the run started is not its window's (exit 3)")
+    with open(ex, "a") as f:
+        f.write(json.dumps({"at": time.time() - 1800, "window": "five_hour", "resets_at": time.time() + 600}) + "\n")
+    r = judge("lander", "limit")
+    check((r[0], "resets at" in r[1]), (3, True), "  refused before its reset (exit 3, saying when)")
+    with open(ex, "a") as f:
+        f.write(json.dumps({"at": time.time() - 900, "window": "seven_day", "resets_at": time.time() + 86400}) + "\n")
+        f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
+    check(judge("lander", "limit"), (0, ""), "once acct-pro's newest five_hour row's reset passed: its own login is eligible")
+    set_last("no-landing", "You've hit your weekly limit · resets Mon 9am")
+    check(judge("lander", "limit")[0], 3, "  on a weekly limit, acct-pro waits for its seven_day reset even after five_hour passed")
+    with open(ex, "a") as f:
+        f.write(json.dumps({"at": time.time() - 300, "window": "seven_day", "resets_at": time.time() - 30}) + "\n")
+    check(judge("lander", "limit"), (0, ""), "  once seven_day's reset passed, acct-pro is eligible on a weekly limit too")
+    with open(ex, "w") as f:   # the window's one row, written by a probe before the run started; reset since
+        f.write(json.dumps({"at": time.time() - 5400, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(judge("lander", "limit"), (0, ""), "  a row written before the run, for the window it ran in, counts too")
+    POOL[:] = []
+    set_prev(outcome="stopped", gate="no-landing", account="acct-gone", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(judge("lander", "limit")[0], 3, "an unknown login with no other login having room: plain wait (exit 3)")
+    set_prev(outcome="stopped", gate="no-landing", account="oauth-token", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(judge("lander", "limit")[0], 3, "  and a caller's token with no registry login having room: plain wait (exit 3)")
+    POOL[:] = ["acct spaced"]
+    with open(ex, "a") as f:
+        f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60}) + "\n")
+    set_prev(outcome="stopped", gate="no-landing", account="acct_spaced", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(judge("lander", "limit"), (0, ""), "a label with a space, as pick records it, is read")
+    # an Orca profile's log holds another seat's rows copied in: only the login's own seat's rows judge (round 3)
+    POOL[:] = ["acct-pro"]
+    with open(os.path.join(acct_home, ".claude.json"), "w") as f:
+        json.dump({"oauthAccount": {"accountUuid": "aaaaaaaa-1111", "organizationUuid": "oooooooo-2222"}}, f)
+    with open(ex, "w") as f:
+        f.write(json.dumps({"at": time.time() - 1200, "window": "five_hour", "resets_at": time.time() + 7200,
+                            "account": "aaaaaaaa"}) + "\n")
+        f.write(json.dumps({"at": time.time() - 600, "window": "five_hour", "resets_at": time.time() - 60,
+                            "account": "bbbbbbbb"}) + "\n")
+    set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    r = judge("lander", "limit")
+    check((r[0], "resets at" in r[1]), (3, True), "a newer row of another seat (copied into the profile) never lifts the road: its own reset waits")
+    os.remove(os.path.join(acct_home, ".claude.json"))
+
+    # S2 & Revision 10(b): at most one road=limit relaunch per target login (`account=`) per 5-hour window.
+    POOL[:] = ["acct-new", "acct-third"]
+    clear_store()
+    set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(start("lander", "limit")[0], 0, "first limit stop migrates onto acct-new")
+    check(state().get("account"), "acct-new", "  recorded on acct-new")
+    end_run(gate="no-landing", account="acct-new")
+    set_last("no-landing", "You've hit your 5-hour limit · resets 2am")
+    check(judge("lander", "limit")[0], m.STUCK_RC, "  a second limit relaunch on the same branch: STUCK_RC")
+    clear_store()   # simulate a second stopped branch in the same 5-hour window, also stopped_on=acct-pro
+    set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    check(start("lander", "limit")[0], 0, "second branch in the window skips spent acct-new and migrates onto acct-third")
+    check(state().get("account"), "acct-third", "  landed on acct-third (read on account=, not stopped_on=acct-pro)")
+    clear_store()   # a third stopped branch in the same window finds both acct-new and acct-third spent
+    set_prev(outcome="stopped", gate="no-landing", account="acct-pro", started=iso(3600))
+    set_last("no-landing", "You've hit your 5-hour limit · resets 9pm")
+    r = judge("lander", "limit")
+    check(r[0], 3, "third branch waits (exit 3) when every login with room already took one limit relaunch in this window")
+
+    # Revision 10(b) explicit check: stopped_on=acct-new does NOT spend acct-new; never-started does NOT spend acct-new;
+    # and the 5-hour window spans midnight across two autofinish-<date>.log files.
+    for fn in os.listdir(m.LOGS):
+        if fn.startswith("autofinish-") and fn.endswith(".log"):
+            os.remove(os.path.join(m.LOGS, fn))
+    POOL[:] = ["acct-new"]
+    d1 = datetime.datetime(2026, 11, 1, 23, 30, 0).astimezone()
+    d2 = datetime.datetime(2026, 11, 2, 1, 30, 0).astimezone()
+    m.limit_now = lambda: d2.timestamp()
+    log_d1 = os.path.join(m.LOGS, "autofinish-2026-11-01.log")
+    log_d2 = os.path.join(m.LOGS, "autofinish-2026-11-02.log")
+    with open(log_d1, "w") as f:
+        # stopped_on=acct-new landing on acct-other does not spend acct-new
+        f.write("%s run repo b1 started session=11111111 tip=abc1234 rule=C by=lander via=sweep road=limit "
+                "stopped_on=acct-new account=acct-other window=\"w\" — picked\n" % d1.isoformat(timespec="seconds"))
+        # never-started session on acct-new does not spend acct-new
+        f.write("%s run repo b2 started session=22222222 tip=abc1234 rule=C by=lander via=sweep road=limit "
+                "stopped_on=acct-pro account=acct-new window=\"w\" — picked\n" % d1.isoformat(timespec="seconds"))
+    with open(log_d2, "w") as f:
+        f.write("%s run repo b2 never-started gate=refused session=22222222 tip=abc1234 rule=C by=lander — refused\n"
+                % d2.isoformat(timespec="seconds"))
+    check(judge("lander", "limit"), (0, ""),
+          "stopped_on=acct-new (account=acct-other) and never-started leave acct-new's window unspent")
+    with open(log_d1, "a") as f:
+        f.write("%s run repo b3 started session=33333333 tip=abc1234 rule=C by=lander via=sweep road=limit "
+                "stopped_on=acct-pro account=acct-new window=\"w\" — picked\n" % d1.isoformat(timespec="seconds"))
+    check(judge("lander", "limit")[0], 3,
+          "a started road=limit line at 23:30 in yesterday's log spends acct-new's window at 01:30 across midnight")
+finally:
+    m.account_pick = real_pick_stub
+    m.limit_now = real_limit_now
+    for fn in os.listdir(m.LOGS) if os.path.isdir(m.LOGS) else ():
+        if fn.startswith("autofinish-") and fn.endswith(".log"):
+            os.remove(os.path.join(m.LOGS, fn))
 
 print("the stand road (d): a G4 stop whose items stood")
 clear_store()
