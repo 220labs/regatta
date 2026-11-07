@@ -2956,10 +2956,33 @@ def configured(s, t):
                  own=next((l[4:] for l in lines[1:] if l.startswith("own ")), None), cpus=cpus)
 
 
+# What wharf's bin/runner-user gives a Linux node's runner login, as root, in one run; the rest of LACKS stays a
+# step of the owner's, named in full (node-runner-user, 2026-11-05: the hand-made sudo script became that one line)
+RUNNER_USER_GIVES = ("podman", "uidmap", "subuids", "network", "linger", "user-systemd")
+
+
 def refuse_lacks(probe, host):
+    """A Linux host's lacks, refused. Where wharf's runner-user is in this checkout (it is off the public twin until its
+    publish review) and gives some of them, the refusal is its one line, the rest named in full; else every remedy is."""
     if probe.system == "Linux" and probe.lacks:
-        raise Refusal("%s lacks what a rootless runner container needs, the owner's to give with sudo first: %s; "
-                      "nothing minted" % (host, "; ".join(LACKS.get(w, w) for w in probe.lacks)))
+        script = os.path.join(os.path.dirname(os.path.realpath(__file__)), "runner-user")
+        # the user instance comes with linger, which runner-user enables; with linger there already it is something
+        # else, which the script does not check
+        def given(w):
+            return w in RUNNER_USER_GIVES and (w != "user-systemd" or "linger" in probe.lacks)
+        gives = [w for w in probe.lacks if given(w)]
+        rest = [LACKS.get(w, w) for w in probe.lacks if not given(w)]
+        if not gives or not os.path.isfile(script):
+            raise Refusal("%s lacks what a rootless runner container needs, the owner's to give with sudo first: %s; "
+                          "nothing minted" % (host, "; ".join(LACKS.get(w, w) for w in probe.lacks)))
+        raise Refusal("%s lacks what a rootless runner container needs (%s), the owner's to give with sudo first: "
+                      "wharf's runner-user gives the login %s, one line from this Mac: scp %s <key>.pub "
+                      "<node>: && ssh -t <node> sudo bash runner-user --node-user <the node's login> --login "
+                      "<%s's login> --key-file <key>.pub (<node> the node's own login's alias, which has sudo; "
+                      "<key>.pub the key %s logs in with; the runner login is its own, never the node's)%s; "
+                      "nothing minted"
+                      % (host, ", ".join(probe.lacks), "what it can" if rest else "all of it", shlex.quote(script),
+                         host, host, ("; and, which it does not give: " + "; ".join(rest)) if rest else ""))
 
 
 def served(s, value, name):

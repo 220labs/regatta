@@ -2,7 +2,7 @@
 # wharf's check: the checkpoint hook's suite (throwaway repos, a bare origin, GitHub and the lander
 # stubbed), pr's stray check against a fake GitHub, review-gate's tiers and merge against a fake
 # claude and a fake Jev, repos' and github-repo's GitHub side against a fake API, ci-provider against
-# a fake gh and a fake ssh, ci-circleci against a fake CircleCI API, scopes, finish-stuck-rebase, the
+# a fake gh and a fake ssh, runner-user on a stand-in root, ci-circleci against a fake CircleCI API, scopes, finish-stuck-rebase, the
 # agents' pairs, council against stand-in claude, codex and agy, and C1's name rule for this module's
 # bin/. Scratch paths only; no network.
 # A caller's REGATTA_CONFIG is honoured (an overlay's private values, its keel and plumb); without
@@ -30,8 +30,13 @@ done
 p=$(python3 "$M/../regatta/bin/regatta" which pr)
 [ "$p" = "$M/libexec/pr" ] && echo "  ok   regatta which pr: $p" || { echo "  FAIL regatta which pr: $p"; rc=1; }
 
-for s in peers test_pr test_restack test_review_gate test_repos test_ci_provider test_ci_circleci test_scopes test_finish_stuck_rebase test_todo_md test_list_merge test_agents test_council test_checkpoint; do
+for s in peers test_pr test_restack test_review_gate test_repos test_ci_provider test_runner_user test_ci_circleci test_scopes test_finish_stuck_rebase test_todo_md test_list_merge test_agents test_council test_checkpoint; do
   echo "== $s"
+  # a suite still off the allowlist (test_runner_user) is absent from the public twin, with its subject; any other
+  # missing suite still fails through bash
+  if [ "$s" = test_runner_user ] && [ ! -f "$D/$s.sh" ] && [ ! -f "$M/bin/runner-user" ]; then
+    echo "  --   skipped: not in this checkout"; continue
+  fi
   bash "$D/$s.sh" || rc=1
 done
 exit $rc
