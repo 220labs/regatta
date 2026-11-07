@@ -5,9 +5,9 @@
 # when it differs. An id joins once its suite passes on Linux (.circleci/linux-local.sh reproduces one
 # on a Mac). wharf-runs' check.sh is one command of the line and ten `wharf-runs-<shard>` ids here
 # (share.sh reads its --list-shards); eight passed on Linux (#500, 2026-11-05) and are here (pickup left it
-# for a day, until the self-hosted runners had lsof: runner-lsof, 2026-11-06). Off this
-# list: sextant and wharf-runs-macos, whose suites need macOS, and wharf-runs-queue, whose finish-queue cases
-# read a Mac's claim and memory floors. A wharf-runs shard joins with its suites on check.sh's LINUX_OK, in one change.
+# for a day, until the self-hosted runners had lsof: runner-lsof, 2026-11-06), and queue since its finish cases
+# judge a prepared host by stand-ins (mac-share-speed, 2026-11-06). Off this list: sextant and wharf-runs-macos,
+# whose suites need macOS. A wharf-runs shard joins with its suites on check.sh's LINUX_OK, in one change.
 plugin
 regatta
 regatta-classes
@@ -25,5 +25,6 @@ wharf-runs-pickup
 wharf-runs-jobs
 wharf-runs-landing
 wharf-runs-wharf
+wharf-runs-queue
 wharf-runs-tools
 helm

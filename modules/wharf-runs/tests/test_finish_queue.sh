@@ -23,6 +23,7 @@ has()   { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  ok   $3"; else echo
 hasnt() { if grep -qF -- "$2" "$1" 2>/dev/null; then echo "  FAIL $3: unexpected [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); else echo "  ok   $3"; fi; }
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export HOME="$T/h"; HL="$T/h/Library"; mkdir -p "$HL/LaunchAgents"
+fixture_finish_ready "$T/h/.acct-queue"   # a finish claim judges as on a Mac, whatever host runs the suite
 # a recursive delete under HOME goes through rm_own: only under this suite's own $T (the core's check, home_rm)
 rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 export ACCOUNTS_FILE="$T/no-accounts.json"
@@ -532,6 +533,7 @@ m = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
 # The readiness probe has its own suite with scheduler stand-ins; this case tests
 # the OS/peer rule without ever asking the machine's scheduler or word list.
 m.capability = lambda common: {"reason": "fixture host is not prepared"}
+m.sys.platform = "darwin"   # the Mac half on any host: the suite runs on Linux too (mac-share-speed)
 r = [m.builtin_met("finish-queue", "laptop"), m.builtin_met("finish-queue", "buildbox")]
 m.sys.platform = "linux"
 r += [m.builtin_met("finish-queue", "laptop"), m.builtin_met("finish-queue", "buildbox"), m.builtin_met("other", "buildbox")]

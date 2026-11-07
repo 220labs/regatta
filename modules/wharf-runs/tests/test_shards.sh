@@ -62,7 +62,7 @@ for shard in $(cut -f1 "$T/shards"); do
   want="$(awk -F'\t' -v s="$shard" '$1==s {print $2}' "$T/shards" | tr ' ' '\n' | sort)"
   check "$(ran)" "$want" "  runs exactly $shard's suites, including candidates"
 done
-run --shard queue; check "$?:$(ran)" "0:" "off macOS a plain selector leaves the unproven queue shard to a Mac (the twin's rest)"
+run --shard queue; check "$?:$(ran)" "0:$(printf '%s\n' test_after test_finish_capable test_finish_queue test_lander test_priority test_queue test_rank)" "off macOS a plain selector runs the queue shard, proven there since mac-share-speed"
 run --shard dispatch; check "$(ran)" "test_dispatch" "off macOS a plain selector runs its proven suites"
 run --shard unknown; check "$?" 2 "an unknown shard is refused"
 run --shard; check "$?" 2 "a missing shard name is refused"
@@ -71,10 +71,10 @@ run --shard macos; check "$(ran)" "" "the macOS shard names its OS requirements 
 run; check "$?" 0 "the default Linux mode still runs only proven suites"
 proven="$(ran)"
 check "$(printf '%s\n' "$proven" | grep -c '^test_dispatch$')" 1 "the unsharded Linux default runs dispatch, proven by #500's Linux run"
-check "$(printf '%s\n' "$proven" | grep -c '^test_finish_queue$')" 0 "the unsharded Linux default leaves the unproven queue shard to a Mac"
+check "$(printf '%s\n' "$proven" | grep -c '^test_vendor$')" 0 "the unsharded Linux default leaves the unproven macos shard to a Mac"
 TEST_OS=Darwin WHARF_RUNS_SKIP_LINUX_OK=1 run
 mac="$(ran)"
-check "$(printf '%s\n' "$mac" | grep -c '^test_finish_queue$')" 1 "the unsharded Mac remainder still covers the queue shard"
+check "$(printf '%s\n' "$mac" | grep -c '^test_vendor$')" 1 "the unsharded Mac remainder still covers the macos shard"
 check "$(printf '%s\n' "$proven" "$mac" | sort)" "$all" "the unsharded Linux and Mac shares cover every suite exactly once"
 printf '#!/bin/sh\necho "helper: command not found" >&2\nexit 0\n' > "$T/tree/tests/test_dispatch.sh"
 run --shard dispatch; check "$?" 1 "a hidden shell error fails a Linux shard even when its suite exits 0"
@@ -131,11 +131,12 @@ if (repo / "AGENTS.md").exists():
     contract = contract.split("`", 2)[1].split(" && ")
     assert [c for c in contract if "modules/wharf-runs/tests/" in c] == plain
 linux = json.loads((t / "linux-ids").read_text())
-# `macos` needs a Mac; `queue` failed on Linux in #500's run (its finish-queue cases read the Mac's claim floors);
-# `pickup` failed on the self-hosted runners while their image lacked lsof; the image has it (runner-lsof, 2026-11-06)
-candidates = ["wharf-runs-" + g for g in groups if g not in ("macos", "queue")]
+# `macos` needs a Mac; `queue` failed on Linux in #500's run (its finish-queue cases read the Mac's claim floors) until
+# they judged a prepared host by stand-ins (mac-share-speed, 2026-11-06); `pickup` failed on the self-hosted runners
+# while their image lacked lsof; the image has it (runner-lsof, 2026-11-06)
+candidates = ["wharf-runs-" + g for g in groups if g != "macos"]
 assert [i for i in linux if i.startswith("wharf-runs")] == candidates, linux
-assert len(groups) == 10 and len(candidates) == 8
+assert len(groups) == 10 and len(candidates) == 9
 # a shard on the Linux list runs LINUX_OK's suites only off macOS: one of its suites off LINUX_OK would be a
 # green check-linux that ran nothing, so a suite joins LINUX_OK in the change that lists its shard
 import re
@@ -151,7 +152,7 @@ share = t / "share"
 (share / ".github/ci/linux-ids").write_text("\n".join(candidates) + "\n")
 (share / ".circleci/parts/check-linux.yml").write_text("id: [" + ", ".join(candidates) + "]\n")
 PY
-check "$?" 0 "the workflow and any root contract name wharf-runs once; its ids are all ten groups, eight on Linux"
+check "$?" 0 "the workflow and any root contract name wharf-runs once; its ids are all ten groups, nine on Linux"
 # Restore the script used above to demonstrate hidden errors before replaying the whole partition.
 printf '#!/bin/sh\necho ran:test_dispatch\n' > "$T/tree/tests/test_dispatch.sh"
 cp -R "$T/tree/." "$T/share/modules/wharf-runs/"
@@ -159,10 +160,10 @@ mkdir -p "$T/share/modules/extra/tests"
 printf '#!/bin/sh\necho ran:uncovered\n' > "$T/share/modules/extra/tests/check.sh"
 TEST_OS=Darwin bash "$T/share/.github/ci/share.sh" macos > "$T/out" 2>&1
 check "$?" 0 "the Mac share executes the wired remainder"
-check "$(ran)" "$(printf '%s\n' test_harness test_rc_hosts test_check_ci test_vendor test_handover test_queue test_priority test_after test_rank test_finish_queue test_finish_capable test_lander uncovered | sort)" "the Mac share runs macos, queue and an uncovered command, without Linux candidates"
+check "$(ran)" "$(printf '%s\n' test_harness test_rc_hosts test_check_ci test_vendor test_handover uncovered | sort)" "the Mac share runs macos and an uncovered command, without Linux candidates"
 ran > "$T/covered"
 TEST_OS=Linux bash "$T/share/.github/ci/share.sh" rest > "$T/out" 2>&1
-check "$?" 0 "the twin's rest on Linux passes: queue and macos leave their suites to a Mac"
+check "$?" 0 "the twin's rest on Linux passes: macos leaves its suites to a Mac"
 check "$(ran)" "uncovered" "  and runs none of the Mac-only suites there"
 while IFS= read -r id; do
   TEST_OS=Linux bash "$T/share/.github/ci/share.sh" linux "$id" > "$T/out" 2>&1

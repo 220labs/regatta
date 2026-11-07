@@ -59,3 +59,17 @@ fixture_config() {
   unset HEADROOM_HOST HEADROOM_OS HEADROOM_PROC HEADROOM_SAMPLE_S
   export HEADROOM_SAMPLE="60 0 0"
 }
+fixture_finish_ready() {   # [LOGIN_DIR…]: this host reads as one prepared to land, by stand-ins
+  # Off macOS a host claims a finish only once finish_capability.py finds the autofinish schedule loaded, the
+  # publish gate's word list and /finish in every login dir (dispatch-queue's builtin_met); a Mac keeps its grant.
+  # The queue suites' finish cases would otherwise judge the machine they run on: four failed on GitHub's ubuntu
+  # (#500), and dozens on a node with a schedule of its own. A scheduler that says loaded, a one-word list and the
+  # skill in the moved HOME's .claude and each LOGIN_DIR a case registers make every host judge as a Mac does (mac-share-speed,
+  # 2026-11-06). Call it after HOME moves. Readiness itself is test_finish_capable's, with stand-ins of its own.
+  local d="$REGATTA_CONFIG/finish-ready" l
+  mkdir -p "$d"
+  printf '#!/bin/sh\n[ "$1" = print ] || exit 64\nexit 0\n' > "$d/launchctl"; chmod +x "$d/launchctl"
+  printf 'zz-fixture-word\n' > "$d/wordlist.txt"
+  for l in "$HOME"/.claude "$@"; do mkdir -p "$l/skills/finish"; : > "$l/skills/finish/SKILL.md"; done
+  export WHARF_RUNS_LAUNCHCTL="$d/launchctl" HELLOWORLD_WORDLIST="$d/wordlist.txt"
+}

@@ -31,6 +31,11 @@
   line that disagrees. A node's own user is no builder user (the Argon design's D1), so a node's own row never carries
   it: a builder row's own line does (TODO.md [codex-row]); a claim with the feature and no road fell each GPT entry back
   to Opus (the landing review). The line is the claim side only: a draw reads the drawing host's own features file.
+- The `queue` shard runs on Linux: its finish cases judge a prepared host by stand-ins (`config_fixture.sh`'s
+  `fixture_finish_ready`: a scheduler that says loaded, a one-word list, `/finish` in each login dir), so a claim's
+  finish readiness reads as a Mac's on any host, and test_queue's `systemctl` stand-in answers for a systemd user
+  manager (the self-hosted runners have none); `wharf-runs-queue` joins the Linux list and `LINUX_OK`, and only
+  `macos` stays in the PR's Mac share (mac-share-speed, 2026-11-06).
 - `builder-host`: add the `codex` vendor (`<host>-codex`, feature `codex`, `only=codex`, the builder's `.codex` hooks and `AGENTS.md`, written again by the sweep after a fast-forward that moves the clone, another `CODEX_HOME` refused, `codex login status` with missing login `owed`, no model call in `probe`, its own sweep LaunchDaemon label, and a shared slot folder across builders on one Mac).
 - `dispatch-queue`: no host claims a landing (a `finish` entry) below `normal` priority (landing-floor, 2026-11-06).
   A `low` finish stays queued and the listing says why and how to lift it (`autofinish-run <worktree> --priority

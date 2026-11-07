@@ -33,6 +33,13 @@ exit 0
 EOF
 chmod +x "$T/launchctl"
 export DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_DEFAULT_ON= DISPATCH_HOST=laptop
+# Off macOS the queue's jobs load only where a systemd user manager answers (dispatch-queue's launcher_here asks
+# systemd-launchctl's `manager`); the self-hosted Linux runners have none, a node does, so the job cases judged the
+# host (29 failed in the PR's check-linux, mac-share-speed, 2026-11-06). A systemctl that answers that one question
+# makes every host read as one with a manager; the cases load through $T/launchctl as before, and the road without a
+# manager is test_systemd's.
+printf '%s\n' '#!/bin/sh' '[ "$1 $2" = "--user is-system-running" ] && [ "$#" = 2 ] || exit 1' 'echo running' > "$T/systemctl"
+chmod +x "$T/systemctl"; export SYSTEMD_LAUNCHCTL_SYSTEMCTL="$T/systemctl"
 git init -q --bare "$T/queue.git"
 echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 QB="$B/dispatch-queue"; LA="$HL/LaunchAgents"; QL="$HL/Logs/claude-weekly/queue.jsonl"
