@@ -43,6 +43,7 @@ FOR_NOW = ("does not read", "does not walk", "did not answer", "another vendor l
 
 def run(a):
     wt = Path(a.worktree).resolve()
+    a.model = a.model or v.model_for(a.cli)
     try:
         v.fence(wt, a.cli, a.origin, paths=True)
     except v.Refused as ex:
@@ -56,7 +57,7 @@ def run(a):
             raise
         print("vendor pre-flight fallback: " + str(ex), file=sys.stderr)
         return 3
-    why = v.preflight(a.cli, a.model, a.effort)
+    why = v.preflight(a.cli, a.model, a.effort, wt)
     if why:
         if not a.preflight:
             raise ForNow("the vendor pre-flight changed since it passed: " + why)
@@ -101,7 +102,7 @@ def run(a):
     state = json.loads(record.read_text())
     sid = state["session"]
     # A separate advisory lock also protects direct calls between model turns.
-    with (gd / "vendor.lock").open("a") as lock:
+    with (gd / "vendor.lock").open("a") as lock, contextlib.ExitStack() as homes:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -152,7 +153,7 @@ def run(a):
         env = {k: val for k, val in os.environ.items() if not k.startswith("DISPATCH_") or k in routing}
         env.update(REGATTA_UNATTENDED="vendor-build", CLAUDE_UNATTENDED="vendor-build",
                    CLAUDE_CODE_SESSION_ID=sid, DISPATCH_DEPTH=str(state.get("depth") or 0),
-                   DISPATCH_REPO=state["repo"])
+                   DISPATCH_REPO=state["repo"], CHECK_HOST=v.common.host_name())
         br = str(v.HERE / "build-review")
         deadline = time.monotonic() + a.timeout
 
@@ -184,7 +185,7 @@ def run(a):
             state["turns"] += 1
             result = v.turn(a.cli, wt, prompt, model=a.model, effort=a.effort,
                             conversation=state["conversation"], origin=a.origin, on_pid=pid,
-                            on_usage=usage, on_thread=thread, timeout=remaining)
+                            on_usage=usage, on_thread=thread, timeout=remaining, home=home)
             state.update(conversation=result["conversation"], last_answer=result["last_answer"],
                          turn_pid=None)
             save_state()
@@ -260,6 +261,7 @@ def run(a):
         base_tip = None
         main = v.main_name(wt)   # the main checkout's workflow.json, as dispatch's after_merge reads it
         try:
+            home = homes.enter_context(v.vendor_home(a.cli, wt))
             v.git(wt, "fetch", "origin", "+refs/heads/%s:refs/remotes/origin/%s" % (main, main))
             try:
                 v.git(wt, "merge", "--no-edit", "origin/" + main)
@@ -284,10 +286,12 @@ def run(a):
                       "decide routine details; leave an unresolved decision as a committed D-item and make your last line "
                       "start WAITING FOR. "
                       "Commit small changes with clear module-prefixed messages and the trailer "
-                      "Co-Authored-By: Codex <noreply@openai.com>. The launcher runs checks and review rounds. "
+                      "%s. The launcher runs checks and review rounds. "
                       "Never fetch, merge, rebase, push, run /finish, pr, dispatch, or start other agents. "
                       "Leave design step stamps to the landing. If a next step is needed, write its brief "
-                      "and name it in your final answer; the launcher schedules it after a clean end." % (brief, branch))
+                      "and name it in your final answer; the launcher schedules it after a clean end." %
+                      (brief, branch, "Co-Authored-By: Codex <noreply@openai.com>" if a.cli == "codex" else
+                       "Co-Authored-By: Antigravity <noreply@google.com>"))
             if state.get("note"):
                 prompt += "\n\n" + state["note"]
             build_turn(prompt)
@@ -352,11 +356,14 @@ def run(a):
                            and not why.startswith("launcher stopped by signal") and not state.get("ending"))
             if before_turn:
                 exit_code, why = 4, "refused for now: before any vendor turn: " + why
+            # a tainted turn (vendorlib.Tainted): no more git here, so no review record's end and no push
+            tainted = isinstance(ex, v.Tainted)
             with contextlib.suppress(v.Refused):
-                if not before_turn and not finish_only:
+                if not before_turn and not finish_only and not tainted:
                     br_call("end", str(wt), "--outcome", "held", "--why", ("failed: " if outcome == "failed" else "") + why)
-            with contextlib.suppress(v.Refused):
-                push()
+            if not tainted:
+                with contextlib.suppress(v.Refused):
+                    push()
         finally:
             stop_owner.set(); owner_thread.join()
             tip = None
@@ -427,7 +434,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("worktree")
     ap.add_argument("--cli", choices=v.CLIS, required=True)
-    ap.add_argument("--model", default=v.MODEL)
+    ap.add_argument("--model", default=None)
     ap.add_argument("--effort", default="high")
     ap.add_argument("--origin", default="")
     ap.add_argument("--record", default="")
@@ -439,14 +446,26 @@ def main():
     def stopped(signum, frame):
         raise v.Refused("launcher stopped by signal %d" % signum)
     signal.signal(signal.SIGTERM, stopped)
+    args = ap.parse_args()
     try:
-        return run(ap.parse_args())
+        code = run(args)
     except (v.Refused, OSError, ValueError) as ex:
         if isinstance(ex, ForNow) or any(w in str(ex) for w in FOR_NOW):
             print("run_vendor: refused for now: %s" % ex, file=sys.stderr)
-            return 4
-        print("run_vendor: refused for good: %s" % ex, file=sys.stderr)
-        return 2
+            code = 4
+        else:
+            print("run_vendor: refused for good: %s" % ex, file=sys.stderr)
+            code = 2
+    # dispatch reserves its slot before this second pre-flight. A refusal there
+    # must end that reservation even though run() never reached its loop.
+    if args.record and not args.preflight and Path(args.record).is_file():
+        state = json.loads(Path(args.record).read_text())
+        if not state.get("ended"):
+            state.update(ended=int(time.time()), exit=code, turn_pid=None,
+                         outcome="fallback" if code == 3 else "held", retry_claude=False,
+                         end_reason="vendor pre-flight fallback" if code == 3 else "vendor start refused")
+            v.save(args.record, state)
+    return code
 
 
 if __name__ == "__main__":

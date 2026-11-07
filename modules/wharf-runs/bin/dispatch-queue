@@ -1322,6 +1322,14 @@ def apply_op(entries, op):
             # and replacing it would lose that branch's run silently
             return False, "clash with %s" % cur.get("branch")
         fin, cur_fin = new.get("kind") == FINISH, cur.get("kind") == FINISH
+        # A stall retry is a new put, unlike --requeue. Keep the fact that this
+        # arm already ran; only its own session's --next starts a new step.
+        old_arm = (cur.get("env") or {}).get("DISPATCH_ARM") if isinstance(cur.get("env"), dict) else None
+        new_arm = (new.get("env") or {}).get("DISPATCH_ARM") if isinstance(new.get("env"), dict) else None
+        if (not fin and not cur_fin and old_arm and old_arm == new_arm
+                and (cur.get("vendor_started") or cur.get("started") or cur.get("session"))
+                and (not cur.get("session") or new.get("by") != cur.get("session"))):
+            new["vendor_started"] = True
         if cur.get("state") == "ended":
             # a finish's tombstone (finish-as-task): one run per tip. Another tip, or a build, takes its place
             why = fin and new.get("tip") == cur.get("tip") and tomb_holds(new, cur)
@@ -1496,7 +1504,9 @@ def apply_op(entries, op):
                 cur.update(prefer_off=op["at"], prefer_why=("refused on %s: %s" % (op["host"], op["why"]))[:120])
         elif op.get("skip") or (cur.get("host") or "").lower() != hop:
             rb[op["host"]] = op["at"]
-        for f in ("claimed_by", "claimed_at", "running_on", "job"):
+        # `started` too, as requeue drops it: a run refused before any turn ran nothing, so redraw_op may still re-draw
+        # a vendor entry it handed back (the landing review, 2026-11-06)
+        for f in ("claimed_by", "claimed_at", "running_on", "job", "started"):
             cur.pop(f, None)
         if op.get("keep_on"):
             # a run of the branch outside the queue is live on that host (branch_live_here): its mark stays,
@@ -4503,7 +4513,7 @@ def redraw_op(qid, k, e, t):
     w = str(env0.get("DISPATCH_ARM") or "")
     if not ARM_WORD.fullmatch(w) or e.get("running_on") or e.get("pinned_why"):
         return None
-    if e.get("requeued_from") or e.get("requeued_at"):
+    if e.get("requeued_from") or e.get("requeued_at") or e.get("started") or e.get("session") or e.get("vendor_started"):
         return None   # its run started (a requeue hands back a started run): an Argon failure stays Argon's, never Opus in its place
     if e.get("host"):
         return None   # pinned (typed, a held worktree, a login): it waits for that host, which met the need when it was put
@@ -4542,7 +4552,8 @@ def redraw_op(qid, k, e, t):
             # every guard above again where the op lands: a sweep's op may wait in the outbox while the entry is claimed,
             # started and requeued, and a replay must never make that started run Opus (None: must be absent)
             "cond": {"id": e.get("id"), "state": "queued", "env": e.get("env"), "args": e.get("args"), "host": None,
-                     "requeued_from": None, "requeued_at": None, "running_on": None, "pinned_why": None},
+                     "requeued_from": None, "requeued_at": None, "running_on": None, "pinned_why": None,
+                     "started": e.get("started"), "session": e.get("session"), "vendor_started": e.get("vendor_started")},
             "redraw": w, "age": t - since}
 
 
@@ -4603,7 +4614,8 @@ def entry_of_record(st, h, t):
         except Exception as x:
             event("requeue-arm-unread", why="%s: %s" % (type(x).__name__, x))
             env.pop("DISPATCH_ARM")
-    agy = st.get("mode") == "agy" or st.get("harness") == "agy"
+    agy = st.get("mode") == "agy" or st.get("harness") == "agy" or (
+        not env.get("DISPATCH_ARM") and (st.get("agent") == "antigravity" or st.get("cli") == "agy"))
     if agy:   # dispatch's agy road: an agy build again, on a host with agy, and never a landing's mode (agy-road's round 2)
         if env.get("DISPATCH_MODE") in ("yolo", "dnd"):
             env.pop("DISPATCH_MODE")
@@ -5034,10 +5046,10 @@ def vendor_fallback_fields(e):
         if flag not in ("--harness", "--model", "--effort", "--needs"):
             args.extend(old[i:i + n])
         i += n
-    # The arm's added feature goes, and codex with it even where the caller typed it: only a codex builder row
+    # The arm's added feature goes, and codex/agy with it even where the caller typed it: only a vendor builder row
     # has that feature, and it has no Claude login, so a Claude fallback that kept it would never run (dispatch's
     # Claude retry drops it the same way).
-    drop = {e.get("arm_need"), "codex"}
+    drop = {e.get("arm_need"), "codex", AGY_NEED}
     needs = [n for n in e.get("needs") or [] if n not in drop]
     if needs:
         args += ["--needs", ",".join(needs)]

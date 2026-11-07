@@ -349,147 +349,15 @@ has "$T/out" "DRY RUN: would" "an agy job carrying a dnd (a dnd run's --next, it
 hasnt "$T/out" "mode dnd" "an inherited dnd (a dnd run's --next) never rides on an agy entry: no landing follows (the finish review)"
 D claude/laptop/2026-11-04-w --repo "$T/projects/site" --harness agy --mode dnd --dry-run > /dev/null 2>"$T/err"; check "$?" 2 "--harness agy --mode dnd: refused (no landing follows an agy build)"
 
-echo "dispatch's agy road: a fired job runs agy through harness in the branch's worktree, records it and ends"
-HN=$(python3 "$B/dispatch-queue" agy-host 2>/dev/null | awk '{print $1}')   # this host's name, as the rule reads it
-check "$([ -n "$HN" ] && echo named)" "named" "  agy-host names this host while it declares no agy"
-# a seeded branch on an origin; the job fired as launchd fires it (DISPATCH_LABEL), here with no queue home and a
-# stand-in launchctl: the one-shot road, whose fire path is the queue's claim's too
-git init -q --bare "$T/origin.git"
-git clone -q "$T/origin.git" "$T/projects/road" 2>/dev/null
-printf -- '- physical: none\n' > "$T/projects/road/AGENTS.md"; git -C "$T/projects/road" add AGENTS.md
-git -C "$T/projects/road" commit -qm init; git -C "$T/projects/road" push -q origin main 2>/dev/null
-git -C "$T/projects/road" checkout -q -b claude/laptop/2026-11-04-ar
-mkdir -p "$T/projects/road/docs/handoff"; echo "# ar — build it" > "$T/projects/road/docs/handoff/2026-11-04-ar.md"
-git -C "$T/projects/road" add docs; git -C "$T/projects/road" commit -qm "Seed: ar"
-git -C "$T/projects/road" push -q origin claude/laptop/2026-11-04-ar 2>/dev/null; git -C "$T/projects/road" checkout -q main
-: > "$STUB_AGY_CALLS"
-DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_LABEL=org.example.claude.dispatch.road.ar DISPATCH_DEFAULT_ON="" DISPATCH_AGY_POLL=1 \
-  bash "$B/dispatch" claude/laptop/2026-11-04-ar --repo "$T/projects/road" --harness agy > "$T/fire.out" 2>&1
-check "$?" 2 "a host whose features line names no agy: refused, though agy is installed (the owner's D1: a builder host only)"
-has "$T/fire.out" "runs only on a builder host: $HN declares no agy feature" "  naming the rule"
-hasnt "$STUB_AGY_CALLS" "-p" "  agy never started"
-sed -n '/^agy_road() {$/,/^}$/p' "$B/dispatch" | grep -q 'FAILED: refused for good, $hwhy' \
-  && check ok ok "  the fire path rechecks it (a claim judged it; a one-shot did not)" || check missing ok "  the fire path rechecks it"
-mkdir -p "$T/config/wharf-runs"; echo "$HN:agy" > "$T/config/wharf-runs/features"   # this host a builder's from here on
-: > "$STUB_AGY_CALLS"; rm -f "$STUB_AGY_CALLS.prompt"
-STUB_AGY_EDIT=1 DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_LABEL=org.example.claude.dispatch.road.ar DISPATCH_DEFAULT_ON="" \
-  DISPATCH_AGY_POLL=1 bash "$B/dispatch" claude/laptop/2026-11-04-ar --repo "$T/projects/road" --harness agy > "$T/fire.out" 2>&1
-check "$?" 0 "the fired job ends"
-LOG=$(ls -t "$HD"/Library/Logs/claude-weekly/run-seed*/*ar*.log "$HD"/Library/Logs/claude-weekly/*ar*.log 2>/dev/null | head -1)
-[ -n "$LOG" ] || { LOG="$T/fire.out"; echo "  (no run log found; the job's own output stands in)"; }
-has "$LOG" "== started (agy):" "  agy started through harness"
-has "$LOG" "== exit 0" "  and ended with agy's exit"
-has "$LOG" "agy left 1 changed path(s) uncommitted" "  its edits left in the worktree for the owner's session"
-hasnt "$LOG" "FAILED" "  no refusal on the way"
-has "$STUB_AGY_CALLS.prompt" "Read the brief at $T/projects/road/.claude/worktrees/ar/docs/handoff/2026-11-04-ar.md" "  the prompt names the brief by path"
-ST=$(ls -t "$HD"/Library/Logs/claude-weekly/run-seed-runs/*road.ar.*.json 2>/dev/null | head -1)
-check "$( [ -n "$ST" ] && python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); print(s.get("mode"), s.get("agent"), s.get("exit"), bool(s.get("ended")), s.get("agy_account"), str(s.get("harness_run", "")).endswith(".json"), isinstance(s.get("pid"), int) and bool(s.get("proc_start")))' "$ST")" \
-  "agy agy 0 True agy-x True True" "  dispatch's run record: mode and agent agy, its exit, ended, the login, the harness record, agy's pid and start"
-check "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("dispatched") == sys.argv[2])' "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["harness_run"])' "$ST")" "$ST")" "True" \
-  "  the harness record names dispatch's, which holds the slot"
-check "$(python3 -c 'import json, sys; r = json.load(open(json.load(open(sys.argv[1]))["harness_run"])); print(isinstance(r.get("wrapper"), int) and bool(r.get("wrapper_start")))' "$ST")" "True" \
-  "  the harness record keeps its wrapper's start beside its pid, so a reused pid never keeps it alive (the finish review)"
-
-fire() {   # a fired job of the road branch, its log's bytes from here on in $T/fire.log
-  local n0=0; [ -f "$LOG" ] && n0=$(wc -c < "$LOG" | tr -d ' ')
-  DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_LABEL=org.example.claude.dispatch.road.ar DISPATCH_DEFAULT_ON="" DISPATCH_AGY_POLL=1 \
-    bash "$B/dispatch" claude/laptop/2026-11-04-ar --repo "$T/projects/road" --harness agy "$@" > /dev/null 2>&1
-  local rc=$?; tail -c +$((n0 + 1)) "$LOG" > "$T/fire.log"; return $rc
-}
-echo "dispatch: a brief of a principal tier is refused before it queues (the finish review)"
-git -C "$T/projects/road" checkout -q -b claude/laptop/2026-11-04-pt
-mkdir -p "$T/projects/road/docs/handoff"; printf '# pt\nTier: principal-worker\n' > "$T/projects/road/docs/handoff/2026-11-04-pt.md"
-git -C "$T/projects/road" add docs; git -C "$T/projects/road" commit -qm "Seed: pt"; git -C "$T/projects/road" checkout -q main
-D claude/laptop/2026-11-04-pt --repo "$T/projects/road" --harness agy --dry-run > /dev/null 2>"$T/err"; check "$?" 2 "--harness agy on a principal brief: refused"
-has "$T/err" "builds no principal tier" "  saying a principal tier runs Claude"
-echo "dispatch's agy road: the last step a chain allows still runs (harness judges its caller's depth)"
-DISPATCH_DEPTH=5 DISPATCH_MAX_DEPTH=5 fire
-has "$T/fire.log" "== exit 0" "a run at depth 5 of 5 starts and ends"
-hasnt "$T/fire.log" "DISPATCH_MAX_DEPTH" "  no depth refusal"
-echo "dispatch's agy road: what harness refused decides the end"
-rm -f "$HD/.gemini/config/hooks.json"
-fire
-has "$T/fire.log" "FAILED: agy did not start on" "no guards entry here: this host's own refusal, never 'for good'"
-hasnt "$T/fire.log" "refused for good" "  so a host that can run it may still"
-guards
-echo road > "$T/config/wharf-runs/public-repos"
-fire
-has "$T/fire.log" "FAILED: agy refused for good" "a public repo: refused for good"
-rm -f "$T/config/wharf-runs/public-repos"
-# the tenant's fence: for good for a confidential scope (its entry no other host claims), this host's own otherwise
-# (a guarded repo's answer is this host's agy login, round 3's item 4)
-printf '#!/bin/sh\necho "harness: /r/road is guarded: its text goes only to a login its tenant owns, and the antigravity login account pick names, agy-x, is not one" >&2\nexit 2\n' > "$T/harness-guarded"
-printf '#!/bin/sh\necho "harness: /r/road is in confidential scope conf: its text goes only to a login its tenant owns, and the antigravity login account pick names, agy-x, is not one" >&2\nexit 2\n' > "$T/harness-conf"
-chmod +x "$T/harness-guarded" "$T/harness-conf"
-HARNESS_BIN="$T/harness-guarded" fire
-has "$T/fire.log" "FAILED: agy did not start on" "a guarded repo on a login its tenant does not own: this host's refusal"
-hasnt "$T/fire.log" "refused for good" "  never for good: another host's agy login may be the tenant's"
-HARNESS_BIN="$T/harness-conf" fire
-has "$T/fire.log" "FAILED: agy refused for good" "  a confidential scope's: refused for good"
-check "$(ls "$HD"/Library/Logs/claude-weekly/run-seed-runs/ | grep -c 'harness-err$')" "0" "  harness's stderr goes to the run log, and its file no further"
-has "$T/fire.log" "harness: /r/road is in confidential scope conf" "  (its words in the log)"
-echo "dispatch's agy road: a torn registry's ask is this run's alone, no DISPATCH_MODE for agy (the build review)"
-printf '#!/bin/sh\necho "DISPATCH_MODE=${DISPATCH_MODE-unset}" > "%s"\necho "harness: the scope registry does not read" >&2\nexit 2\n' "$T/mode.seen" > "$T/harness-mode"
-chmod +x "$T/harness-mode"; rm -f "$T/mode.seen"
-# a torn registry at fire time meets the spawn gate first (it fails closed), so a tear between it and the mode read
-# is a race no case makes: the road's own rule, as resolve_mode's for a Claude run's chain, is read from its text
-sed -n '/^agy_road() {$/,/^}$/p' "$B/dispatch" > "$T/agy_road.sh"
-check "$(grep -c '\[ "\$mode_torn" = 1 \] || menv=(DISPATCH_MODE="\$mode")' "$T/agy_road.sh") $(grep -c 'DISPATCH_MODE="\$mode" ' "$T/agy_road.sh")" "1 0" \
-  "a torn mode read puts no DISPATCH_MODE on agy's env (resolve_mode's rule), only menv does"
-HARNESS_BIN="$T/harness-mode" fire
-check "$(cat "$T/mode.seen" 2>/dev/null)" "DISPATCH_MODE=default" "  a registry that reads: agy gets the mode that runs"
-echo "dispatch's agy road: a fired job its own arguments refuse hands back its plist (round 3's item 2)"
-mkdir -p "$HD/Library/LaunchAgents"; : > "$HD/Library/LaunchAgents/org.example.claude.dispatch.road.ar.plist"
-printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$T/lc.calls" > "$T/launchctl"; : > "$T/lc.calls"
-fire --account acct-b; check "$?" 2 "a fired agy job carrying --account: refused"
-check "$([ -e "$HD/Library/LaunchAgents/org.example.claude.dispatch.road.ar.plist" ] && echo left || echo gone)" "gone" "  its plist removed"
-has "$T/lc.calls" "bootout gui/" "  and its job booted out"
-printf '#!/bin/sh\nexit 0\n' > "$T/launchctl"
-echo "dispatch's agy road: agy and its wrapper gone with no end recorded end the run here"
-cat > "$T/harness-gone" <<'SH'
-#!/bin/sh
-# harness run's answer for a run whose wrapper died at once: a record with a dead pid and no end
-r="$HARNESS_RUNS_DIR/agy-gone-ar-000000.json"
-printf '{"run": "agy-run-000000000000", "pid": DEADPID, "proc_start": "Thu Jan  1 00:00:00 1970", "wrapper": DEADPID}\n' > "$r"
-printf '{"harness": "agy", "native": {"run": "%s"}}\n' "$r"
-SH
-# a pid known dead, never a fixed number a busy Linux box may have live (pid_max 4194304: the finish review)
-sleep 0 & deadpid=$!; wait "$deadpid"
-sed "s/DEADPID/$deadpid/g" "$T/harness-gone" > "$T/harness-gone.new" && mv "$T/harness-gone.new" "$T/harness-gone"
-chmod +x "$T/harness-gone"
-HARNESS_BIN="$T/harness-gone" fire
-has "$T/fire.log" "agy and its wrapper are gone with no end recorded" "a dead wrapper ends the run within two polls"
-has "$T/fire.log" "== exit 1" "  failed"
-echo "dispatch's agy road: past DISPATCH_MAX_H the run is ended only once agy no longer runs (the build review, round 2)"
-: > "$STUB_AGY_PIDS"
-STUB_AGY_SLEEP=60 STUB_AGY_IGNORE_TERM=1 HARNESS_START_WAIT=1 DISPATCH_MAX_H=0.0003 DISPATCH_AGY_GRACE=2 fire
-apid=$(tail -1 "$STUB_AGY_PIDS")
-has "$T/fire.log" "ending agy: still running after" "an agy past its cap is stopped…"
-has "$T/fire.log" "outlived its stop by 2 s: SIGKILL" "  …and, deaf to the SIGTERM, killed once the grace is spent"
-has "$T/fire.log" "== exit 143" "  the cap's exit"
-check "$( [ -n "$apid" ] && kill -0 "$apid" 2>/dev/null && echo alive || echo dead)" "dead" "  agy no longer runs when the record is ended"
-hasnt "$T/fire.log" "agy may still run" "  never ended with agy unseen to end"
-echo "  …and a start ps could not read for a live agy is read again, never taken for an end (the build review, round 3)"
-# a ps that prints no lstart while $T/ps-blank exists (a loaded Mac), armed when harness stop returns and cleared
-# once the run's log shows the re-read (12 s at most: a clock window raced the grace check under load), so the
-# grace check meets the blank read, and the kill must still come once ps reads again
-mkdir -p "$T/psbin"; realps=$(command -v ps)
-printf '#!/bin/sh\ncase " $* " in *" lstart= "*) [ -e "%s" ] && exit 0;; esac\nexec "%s" "$@"\n' "$T/ps-blank" "$realps" > "$T/psbin/ps"
-printf '#!/bin/sh\n"%s" "$@"; rc=$?\n[ "$1" = stop ] && { : > "%s"; ( i=0; while [ $i -lt 60 ] && ! grep -q "ps printed no start" "%s"; do sleep 0.2; i=$((i + 1)); done; rm -f "%s" ) > /dev/null 2>&1 & }\nexit $rc\n' \
-  "$B/harness" "$T/ps-blank" "$LOG" "$T/ps-blank" > "$T/harness-blank"
-chmod +x "$T/psbin/ps" "$T/harness-blank"; : > "$STUB_AGY_PIDS"; rm -f "$T/ps-blank"
-PATH="$T/psbin:$PATH" HARNESS_BIN="$T/harness-blank" STUB_AGY_SLEEP=60 STUB_AGY_IGNORE_TERM=1 HARNESS_START_WAIT=1 \
-  DISPATCH_MAX_H=0.0003 DISPATCH_AGY_GRACE=2 fire
-apid=$(tail -1 "$STUB_AGY_PIDS")
-has "$T/fire.log" "ps printed no start for agy's live pid" "  a blank start read at the grace check…"
-has "$T/fire.log" "outlived its stop by 2 s: SIGKILL" "  …waits for the next poll, then the kill"
-hasnt "$T/fire.log" "agy may still run" "  never ended on one blank read"
-check "$( [ -n "$apid" ] && kill -0 "$apid" 2>/dev/null && echo alive || echo dead)" "dead" "  agy no longer runs when the record is ended"
-rm -f "$T/ps-blank"
+# Dispatched builds now use run-vendor; test_vendor.sh covers build/review/fix,
+# the cap, timeouts, identity, and every typed/coin fire through the vendor fence.
+# Harness-specific run/resume/stop and registry readers remain covered here.
 cat > "$T/same.py" <<'PY'
 import importlib.machinery, importlib.util, os, sys
 ld = importlib.machinery.SourceFileLoader("drc", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("drc", ld)); ld.exec_module(m)
+# A sandbox may refuse ps: simulate a known start for the stale-pid half.
+m.proc_start = lambda pid: "Thu Jan  1 00:00:00 2026"
 print(m.same({"mode": "agy", "pid": os.getpid()}), m.same({"mode": "agy", "pid": os.getpid(), "proc_start": "Thu Jan  1 00:00:00 1970"}))
 PY
 check "$(python3 "$T/same.py" "$B/dispatch-rc")" "True False" \

@@ -1869,16 +1869,25 @@ rm -f "$T/calls"
 CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4w "${QC[@]}" > "$T/out" 2>&1
 check "$?:$(qget repo--c4w state):$(grep -c bootout "$T/calls" 2>/dev/null || echo 0)" "2:waiting:0" "  and another session's entry waiting here, its job never booted out"
 has "$T/out" "the next step waits for a run to end" "  in the cap's waiting words"
-# the caller's own run: a record whose pid is this suite's shell (an ancestor of the call) with its start time
+# The caller's own run: this suite's shell is the known ancestor. Inject just
+# that observation; the real CLI parser, record reader and cancellation guard
+# still judge the call, including the live-pid check. No production seam.
+cat > "$T/cancel-own.py" <<'PY'
+import importlib.machinery, sys
+q = importlib.machinery.SourceFileLoader("own_queue", sys.argv[1]).load_module()
+q._ANC.append([(int(sys.argv[2]), "fixture-shell")])
+q.rc_mod().proc_start = lambda pid: "Thu Jan 1 00:00:00 2026"
+sys.exit(q.main(sys.argv[3:]))
+PY
 RECS4="$HL/Logs/claude-weekly/run-seed-runs"; mkdir -p "$RECS4"
 printf '{"session": "s-mine", "pid": %s, "proc_start": "%s", "started": %s, "topic": "c4b", "repo": "%s"}' "$$" \
-  "$(TZ=UTC LC_ALL=C ps -o lstart= -p $$ | tr -s ' ' | sed 's/^ //; s/ $//')" "$(date +%s)" "$T/repo" > "$RECS4/mine.json"
+  "Thu Jan 1 00:00:00 2026" "$(date +%s)" "$T/repo" > "$RECS4/mine.json"
 "${Q4[@]}" --branch claude/laptop/2026-11-02-c4b --by s-mine --replace > /dev/null 2>&1
 check "$(qget repo--c4b by)" "s-mine" "  (the entry now its own run's step)"
-CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4b "${QC[@]}" > /dev/null 2>&1
+CLAUDE_UNATTENDED=1 python3 "$T/cancel-own.py" "$QB" "$$" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4b "${QC[@]}" > /dev/null 2>&1
 check "$?:$(qget repo--c4b state)" "0:" "  its own run's step (by its record, found by ancestry): cancelled"
 s4put c4y state=running running_on=laptop session=s-mine by=s-parent job=org.example.claude.dispatch.repo.c4y.q1
-CLAUDE_UNATTENDED=1 python3 "$QB" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4y "${QC[@]}" > "$T/out" 2>&1
+CLAUDE_UNATTENDED=1 python3 "$T/cancel-own.py" "$QB" "$$" cancel --repo "$T/repo" --branch claude/laptop/2026-11-02-c4y "${QC[@]}" > "$T/out" 2>&1
 check "$?:$(qget repo--c4y state)" "0:running" "  its own running entry (its session, though another put it): no refusal, the --end hint, as on main"
 has "$T/out" "a run is ended, not unqueued: dispatch --end c4y" "    said"
 rm -f "$RECS4/mine.json"

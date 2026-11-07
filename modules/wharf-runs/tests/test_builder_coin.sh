@@ -139,8 +139,8 @@ w = c.read_odds()[0]; print(w, [sum(c.coin_of(r, w) == k for r in range(sum(w)))
   "the coin: no builder-odds reads 1:2:2:1:1, and of 7 rolls each of the five arms draws by its weight (the owner's D2, 2026-11-04; S8's two Sol arms)"
 check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
 print(c.road_weights((1, 2, 2, 1, 1), True), c.road_weights((1, 2, 2, 1, 1)))' "$B")|$(DISPATCH_COIN_ROADS=antigravity python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import buildercoin as c
-print(c.road_weights((1, 2, 2, 1, 1), True), c.road_weights((1, 2, 2, 1, 1)))' "$B")" "(1, 2, 0, 1, 1) (1, 2, 0, 1, 1)|(1, 2, 2, 1, 1) (1, 2, 0, 1, 1)" \
-  "  rolled: an arm with no road in dispatch weighs 0 (Argon until S4; Codex has its road), a test's road at the draw only"
+print(c.road_weights((1, 2, 2, 1, 1), True), c.road_weights((1, 2, 2, 1, 1)))' "$B")" "(1, 2, 2, 1, 1) (1, 2, 2, 1, 1)|(1, 2, 2, 1, 1) (1, 2, 2, 1, 1)" \
+  "  rolled: both vendor roads carry their weights at draw and fire"
 # a claude-code block's tier: worker key over a Tier: line that is not specced: dispatch reads the line, so wharf check warns
 cat > "$T/bp.md" <<'MD'
 ---
@@ -470,8 +470,8 @@ printf 'sonnet-high=1\n' > "$ODK"
 check "$(sched worker)" "sonnet-high:1:$UNTIL:0" "  an arm left out weighs 0"
 echo "argon-high=1" > "$ODK"
 # a bare draw, no brief class: with both Claude weights 0 a worker brief would take gpt-mid alone (gpt_class, S8)
-check "$(python3 "$B/buildercoin.py" draw "$R" 2> "$T/out")" "" "builder-odds weighing only Argon while it has no road: no arm, never Opus in its place"
-has "$T/out" "weighs only arms with no road in dispatch yet" "  said"
+check "$(DISPATCH_COIN=2 python3 "$B/buildercoin.py" draw "$R" 2> "$T/out")" "opus-high:2:$UNTIL:1" "builder-odds weighing only Argon with no fresh host: its pre-flight fallback"
+has "$T/out" "fallback to opus-high" "  said"
 printf 'opus-high=0, sonnet-high=1 # the owner, a note\nargon-high=1\n' > "$ODK"
 check "$(sched worker)" "sonnet-high:1:$UNTIL:0" "a note after # (on its line and the lines after it) is no text, spaces split arms"
 has "$T/out" "odds opus-high=0,sonnet-high=1; coin 1" "  read without it"
@@ -484,8 +484,8 @@ has "$T/out" "not \`opus-high=W,sonnet-high=W,argon-high=W\`" "  said"
 rm -f "$ODK"
 
 echo "the fallback: an Argon draw with no builder host, or no road for it"
-check "$(sched worker DISPATCH_COIN=2)" "opus-high:2:$UNTIL:1" "an Argon coin while dispatch has no road for antigravity: Opus under Argon's coin"
-has "$T/out" "coin 2: argon-high (forced) — fallback to opus-high: no road for antigravity in dispatch yet (run_vendor)" "  said"
+check "$(sched worker DISPATCH_COIN=2)" "opus-high:2:$UNTIL:1" "an Argon coin without a hosts ref: Opus under Argon's coin"
+has "$T/out" "coin 2: argon-high (forced) — fallback to opus-high: no queue home here" "  said"
 check "$(sched worker DISPATCH_COIN=2 DISPATCH_COIN_ROADS=antigravity)" "opus-high:2:$UNTIL:1" "  a road, and no queue home (no hosts ref): Opus too"
 has "$T/out" "fallback to opus-high: no queue home here" "  said"
 check "$(grep -c 'needs' "$(pl worker)")" "0" "  the fallback's one-shot needs nothing"
@@ -495,6 +495,7 @@ git init -q --bare "$T/q3.git"
 echo "$T/q3.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 echo "buildbox:agy" > "$REGATTA_CONFIG/wharf-runs/features"
 NOW=$(date +%s)
+export DISPATCH_QUEUE_NOW="$NOW"
 hostrow() { printf '{"host": "buildbox", "at": %s, "load": null, "mem": null, "limits": {}, "headroom": {}, "slots": {}, "runs": []}\n' "$1" > "$T/row.json"
   DISPATCH_HOST=buildbox python3 "$B/dispatch-queue" hosts put --file "$T/row.json" --refresh > /dev/null 2>&1; }
 qreset() { git --git-dir="$T/q3.git" update-ref -d refs/regatta/queue 2>/dev/null; rm_own "$HL/Caches/run-seed/queue" 2>/dev/null; clean; }
@@ -677,17 +678,32 @@ None
 argon-high:2:$UNTIL:0 ['agy'] None agy" \
   "past REDRAW_AGE: Opus under Argon's coin, the arm's agy dropped (a typed one waits for its host, an env that is no mapping is left), the old word kept; aged from its run elsewhere ending and its --after hold clearing (stamped first), never while held, pinned or once its run started (a requeue), nor by an outbox replay after one, never a moved entry, a claude arm or a fallback; a requeued Argon run needs agy again"
 
+cat > "$T/refused.py" <<'PY'
+import importlib.machinery, sys
+q = importlib.machinery.SourceFileLoader("dq", sys.argv[1]).load_module()
+u = sys.argv[2]
+e = {"id": "x", "state": "running", "repo": "repo", "branch": "claude/laptop/2026-11-02-worker", "needs": ["agy"],
+     "args": ["--needs", "agy"], "env": {"DISPATCH_ARM": "argon-high:2:%s:0" % u, "DISPATCH_DEPTH": "0"},
+     "put_at": 1000, "queued_at": 900, "arm_need": "agy", "session": "s", "started": 1100, "claimed_by": "buildbox",
+     "claimed_at": 1100, "running_on": "buildbox", "job": "j"}
+ents = {"k": e}
+print(q.apply_op(ents, {"op": "refuse", "key": "k", "host": "buildbox", "at": 1200, "why": "refused for now"}),
+      "started" in ents["k"], bool(q.redraw_op("q:k", "k", ents["k"], 10 ** 9)))
+PY
+check "$(python3 "$T/refused.py" "$B/dispatch-queue" "$UNTIL" 2>&1)" "(True, 'queued') False True" \
+  "a vendor entry refused for now after its start ran nothing: started dropped, so the sweep may still re-draw it"
+
 echo "the fire path: the odds again, the fallback recorded"
 clean
 fire worker "argon-high:2:$UNTIL:0"
-has "$T/claude.calls" "--model claude-opus-5-5 --effort high --permission-mode auto" "an argon-high word fired by a dispatch with no road for it: Opus, its fallback"
-has "$H/fire-worker.log" "== builder coin: argon-high:2:$UNTIL:0 has no road here — its fallback, opus-high:2:$UNTIL:0" "  said in the log"
+has "$T/claude.calls" "--model claude-opus-5-5 --effort high --permission-mode auto" "an argon-high word fired outside a builder home: Opus, its fallback"
+has "$H/fire-worker.log" "fallback to Opus before any vendor turn" "  said in the log"
 check "$(recof worker)" "{\"agent\": \"claude\", \"coin\": 2, \"effort\": \"high\", \"fallback\": true, \"forced\": false, \"model\": \"claude-opus-5-5\", \"name\": \"opus-high\", \"until\": \"$UNTIL\"} fallback claude-opus-5-5 high" \
   "  the record's arm: Opus under Argon's coin, fallback"
 check "$(python3 -c 'import json, sys
 r = [json.loads(l) for l in open(sys.argv[1])]
-print(len(r), *[(x["arm"], x["coin"], x["drawn"], x["agent"], x["fallback"], x["odds"]) for x in r])' "$ROWS" 2>&1)" "1 ('opus-high', 2, 'argon-high', 'claude', True, '1:2:0:1:1')" \
-  "  its row: drawn argon-high, run by claude, fallback, the odds as rolled (Argon 0 with no road)"
+print(len(r), *[(x["arm"], x["coin"], x["drawn"], x["agent"], x["fallback"], x["odds"]) for x in r])' "$ROWS" 2>&1)" "1 ('opus-high', 2, 'argon-high', 'claude', True, '1:2:2:1:1')" \
+  "  its row: drawn argon-high, run by claude, fallback, the odds as rolled, the pre-flight fallback excluded from samples"
 clean
 fire worker "opus-high:2:$UNTIL:0"
 has "$T/claude.calls" "--model claude-opus-5-5 --effort high" "a fallback word (the draw's, or the sweep's) fires as Opus"
@@ -757,6 +773,35 @@ echo "1:0:0:1:1" > "$ODK"
 check "$(sched sr DISPATCH_COIN=3)" "" "a positive Claude weight restores the old class rule"
 rm -f "$ODK"
 
+echo "Argon: inherited landing modes are dropped before either dispatch road writes them"
+qreset
+echo "buildbox:agy" > "$REGATTA_CONFIG/wharf-runs/features"
+hostrow "$NOW"
+DISPATCH_MODE=dnd DISPATCH_COIN=2 env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-worker --repo "$R" --next > "$T/out" 2>&1
+k=$(git --git-dir="$T/q3.git" ls-tree -r --name-only refs/regatta/queue | grep '^queue/' | head -1)
+check "$(git --git-dir="$T/q3.git" show "refs/regatta/queue:$k" | python3 -c 'import json,sys; e=json.load(sys.stdin); print(e["env"].get("DISPATCH_ARM"), e["env"].get("DISPATCH_MODE"), e.get("mode"))')" \
+  "argon-high:2:$UNTIL:1 default default" "an Argon queue entry inherits no dnd that a builder host cannot claim"
+qreset
+w=$(sched worker DISPATCH_MODE=dnd DISPATCH_COIN=2 DISPATCH_LABEL=org.example.claude.dispatch.repo.parent)
+check "$w" "argon-high:2:$UNTIL:1" "the one-shot still draws Argon"
+check "$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"].get("DISPATCH_MODE"))' "$(pl worker)")" \
+  "default" "the one-shot plist inherits no dnd either"
+
+cat > "$T/fresh_timeout.py" <<'PY'
+import os, pathlib, subprocess, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+import buildercoin as c
+with tempfile.TemporaryDirectory() as t:
+    c.HERE=t
+    c.FRESH_TIMEOUT=.2
+    pathlib.Path(t, "dispatch-queue").write_text("import subprocess,time\nsubprocess.Popen(['sleep','30'])\ntime.sleep(30)\n")
+    started=time.monotonic()
+    host, why=c.builder_host(t, "agy")
+    assert host is None and "TimeoutExpired" in why, (host, why)
+    assert time.monotonic()-started < 5, "a git child held the fetch pipes past the timeout"
+print("bounded")
+PY
+check "$(python3 "$T/fresh_timeout.py" "$B")" "bounded" "the draw's timeout kills the fetch process group, including a child holding its pipes"
 echo
 [ "$fails" = 0 ] && echo "test_builder_coin: all passed" || echo "test_builder_coin: $fails failed"
 [ "$fails" = 0 ]

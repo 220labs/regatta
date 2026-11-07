@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Antigravity builds use the shared vendor launcher: stdin stream-json turns in
+  one conversation, fresh vendor reviews and verifier, checks and fix rounds
+  through a clean end or the cap, with no Claude process. Every typed or drawn
+  fire repeats the vendor fence. The builder's per-run keychain, domain and
+  model pre-flight fail before sending a task; started failures stay vendor
+  failures. Records and coin end rows retain provider tokens and the result.
+  The sign-in is read from agy's own log against `wharf-runs/agy-domain` (`account pick` prints no address, and an
+  open repo needs no pick: a builder host keeps no accounts registry); an agy reviewer gets no git dir and is held if
+  it changes a tracked or untracked file; a turn that changes the git dir's config or hooks is held and the launcher
+  runs no more git there (no push) — this run only, as the check runs the branch's code unsandboxed anyway; the
+  launcher's git runs with `core.fsmonitor=false`; the turn's guards read the launcher's config dir; a declared
+  reviewer that is not ready holds the loop; an unreadable features file waits at pre-flight; a confidential scope
+  runs no vendor build, typed or drawn, whatever the tenant's logins (the landing review, 2026-11-06).
+
 - yard-node: a node runs Codex's sandbox (node-codex-sandbox, 2026-11-05). Ubuntu 24.04's AppArmor refuses an unconfined
   program a user namespace (`kernel.apparmor_restrict_unprivileged_userns=1`), so every command under Codex's own bwrap
   failed "bwrap: loopback: Failed RTM_NEWADDR" on the Azure node, Ubuntu's bubblewrap too. The guest's new

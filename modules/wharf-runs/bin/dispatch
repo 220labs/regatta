@@ -177,20 +177,15 @@
 #               names every one. A need no host that may take the repo meets is refused at enqueue, never
 #               queued (dispatch-queue enqueue exits 3; here exit 2, the cap's waiting words). `pickup seed`
 #               passes a brief's `needs:` line on. No queue home: said and dropped.
-#   --harness agy  the build runs Google's agy CLI, not Claude Code (agy-road, 2026-11-04): the entry needs `agy`
-#               (added to --needs; dispatch-queue's eligibility: a builder host's feature line names it, never
-#               the owner's rows — docs/argon-builder-arm-2026-11-03.md D1 — and that host judges its own agy:
-#               the adapter's exe(), the guards entry in agy's hooks.json naming a vendor_hook.py that is there,
-#               --sandbox in its --help), so only such a host claims it (the fire rechecks: `dispatch-queue agy-host`), and the fired run starts
-#               `harness run --harness agy` in the branch's worktree with a prompt naming the brief by path. That
-#               start meets what any vendor's run meets (bin/harness's guard: `physical: none`, the public-repo
-#               rule, the vendor fence's tenant check through `account pick --provider antigravity`, the spawn
-#               gate, the depth and run caps) and the adapter's own (a worktree on a claude/* branch, the guards
-#               entry in agy's hooks.json, --sandbox). The run waits for agy's end and records it beside a Claude
-#               run's (mode agy, its harness record in `harness_run`); its edits stay uncommitted in the worktree
-#               for the owner's session, and no landing follows it. Refused with --start, --probe, --headless,
-#               --yolo, --if-room, --account LABEL, a typed --mode yolo or dnd and a principal tier; `claude` is the default
-#               and changes nothing.
+#   --harness agy|codex  a vendor build through run-vendor: the launcher fetches,
+#               merges main, pushes the branch, checks and runs fresh vendor reviews,
+#               then resumes the same builder conversation for fixes until clean or
+#               capped. agy adds its agy need; Codex its codex need. Only a configured
+#               builder user runs it, and every fire and turn repeats the vendor fence.
+#               agy uses --dangerously-skip-permissions and --sandbox, never plan mode.
+#               No Claude process or landing; /finish and the hand-over are separate.
+#               Refused with a principal tier, --start, --probe, --yolo, --if-room, a typed
+#               landing mode or --account LABEL; agy also refuses --headless.
 #   --slots     `<busy> <cap>` for this Mac: the runs counted against the cap, and the cap (berth reads
 #               a peer's over ssh, so the cap has one home).
 #   --cap       this Mac's cap alone, without counting runs: bin/wharf and helm's stalls_tick ask it,
@@ -1478,8 +1473,8 @@ if [ -n "$needs" ] && ! queue_on; then
   echo "dispatch: --needs ignored — no queue home here (wharf-runs/queue-repo), so no host claims by its features" >&2
   needs=""
 fi
-# Every GPT fire uses run_vendor, including a typed --model that bypassed the coin.
-case "$model" in gpt-*) [ -n "$harness" ] || harness=codex;; esac
+# Every vendor model uses run_vendor, including a typed model that bypassed the coin.
+case "$model" in gpt-*) [ -n "$harness" ] || harness=codex;; gemini-*) [ -n "$harness" ] || harness=agy;; esac
 harness_need=""
 # what a codex run cannot be, refused here before the cleanup trap: a fired job (a plist, a claimed entry) ends its
 # entry as failed and removes its own plist, as agy_refuse does — its own arguments refuse it, so every host would
@@ -1511,8 +1506,8 @@ if [ "$harness" = codex ]; then
   fi
 fi
 vendor_pending() {
-  [ "$harness" = codex ] && return 0
-  case "$arm_word" in gpt-big:*|gpt-mid:*) return 0;; esac
+  case "$harness" in codex|agy) return 0;; esac
+  case "$arm_word" in gpt-big:*|gpt-mid:*|argon-high:*) return 0;; esac
   return 1
 }
 # --harness agy (the header): what an agy run cannot be, refused here; and its need, so only a host with agy claims it.
@@ -1522,7 +1517,7 @@ vendor_pending() {
 agy_refuse() {
   echo "dispatch: --harness agy $1" >&2
   [ -n "$fromq" ] && [ "$dry" = 0 ] \
-    && python3 "$Q" failed "$fromq" --label "${DISPATCH_LABEL:-}" --why "FAILED: --harness agy $1" "${qctx[@]}" >&2
+    && python3 "$Q" failed "$fromq" --label "${DISPATCH_LABEL:-}" --why "FAILED: refused for good, --harness agy $1" "${qctx[@]}" >&2
   [ -n "${DISPATCH_LABEL:-}" ] && { rm -f "$LA/$DISPATCH_LABEL.plist"; "$LC" bootout "$DOM/$DISPATCH_LABEL" 2>/dev/null; }
   exit 2
 }
@@ -1539,7 +1534,9 @@ if [ "$harness" = agy ]; then
   # the brief's Tier: line, read above where the branch's brief is found: a principal tier runs Claude, so it is refused
   # here, before it queues or a dry run picks a Fable login for it (agy_road refuses it again at the fire; the finish review)
   case "${tier:-}" in principal*) agy_refuse "builds no principal tier ($tier runs Claude): dispatch it without --harness";; esac
-  if queue_on; then needs="$(printf '%s\n' ${needs//,/ } agy | sort -u | paste -sd , -)"
+  if queue_on; then
+    case ",$needs," in *,agy,*) ;; *) harness_need=agy;; esac
+    needs="$(printf '%s\n' ${needs//,/ } agy | sort -u | paste -sd , -)"
   elif [ "$dry$cancel" = 00 ] && [ -z "$on" ]; then
     # a one-shot here: no claim judges this host, so the agy need's rule does (a builder host's feature line)
     why=$(python3 "$Q" agy-host 2>/dev/null) || { [ $? = 3 ] && agy_refuse "runs only on a builder host: $why"; }
@@ -2607,16 +2604,16 @@ if [ -n "$arm_word" ] && [ "$start$probe$cancel" = 000 ] && [ -z "$fromq" ]; the
     esac
   fi
 fi
-# Drawn GPT arms have no harness: reject --if-room after the draw and any dropped arm, before enqueue or schedule.
+# Drawn vendor arms have no harness: reject --if-room after the draw and any dropped arm, before enqueue or schedule.
 if vendor_pending; then codex_if_room; fi
-# a drawn GPT arm inherits no login label: --next took this session's before the draw, and a label pins the entry to this
-# host (enqueue), which has no codex, so the claim would always fall back to Opus (the finish review, 2026-11-06). The
+# a drawn vendor arm inherits no login label: --next took this session's before the draw, and a label pins the entry to this
+# host (enqueue), which has no builder feature, so the claim would always fall back to Opus (the finish review, 2026-11-06). The
 # entry walks (auto); a typed --account rides as typed, and so does a label where the primary may not run the repo
 # (queue_args' login_free: another host's auto pick could refuse its Opus fallback for good)
 if vendor_pending && [ "$account_typed" = 0 ]; then case "$account" in ''|auto|bound) ;; *) login_free && account="";; esac; fi
-# a GPT arm's build hands no landing, and a disarmed builder host never claims a yolo or dnd entry: an inherited mode
+# A vendor build hands no landing, and a disarmed builder host never claims a yolo or dnd entry: an inherited mode
 # is dropped (a typed one stays, and a re-draw to Opus lands it on an armed host)
-case "$arm_word" in gpt-big:*|gpt-mid:*) [ "$mode_given" = 0 ] && case "$mode" in yolo|dnd) mode=default;; esac;; esac
+case "$arm_word" in argon-high:*|gpt-big:*|gpt-mid:*) [ "$mode_given" = 0 ] && case "$mode" in yolo|dnd) mode=default;; esac;; esac
 if [ -n "$at" ]; then
   [ "$probe" = 1 ] || skipper_env
   [ "$probe" = 1 ] || ship_mode >&2 || exit 2
@@ -3342,7 +3339,7 @@ run_vendor() {
   else
     # Only a coin draw may fall back on the vendor fence. A typed harness or
     # model still refuses, even if this fire also carried an old coin word.
-    [ -n "$arm_word" ] && [ "$harness" != codex ] && [ "$model_given$effort_given" = 00 ] && vflags+=(--coin)
+    [ -n "$arm_word" ] && [ -z "$harness" ] && [ "$model_given$effort_given" = 00 ] && vflags+=(--coin)
     # the verdict is run-vendor's last stderr line: a note a peer printed first (harness's public-repos warning)
     # is shown in the log, never made the FAILED line's head, which helm reads alone (FOR_GOOD_RE)
     local verr; verr=$(mktemp "${TMPDIR:-/tmp}/run-vendor.XXXXXX")
@@ -3406,7 +3403,7 @@ run_vendor() {
   # Reserve the slot with this live launcher before dropping the start lock.
   # run-vendor replaces this pid with its own after its second pre-flight;
   # during that pre-flight another topic must still count this run as busy.
-  record mode=vendor agent="$vendor_cli" cli="$vendor_cli" branch="$branch" repo="$repo" topic="$topic" \
+  record mode=vendor agent="$vendor_cli" cli="$vendor_kind" branch="$branch" repo="$repo" topic="$topic" \
     session="$sid" pid="$$" proc_start="$(pstart $$)" started="$(date +%s)" log="$log" wt="$wt" watcher="$$" watcher_start="$(pstart $$)" \
     brief_class="${rotates:-}" "${crec[@]}"
   drop_lock
@@ -3434,11 +3431,11 @@ run_vendor() {
       # A separate Claude run outside the coin. No one-shot fallback here: the
       # builder user has no Claude login, so only the fleet may take this retry.
       # the run's own context rides, as queue_refused's put does (skipper, mode, depth, note, needs, --after,
-      # the caller's origin): only the harness, its arm and the codex need are dropped — a Claude retry never
-      # runs on a codex builder row (no Claude login there), and on a fired job a typed codex need reads as the
-      # harness's own
+      # the caller's origin): only the harness, its arm and the vendor builder needs (codex, agy) are dropped — a
+      # Claude retry never runs on a vendor builder row (no Claude login there), and on a fired job a typed vendor
+      # need reads as the harness's own
       local rneeds="" n
-      for n in ${needs//,/ }; do [ "$n" = codex ] || rneeds="${rneeds:+$rneeds,}$n"; done
+      for n in ${needs//,/ }; do case "$n" in codex|agy) ;; *) rneeds="${rneeds:+$rneeds,}$n";; esac; done
       harness=""; arm_word=""; arm_need=""; needs="$rneeds"
       model=claude-opus-5-5; effort=high; model_given=1; effort_given=1
       skipper_env; queue_args
@@ -3454,210 +3451,6 @@ run_vendor() {
   exit "$vrc"
 }
 
-# The agy road (--harness agy, the header): from the fire path once the brief is found, in its own words; it never
-# returns. The refusals a Claude run meets here are kept (the spawn gate on this tree, the cap and memory under the
-# start lock); Claude's own steps are not (the login pick, trust, the tier, the landing).
-agy_road() {
-  local hout hrc hrec hpid t0 tail herr menv=()
-  if grep -qiE '^[[:space:]*-]*tier[*]*:.*principal' "$brief"; then
-    echo "FAILED: $rel names a principal tier, which runs Claude: no agy build of it; not running"; exit 1
-  fi
-  # the agy need's rule for this host (a builder host's feature line, its own agy): a claim judged it already, a one-shot
-  # with no queue home did not; no retry fixes a host that is no builder's, so its words are the for-good ones
-  local hwhy hhrc=0
-  hwhy=$(python3 "$Q" agy-host 2>/dev/null) || hhrc=$?
-  if [ "$hhrc" = 3 ]; then
-    echo "FAILED: refused for good, $hwhy; not running"; exit 1
-  elif [ "$hhrc" != 0 ]; then   # this host's agy (or a rule that did not read): the adapter's own refusal says which
-    echo "== agy host: ${hwhy:-the agy host rule did not read (exit $hhrc)}; harness judges the start"
-  fi
-  if ! spawn_judge "$wt" HEAD; then spawn_back; fi
-  skipper_chain
-  resolve_mode
-  # what ran is what the record says (chain_record): an inherited landing mode runs as default (agy-road's round 2)
-  case "$mode" in yolo|dnd) echo "== mode $mode: an agy build hands no landing; it runs as default"; mode=default; yolo=0;; esac
-  chain+=(DISPATCH_BRIEF="$(git -C "$wt" rev-parse "HEAD:$rel" 2>/dev/null)")   # the brief's blob, as a Claude run's record has it
-  prompt="You are an unattended agy run started by dispatch on $(hostname -s) at $(date '+%F %H:%M %Z'); nobody is watching, so decide from the brief and do not ask. Your worktree is $wt on branch $branch. Read the brief at $brief and do what it says, writing only inside that worktree. This run's permission mode may deny shell commands: when one is denied, do not look for a way around it; say which step it held and go on with the rest. Leave your work as edits in the worktree: do not push, merge or launch anything. End with what changed, what you could not run or verify, and what you left for $who. ${note}"
-  cd "$wt" || exit 1
-  python3 "$here/bin/dispatch-rc" reap
-  room=0; why=$(roomy) || room=1
-  refresh_cap
-  take_lock || exit 1
-  n=$(python3 "$here/bin/dispatch-rc" live --no-reap "$repo" "$topic") || n=0
-  n=$((n + $(qreserved)))
-  if [ "$n" -ge "$(pcap)" ]; then
-    drop_lock
-    queue_refused "the run cap ($n of $max_runs busy on $self_host)" \
-      || echo "FAILED: $n other runs are busy (dispatch --status; warm or waiting ones not counted); not starting another (DISPATCH_MAX_RUNS)"
-    exit 1
-  fi
-  if [ "$room" = 1 ]; then
-    drop_lock
-    queue_refused "memory on $self_host: $why" || echo "FAILED: $why; not starting another (wharf-runs/headroom)"
-    exit 1
-  fi
-  new_state
-  printf '%s' "$prompt" > "$state.prompt"
-  local ha=(run --harness agy --cwd "$wt" --prompt-file "$state.prompt" --name "$topic" --json)
-  [ "$model_given" = 1 ] && ha+=(--model "$model")
-  [ "$effort_given" = 1 ] && ha+=(--effort "$effort")
-  echo "== agy: harness ${ha[*]}"
-  # the mode that runs, as resolve_mode puts it on a Claude run's chain: a torn read's ask is this run's alone, so no
-  # DISPATCH_MODE goes on for a --next inside it to inherit (the build review, 2026-11-05)
-  [ "$mode_torn" = 1 ] || menv=(DISPATCH_MODE="$mode")
-  # the run's marker under both names (run_env's), so agy's guards (vendor-hooks) judge it unattended. The depth harness
-  # judges is its caller's, one less than this run's own (fire_refusals allowed depth up to the max; harness refuses at
-  # it), and the cap is the one counted here under the start lock (HARNESS_SLOTS): harness's own `dispatch --slots` would
-  # count this claim's reservation, which qreserved leaves out, and not force's slot over (round 1's items 3 and 4).
-  # HARNESS_DISPATCHED: this record holds the slot once written. The chain's env (the skipper's road, the brief's blob)
-  # and the mode that runs reach agy as a Claude run's reach claude, never the plist's raw DISPATCH_MODE (the finish review)
-  hout=$(env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN \
-    -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u CLAUDE_CODE_SESSION_ID \
-    "${SKIPPER_UNSET[@]}" -u DISPATCH_MODE "${chain[@]}" ${menv[@]+"${menv[@]}"} \
-    REGATTA_UNATTENDED=dispatch CLAUDE_UNATTENDED=dispatch HARNESS_DISPATCHED="$state" DISPATCH_REPO="$repo" \
-    DISPATCH_DEPTH=$(( depth > 0 ? depth - 1 : 0 )) HARNESS_SLOTS="$n $(pcap)" \
-    "${HARNESS_BIN:-$here/bin/harness}" "${ha[@]}" 2>"$state.harness-err"); hrc=$?
-  # what harness said goes to the run log either way (a start's warnings too), and its file no further
-  herr=$(cat "$state.harness-err" 2>/dev/null)
-  [ -n "$herr" ] && printf '%s\n' "$herr"
-  tail=$(printf '%s' "$herr" | tail -3 | tr '\n' ' ')
-  [ "$hrc" = 0 ] && rm -f "$state.harness-err"
-  if [ "$hrc" != 0 ]; then
-    drop_lock
-    rm -f "$state.prompt"
-    # what harness said decides (round 1's item 9): a refusal no host and no wait fixes (the tenant's fence, a public
-    # repo, the contract, the spawn gate's "for good") is FAILED, refused for good; one a wait fixes (the cap's waiting
-    # words, "refused for now", a registry or cap that did not read) goes back to the queue; the rest are this host's
-    # (no guards entry, no --sandbox, no Antigravity login here, agy never sent its init): back, and this host skips it.
-    # The tenant's fence is for good only for a confidential scope, whose entry no other host claims (fleet_fence);
-    # a guarded repo's answer is this host's agy login, which another host's may not share (round 3's item 4)
-    # read from the file, never a grep -q pipe, which under pipefail reads an early match on a long text as 141
-    if grep -qE "does not run in .*a public repo|contract must say|refused for good" "$state.harness-err" \
-       || { grep -q "goes only to a login its tenant owns" "$state.harness-err" && grep -q "in confidential scope" "$state.harness-err"; }; then
-      echo "FAILED: agy refused for good (harness exit $hrc): ${tail:-no word}; not running"; rm -f "$state.harness-err"; exit 1
-    elif grep -qE "waits for a run to end|refused for now|registry does not (read|walk)|run cap did not read" "$state.harness-err"; then
-      queue_refused "agy waits (harness exit $hrc): ${tail:-no word}" \
-        || echo "FAILED: agy did not start (harness exit $hrc): ${tail:-no word}; not running — the next step waits for a run to end"
-    else
-      queue_refused "agy did not start on $self_host (harness exit $hrc): ${tail:-no word}" skip \
-        || echo "FAILED: agy did not start on $self_host (harness exit $hrc): ${tail:-no word}; not running"
-    fi
-    rm -f "$state.harness-err"; exit 1
-  fi
-  # agy's pid and start time from the harness record itself (its wrapper wrote them before init): the run record
-  # harness prints shows a pid only while agy runs, and dispatch-rc's count needs both to hold the slot
-  local hstart hrun
-  { read -r hrec; read -r hpid; read -r hstart; read -r hrun; } < <(printf '%s' "$hout" | python3 -c 'import json, sys
-r = json.load(sys.stdin)
-p = (r.get("native") or {}).get("run") or ""
-try:
-    raw = json.load(open(p))
-except (OSError, ValueError):
-    raw = {}
-pid = raw.get("pid")
-print(p or "-"); print(pid if isinstance(pid, int) and not isinstance(pid, bool) else "-"); print(raw.get("proc_start") or "-")
-print(raw.get("run") or "-")' 2>/dev/null)
-  [ "$hpid" = - ] && hpid=""; [ "$hstart" = - ] && hstart=""; [ "$hrun" = - ] && hrun=""
-  # a blank start time from the wrapper's one read: dispatch's own, which retries (dispatch-rc's same() needs one)
-  [ -n "$hpid" ] && [ -z "$hstart" ] && hstart=$(pstart "$hpid")
-  [ "$model_given" = 1 ] || model=""; [ "$effort_given" = 1 ] || effort=""   # agy's own, not Claude's defaults
-  chain_record   # the chain's fields, as a Claude run's record has them: brief, prio, queue, the skipper's road
-  record mode=agy harness=agy agent=agy background=deny branch="$branch" repo="$repo" topic="$topic" session="$sid" \
-    harness_run="${hrec:--}" ${hpid:+pid="$hpid"} ${hstart:+proc_start="$hstart"} started="$(date +%s)" log="$log" wt="$wt" \
-    watcher="$$" watcher_start="$(pstart $$)" "${crec[@]}"
-  drop_lock
-  queue_started
-  echo "== started (agy): record ${hrec:-?}, pid ${hpid:-?}"
-  # a Mac kept awake while agy runs, as run_headless keeps it for claude (no caffeinate off macOS)
-  [ -n "$hpid" ] && command -v caffeinate >/dev/null && { caffeinate -i -w "$hpid" & }
-  # the run's end: the harness record's `ended`, which its wrapper writes; bounded as a headless run is (DISPATCH_MAX_H)
-  # Each pass: `ended` (its exit), or agy and its wrapper both gone with no end written (a wrapper that died: round
-  # 1's item 18), which ends the run here, failed, rather than poll for hours with the entry running and the branch held
-  # Past the cap, harness stop, then the same polls until agy's end is written or it is gone: the record is ended only
-  # once agy no longer runs, or a second writer could start beside it (the build review, round 2). A pid that outlives
-  # the stop by DISPATCH_AGY_GRACE seconds (60) and is still agy (its start time) is killed; a pid gone, or another
-  # process's (its start differs), has ended; a start ps could not read for a live pid (a loaded Mac) is read again
-  # at the next polls, four times at most; one never seen to end after that, or one whose start was never recorded,
-  # ends the loop with the old warning (the build review, round 3).
-  local grace cur live unread=0
-  grace=$(awk -v g="${DISPATCH_AGY_GRACE:-60}" 'BEGIN { printf "%d", (g + 0 > 0) ? g : 60 }')
-  t0=$(date +%s); rc=""; gone=0; stop_at=""; killed=0
-  while :; do
-    rc=$(python3 -c 'import json, os, subprocess, sys
-def alive(pid, start=None):
-    if not isinstance(pid, int) or isinstance(pid, bool):
-        return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        pass
-    except OSError:
-        return False
-    if not start:
-        return True
-    r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=dict(os.environ, TZ="UTC", LC_ALL="C"))
-    got = " ".join(r.stdout.split())
-    return not got or got == start   # a ps that prints nothing reads as alive, as dispatch-rc running() reads it
-try:
-    r = json.load(open(sys.argv[1]))
-except (OSError, ValueError):
-    print("gone"); sys.exit()
-if r.get("ended"):
-    print(r.get("exit") if isinstance(r.get("exit"), int) else 1)
-elif not alive(r.get("pid"), r.get("proc_start")) and not alive(r.get("wrapper"), r.get("wrapper_start")):
-    print("gone")' "$hrec" 2>/dev/null)
-    if [ "$rc" = gone ]; then
-      gone=$((gone + 1)); rc=""
-      # twice in a row: a wrapper between agy's exit and its last write is not gone
-      [ "$gone" -ge 2 ] && { echo "== agy and its wrapper are gone with no end recorded (${hrec:-no harness record}): ended here, failed"; rc=1; break; }
-    else
-      gone=0
-    fi
-    [ -n "$rc" ] && break
-    if [ -z "$stop_at" ] && [ $(( $(date +%s) - t0 )) -ge "$max_s" ]; then
-      echo "$(date +%T) ending agy: still running after ${DISPATCH_MAX_H:-8} h (DISPATCH_MAX_H)"
-      # by its run id (the adapter's candidates match it), so harness checks the pid's start before its SIGTERM
-      "${HARNESS_BIN:-$here/bin/harness}" stop "${hrun:-$topic}" --harness agy > /dev/null 2>&1 \
-        || echo "== harness stop ${hrun:-$topic} did not end it (pid ${hpid:-?}): waiting for its end"
-      stop_at=$(date +%s)
-    elif [ -n "$stop_at" ] && [ $(( $(date +%s) - stop_at )) -ge "$grace" ]; then
-      cur=""; live=0
-      if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then live=1; cur=$(pstart "$hpid"); fi
-      if [ -n "$hpid" ] && { [ "$live" = 0 ] || { [ -n "$cur" ] && [ -n "$hstart" ] && [ "$cur" != "$hstart" ]; }; }; then
-        echo "== agy (pid $hpid) has ended (gone, or the pid another process's); its wrapper wrote no end: ended here"; rc=143; break
-      elif [ "$killed" = 0 ] && [ -n "$hstart" ] && [ "$cur" = "$hstart" ]; then
-        echo "$(date +%T) agy (pid $hpid) outlived its stop by $grace s: SIGKILL"
-        kill -KILL "$hpid" 2>/dev/null; killed=1; stop_at=$(date +%s)
-      elif [ -n "$hstart" ] && [ -z "$cur" ] && [ "$unread" -lt 4 ]; then
-        unread=$((unread + 1)); echo "== ps printed no start for agy's live pid $hpid: read again at the next poll ($unread of 4)"
-      else
-        echo "== agy's end was never seen after its stop: agy may still run (pid ${hpid:-?})"; rc=143; break
-      fi
-    fi
-    sleep "${DISPATCH_AGY_POLL:-15}"
-  done
-  [ -n "$stop_at" ] && rc=143   # the cap's end is the reason, whatever exit agy's stop wrote
-  rm -f "$state.prompt"
-  python3 -c 'import json, sys, time
-p, h, rc = sys.argv[1:4]
-s = json.load(open(p))
-try:
-    r = json.load(open(h))
-except (OSError, ValueError):
-    r = {}
-if not s.get("ended"):   # an `ending` already said (dispatch --end) is the reason
-    s.update(ended=int(time.time()), end_reason=s.get("ending") or r.get("end_reason") or "exit " + rc, exit=int(rc))
-for k in ("thread", "account", "status", "turns", "denied_actions"):
-    if r.get(k) is not None:
-        s["agy_" + k] = r[k]
-json.dump(s, open(p, "w"), indent=1)' "$state" "$hrec" "$rc"
-  local dirty; dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  [ "${dirty:-0}" = 0 ] || echo "== agy left $dirty changed path(s) uncommitted in $wt: $who's session reads and commits them (no landing follows an agy build)"
-  echo "== exit $rc at $(date)"
-  queue_ended
-  queue_claim
-  exit 0
-}
 
 machine() {   # $host, and $shown: the name as the config keys spell it (regatta/laptop, the dispatch host, the ssh peers)
   local n
@@ -4492,12 +4285,16 @@ fi
       acct_label="$acct_label (account pick --room fable)"
     fi
   fi
-  # a vendor build runs gpt-6.1-sol unless a model was typed or the arm was cancelled (its fallback keeps tier_run's)
+  # a vendor build runs its CLI's default model unless a model was typed or the arm was cancelled (its fallback keeps tier_run's)
   vendor_model_default() {
-    [ "${vendor_cancelled:-0}" = 1 ] || [ "$model_given" = 1 ] || case "$model" in gpt-*) ;; *) model=gpt-6.1-sol;; esac
+    [ "${vendor_cancelled:-0}" = 1 ] || [ "$model_given" = 1 ] || {
+      case "$harness:$arm_word" in
+        agy:*|:argon-high:*) case "$model" in gemini-*) ;; *) model=gemini-4-argon-high;; esac;;
+        *) case "$model" in gpt-*) ;; *) model=gpt-6.1-sol;; esac;;
+      esac
+    }
   }
-  if [ "$dry" = 1 ] && vendor_pending; then vendor_model_default; echo "DRY RUN: would run_vendor codex in $wt with $model $effort${needs:+, needs $needs}" >&3; exit 0; fi
-  if [ "$dry" = 1 ] && [ "$harness" = agy ]; then echo "DRY RUN: would fetch $branch, use $wt, run agy there (harness run --harness agy, its login account pick --provider antigravity's at the start)${needs:+, needs $needs}${mode:+, mode $mode}" >&3; exit 0; fi
+  if [ "$dry" = 1 ] && vendor_pending; then vendor_model_default; echo "DRY RUN: would run_vendor ${harness:-$arm_word} in $wt with $model $effort${needs:+, needs $needs}" >&3; exit 0; fi
   if [ "$dry" = 1 ]; then echo "DRY RUN: would fetch $branch, use $wt, run $C $([ "$headless" = 1 ] && echo "-p <brief>" || echo "<brief> --remote-control in screen run-$rname-$topic") --model $model --effort $effort${tiershow}, background ${bg:-deny}, account ${acct_label:-the default login}${mode:+, mode $mode}$([ "$yolo" = 1 ] && echo ", --yolo: memo yolo's gate in the prompt, then autofinish-run --by yolo")$([ "$mode" = dnd ] && echo ", dnd: keel yolo --dnd's gate in the prompt, then autofinish-run --by dnd")" >&3; exit 0; fi
   # scheduled from inside an earlier run of this branch (--next's usual case): that run is in its
   # last turn, or idle in its screen, in this same worktree. Wait for it rather than share it.
@@ -4553,7 +4350,6 @@ fi
   elif [ "$hrc" != 0 ]; then
     echo "== keel held could not tell (exit $hrc): $(printf '%s\n' "$held_why" | tail -n 1) — not held"
   fi
-  [ "$harness" = agy ] && agy_road
   # the brief as it fires decides the tier (tier_run): unread, a principal line refuses rather than run at the default
   if ! tier_run < "$brief"; then
     if grep -qiE '^[[:space:]*-]*tier[*]*:.*principal' "$brief"; then
@@ -4561,16 +4357,19 @@ fi
     fi
   fi
   if ! why=$(principal_flags); then echo "FAILED: $rel — $why; not running at $model $effort"; exit 1; fi
-  vendor_fire=0; vendor_pending && vendor_fire=1
+  vendor_fire=0; vendor_kind=codex
+  vendor_pending && vendor_fire=1
+  case "$harness:$arm_word" in agy:*|:argon-high:*) vendor_kind=agy;; esac
   arm_apply   # the builder rotation's arm, on the brief as it fires (tier_run reset the pair to the given-or-default)
   if [ "$vendor_fire" = 1 ] && ! vendor_pending; then
-    harness=codex; vendor_cancelled=1   # a disabled arm still returns to the fleet; no Claude in the builder home
+    harness="$vendor_kind"; vendor_cancelled=1   # a disabled arm still returns to the fleet; no Claude in the builder home
   fi
   if vendor_pending; then
     # an arm cancelled at fire (a brief now principal among the causes) takes run_vendor's fallback road: only a
     # vendor build still meant to run is refused for a principal tier
     [ "${vendor_cancelled:-0}" = 1 ] || case "$tier" in principal*) echo "FAILED: refused for good, principal tiers run Claude; no vendor build"; exit 2;; esac
     vendor_cli=codex
+    [ "$vendor_kind" = agy ] && vendor_cli=antigravity
     # a cancelled arm keeps the model tier_run gave it: its fallback runs that, a principal tier's included
     vendor_model_default
     run_vendor

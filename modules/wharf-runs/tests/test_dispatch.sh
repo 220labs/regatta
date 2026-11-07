@@ -1176,8 +1176,8 @@ for e, store in (({"repo": sys.argv[2], "branch": "claude/laptop/2026-10-02-gone
 PYQ
 check "$(CLAUDE_REPOS_JSON="$T/origin-repos.json" python3 "$T/s6gone.py" "$B/dispatch-queue" "$T/repo" "$NM" | tr '\n' ' ')" "True True True True " \
   "seventh review: a host-local entry whose branch is gone here (a spawn's with --origin, a node's): dropped for good, never handed back hourly"
-check "$(grep -c -- '-u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD' "$B/dispatch"):$(grep -c -- '-u DISPATCH_HOST_PIN' "$B/dispatch"):$(grep -c "^  echo 'unset .*DISPATCH_SPAWN_HELD" "$B/dispatch")" "5:5:1" \
-  "seventh review: every launch drops DISPATCH_SPAWN_HELD, so a re-armed run's count never reaches the dispatches it makes (the agy road's harness call the fifth)"
+check "$(grep -c -- '-u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD' "$B/dispatch"):$(grep -c -- '-u DISPATCH_HOST_PIN' "$B/dispatch"):$(grep -c "^  echo 'unset .*DISPATCH_SPAWN_HELD" "$B/dispatch")" "4:4:1" \
+  "seventh review: shell launches drop DISPATCH_SPAWN_HELD; test_vendor covers the vendor CLIs' environment filter"
 # item 11: dispatch's after_merge merges origin/main into the step's branch, a local commit: what it brings is on
 # origin already, so a caller inside the node is not refused for it (-m listed every path main changed)
 git -C "$T/repo" branch -q claude/laptop/2026-10-02-mbase main; git -C "$T/repo" worktree add -q "$(dirname "$WTS")/mbase" claude/laptop/2026-10-02-mbase
@@ -4571,12 +4571,11 @@ check "$(qget repo--m10 state refused_by)" "queued laptop" "  once the home answ
 qreset
 
 echo "  items 11, 12, 13, 14, 16, 17, 18: order, bounds, names, the peer, the reason"
-# the fire block's own tail: the range opens at run_headless's end, and the agy road (agy_road, between them) ends
-# with its own `== exit` line, so only what follows the range's last one is the fire block's
+# The fire block's own tail, after the last shell launch's exit line.
 check "$(sed -n '/^  echo "== exit \$rc at \$(date)"$/,/^} >> "\$log" 2>&1$/p' "$B/dispatch" | awk '/^  echo "== exit /{b=""} {b=b $0 "\n"} END{ORS=""; print b}' | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
   'queue_ended yolo_launch"$rc" queue_claim ' "item 11: a run's end writes its word, then hands its landing on, then claims"
-check "$(sed -n '/^agy_road() {$/,/^}$/p' "$B/dispatch" | awk '/^  echo "== exit /{b=""} {b=b $0 "\n"} END{ORS=""; print b}' | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
-  'queue_ended queue_claim ' "  the agy road's end writes its word, then claims, and hands no landing on"
+check "$(sed -n '/^run_vendor() {$/,/^}$/p' "$B/dispatch" | awk '/^  queue_ended$/{b=""} {b=b $0 "\n"} END{ORS=""; print b}' | grep -E '^  (queue_ended|yolo_launch|queue_claim)' | tr -d ' ' | tr '\n' ' ')" \
+  'queue_ended queue_claim ' "  the vendor road's end writes its word, then claims, and hands no landing on"
 grep -q '\[ "\$arc" = 0 \] && launched=1' "$B/dispatch"; check "$?" "0" "  and a landing started leaves the slot to it (queue_claim skips)"
 sed -n '/^  if \[ "\$start" = 1 \]; then$/,/^  fi$/p' "$B/dispatch" | grep -q queue_claim
 check "$?" "0" "item 17: a --start's end claims too: a slot it held had no end that claimed"
