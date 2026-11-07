@@ -3060,7 +3060,7 @@ RU=0; [ -f "$B/runner-user" ] && RU=1
 if [ "$RU" = 1 ]; then
   grep -q "node-ci lacks what a rootless runner container needs (subuids, linger), the owner's to give with sudo first: wharf's runner-user gives the login all of it" "$T/out"; check "$?" "0" "…all of them at once, named as the owner's step"
   q=$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$(cd "$B" && pwd -P)/runner-user")   # as the refusal quotes it
-  grep -qF "scp $q <key>.pub <node>: && ssh -t <node> sudo bash runner-user --node-user <the node's login> --login <node-ci's login> --key-file <key>.pub (<node> the node's own login's alias, which has sudo; <key>.pub the key node-ci logs in with; the runner login is its own, never the node's); nothing minted" "$T/out"; check "$?" "0" "…by runner-user's one line, its path this checkout's"
+  grep -qF "scp $q <node>: && ssh -t <node> sudo bash runner-user --node-user <the node's login> --login <node-ci's login> (<node> the node's own login's alias, which has sudo; the key node-ci already logs in with is kept; the runner login is its own, never the node's); nothing minted" "$T/out"; check "$?" "0" "…by runner-user's one line, its path this checkout's"
 else
   grep -q "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: a subordinate uid and gid range for the login" "$T/out"; check "$?" "0" "…each lack named as the owner's step (no runner-user here)"
   grep -q "linger for the login (loginctl enable-linger <login>)" "$T/out"; check "$?" "0" "…all of them at once"
