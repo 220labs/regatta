@@ -511,8 +511,10 @@ def match_rows(gate, rows, texts, findings):
         scored = sorted(((len(sig & set(signature(f"{f.get('need', '')} {f.get('title', '')}"))), f) for f in before),
                         key=lambda x: -x[0])[:5]
         cands[r["id"]] = [f for n, f in scored if n]
-        listed = "; ".join(f"{f['id']} ({f['date']}): {str(f.get('need', ''))[:200]} -> "
-                           f"{str(f.get('intervention', ''))[:160]} [{f.get('status', 'proposed')}]" for f in cands[r["id"]])
+        listed = "; ".join(
+            f"{f['id']} ({f['date']}): {str(f.get('need', ''))[:200]} -> {str(f.get('intervention', ''))[:160]} "
+            f"[{(f['status'].get('proposal') or 'proposed') if isinstance(f.get('status'), dict) else (f.get('status') or 'proposed')}]"
+            for f in cands[r["id"]])
         items[r["id"]] = f"ASK ({r['date']}): {texts[r['id']][:TEXT_MAX]}\nFINDINGS: {listed or 'none'}"
     got = gate.label("evolve.match", MATCH_ASK, MATCH_LABELS, items, context="",
                      sources={r["id"]: r.get("project") for r in todo})

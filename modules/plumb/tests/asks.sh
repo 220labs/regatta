@@ -267,6 +267,31 @@ out=$("$A" run --digest "$T/digest.json" --no-model); check "$(echo "$out" | gre
 check "$([ -f "$ASKS_STATE/overrules.jsonl" ] && echo yes)" yes "  the ledger file exists"
 rm -rf "$ASKS_STATE"
 
+echo "the matcher reads three-family finding status objects (Evolve S5)"
+mkdir -p "$ASKS_FINDINGS"
+printf '[{"id": "F3", "date": "%s", "need": "MATCHWORD the dream should remember corrections about the weekly digest ledger", "intervention": "add a memory check", "status": {"proposal": "routed", "execution": "queued", "outcome": null}}]\n' "$(day 6)" > "$ASKS_FINDINGS/s5.json"
+out=$("$A" run --digest "$T/digest.json" --no-overrules); check "$(echo "$out" | grep -o 'match: [0-9]* matched')" "match: 1 matched" "three-family status: matched"
+cat > "$T/s5-status.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("asks", sys.argv[1]).load_module()
+class G:
+    off = False
+    error = None
+    seen = None
+    def label(self, site, ask, labels, items, context="", sources=None):
+        self.seen = items
+        return {k: "anticipated" for k in items}
+g = G()
+rows = [{"id": "p1", "date": "2026-11-05", "target": "system", "detect": "E", "project": "regatta"}]
+fs = [{"id": "F3", "date": "2026-11-01", "need": "digest ledger check", "intervention": "add hook",
+       "status": {"proposal": "routed", "execution": None, "outcome": None}}]
+a.match_rows(g, rows, {"p1": "digest ledger check"}, fs)
+print("[routed]" in g.seen["p1"], "{" not in g.seen["p1"])
+PY
+check "$(python3 "$T/s5-status.py" "$D/bin/asks")" "True True" "  the matcher prompt prints status.proposal as one word, never a dict"
+rm -rf "$ASKS_STATE" "$ASKS_FINDINGS"; : > "$GATE_LOG"
+
 echo "baseline: a made-up corpus through the sieve and the stand-in gate"
 C="$T/corpus"; mkdir -p "$C"
 printf '0\tsysrepo\t10-01\tsa\tASKWORD we should add FEATWORD to the weekly digest ledger EVIDWORD\n1\tsysrepo\t10-02\tsb\tASKWORD we should add FEATWORD to the weekly digest ledger again EVIDWORD\n2\tregatta\t10-02\tsb\tstatus?\n3\tregatta\t10-03\tsc\tQWORD why is the page empty here\n4\tregatta\t10-03\tsc\tfix the typo in the readme\n' > "$C/core.tsv"
