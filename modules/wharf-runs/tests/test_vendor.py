@@ -342,12 +342,33 @@ sys.exit(m.main())
 
     def test_the_house_waiting_line_holds_in_every_form(self):
         rv=importlib.machinery.SourceFileLoader("vendor_fixture_rv_hold",str(B/"run-vendor")).load_module()
-        for line in ("WAITING FOR you: D1", "\U0001f6d1 THIS SESSION IS WAITING FOR YOU \u2014 D1",
+        for line in ("WAITING FOR you: D1", "WAITING FOR D2: which launcher to keep", "WAITING FOR the owner: D1",
+                     # a D-item named after a launcher word still holds (the landing review, 2026-11-07)
+                     "WAITING FOR review of D1 by the owner", "WAITING FOR CI budget decision: D1",
+                     "WAITING FOR the launcher choice (D1)", "WAITING FOR ci-provider decision D2",
+                     "WAITING FOR review: a D-item is open",
+                     "\U0001f6d1 OWNER, THIS SESSION IS WAITING FOR review \u2014 D1",
+                     # owner words, a house line, a lowercase d1 or a hyphen hold with no D-item (the second review)
+                     "WAITING FOR review by the owner", "WAITING FOR CI credentials from the owner",
+                     "WAITING FOR checks: owner must grant access", "WAITING FOR review of d1",
+                     "WAITING FOR review of the open decision in docs/x.md", "WAITING FOR ci-provider access",
+                     "WAITING FOR CIRCLECI credits: top up", "WAITING FOR reviewer",
+                     "\U0001f6d1 OWNER, THIS SESSION IS WAITING FOR review \u2014 approve the schema",
+                     "\U0001f6d1 THIS SESSION IS WAITING FOR CI \u2014 add the token",
+                     # a bare stage word names no launcher and may be the owner's review (the third review)
+                     "WAITING FOR Checks", "WAITING FOR review", "WAITING FOR review.", "WAITING FOR CI",
+                     "WAITING FOR REVIEW", "WAITING FOR checks, review and CI.",
+                     "\U0001f6d1 THIS SESSION IS WAITING FOR YOU \u2014 D1",
                      "\U0001f6d1 MARY ANN, THIS SESSION IS WAITING FOR YOU \u2014 D1",
                      "\U0001f6d1 JOS\u00c9, THIS SESSION IS WAITING FOR YOU \u2014 D1"):
             self.assertTrue(rv.HOLD_RE.match(line), line)
         for line in ("Done, WAITING FOR review", "I noted that WAITING FOR x",
-                     "\u2705 OWNER, THIS SESSION IS WAITING FOR NOTHING \u2014 built"):
+                     "\u2705 OWNER, THIS SESSION IS WAITING FOR NOTHING \u2014 built",
+                     # the launcher's own next stage is no hold (three Codex builds, 2026-11-06)
+                     "WAITING FOR launcher checks and review.", "WAITING FOR the launcher's review rounds",
+                     "WAITING FOR: launcher checks", "WAITING FOR\tlauncher checks and review",
+                     "**WAITING FOR launcher checks and review**", "WAITING FOR the launcher's checks, review and CI.",
+                     "WAITING FOR the launcher"):
             self.assertFalse(rv.HOLD_RE.match(line), line)
 
     def test_codex_takes_no_if_room(self):
