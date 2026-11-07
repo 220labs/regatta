@@ -1564,6 +1564,21 @@ CLAUDE_REPOS_JSON="$T/guarded.json" HC run --harness codex --cwd "$T/projects/co
 has "$T/err" "is guarded" "  named guarded"
 unset CLAUDE_REPOS_JSON HARNESS_ACCOUNT STUB_ACCOUNT_CALLS
 
+echo "the fence keeps a home-installed Codex readable (npm's user prefix on a Linux node: its helper re-runs Codex inside the sandbox)"
+NH="$T/npmh"; NP="$NH/.local/lib/node_modules/@openai/codex"; mkdir -p "$NP/bin" "$NH/.local/bin" "$NH/.ssh" "$T/nscratch"
+printf '{"name": "@openai/codex"}\n' > "$NP/package.json"; printf '#!/bin/sh\n' > "$NP/bin/codex.js"; chmod +x "$NP/bin/codex.js"
+ln -s "$NP/bin/codex.js" "$NH/.local/bin/codex"
+NR="$NH/projects/r"; git init -q -b main "$NR"; git -C "$NR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+nprof() { HOME="$NH" HARNESS_CODEX="$1" python3 -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import codex
+a = codex.fence_profile(sys.argv[2], sys.argv[3]); print(a[-1])' "$B/harness_adapters" "$NR" "$T/nscratch"; }
+NPR=$(cd "$NP" && pwd -P)
+out=$(nprof "$NH/.local/bin/codex")
+case "$out" in *"\"$NPR\"=\"read\""*) r=kept;; *) r="missing: $out";; esac; check "$r" kept "  the npm package folder (its package.json) is read, through the bin link"
+case "$out" in *"/.ssh\"=\"deny\""*) r=denied;; *) r="open: $out";; esac; check "$r" denied "  the rest of the home stays denied (.ssh)"
+out=$(nprof "$T/no-such-codex")
+case "$out" in *node_modules*) r="kept: $out";; *) r=none;; esac; check "$r" none "  no codex found: nothing extra kept"
+unset NH NP NR NPR
+
 echo "the fence, live: codex sandbox under the start's permissions profile (no model call)"
 if command -v codex > /dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
   # a home with a key in it, and a repo under it with a worktree inside the repo

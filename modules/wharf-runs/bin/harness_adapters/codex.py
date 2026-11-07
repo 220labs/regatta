@@ -498,6 +498,25 @@ def _toml_str(v):
     return json.dumps(v)   # a TOML basic string: JSON's escapes are TOML's for every path a Mac names
 
 
+def _install_root():
+    """The folder Codex itself is installed in, real path, kept readable under the fence: Codex's sandbox helper
+    re-executes Codex's own binary inside its sandbox, so a home-installed Codex (npm's user prefix, `.local/lib/node_modules` in the home,
+    on a Linux node) whose folder the profile denies fails every start, `bwrap: execvp …/codex: Permission denied`
+    (a Linux node, 2026-11-06). A Mac's Homebrew Codex lives outside HOME and never needed it. For an npm install
+    it is the package folder (the nearest one holding a package.json, at most three folders up); otherwise the
+    binary's own folder. None when no codex is found."""
+    found = shutil.which(_bin())
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    d = os.path.dirname(real)
+    for _ in range(3):
+        if os.path.isfile(os.path.join(d, "package.json")):
+            return d
+        d = os.path.dirname(d)
+    return os.path.dirname(real)
+
+
 def fence_profile(cwd, scratch, home=None):
     """The `-c` arguments of the start's permissions profile (the module docstring): `regatta-fence`, from
     `:workspace`, with every entry of HOME denied but those on the way to a kept path, the checkout CWD sits
@@ -513,6 +532,9 @@ def fence_profile(cwd, scratch, home=None):
             keep[os.path.realpath(extra)] = "read"
     if scratch:
         keep[scratch] = "write"
+    inst = _install_root()
+    if inst:
+        keep.setdefault(inst, "read")
     under = [k for k in keep if (k + os.sep).startswith(home + os.sep) and k != home]
     table = {}
 
