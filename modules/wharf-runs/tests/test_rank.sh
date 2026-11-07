@@ -24,6 +24,7 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 has()   { if grep -qF -- "$2" "$1"; then echo "  ok   $3"; else echo "  FAIL $3: missing [$2]"; sed 's/^/         | /' "$1" | head -20; fails=$((fails+1)); fi; }
 export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
 export HOME="$T/h"; HL="$T/h/Library"; mkdir -p "$HL/LaunchAgents"
+fixture_finish_ready   # a finish claim judges as on a Mac, whatever host runs the suite
 # a recursive delete under HOME goes through rm_own: only under this suite's own $T (the core's check, home_rm)
 rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
 export ACCOUNTS_FILE="$T/no-accounts.json"

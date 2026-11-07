@@ -234,8 +234,8 @@ skipped with a line.
 `--shard NAME` runs one group in one lane; off macOS it runs `LINUX_OK`'s suites only, and
 `WHARF_RUNS_LINUX_PROOF=1` runs the group whole, to prove a candidate. The check line names the suite
 once (a Mac's whole line runs it in lanes); `share.sh` splits it into one id per shard. The PR's
-`check-linux` runs the eight that passed on Linux (#500, 2026-11-05; `pickup` waited a day for the self-hosted runners' `lsof`); the macOS share runs
-`wharf-runs-queue` and `wharf-runs-macos`.
+`check-linux` runs the eight that passed on Linux (#500, 2026-11-05; `pickup` waited a day for the self-hosted runners' `lsof`); and `queue` since its finish cases judge a prepared host by
+stand-ins (mac-share-speed, 2026-11-06); the macOS share runs `wharf-runs-macos`.
 `test_harness` needs macOS's research seatbelt, and `test_rc_hosts` compiles and signs the TCC
 launcher; both stay in `macos`.
 `share.sh` names a command ending in `tests/check.sh --shard NAME` as `<module>-NAME`, and a plain
