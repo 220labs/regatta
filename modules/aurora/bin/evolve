@@ -11,9 +11,17 @@
     evolve conformance [--scope S] [--days 7] [--json] [--no-record]
         The declared rules against the transcripts' tool calls: exit 0 when every rule holds, 1 when one is
         dead, violated or worked around (or none is declared), 2 when the registry or a rule cannot be read.
-    evolve validate KIND FILE [--quiet] · evolve schema [KIND] · evolve action-id FINDING_ID VERSION SCOPE
+    evolve validate KIND FILE [--scope S] [--quiet] · evolve schema [KIND] · evolve action-id FINDING_ID VERSION SCOPE
         A record (a .jsonl file: each line) against its schema (lib/evolve_schema.py); the schemas; an
         action's identity.
+    evolve where SCOPE [--day D] · evolve open SCOPE [--day D] [--session ID] [--quiet-exit] [--json]
+        Where the scope pass reads and writes (`atlas` records in the vault, staged outside it); the pass's
+        zero-token collectors, carried findings, tonight's research check, rotating deep lens and opening
+        manifest (exit 3 under --quiet-exit when quiet is earned at zero tokens).
+    evolve critic FILE [--scope S] [--json] · evolve record SCOPE [--day D] [--quiet] [--session ID] [--cost USD]
+        The blinded critic over a cold findings artefact (gate `evolve.critic`); the pass's record gate.
+    evolve meetings [PATH | --scope S] [--json] · evolve replay --cutoff D [...] · evolve shadow --scope S [...]
+        Repo-committed meeting pre-briefs and if-then commitments; hidden-future replay; shadow scope pass.
 
 **Why it exists** (Evolve S2; the scope-pass component's lens 3). The owner's asks about the live
 surfaces — a course link that opens nothing, an answer nobody picked up, a board card that never came —
@@ -104,9 +112,11 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -661,11 +671,53 @@ def member_sessions(members):
     return match
 
 
+def _atlas_key(role):
+    """(name, Path) from `<config>/atlas/<role>` or `$ATLAS_<ROLE>`, without importing atlas."""
+    cfg = Path(common.CONFIG)
+    lines = []
+    try:
+        lines = [l.strip() for l in (cfg / "atlas" / role).read_text(encoding="utf-8-sig").splitlines() if l.strip()]
+    except (OSError, UnicodeDecodeError):
+        pass
+    env_var = "ATLAS_%s" % role.upper()
+    alt_var = lines[2] if len(lines) > 2 and lines[2].isidentifier() else None
+    ov = os.environ.get(env_var) or (os.environ.get(alt_var) if alt_var else None)
+    name = lines[0] if lines else role
+    if ov:
+        return name, Path(ov).expanduser()
+    if len(lines) >= 2 and os.path.isabs(os.path.expanduser(lines[1])):
+        return name, Path(lines[1]).expanduser()
+    if role == "vault" and not (cfg / "regatta" / "overlay").exists():
+        return name, Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share").expanduser() / "atlas"
+    return name, None
+
+
+def layer_roots():
+    """Forms of the knowledge layer's checkout (`common.overlay_root()` and `atlas/layer`), never hardcoding its name."""
+    pts = []
+    ov = getattr(common, "overlay_root", lambda: None)()
+    if ov:
+        pts.append(ov)
+    _, lyr = _atlas_key("layer")
+    if lyr:
+        pts.append(lyr)
+    return forms(pts) if pts else set()
+
+
+def vault_info():
+    """(vault Path or None, vault-name) from `atlas/vault` (`$ATLAS_VAULT`)."""
+    name, p = _atlas_key("vault")
+    return p, name
+
+
 class Scope:
     """One scope of the registry as coverage reads it: its members' paths, its anchor, its profile — the
-    profile checked whole, so a bad value makes the scope's profile_error (never quiet), never a crash."""
+    profile checked whole, so a bad value makes the scope's profile_error (never quiet), never a crash.
+    S5: `<config>/aurora/scopes/<scope>.json` wins; `<anchor>/.claude/evolve-scope.json` is read only where
+    the anchor is neither fenced nor the knowledge layer (a profile placed in the layer is a profile_error);
+    the `atlas` scope (or an open scope anchored on the layer) keeps its `evolve/` records in the vault."""
 
-    def __init__(self, name, sc, repos, lens_doc):
+    def __init__(self, name, sc, repos, lens_doc, fenced_by=None, vault=None, layers=None):
         self.name, self.sc = name, sc
         self.confidential = sc.get("confidential") is True
         self.label = scope_label(name, sc)
@@ -675,11 +727,25 @@ class Scope:
         first = ms[0] if isinstance(ms, list) and ms else None
         self.anchor = (Path(first) if first.startswith("/") else Path(common.PROJECTS) / first) \
             if isinstance(first, str) and not common.is_glob(first) else None
+        lroots = layer_roots() if layers is None else layers
+        self.in_layer = bool(self.anchor is not None and (forms([self.anchor]) & lroots))
+        if vault is None and (self.name == "atlas" or self.in_layer):
+            vault, _ = vault_info()
+        self.vault_records = bool(not self.confidential and (self.name == "atlas" or self.in_layer))
+        self.records_home = vault if (self.vault_records and vault is not None) else self.anchor
         # a registry change wakes the scope (finding 7): its own entry and the members it resolves to
         self.reg_sha = hashlib.sha256(json.dumps({"scope": sc, "members": keys}, sort_keys=True).encode()).hexdigest()
         self.refs, self.git_changed, self.sessions_at = {}, False, None
-        self.profile_file = Path(common.CONFIG) / "aurora" / "scopes" / ("%s.json" % name)
+        cfg_prof = Path(common.CONFIG) / "aurora" / "scopes" / ("%s.json" % name)
+        anc_prof = (self.anchor / ".claude" / "evolve-scope.json") \
+            if (self.anchor is not None and not (fenced_by and fenced_by(self.anchor))) else None
+        self.profile_file = cfg_prof
         self.profile, self.profile_error = {}, None
+        if self.in_layer and anc_prof is not None and anc_prof.exists():
+            self.profile_error = "the profile cannot sit in the knowledge layer (use aurora/scopes/%s.json in the config dir)" % name
+            return
+        if not cfg_prof.exists() and anc_prof is not None and anc_prof.exists():
+            self.profile_file = anc_prof
         if self.profile_file.exists():
             try:
                 with open(self.profile_file, encoding="utf-8") as fh:
@@ -711,13 +777,30 @@ def profile_problem(prof, lens_doc):
         if s.get("collector") is not None and s.get("collector") not in {c.get("id") for c in lens_doc.get("collectors") or []}:
             return "profile source %d: no collector %r" % (i + 1, s.get("collector"))   # a typo never drops a requirement
         own.add(s["id"])
-    for k, t in (("not_applicable", list), ("exclude", dict), ("conformance", list)):
+    for k, t in (("not_applicable", list), ("exclude", dict), ("conformance", list),
+                 ("outcome_classes", dict), ("observation_windows", dict), ("bars", dict), ("radar_queries", list)):
         if prof.get(k) is not None and not isinstance(prof[k], t):
             return "%s is no %s" % (k, t.__name__)
     if any(not isinstance(x, str) for x in prof.get("not_applicable") or []):
         return "not_applicable holds something other than a lens id"
+    if any(x not in lens_doc["_lens_ids"] for x in prof.get("not_applicable") or []):
+        return "not_applicable names an unknown lens"
     if any(not isinstance(v, dict) for v in (prof.get("exclude") or {}).values()):
         return "an exclusion is no object"
+    for oc, spec in (prof.get("outcome_classes") or {}).items():
+        if not oc or not isinstance(spec, dict):
+            return "outcome_classes[%r] is no object" % oc
+        od = spec.get("observation_days")
+        if od is not None and (isinstance(od, bool) or not isinstance(od, (int, float)) or od < 0):
+            return "outcome_classes[%r]: observation_days is no non-negative number" % oc
+    for k, v in (prof.get("observation_windows") or {}).items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            return "observation_windows[%r] is no non-negative number" % k
+    for ln, b in (prof.get("bars") or {}).items():
+        if ln not in lens_doc["_lens_ids"] or not isinstance(b, (str, dict)):
+            return "bars[%r]: unknown lens or bad bar" % ln
+    if any(not isinstance(q, str) or not q.strip() for q in prof.get("radar_queries") or []):
+        return "radar_queries holds a non-string or blank query"
     return None
 
 
@@ -727,7 +810,13 @@ def expand(at, scope):
     if at.startswith("{repo}"):
         return [(Path(str(m) + at[len("{repo}"):]), m.is_dir()) for m in scope.members]
     if at.startswith("{anchor}"):
-        return [(Path(str(scope.anchor) + at[len("{anchor}"):]), scope.anchor.is_dir())] if scope.anchor else []
+        tail = at[len("{anchor}"):]
+        if scope.vault_records and scope.records_home is not None and tail.startswith("/evolve"):
+            return [(Path(str(scope.records_home) + tail), scope.records_home.is_dir())]
+        if scope.vault_records and scope.records_home is not None and tail.startswith("/meetings") and \
+                (not scope.anchor or not (scope.anchor / "meetings").exists()) and (scope.records_home / "meetings").exists():
+            return [(Path(str(scope.records_home) + tail), scope.records_home.is_dir())]
+        return [(Path(str(scope.anchor) + tail), scope.anchor.is_dir())] if scope.anchor else []
     return [(Path(at.replace("{log}", log, 1).replace("{config}", cfg, 1)), True)]
 
 
@@ -776,8 +865,9 @@ def judge_source(src, scope, fenced_by):
 
 
 def cited_counts(scope, fenced_by):
-    """{source id: findings citing it} over the anchor's last four findings files; None when there are none."""
-    d = scope.anchor / "evolve" if scope.anchor and not fenced_by(scope.anchor) else None
+    """{source id: findings citing it} over the scope's last four findings files; None when there are none."""
+    home = scope.records_home if scope.vault_records else scope.anchor
+    d = home / "evolve" if home and not fenced_by(home) else None
     try:   # an unreadable anchor (3.9's is_dir raises EACCES) is no count, never a crash (the finish review)
         files = sorted(d.glob("*.findings.json"))[-4:] if d and d.is_dir() else []
     except OSError:
@@ -883,7 +973,8 @@ def scope_state(scope, fenced_by, base, current=None):
         if old is None:
             scope.git_changed = True
         elif new:
-            outside = PASS_OUTPUT if scope.anchor is not None and os.path.realpath(m) == os.path.realpath(scope.anchor) else ()
+            pass_homes = {os.path.realpath(x) for x in (scope.anchor, scope.records_home) if x is not None}
+            outside = PASS_OUTPUT if os.path.realpath(m) in pass_homes else ()
             q = git(m, "rev-list", "--max-count=1", *new, "--not", *old, "--", ".", *outside)
             if q.returncode != 0 or q.stdout.strip():
                 scope.git_changed = True
@@ -1022,7 +1113,7 @@ def surface(reg, scopes, lens_doc, fenced_by, now):
     torn = any(sc.confidential and sc.profile_error for sc in scopes)   # its folders unknown: name no entry
     cfg = Path(common.CONFIG)
     read |= forms((cfg / "aurora" / "scopes", cfg / "aurora" / "surface.json", cfg / "aurora" / "conformance.json",
-                   cfg / "sextant" / "north-star.json", state_dir()) + ((common.repos_json(),) if common.repos_json() else ()))
+                   cfg / "atlas", cfg / "sextant" / "north-star.json", state_dir()) + ((common.repos_json(),) if common.repos_json() else ()))
     ignore = list((lens_doc.get("surface") or {}).get("ignore") or [])
     try:
         with open(cfg / "aurora" / "surface.json", encoding="utf-8") as fh:
@@ -1133,8 +1224,11 @@ def cmd_coverage(a):
     bad_scopes = sum(1 for n in names if not usable(reg["scopes"][n]))
     now = dt.datetime.now().astimezone()
     repos = reg.get("repos") or {}
-    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc) for n in names if usable(reg["scopes"][n])]
     ms = matchers(reg)
+    vpath, _ = vault_info()
+    lroots = layer_roots()
+    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
+              for n in names if usable(reg["scopes"][n])]
     result = {"version": 1, "time": now.isoformat(timespec="seconds"), "lenses_sha": lens_doc["_sha"], "scopes": [],
               "surface": {"items": 0, "unobserved": [], "fenced": 0, "ignored": 0}, "bad_scopes": 0 if a.scope else bad_scopes,
               "skipped_confidential": 0}
@@ -1348,6 +1442,9 @@ def cmd_conformance(a):
     if a.scope and a.scope not in scopes_reg:
         raise Refused("no scope %r in the registry" % a.scope)
     rules_file = Path(common.CONFIG) / "aurora" / "conformance.json"
+    ms = matchers(reg)
+    vpath, _ = vault_info()
+    lroots = layer_roots()
     groups, skipped, unreadable = [], 0, 0   # (scope name or None, [rule])
     try:
         if rules_file.exists():
@@ -1361,7 +1458,7 @@ def cmd_conformance(a):
                     raise ValueError("scope %s in the registry has no list of repos" % n)
                 unreadable += 1   # nothing to judge its rules on
                 continue
-            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc)
+            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
             if sc.profile_error:
                 if a.scope == n:
                     raise ValueError("scope %s: %s" % (sc.label, sc.profile_error))
@@ -1467,6 +1564,34 @@ def cmd_conformance(a):
     return 0 if rows and all(r["class"] == "holds" for r in rows) else 1
 
 
+def _classes_for_scope(sname, base_classes, doc, explicit=False):
+    out = dict(base_classes or {})
+    if not sname:
+        return out
+    reg, bad = common.read_registry()
+    if bad or reg is None:
+        if explicit:
+            raise Refused("the registry cannot be read")
+        return out
+    scopes_reg = reg.get("scopes") or {}
+    target = sname if sname in scopes_reg else next(
+        (n for n, v in scopes_reg.items() if isinstance(v, dict) and scope_label(n, v) == sname), None)
+    if not target or not isinstance(scopes_reg.get(target), dict) or not isinstance(scopes_reg[target].get("repos"), list):
+        if explicit:
+            raise Refused("no usable scope %r in the registry" % sname)
+        return out
+    ms = matchers(reg)
+    vpath, _ = vault_info()
+    sc = Scope(target, scopes_reg[target], reg.get("repos") or {}, doc, fenced_by=fence_for(ms, own=target), vault=vpath)
+    if sc.profile_error:
+        if explicit:
+            raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+        return out
+    if isinstance(sc.profile.get("outcome_classes"), dict):
+        out.update(sc.profile["outcome_classes"])
+    return out
+
+
 def cmd_validate(a):
     if a.kind not in schema.SCHEMAS:
         print("%s validate: no schema %r (one of %s)" % (PROG, a.kind, ", ".join(sorted(schema.SCHEMAS))), file=sys.stderr)
@@ -1479,9 +1604,10 @@ def cmd_validate(a):
         return 2
     try:
         doc = load_lenses() if a.kind in ("finding", "findings") else {}
-        classes, lens_ids = doc.get("outcome_classes"), set(doc.get("_lens_ids") or [])
+        base_classes, lens_ids = doc.get("outcome_classes"), set(doc.get("_lens_ids") or [])
     except (OSError, ValueError) as e:
         raise Refused("a finding's outcome class is judged against lenses.json, which cannot be read (%s)" % e)
+    explicit_classes = _classes_for_scope(getattr(a, "scope", None), base_classes, doc, explicit=True) if getattr(a, "scope", None) else None
     recs = []
     if a.file.endswith(".jsonl"):
         for n, line in enumerate(raw.splitlines(), 1):
@@ -1498,6 +1624,9 @@ def cmd_validate(a):
         recs = [(k, v) for k, v in d.items()] if a.kind == "theme" and isinstance(d, dict) else [("", d)]
     bad = 0
     for where, rec in recs:
+        classes = explicit_classes
+        if classes is None and a.kind in ("finding", "findings") and isinstance(rec, dict):
+            classes = _classes_for_scope(rec.get("scope"), base_classes, doc, explicit=False) if rec.get("scope") else base_classes
         probs = [str(rec)] if isinstance(rec, ValueError) else schema.validate(a.kind, rec, classes)
         if lens_ids and not isinstance(rec, ValueError):   # a lens lenses.json never declared (the finish review)
             fs = [rec] if a.kind == "finding" else (rec.get("findings") if isinstance(rec, dict) else None)
@@ -1529,6 +1658,1150 @@ def cmd_action_id(a):
     return 0
 
 
+# ---- S5: the scope pass in shadow: where, open, critic, record, meetings, replay, shadow ----------------
+
+CRITIC_SITE = "evolve.critic"
+SENSOR_RX = re.compile(r"\b(sensor|probe|probes|collector|coverage|log|jsonl|json|check|schedule|scheduled|cron|metric|ledger|verb|hook|test|watch|monitor)\b", re.I)
+TRIVIAL_CHECK = {"none", "manual", "tbd", "todo", "n/a", "na", "unknown"}
+RECORDING_EXTS = (".vtt", ".srt", ".m4a", ".mp3", ".wav", ".mp4", ".mov", ".eml", ".ics")
+IF_THEN_RX = re.compile(r"^\s*[-*]\s+(?:If\b.+?\bthen\b.+|.+)", re.I)
+DUE_RX = re.compile(r"\bdue:\s*(\d{4}-\d{2}-\d{2})\b", re.I)
+CONFIRMED_RX = re.compile(r"\bConfirmed:\s*(yes|true|confirmed)\b", re.I)
+READ_BEFORE_RX = re.compile(r"^Read before:\s*(yes|true)\s*$", re.I | re.M)
+
+
+def day_or_today(day):
+    d = day or dt.date.today().isoformat()
+    if not valid_day(d):
+        raise Refused("--day %r is no YYYY-MM-DD date" % d)
+    return d
+
+
+def cycle_for_day(day, cycle=None):
+    if cycle:
+        if not re.fullmatch(schema.CYCLE, cycle):
+            raise Refused("--cycle %r is no ISO week (YYYY-Www)" % cycle)
+        return cycle
+    return dt.date.fromisoformat(day).strftime("%G-W%V")
+
+
+def records_branch_name(day):
+    return "claude/%s/%s-scope-pass" % (common.host_name(), day)
+
+
+def resolve_scope_one(name, lens_doc=None):
+    if lens_doc is None:
+        try:
+            lens_doc = load_lenses()
+        except (OSError, ValueError) as e:
+            raise Refused("lenses.json cannot be read (%s)" % e)
+    reg, why = registry_or_refusal()
+    if why:
+        raise Refused(why)
+    scopes_reg = reg.get("scopes") or {}
+    if name not in scopes_reg:
+        raise Refused("no scope %r in the registry" % name)
+    raw = scopes_reg[name]
+    if not isinstance(raw, dict) or not isinstance(raw.get("repos"), list):
+        raise Refused("scope %r in the registry has no list of repos" % name)
+    ms = matchers(reg)
+    own_fence = fence_for(ms, own=name)
+    vpath, vname = vault_info()
+    sc = Scope(name, raw, reg.get("repos") or {}, lens_doc, fenced_by=own_fence, vault=vpath)
+    return reg, sc, own_fence, vpath, vname, lens_doc
+
+
+def staging_dir(sc, day):
+    """Where drafts sit before `evolve record`: outside `<vault>` and `<layer>` for `atlas`, else `<anchor>`."""
+    if sc.vault_records:
+        return state_dir() / "staging" / sc.label.replace(":", "-") / day
+    return sc.anchor
+
+
+def deep_lens_for(reg, sc, lens_doc, day):
+    d = dt.date.fromisoformat(day)
+    serial = (d - dt.timedelta(days=d.weekday())).toordinal() // 7
+    usable_names = sorted(k for k, v in (reg.get("scopes") or {}).items() if isinstance(v, dict) and isinstance(v.get("repos"), list))
+    idx = usable_names.index(sc.name) if sc.name in usable_names else 0
+    na = set(sc.profile.get("not_applicable") or [])
+    app = [ln["id"] for ln in lens_doc["lenses"] if ln["id"] not in na] or [ln["id"] for ln in lens_doc["lenses"]]
+    return app[(serial + idx) % len(app)]
+
+
+def research_status(day, now):
+    """Check tonight's sextant research artefact: complete within freshness, else `outside: stale`."""
+    log = Path(common.LOG_DIR)
+    candidates = [log / "sextant" / ("%s-research.json" % day),
+                  log / "sextant" / "research" / ("%s.json" % day),
+                  log / "sextant" / "research" / ("%s-research.json" % day)]
+    rdir = log / "sextant" / "research"
+    if rdir.is_dir() and not rdir.is_symlink():
+        try:
+            candidates += sorted(rdir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+        except OSError:
+            pass
+    elif rdir.is_file():
+        candidates.append(rdir)
+    seen = set()
+    for p in candidates:
+        rp = str(p)
+        if rp in seen or not p.is_file():
+            continue
+        seen.add(rp)
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+            mtime = dt.datetime.fromtimestamp(p.stat().st_mtime).astimezone()
+        except OSError:
+            continue
+        age = (now - mtime).total_seconds() / 86400
+        if p.suffix == ".json":
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            st = obj.get("status")
+            if st in ("incomplete", "failed", "stale") or obj.get("complete") is False:
+                return {"outside": "stale", "why": "research artefact %s is %s" % (p.name, st or "incomplete")}
+            t = parse_time(obj.get("time") or obj.get("date")) or mtime
+            if (now - t).total_seconds() / 86400 <= 7:
+                return {"outside": "complete", "artefact": p.name}
+        elif raw.strip() and age <= 7:
+            return {"outside": "complete", "artefact": p.name}
+    return {"outside": "stale", "why": "no complete research artefact within 7 days"}
+
+
+def reconcile_carried(sc, day, own_fence):
+    """Read carried `*.findings.json` older than DAY from the scope's records home (or anchor's records/main git)."""
+    home = sc.records_home if sc.vault_records else sc.anchor
+    by_id = {}
+    if home and not own_fence(home):
+        edir = home / "evolve"
+        try:
+            files = sorted(f for f in edir.glob("*.findings.json") if f.name < ("%s.findings.json" % day)) if edir.is_dir() else []
+        except OSError:
+            files = []
+        for f in files:
+            try:
+                rec = json.load(open(f, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for fd in (rec.get("findings") if isinstance(rec, dict) and isinstance(rec.get("findings"), list) else []):
+                if isinstance(fd, dict) and isinstance(fd.get("id"), str):
+                    by_id[fd["id"]] = fd
+        if not files and (home / ".git").exists():
+            r = git(home, "ls-tree", "--name-only", "HEAD", "evolve/")
+            for rel in sorted(r.stdout.splitlines()) if r.returncode == 0 else []:
+                if rel.endswith(".findings.json") and os.path.basename(rel) < ("%s.findings.json" % day):
+                    sh = git(home, "show", "HEAD:%s" % rel)
+                    try:
+                        rec = json.loads(sh.stdout) if sh.returncode == 0 else {}
+                    except ValueError:
+                        rec = {}
+                    for fd in (rec.get("findings") if isinstance(rec, dict) and isinstance(rec.get("findings"), list) else []):
+                        if isinstance(fd, dict) and isinstance(fd.get("id"), str):
+                            by_id[fd["id"]] = fd
+    routed, due_checks, cooldowns = [], [], []
+    d_cur = dt.date.fromisoformat(day)
+    for fid, fd in sorted(by_id.items()):
+        st = fd.get("status") if isinstance(fd.get("status"), dict) else {}
+        prop, exe, outc = st.get("proposal"), st.get("execution"), st.get("outcome")
+        bc = fd.get("benefit_check") if isinstance(fd.get("benefit_check"), dict) else {}
+        due = valid_day(bc.get("due"))
+        if prop == "routed" and outc not in ("benefit_observed", "closed_verified"):
+            routed.append({"id": fid, "execution": exe, "outcome": outc, "due": due})
+        if due and due <= day and (prop == "routed" or exe == "shipped") and outc not in ("benefit_observed", "closed_verified"):
+            due_checks.append({"id": fid, "due": due, "check": bc.get("check") if not sc.confidential else "due", "outcome": outc})
+        cd = fd.get("cooldown")
+        fday = valid_day(fd.get("date"))
+        if prop in ("parked", "killed") and isinstance(cd, int) and cd > 0 and fday:
+            left = cd - (d_cur - dt.date.fromisoformat(fday)).days
+            if left > 0:
+                cooldowns.append({"id": fid, "proposal": prop, "days_left": left})
+    return {"carried_total": len(by_id), "routed": routed, "due_checks": due_checks, "cooldowns": cooldowns}
+
+
+def _workflow_in_place(repo):
+    wf = repo / ".claude" / "workflow.json"
+    if not wf.is_file() or (repo / ".claude" / "no-workflow").exists():
+        return None, wf
+    try:
+        w = json.loads(wf.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set(), wf
+    return {str(e).rstrip("/") for e in ((w or {}).get("in_place") or []) if isinstance(e, str)}, wf
+
+
+def scope_readiness(sc, vpath):
+    if sc.profile_error:
+        return sc.profile_error
+    if not sc.anchor:
+        return "scope %s has no anchor (its first repo, named, not a glob)" % sc.label
+    if not (sc.anchor / ".git").exists():
+        return "its anchor is not cloned here"
+    if not vpath or not (vpath / ".git").exists():
+        return "atlas's vault is not configured (weekly-run where)"
+    if sc.confidential and not (sc.anchor / ".claude" / "words.txt").is_file():
+        return "confidential, and its anchor has no .claude/words.txt"
+    if sc.vault_records:
+        ip, wf = _workflow_in_place(vpath)
+        if ip is not None and "evolve" not in ip:
+            return "evolve/ is not in the vault's in_place (%s)" % wf
+    else:
+        ip, wf = _workflow_in_place(sc.anchor)
+        if ip is not None:
+            missing = [d for d in ("dreams", "evolve") if d not in ip]
+            if missing:
+                return "%s not in the anchor's in_place (%s)" % (" and ".join(d + "/" for d in missing), wf)
+    return None
+
+
+def write_verb_receipt(sc, cell_id, now):
+    p = state_dir() / "receipts" / sc.label.replace(":", "-") / ("%s.json" % cell_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"time": now.isoformat(timespec="seconds")}) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def run_collectors(sc, lens_doc, now, record_receipts=True):
+    """Run zero-token verb collectors declared in lenses.json or the scope's profile; write receipts on exit 0."""
+    col_map = {c["id"]: bool(c.get("required")) for c in lens_doc.get("collectors") or [] if isinstance(c, dict) and c.get("id")}
+    req_srcs = {s for c in lens_doc.get("collectors") or [] if c.get("required") for s in c.get("sources") or []}
+    ran, errors = [], []
+    wd = HERE / "week-digest"
+    if wd.is_file():
+        try:
+            r = subprocess.run([sys.executable, str(wd), "--days", "7", "--json", "--scope", sc.name],
+                               capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            r = subprocess.CompletedProcess([], 124, "", "timed out")
+        if r.returncode == 0:
+            ran.append("week-digest")
+            if record_receipts:
+                write_verb_receipt(sc, "week-digest", now)
+        elif "week-digest" in req_srcs:
+            errors.append("collector digest (week-digest): exit %d" % r.returncode)
+    else:
+        errors.append("collector digest: week-digest missing")
+    for idx, src in enumerate(sc.profile.get("sources") or [], 1):
+        if src.get("kind") != "verb" or not src.get("collector"):
+            continue
+        cid = "profile-source-%d" % idx if sc.confidential else src["id"]
+        req = col_map.get(src["collector"], False)
+        vb = peer(src["name"])
+        if not vb:
+            if req:
+                errors.append("collector %s (%s): verb not installed" % (src["collector"], cid))
+            continue
+        try:
+            r = subprocess.run([str(vb), "--scope", sc.name], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            r = subprocess.CompletedProcess([], 1, "", "failed")
+        if r.returncode == 0:
+            ran.append(cid)
+            if record_receipts:
+                write_verb_receipt(sc, cid, now)
+        elif req:
+            errors.append("collector %s (%s): exit %d" % (src["collector"], cid, r.returncode))
+    return ran, errors
+
+
+def cmd_where(a):
+    day = day_or_today(a.day)
+    reg, sc, own_fence, vpath, vname, lens_doc = resolve_scope_one(a.scope)
+    now = dt.datetime.now().astimezone()
+    why = scope_readiness(sc, vpath)
+    stg = staging_dir(sc, day)
+    rs = research_status(day, now)
+    dl = deep_lens_for(reg, sc, lens_doc, day)
+    prof_disp = str(sc.profile_file) if sc.profile_file.exists() and not sc.confidential else ("present" if sc.profile_file.exists() else "none")
+    rows = [
+        ("scope", sc.name),
+        ("label", sc.label),
+        ("confidential", "true" if sc.confidential else "false"),
+        ("login", common.scope_login(sc.name) or "default"),
+        ("anchor", str(sc.anchor or "MISSING")),
+        ("records", str(sc.records_home or "MISSING")),
+        ("vault-records", "true" if sc.vault_records else "false"),
+        ("staging", str(stg or "MISSING")),
+        ("profile", prof_disp),
+        ("deep-lens", dl),
+        ("outside", rs["outside"]),
+        ("vault", str(vpath or "MISSING")),
+        ("vault-name", vname),
+        ("inbox", str(vpath / "inbox" / "upstream" / ("%s.md" % sc.name)) if vpath else "MISSING"),
+        ("records-branch", records_branch_name(day)),
+        ("ready", "yes" if not why else "no — %s" % why),
+    ]
+    for k, v in rows:
+        print("%s %s" % (k, v))
+    return 0 if not why else 1
+
+
+def _commit_vault_paths(vpath, vname, msg, rels):
+    """Commit RELS in the vault through `SCOPE_PASS_COMMIT` (suite stand-in) or atlas's `knowledge-commit`."""
+    override = os.environ.get("SCOPE_PASS_COMMIT")
+    if override:
+        cmd = [*override.split(), vname, "-m", msg, *rels]
+    else:
+        kc = peer("knowledge-commit")
+        if not kc:
+            return False, "atlas's knowledge-commit is not installed"
+        cmd = [str(kc), vname, "-m", msg, *rels]
+    r = subprocess.run(cmd, cwd=str(vpath), capture_output=True, text=True)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()[-240:]
+
+
+def _append_vault_log(vpath, scope_name, day, word):
+    if not vpath or not vpath.is_dir():
+        return False
+    log_md = vpath / "log.md"
+    prefix = "- %s evolve --scope %s:" % (day, scope_name)
+    line = "%s %s" % (prefix, word)
+    old = log_md.read_text(encoding="utf-8") if log_md.is_file() else "# Log\n\n"
+    lines = [l for l in old.splitlines() if not l.startswith(prefix)]
+    lines.append(line)
+    log_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
+def _write_state_receipt(sc, day, rc_obj):
+    p = state_dir() / "receipts" / sc.label.replace(":", "-") / ("%s-receipt.json" % day)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rc_obj, indent=1) + "\n", encoding="utf-8")
+    return p
+
+
+def cmd_open(a):
+    day = day_or_today(a.day)
+    cycle = cycle_for_day(day, a.cycle)
+    reg, sc, own_fence, vpath, vname, lens_doc = resolve_scope_one(a.scope)
+    if sc.profile_error:
+        raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+    now = dt.datetime.now().astimezone()
+    ran, col_errors = run_collectors(sc, lens_doc, now, record_receipts=True)
+    if col_errors:
+        raise Refused("collector failed (held, never quiet): " + "; ".join(col_errors))
+    rec = reconcile_carried(sc, day, own_fence)
+    rs = research_status(day, now)
+    dl = deep_lens_for(reg, sc, lens_doc, day)
+    base = read_baseline(sc)
+    cells, extra = scope_cells(sc, lens_doc, own_fence, now)
+    scope_state(sc, own_fence, base, a.session)
+    m = manifest(sc, lens_doc, cells, extra, now, None, base)
+    if a.session:
+        m["pass_session"] = a.session
+    label_file(sc, "").parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", ".opening"):
+        with open(label_file(sc, suffix), "w", encoding="utf-8") as fh:
+            json.dump(m, fh, indent=1)
+    m_sha = file_sha(label_file(sc, ".opening"))
+    why = list(m["why"])
+    if rec["due_checks"]:
+        why.append("%d benefit check%s due" % (len(rec["due_checks"]), "" if len(rec["due_checks"]) == 1 else "s"))
+    quiet_earned = bool(m["quiet_ok"] and not rec["due_checks"])
+    pkt = {
+        "scope": sc.label, "day": day, "cycle": cycle, "cutoff": m["cutoff"],
+        "deep_lens": dl, "outside": rs["outside"], "outside_detail": rs,
+        "collectors_ran": ran, "reconciled": rec,
+        "quiet_ok": quiet_earned, "why": why, "manifest_sha": m_sha,
+        "staging": str(staging_dir(sc, day)) if not sc.confidential else None,
+    }
+    if a.quiet_exit and quiet_earned:
+        rc_obj = {"receipt": "quiet", "scope": sc.label, "cycle": cycle, "day": day,
+                  "cutoff": m["cutoff"], "cost_usd": 0.0, "manifest_sha": m_sha,
+                  "time": now.isoformat(timespec="seconds")}
+        if schema.validate("receipt", rc_obj):
+            raise Refused("quiet receipt failed schema validation")
+        _write_state_receipt(sc, day, rc_obj)
+        if vpath and (vpath / ".git").exists() and not os.environ.get("EVOLVE_NO_COMMIT"):
+            if _append_vault_log(vpath, sc.name, day, "quiet"):
+                _commit_vault_paths(vpath, vname, "Evolve: %s %s quiet" % (sc.label, day), ["log.md"])
+        pkt["receipt"] = rc_obj
+        if a.json:
+            print(json.dumps(pkt, indent=1))
+        else:
+            print("evolve open %s: quiet earned at $0 (cutoff %s)" % (sc.label, m["cutoff"]))
+        return 3
+    if a.json:
+        print(json.dumps(pkt, indent=1))
+    else:
+        print("scope %s (%s): deep-lens %s, outside %s, %d carried (%d due check%s), quiet %s" % (
+            sc.label, cycle, dl, rs["outside"], rec["carried_total"], len(rec["due_checks"]),
+            "" if len(rec["due_checks"]) == 1 else "s", "earned" if quiet_earned else "not allowed — " + "; ".join(why)))
+    return 0
+
+
+def _deterministic_finding_checks(rec, sc, lens_doc):
+    """Cold-artefact deterministic checks beyond field types: outcome_classes, lenses, blind-spot sensors, strength n."""
+    base_classes = dict(lens_doc.get("outcome_classes") or {})
+    if sc is not None and not sc.profile_error and isinstance(sc.profile.get("outcome_classes"), dict):
+        base_classes.update(sc.profile["outcome_classes"])
+    elif isinstance(rec, dict) and rec.get("scope"):
+        base_classes = _classes_for_scope(rec.get("scope"), base_classes, lens_doc, explicit=False)
+    probs = list(schema.validate("findings", rec, base_classes))
+    lens_ids = set(lens_doc.get("_lens_ids") or [])
+    na = set((sc.profile.get("not_applicable") if sc and not sc.profile_error else None) or [])
+    fs = rec.get("findings") if isinstance(rec, dict) and isinstance(rec.get("findings"), list) else []
+    seen_ids = set()
+    for i, f in enumerate(fs):
+        if not isinstance(f, dict):
+            continue
+        fid = f.get("id")
+        if isinstance(fid, str):
+            if fid in seen_ids:
+                probs.append("findings[%d].id: duplicate id %r in findings file" % (i, fid))
+            seen_ids.add(fid)
+        ln = f.get("lens")
+        if isinstance(ln, str) and ln:
+            if ln not in lens_ids:
+                probs.append("findings[%d].lens: %r is no lens lenses.json declares" % (i, ln))
+            elif ln in na:
+                probs.append("findings[%d].lens: %r is marked not_applicable in the scope profile" % (i, ln))
+        ac = (f.get("acceptance_check") or "").strip() if isinstance(f.get("acceptance_check"), str) else ""
+        if ac.lower() in TRIVIAL_CHECK:
+            probs.append("findings[%d].acceptance_check: %r is no runnable check" % (i, f.get("acceptance_check")))
+        if f.get("kind") == "blind_spot":
+            combined = "%s %s" % (f.get("intervention") or "", ac)
+            if not SENSOR_RX.search(combined):
+                probs.append("findings[%d].intervention: a blind_spot candidate must add a sensor or scheduled observation" % i)
+        if f.get("kind") == "strength" and f.get("proposed_route") not in (None, "park"):
+            refs = f.get("evidence_refs") if isinstance(f.get("evidence_refs"), list) else []
+            max_n = max([r.get("count", 0) for r in refs if isinstance(r, dict) and isinstance(r.get("count"), int)] or [0])
+            if max_n < 5:
+                probs.append("findings[%d]: a strength with n < 5 (%d) is a watch line (park), not %r" % (i, max_n, f.get("proposed_route")))
+        if f.get("proposed_route") in ("build", "sound", "pin"):
+            ce = f.get("counterevidence")
+            if not isinstance(ce, str) or len(ce.strip()) < 3:
+                probs.append("findings[%d].counterevidence: required on a %s proposal" % (i, f.get("proposed_route")))
+    return probs
+
+
+CRITIC_PROMPT = (
+    "You are a cold, blinded critic reviewing a scope pass's candidate findings artefact. You have NOT been told "
+    "the owner's preferences or past overrules. Judge each finding strictly on the artefact before you: "
+    "(1) does `acceptance_check` test what `intervention` changes, and is `benefit_check` falsifiable on its due date? "
+    "(2) does `observation` follow from `evidence_counts`, and was `counterevidence` genuinely weighed? "
+    "(3) if `kind` is `blind_spot`, does `intervention` add a real sensor or scheduled observation rather than prose? "
+    "Return JSON matching the schema: for each finding id, `verdict` (`pass` or `drop`) and `reason` (one short sentence).")
+
+
+def _load_gate_mod():
+    gpath = HERE.parent.parent / "regatta" / "bin" / "gate"
+    if not gpath.is_file():
+        return None
+    from importlib.machinery import SourceFileLoader
+    return SourceFileLoader("gate", str(gpath)).load_module()
+
+
+def _run_blinded_critic(rec, sc, require_model=False):
+    """Run the gate's `evolve.critic` row over a stripped cold packet; return (issues, meta)."""
+    fs = [f for f in (rec.get("findings") or []) if isinstance(f, dict) and isinstance(f.get("id"), str)]
+    if not fs:
+        return [], {"gate": "no_findings", "cost_usd": 0.0}
+    gate_mod = _load_gate_mod()
+    if gate_mod is None:
+        if require_model:
+            raise Refused("gate module is missing")
+        return [], {"gate": "skipped", "why": "no gate module", "cost_usd": 0.0}
+    try:
+        row = gate_mod.resolve(CRITIC_SITE)
+    except Exception as e:   # noqa: BLE001
+        if type(e).__name__ == "GateOff":
+            raise Refused("%s is off with when_off=fail" % CRITIC_SITE)
+        raise Refused("%s: %s" % (CRITIC_SITE, str(e).splitlines()[0][:160]))
+    if row is None:
+        return [], {"gate": "skipped", "why": "off", "cost_usd": 0.0}
+    if row.get("provider") != "claude":
+        if sc is not None and sc.confidential:
+            raise Refused("%s: provider %r refused on confidential scope (Anthropic-only)" % (CRITIC_SITE, row.get("provider")))
+        try:
+            guarded = set(gate_mod._jev_module().GUARDED)
+            if sc is not None and any(m.name in guarded or str(m) in guarded for m in sc.members):
+                raise Refused("%s: provider %r refused on guarded scope" % (CRITIC_SITE, row.get("provider")))
+        except Refused:
+            raise
+        except Exception:   # noqa: BLE001
+            raise Refused("%s: guard list unreadable for provider %r" % (CRITIC_SITE, row.get("provider")))
+    cold = []
+    for f in fs:
+        refs = [{"source": ("source-%d" % (j + 1) if sc and sc.confidential else r.get("source")), "count": r.get("count")}
+                for j, r in enumerate(f.get("evidence_refs") or []) if isinstance(r, dict)]
+        cold.append({
+            "id": f["id"], "kind": f.get("kind"), "lens": f.get("lens"),
+            "observation": f.get("observation"), "hypothesis": f.get("hypothesis"),
+            "counterevidence": f.get("counterevidence"), "intervention": f.get("intervention"),
+            "smallest_test": f.get("smallest_test"), "acceptance_check": f.get("acceptance_check"),
+            "benefit_check": f.get("benefit_check"), "proposed_route": f.get("proposed_route"),
+            "evidence_counts": refs,
+        })
+    ids = [c["id"] for c in cold]
+    item_schema = {"type": "object", "additionalProperties": False, "required": ["verdict", "reason"],
+                   "properties": {"verdict": {"type": "string", "enum": ["pass", "drop"]},
+                                  "reason": {"type": "string"}}}
+    jschema = {"type": "object", "additionalProperties": False, "required": ids,
+               "properties": {fid: item_schema for fid in ids}}
+    prompt = CRITIC_PROMPT + "\n\nFindings artefact:\n" + json.dumps(cold, indent=1)
+    cbin = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
+    if not cbin:
+        if require_model:
+            raise Refused("%s: claude binary not found" % CRITIC_SITE)
+        return [], {"gate": "skipped", "why": "claude not installed", "cost_usd": 0.0}
+    cmd = [cbin, "-p", *gate_mod.claude_flags(row), "--output-format", "json",
+           "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(jschema)]
+    try:
+        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300,
+                           env={k: v for k, v in os.environ.items() if k != "CLAUDECODE"})
+        res = json.loads(p.stdout)
+        got = res.get("structured_output")
+        if not isinstance(got, dict):
+            got = json.loads(res.get("result") or "")
+        cost = float(res.get("total_cost_usd") or 0.0)
+        if res.get("is_error") or not isinstance(got, dict):
+            raise ValueError("bad critic reply")
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        if require_model:
+            raise Refused("%s failed: %s" % (CRITIC_SITE, type(e).__name__))
+        return [], {"gate": "skipped", "why": "call failed (%s)" % type(e).__name__, "cost_usd": 0.0}
+    issues = []
+    for fid in ids:
+        v = got.get(fid) if isinstance(got.get(fid), dict) else {}
+        if v.get("verdict") == "drop":
+            issues.append("critic (%s): %s" % (fid, str(v.get("reason") or "dropped by blinded critic")[:200]))
+    return issues, {"gate": "ran", "model": row.get("model"), "cost_usd": cost, "verdicts": got}
+
+
+def cmd_critic(a):
+    try:
+        lens_doc = load_lenses()
+    except (OSError, ValueError) as e:
+        raise Refused("lenses.json cannot be read (%s)" % e)
+    try:
+        with open(a.file, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise Refused("findings file cannot be read (%s)" % type(e).__name__)
+    sc = None
+    if a.scope:
+        _, sc, _, _, _, _ = resolve_scope_one(a.scope, lens_doc)
+        if sc.profile_error:
+            raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+    det = _deterministic_finding_checks(rec, sc, lens_doc)
+    mod_issues, meta = _run_blinded_critic(rec, sc, require_model=a.require_model)
+    all_issues = det + mod_issues
+    out = {"ok": not all_issues, "deterministic": det, "critic": mod_issues, "meta": meta}
+    if a.json:
+        print(json.dumps(out, indent=1))
+    else:
+        for msg in all_issues:
+            print("  FAIL %s" % msg)
+        print("critic: %s (%s)" % ("clean" if not all_issues else "%d issue%s" % (len(all_issues), "" if len(all_issues) == 1 else "s"),
+                                   meta.get("gate")))
+    return 0 if not all_issues else 1
+
+
+def _plumb_commit_repo(repo, br, main_name, msg, rels):
+    """Commit RELS (present in REPO) onto refs/heads/BR using a private GIT_INDEX_FILE; remove untracked copies."""
+    here = [r for r in rels if (repo / r).is_file()]
+    if not here:
+        return True, ""
+    ref = "refs/heads/%s" % br
+    old = git(repo, "rev-parse", "-q", "--verify", ref + "^{commit}").stdout.strip()
+    base = old
+    if not base:
+        for cand in ("refs/remotes/origin/%s" % main_name, "refs/heads/%s" % main_name, "HEAD"):
+            tip = git(repo, "rev-parse", "-q", "--verify", cand + "^{commit}").stdout.strip()
+            if tip:
+                base = tip
+                break
+    with tempfile.TemporaryDirectory(prefix="evolve-rec-") as tmp:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index"), "GIT_TERMINAL_PROMPT": "0"}
+
+        def g(*args):
+            return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env)
+        s0 = g("read-tree", base) if base else g("read-tree", "--empty")
+        if s0.returncode != 0:
+            return False, (s0.stderr or s0.stdout).strip()
+        for r in here:
+            h = g("hash-object", "-w", "--", r)
+            if h.returncode != 0:
+                return False, (h.stderr or h.stdout).strip()
+            u = g("update-index", "--add", "--cacheinfo", "100644,%s,%s" % (h.stdout.strip(), r))
+            if u.returncode != 0:
+                return False, (u.stderr or u.stdout).strip()
+        tr = g("write-tree")
+        if tr.returncode != 0:
+            return False, (tr.stderr or tr.stdout).strip()
+        tree = tr.stdout.strip()
+        if not base or git(repo, "rev-parse", base + "^{tree}").stdout.strip() != tree:
+            c = g("commit-tree", tree, *(["-p", base] if base else []), "-m", msg)
+            if c.returncode != 0:
+                return False, (c.stderr or c.stdout).strip()
+            up = g("update-ref", ref, c.stdout.strip(), *([old] if old else []))
+            if up.returncode != 0:
+                return False, (up.stderr or up.stdout).strip()
+    for r in here:
+        if git(repo, "ls-files", "--error-unmatch", "--", r).returncode != 0:
+            try:
+                (repo / r).unlink()
+            except OSError:
+                pass
+    if git(repo, "remote", "get-url", "origin").returncode == 0:
+        p = subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "+%s:%s" % (ref, ref)],
+                           capture_output=True, text=True, timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        if p.returncode != 0:
+            return False, "push failed: %s" % (p.stderr or p.stdout).strip()[-200:]
+        pr_cmd = os.environ.get("SCOPE_PASS_PR")
+        if pr_cmd:
+            subprocess.run([*pr_cmd.split(), "open", str(repo), br, main_name], capture_output=True, text=True)
+    return True, ""
+
+
+def _export_open_findings(sc, day, findings_list):
+    """Write an open scope's finding objects to `$ASKS_FINDINGS/<scope>-<day>.json` for plumb's `asks` matcher."""
+    if sc.confidential:
+        return None
+    fdir = Path(os.environ.get("ASKS_FINDINGS") or (Path(common.LOG_DIR) / "evolve" / "findings"))
+    fdir.mkdir(parents=True, exist_ok=True)
+    out = fdir / ("%s-%s.json" % (sc.name, day))
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(findings_list, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, out)
+    return out
+
+
+def _promote_scope_baseline(sc, session=None):
+    src = label_file(sc, ".opening")
+    if not src.is_file():
+        return False
+    try:
+        m = json.loads(src.read_text(encoding="utf-8"))
+        if schema.validate("manifest", m):
+            return False
+    except (OSError, ValueError):
+        return False
+    if session:
+        m["pass_session"] = session
+    label_file(sc, ".complete").write_text(json.dumps(m, indent=1) + "\n", encoding="utf-8")
+    return True
+
+
+def cmd_record(a):
+    day = day_or_today(a.day)
+    cycle = cycle_for_day(day, a.cycle)
+    _, sc, own_fence, vpath, vname, lens_doc = resolve_scope_one(a.scope)
+    if sc.profile_error:
+        raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+    now = dt.datetime.now().astimezone()
+    open_m_file = label_file(sc, ".opening")
+    if not open_m_file.is_file():
+        base = read_baseline(sc)
+        cells, extra = scope_cells(sc, lens_doc, own_fence, now)
+        scope_state(sc, own_fence, base, a.session)
+        m = manifest(sc, lens_doc, cells, extra, now, None, base)
+        if a.session:
+            m["pass_session"] = a.session
+        open_m_file.parent.mkdir(parents=True, exist_ok=True)
+        open_m_file.write_text(json.dumps(m, indent=1) + "\n", encoding="utf-8")
+    else:
+        m = json.loads(open_m_file.read_text(encoding="utf-8"))
+    m_sha = file_sha(open_m_file)
+    if a.quiet:
+        rec_c = reconcile_carried(sc, day, own_fence)
+        if not m.get("quiet_ok") or rec_c["due_checks"]:
+            reasons = list(m.get("why") or []) + (["benefit check due"] if rec_c["due_checks"] else [])
+            print("%s record: quiet refused for %s — %s" % (PROG, sc.label, "; ".join(reasons) or "not earned"), file=sys.stderr)
+            return 1
+        rc_obj = {"receipt": "quiet", "scope": sc.label, "cycle": cycle, "day": day,
+                  "cutoff": m.get("cutoff"), "cost_usd": 0.0, "manifest_sha": m_sha,
+                  "time": now.isoformat(timespec="seconds")}
+        if schema.validate("receipt", rc_obj):
+            print("%s record: quiet receipt failed schema check" % PROG, file=sys.stderr)
+            return 1
+        _write_state_receipt(sc, day, rc_obj)
+        if vpath and (vpath / ".git").exists():
+            _append_vault_log(vpath, sc.name, day, "quiet")
+            ok, err = _commit_vault_paths(vpath, vname, "Evolve: %s %s quiet" % (sc.label, day), ["log.md"])
+            if not ok:
+                print("%s record: vault log commit failed — %s" % (PROG, err), file=sys.stderr)
+                return 1
+        print("evolve record %s: quiet (%s)" % (sc.label, day))
+        return 0
+
+    stg = staging_dir(sc, day)
+    f_json = (stg / "evolve" / ("%s.findings.json" % day)) if stg else None
+    f_md = (stg / "evolve" / ("%s.md" % day)) if stg else None
+    if (not f_json or not f_json.is_file()) and sc.records_home:
+        alt_j = sc.records_home / "evolve" / ("%s.findings.json" % day)
+        alt_m = sc.records_home / "evolve" / ("%s.md" % day)
+        if alt_j.is_file():
+            f_json, f_md = alt_j, alt_m
+    if not f_json or not f_json.is_file() or not f_md or not f_md.is_file():
+        print("%s record: missing drafted evolve/%s.findings.json or evolve/%s.md in %s" % (PROG, day, day, stg), file=sys.stderr)
+        return 1
+    try:
+        findings_obj = json.loads(f_json.read_text(encoding="utf-8"))
+        md_text = f_md.read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        print("%s record: unreadable findings or markdown (%s)" % (PROG, type(e).__name__), file=sys.stderr)
+        return 1
+    if not md_text.strip():
+        print("%s record: evolve/%s.md is empty" % (PROG, day), file=sys.stderr)
+        return 1
+    expected_scopes = {sc.name, sc.label}
+    if findings_obj.get("scope") not in expected_scopes:
+        print("%s record: findings scope %r does not match %s" % (PROG, findings_obj.get("scope"), sc.label), file=sys.stderr)
+        return 1
+    probs = _deterministic_finding_checks(findings_obj, sc, lens_doc)
+    if probs:
+        for p in probs:
+            print("%s record: %s" % (PROG, p), file=sys.stderr)
+        return 1
+
+    br = records_branch_name(day)
+    if sc.vault_records:
+        if not vpath or not (vpath / ".git").exists():
+            print("%s record: atlas's vault is not configured" % PROG, file=sys.stderr)
+            return 1
+        rc_obj = {"receipt": "complete", "scope": sc.label, "cycle": cycle, "day": day,
+                  "cutoff": findings_obj.get("cutoff") or m.get("cutoff"),
+                  "cost_usd": a.cost, "records_ref": "main", "manifest_sha": m_sha,
+                  "time": now.isoformat(timespec="seconds")}
+        if schema.validate("receipt", rc_obj):
+            print("%s record: receipt failed schema check" % PROG, file=sys.stderr)
+            return 1
+        ve = vpath / "evolve"
+        ve.mkdir(parents=True, exist_ok=True)
+        rels = ["evolve/%s.findings.json" % day, "evolve/%s.md" % day, "evolve/%s-receipt.json" % day]
+        (vpath / rels[0]).write_text(json.dumps(findings_obj, indent=1) + "\n", encoding="utf-8")
+        (vpath / rels[1]).write_text(md_text, encoding="utf-8")
+        (vpath / rels[2]).write_text(json.dumps(rc_obj, indent=1) + "\n", encoding="utf-8")
+        _append_vault_log(vpath, sc.name, day, "complete")
+        ip, _ = _workflow_in_place(vpath)
+        if ip is not None and "evolve" not in ip:
+            rc_obj["records_ref"] = br
+            (vpath / rels[2]).write_text(json.dumps(rc_obj, indent=1) + "\n", encoding="utf-8")
+            ok_b, err_b = _plumb_commit_repo(vpath, br, "main", "Evolve: %s %s" % (sc.label, day), rels)
+            ok_l, err_l = _commit_vault_paths(vpath, vname, "Evolve: %s %s log" % (sc.label, day), ["log.md"])
+            if not (ok_b and ok_l):
+                print("%s record: vault commit failed — %s" % (PROG, err_b or err_l), file=sys.stderr)
+                return 1
+        else:
+            ok, err = _commit_vault_paths(vpath, vname, "Evolve: %s %s" % (sc.label, day), rels + ["log.md"])
+            if not ok:
+                print("%s record: vault commit failed — %s" % (PROG, err), file=sys.stderr)
+                return 1
+        if stg and stg != vpath:
+            shutil.rmtree(stg, ignore_errors=True)
+    else:
+        if not sc.anchor or not (sc.anchor / ".git").exists():
+            print("%s record: scope %s has no cloned anchor" % (PROG, sc.label), file=sys.stderr)
+            return 1
+        has_dream = (sc.anchor / "dreams" / ("%s.md" % day)).is_file() or (sc.anchor / "dreams" / ("%s-upstream.md" % day)).is_file()
+        sp_rc_obj = {}
+        if sc.confidential and not has_dream:
+            sp_chk = subprocess.run([sys.executable, str(HERE / "scope-pass"), "receipt", sc.name, "--day", day],
+                                    capture_output=True, text=True)
+            if sp_chk.returncode != 0:
+                print("%s record: confidential scope requires dreams/%s.md and dreams/%s-upstream.md for export gate" % (PROG, day, day), file=sys.stderr)
+                return 1
+            try:
+                sp_rc_obj = json.loads(sp_chk.stdout)
+            except ValueError:
+                sp_rc_obj = {}
+        elif has_dream:
+            sp = subprocess.run([sys.executable, str(HERE / "scope-pass"), "record", sc.name, "--day", day, "--cycle", cycle],
+                                capture_output=True, text=True)
+            if sp.stdout:
+                sys.stdout.write(sp.stdout)
+            if sp.stderr:
+                sys.stderr.write(sp.stderr)
+            if sp.returncode != 0:
+                return sp.returncode
+            sp_r = subprocess.run([sys.executable, str(HERE / "scope-pass"), "receipt", sc.name, "--day", day],
+                                  capture_output=True, text=True)
+            if sp_r.returncode == 0:
+                try:
+                    sp_rc_obj = json.loads(sp_r.stdout)
+                except ValueError:
+                    sp_rc_obj = {}
+        rc_obj = {
+            "receipt": "complete", "scope": sc.label, "cycle": cycle, "day": day,
+            "cutoff": findings_obj.get("cutoff") or m.get("cutoff"),
+            "cost_usd": a.cost if a.cost is not None else sp_rc_obj.get("cost_usd"),
+            "records_ref": br, "sha256": sp_rc_obj.get("sha256"), "judge_rev": sp_rc_obj.get("judge_rev"),
+            "manifest_sha": m_sha, "time": now.isoformat(timespec="seconds"),
+        }
+        if schema.validate("receipt", rc_obj):
+            print("%s record: receipt failed schema check" % PROG, file=sys.stderr)
+            return 1
+        ae = sc.anchor / "evolve"
+        ae.mkdir(parents=True, exist_ok=True)
+        rels = ["evolve/%s.findings.json" % day, "evolve/%s.md" % day, "evolve/%s-receipt.json" % day]
+        if f_json.resolve() != (sc.anchor / rels[0]).resolve():
+            (sc.anchor / rels[0]).write_text(json.dumps(findings_obj, indent=1) + "\n", encoding="utf-8")
+        if f_md.resolve() != (sc.anchor / rels[1]).resolve():
+            (sc.anchor / rels[1]).write_text(md_text, encoding="utf-8")
+        (sc.anchor / rels[2]).write_text(json.dumps(rc_obj, indent=1) + "\n", encoding="utf-8")
+        wf_file = sc.anchor / ".claude" / "workflow.json"
+        main_name = "main"
+        if wf_file.is_file():
+            try:
+                main_name = json.loads(wf_file.read_text(encoding="utf-8")).get("main") or "main"
+            except (OSError, ValueError):
+                pass
+        ok, err = _plumb_commit_repo(sc.anchor, br, main_name, "Evolve: %s %s" % (sc.label, day), rels)
+        if not ok:
+            print("%s record: records branch commit failed — %s" % (PROG, err), file=sys.stderr)
+            return 1
+        if not has_dream and vpath and (vpath / ".git").exists():
+            _append_vault_log(vpath, sc.name, day, "complete")
+            ok_v, err_v = _commit_vault_paths(vpath, vname, "Evolve: %s %s" % (sc.label, day), ["log.md"])
+            if not ok_v:
+                print("%s record: vault log commit failed — %s" % (PROG, err_v), file=sys.stderr)
+                return 1
+
+    _write_state_receipt(sc, day, rc_obj)
+    _export_open_findings(sc, day, findings_obj["findings"])
+    _promote_scope_baseline(sc, session=a.session)
+    print("evolve record %s: complete (%d finding%s)" % (
+        sc.label, len(findings_obj["findings"]), "" if len(findings_obj["findings"]) == 1 else "s"))
+    return 0
+
+
+def _inspect_meetings_dir(mdir, repo_root=None):
+    """Inspect repo-committed `.md` meeting notes in MDIR; never read uncommitted drafts or recordings."""
+    if not mdir or not mdir.is_dir():
+        return {"state": "source_missing", "meetings": 0, "prebriefs_read": 0, "commitments": 0,
+                "undated_commitments": 0, "unconfirmed_commitments": 0, "uncommitted_ignored": 0, "recordings_refused": 0,
+                "summary": "no committed meeting notes"}
+    root = repo_root
+    if root is None:
+        r = git(mdir, "rev-parse", "--show-toplevel")
+        root = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    tracked = set()
+    if root is not None:
+        ls = git(root, "ls-files", "--", str(mdir))
+        for rel in ls.stdout.splitlines() if ls.returncode == 0 else []:
+            tracked.add(os.path.realpath(root / rel))
+    meetings = prebriefs_read = commitments = undated = unconfirmed = uncommitted = recordings = 0
+    for f in sorted(mdir.iterdir()):
+        if f.is_symlink() or not f.is_file():
+            continue
+        if f.suffix.lower() in RECORDING_EXTS:
+            recordings += 1
+            continue
+        if f.suffix.lower() != ".md" or f.name.lower() == "readme.md":
+            continue
+        if root is not None and os.path.realpath(f) not in tracked:
+            uncommitted += 1
+            continue   # read-only until committed by the owner
+        try:
+            txt = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        meetings += 1
+        if READ_BEFORE_RX.search(txt):
+            prebriefs_read += 1
+        in_comm = False
+        for raw_line in txt.splitlines():
+            s = raw_line.strip()
+            if s.startswith("<!--") or s.endswith("-->"):
+                continue
+            if s.startswith("## "):
+                in_comm = s.lower().startswith("## commitment")
+                continue
+            if in_comm and IF_THEN_RX.match(raw_line):
+                if "<condition" in s and "<YYYY-MM-DD>" in s:
+                    continue   # unedited template placeholder
+                commitments += 1
+                dm = DUE_RX.search(s)
+                if not dm or not valid_day(dm.group(1)):
+                    undated += 1
+                if not CONFIRMED_RX.search(s):
+                    unconfirmed += 1
+    if meetings == 0:
+        return {"state": "source_missing", "meetings": 0, "prebriefs_read": 0, "commitments": 0,
+                "undated_commitments": 0, "unconfirmed_commitments": 0, "uncommitted_ignored": uncommitted,
+                "recordings_refused": recordings, "summary": "0 committed meetings (%d uncommitted draft%s ignored)" % (
+                    uncommitted, "" if uncommitted == 1 else "s")}
+    summary = "%d meeting%s, %d pre-brief%s read before; %d commitment%s (%d with no date, %d unconfirmed)" % (
+        meetings, "" if meetings == 1 else "s", prebriefs_read, "" if prebriefs_read == 1 else "s",
+        commitments, "" if commitments == 1 else "s", undated, unconfirmed)
+    return {"state": "observed", "meetings": meetings, "prebriefs_read": prebriefs_read,
+            "commitments": commitments, "undated_commitments": undated, "unconfirmed_commitments": unconfirmed,
+            "uncommitted_ignored": uncommitted, "recordings_refused": recordings, "summary": summary}
+
+
+def cmd_meetings(a):
+    mdir, root = None, None
+    if a.scope:
+        _, sc, own_fence, _, _, _ = resolve_scope_one(a.scope)
+        cand = sc.anchor / "meetings" if sc.anchor else None
+        if sc.vault_records and sc.records_home and (not cand or not cand.exists()) and (sc.records_home / "meetings").exists():
+            cand, root = sc.records_home / "meetings", sc.records_home
+        else:
+            root = sc.anchor
+        if cand and own_fence(cand):
+            raise Refused("meetings path is fenced")
+        mdir = cand
+    elif a.path:
+        mdir = Path(a.path).expanduser()
+    else:
+        raise Refused("give a directory path or --scope <scope>")
+    res = _inspect_meetings_dir(mdir, repo_root=root)
+    ok = res["state"] == "observed" and res["prebriefs_read"] == res["meetings"] and res["undated_commitments"] == 0 and res["recordings_refused"] == 0
+    res["ok"] = ok
+    if a.json:
+        print(json.dumps(res, indent=1))
+    else:
+        print("meetings: %s" % res["summary"])
+    return 0 if ok else 1
+
+
+def _words_of(s):
+    return {w for w in re.findall(r"[a-z0-9]{3,}", (s or "").lower()) if w not in {"the", "and", "for", "with", "that", "this", "from", "into", "when", "none", "pass"}}
+
+
+def cmd_replay(a):
+    cutoff = day_or_today(a.cutoff)
+    c_date = dt.date.fromisoformat(cutoff)
+    end_date = (c_date + dt.timedelta(days=a.window)).isoformat()
+    cutoff_end = dt.datetime.fromisoformat(cutoff + "T23:59:59+00:00")
+    asks_path = Path(a.asks).expanduser() if a.asks else (Path(common.LOG_DIR) / "plumb" / "asks" / "asks.jsonl")
+    f_arg = Path(a.findings).expanduser() if a.findings else Path(os.environ.get("ASKS_FINDINGS") or (Path(common.LOG_DIR) / "evolve" / "findings"))
+    asks = []
+    if asks_path.is_file():
+        for line in asks_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    asks.append(json.loads(line))
+                except ValueError:
+                    continue
+    f_files = [f_arg] if f_arg.is_file() else (sorted(f_arg.glob("*.json")) if f_arg.is_dir() else [])
+    single_file = f_arg.is_file()
+    findings, masked_future, leaks = [], 0, []
+    for fp in f_files:
+        try:
+            raw = json.loads(fp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        items = raw.get("findings") if isinstance(raw, dict) and isinstance(raw.get("findings"), list) else (raw if isinstance(raw, list) else [raw])
+        for fd in items:
+            if not isinstance(fd, dict) or not fd.get("id"):
+                continue
+            fday = valid_day(fd.get("date"))
+            if fday and fday > cutoff:
+                if single_file or a.strict_cutoff:
+                    leaks.append("finding %s dated %s after cutoff %s" % (fd["id"], fday, cutoff))
+                else:
+                    masked_future += 1
+                continue
+            for ref in fd.get("evidence_refs") or []:
+                if isinstance(ref, dict) and ref.get("time"):
+                    rt = parse_time(ref["time"])
+                    if rt is not None and rt.astimezone(dt.timezone.utc) > cutoff_end:
+                        leaks.append("finding %s cites post-cutoff evidence (%s)" % (fd["id"], ref["time"]))
+            findings.append(fd)
+    by_id = {f["id"]: f for f in findings}
+    past_asks = [r for r in asks if isinstance(r, dict) and (valid_day(r.get("date")) or "") <= cutoff]
+    future_asks = [r for r in asks if isinstance(r, dict) and cutoff < (valid_day(r.get("date")) or "") <= end_date
+                   and (r.get("target") in ("system", "question") or r.get("sieve") == "ask")]
+    e_total = e_hit = n_backlog = j_excl = 0
+    leads, matched_rows = [], []
+    for r in future_asks:
+        det = r.get("detect") or "E"
+        if det == "J":
+            j_excl += 1
+            continue
+        if det == "N":
+            n_backlog += 1
+            continue
+        e_total += 1
+        m = r.get("match") if isinstance(r.get("match"), dict) else {}
+        hit = by_id.get(m.get("finding")) if m.get("label") == "anticipated" and m.get("finding") in by_id else None
+        if hit is None and r.get("theme"):
+            hit = next((f for f in findings if f.get("theme_id") == r.get("theme")), None)
+        if hit is None:
+            rw = _words_of("%s %s" % (r.get("theme") or "", r.get("text") or ""))
+            if rw:
+                hit = next((f for f in findings if len(rw & _words_of("%s %s %s" % (f.get("id") or "", f.get("need") or "", f.get("theme_id") or ""))) >= 2), None)
+        if hit is not None:
+            e_hit += 1
+            fday = valid_day(hit.get("date")) or cutoff
+            lead = (dt.date.fromisoformat(fday) - dt.date.fromisoformat(r["date"])).days
+            leads.append(lead)
+            matched_rows.append({"ask": r.get("id"), "finding": hit["id"], "lead_days": lead})
+    recall = round(e_hit / e_total, 4) if e_total else None
+    out = {
+        "cutoff": cutoff, "window_days": a.window, "canary_leak": bool(leaks), "leaks": leaks,
+        "past_asks_visible": len(past_asks), "findings_at_cutoff": len(findings), "masked_future_findings": masked_future,
+        "future_e_asks": e_total, "anticipated_e": e_hit, "recall_e": recall,
+        "backlog_n": n_backlog, "excluded_j": j_excl,
+        "median_lead_days": sorted(leads)[len(leads) // 2] if leads else None,
+        "matches": matched_rows,
+    }
+    if a.json:
+        print(json.dumps(out, indent=1))
+    else:
+        if leaks:
+            for lk in leaks:
+                print("  LEAK %s" % lk)
+        print("replay @ %s (+%dd): %d/%d E anticipated (recall %s), %d N backlog, %d J outside, canary_leak=%s" % (
+            cutoff, a.window, e_hit, e_total, "n/a" if recall is None else "%.2f" % recall, n_backlog, j_excl, bool(leaks)))
+    return 1 if leaks else 0
+
+
+def _shadow_findings(sc, lens_doc, cells, rec_carried, meetings_res, day, cycle, cutoff):
+    """Synthesise up to 5 schema-valid shadow findings from real coverage cells, bars and meetings."""
+    out = []
+    due_day = (dt.date.fromisoformat(day) + dt.timedelta(days=28)).isoformat()
+    bars = (sc.profile.get("bars") if isinstance(sc.profile.get("bars"), dict) else {}) if not sc.profile_error else {}
+    na = set(sc.profile.get("not_applicable") or []) if not sc.profile_error else set()
+    oc_map = dict(lens_doc.get("outcome_classes") or {})
+    if not sc.profile_error and isinstance(sc.profile.get("outcome_classes"), dict):
+        oc_map.update(sc.profile["outcome_classes"])
+    default_oc = "code" if "code" in oc_map else next(iter(oc_map))
+    noncode_oc = next((k for k in (sc.profile.get("outcome_classes") or {})), None) or (
+        "approved_cut" if sc.name == "film" and "approved_cut" in oc_map else default_oc)
+    lvl_of = {ln["id"]: (ln.get("levels") or ["PW"])[0] for ln in lens_doc["lenses"]}
+
+    def mk(fid_slug, kind, lens_id, need, obs, interv, check_cmd, source_id, count, route="propose", oc=None):
+        fid = re.sub(r"[^a-z0-9._-]", "-", ("%s-%s" % (sc.label.replace(":", "-"), fid_slug)).lower())[:72].strip("-")
+        use_oc = oc or (noncode_oc if lens_id in ("strategy", "product") and sc.name not in ("regatta", "atlas") else default_oc)
+        obs_win = int((oc_map.get(use_oc) or {}).get("observation_days", 28))
+        b_due = (dt.date.fromisoformat(day) + dt.timedelta(days=max(7, obs_win))).isoformat()
+        f = {
+            "id": fid, "theme_id": fid_slug, "scope": sc.label, "cycle": cycle, "date": day,
+            "need": need, "process_revision": "evolve-scope@s5",
+            "kind": kind, "level": lvl_of.get(lens_id, "PW"), "lens": lens_id, "goal_ref": None,
+            "evidence_refs": [{"source": source_id, "count": int(count)}],
+            "source_freshness": {source_id: 0.0},
+            "observation": obs, "hypothesis": "unknown",
+            "counterevidence": "Source may be intentionally idle in a quiet week; check next cycle before widening.",
+            "p_success": 0.7, "intervention": interv, "alternatives": ["park until next cycle"],
+            "smallest_test": check_cmd, "acceptance_check": check_cmd,
+            "benefit_check": {"check": "cell %s reads observed on %s" % (source_id, sc.label), "due": b_due if valid_day(b_due) else due_day},
+            "observation_window": obs_win, "outcome_class": use_oc,
+            "reversible": True, "auto_constructible": route == "build", "auto_activatable": False,
+            "size": "xs", "est_list_usd": 2.0, "owner_minutes": 2, "maintenance_cost": None,
+            "proposed_route": route, "privacy_class": "confidential" if sc.confidential else "open",
+            "cooldown": 14, "prior_ids": [], "supersedes": None,
+            "found_by": "pass", "also_found_by": [],
+            "status": {"proposal": "proposed", "execution": None, "outcome": None},
+            "action_version": 1, "target_scope": sc.label,
+        }
+        f["action_id"] = schema.action_id(f["id"], 1, sc.label)
+        return f
+
+    if "strategy" not in na:
+        ns_cell = next((c for c in cells if c["source"] == "north-star"), None)
+        pr_cell = next((c for c in cells if c["source"] == "principles"), None)
+        if "strategy" not in bars and (not ns_cell or ns_cell["state"] != "observed") and (not pr_cell or pr_cell["state"] != "observed"):
+            out.append(mk("strategy-no-bar", "gap", "strategy", "declare a measurable strategy bar for the scope",
+                          "no bar for this lens: neither north-star.json nor PRINCIPLES.md declares a target for %s" % sc.label,
+                          "Declare `bars.strategy` in aurora/scopes/%s.json or add PRINCIPLES.md" % sc.label,
+                          "evolve coverage --scope %s --json shows north-star or principles observed" % sc.name,
+                          "principles", 0, route="propose"))
+    if "meetings" not in na and meetings_res["state"] == "observed" and (meetings_res["prebriefs_read"] < meetings_res["meetings"] or meetings_res["undated_commitments"] > 0):
+        out.append(mk("meetings-cadence", "gap", "meetings", "pre-briefs read before and dated if-then commitments",
+                      meetings_res["summary"],
+                      "Use templates/meeting.md with `Read before: yes` and dated `due: YYYY-MM-DD` commitments",
+                      "evolve meetings --scope %s exits 0" % sc.name,
+                      "meeting-notes", meetings_res["meetings"], route="propose"))
+    for c in cells:
+        if len(out) >= 5:
+            break
+        if c["state"] in ("unread", "inaccessible", "stale") or c.get("overdue"):
+            src = c["source"]
+            out.append(mk("blind-%s" % src, "blind_spot", c["lens"],
+                          "restore fresh observation on %s/%s" % (c["lens"], src),
+                          "coverage cell %s/%s is %s (%s)" % (c["lens"], src, c["state"], c.get("why") or "unseen"),
+                          "Add a scheduled collector sensor or refresh %s in %s's coverage register" % (src, sc.label),
+                          "evolve coverage --scope %s --json marks %s observed" % (sc.name, src),
+                          src, 1, route="propose"))
+    for c in cells:
+        if len(out) >= 5:
+            break
+        if c["state"] == "source_missing" and c["lens"] not in na:
+            src = c["source"]
+            out.append(mk("missing-%s" % src, "blind_spot", c["lens"],
+                          "wire sensor or exclude %s/%s with review date" % (c["lens"], src),
+                          "coverage cell %s/%s is source_missing" % (c["lens"], src),
+                          "Wire collector log for %s or declare a dated exclusion in aurora/scopes/%s.json" % (src, sc.label),
+                          "evolve coverage --scope %s --json has %s observed or excluded" % (sc.name, src),
+                          src, 0, route="propose"))
+    return {"version": 1, "scope": sc.label, "cycle": cycle, "cutoff": cutoff, "findings": out[:5]}
+
+
+def cmd_shadow(a):
+    t0 = time.monotonic()
+    day = day_or_today(a.day)
+    cycle = cycle_for_day(day, a.cycle)
+    reg, sc, own_fence, _, _, lens_doc = resolve_scope_one(a.scope)
+    if sc.profile_error:
+        raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+    now = dt.datetime.now().astimezone()
+    ran, col_errors = run_collectors(sc, lens_doc, now, record_receipts=False)
+    rec_c = reconcile_carried(sc, day, own_fence)
+    rs = research_status(day, now)
+    dl = deep_lens_for(reg, sc, lens_doc, day)
+    base = read_baseline(sc)
+    cells, extra = scope_cells(sc, lens_doc, own_fence, now)
+    scope_state(sc, own_fence, base, None)
+    m = manifest(sc, lens_doc, cells, extra, now, None, base)
+    counts = {}
+    for c in cells:
+        counts[c["state"]] = counts.get(c["state"], 0) + 1
+    m_dir = sc.anchor / "meetings" if sc.anchor and not own_fence(sc.anchor) else None
+    meetings_res = _inspect_meetings_dir(m_dir, repo_root=sc.anchor)
+    f_obj = _shadow_findings(sc, lens_doc, cells, rec_c, meetings_res, day, cycle, m["cutoff"])
+    det = _deterministic_finding_checks(f_obj, sc, lens_doc)
+    mod_issues, critic_meta = _run_blinded_critic(f_obj, sc, require_model=False)
+    if det:
+        raise Refused("shadow findings failed validation: " + "; ".join(det))
+    out_root = Path(a.out).expanduser() if a.out else (state_dir() / "shadow" / sc.label.replace(":", "-") / day)
+    (out_root / "evolve").mkdir(parents=True, exist_ok=True)
+    f_path = out_root / "evolve" / ("%s.findings.json" % day)
+    md_path = out_root / "evolve" / ("%s.md" % day)
+    f_path.write_text(json.dumps(f_obj, indent=1) + "\n", encoding="utf-8")
+    md_lines = [
+        "# Evolve (shadow) — %s — %s (%s)" % (sc.label, day, cycle), "",
+        "## Reconciled",
+        "- Carried findings: %d (%d routed, %d due benefit checks)" % (rec_c["carried_total"], len(rec_c["routed"]), len(rec_c["due_checks"])), "",
+        "## Deep lens: %s" % dl,
+        "- Outside research: `%s`" % ("complete" if rs["outside"] == "complete" else "outside: stale"),
+        "- Records target: `%s`" % ("vault" if sc.vault_records else "anchor-records-branch"), "",
+        "## Findings (%d)" % len(f_obj["findings"]),
+    ]
+    for fd in f_obj["findings"]:
+        md_lines.append("- **%s** (`%s`, `%s`, `%s`): %s — check: `%s`" % (
+            fd["id"], fd["kind"], fd["lens"], fd["outcome_class"], fd["observation"], fd["acceptance_check"]))
+    md_lines += ["", "## Feedback from the owner", ""]
+    md_path.write_text("\n".join(md_lines), encoding="utf-8")
+    wall = round(time.monotonic() - t0, 3)
+    with_check = sum(1 for fd in f_obj["findings"] if (fd.get("acceptance_check") or "").strip())
+    summary = {
+        "scope": sc.label, "day": day, "cycle": cycle, "vault_records": sc.vault_records,
+        "deep_lens": dl, "outside": rs["outside"], "collectors_ran": ran, "collector_errors": col_errors,
+        "coverage_counts": counts, "reconciled": rec_c, "meetings": meetings_res["state"],
+        "findings_count": len(f_obj["findings"]), "findings_with_check": with_check,
+        "wall_seconds": wall, "split_needed": wall > 2400.0,
+        "critic": {"issues": mod_issues, "meta": critic_meta},
+        "out_dir": str(out_root) if not sc.confidential else None,
+    }
+    (out_root / "evolve" / ("%s-shadow.json" % day)).write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
+    if a.json:
+        print(json.dumps(summary, indent=1))
+    else:
+        print("shadow %s (%s): %d finding%s (%d with runnable check), deep-lens %s, outside %s, %.2fs (split_needed=%s)" % (
+            sc.label, cycle, summary["findings_count"], "" if summary["findings_count"] == 1 else "s",
+            with_check, dl, rs["outside"], wall, summary["split_needed"]))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog=PROG, description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -1555,6 +2828,7 @@ def main(argv=None):
     p = sub.add_parser("validate", help="a record or a JSON-lines ledger against its schema")
     p.add_argument("kind")
     p.add_argument("file")
+    p.add_argument("--scope", help="also accept outcome_classes declared in this scope's profile")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("schema", help="the schemas, or one as JSON")
     p.add_argument("kind", nargs="?")
@@ -1562,9 +2836,50 @@ def main(argv=None):
     p.add_argument("finding_id")
     p.add_argument("action_version", type=int)
     p.add_argument("target_scope")
+    p = sub.add_parser("where", help="where a scope's pass reads and writes, and whether it is ready")
+    p.add_argument("scope")
+    p.add_argument("--day")
+    p = sub.add_parser("open", help="zero-token collectors, carried reconcile, deep lens and opening manifest")
+    p.add_argument("scope")
+    p.add_argument("--day")
+    p.add_argument("--cycle")
+    p.add_argument("--session")
+    p.add_argument("--quiet-exit", action="store_true", help="exit 3 and write a quiet receipt when quiet is earned")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("critic", help="blinded cold-artefact critic over a findings JSON file")
+    p.add_argument("file")
+    p.add_argument("--scope")
+    p.add_argument("--require-model", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("record", help="validate and land a scope pass's findings, receipt and baseline")
+    p.add_argument("scope")
+    p.add_argument("--day")
+    p.add_argument("--cycle")
+    p.add_argument("--session")
+    p.add_argument("--cost", type=float)
+    p.add_argument("--quiet", action="store_true")
+    p = sub.add_parser("meetings", help="repo-committed meeting pre-briefs and dated if-then commitments")
+    p.add_argument("path", nargs="?")
+    p.add_argument("--scope")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("replay", help="hidden-future replay at a cutoff with canary leak detection")
+    p.add_argument("--cutoff", required=True)
+    p.add_argument("--asks")
+    p.add_argument("--findings")
+    p.add_argument("--window", type=int, default=28)
+    p.add_argument("--strict-cutoff", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("shadow", help="run a scope's pass in shadow without touching live refs or the vault")
+    p.add_argument("--scope", required=True)
+    p.add_argument("--day")
+    p.add_argument("--cycle")
+    p.add_argument("--out")
+    p.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     cmds = {"probes": cmd_probes, "coverage": cmd_coverage, "conformance": cmd_conformance, "validate": cmd_validate,
-            "schema": cmd_schema, "action-id": cmd_action_id}
+            "schema": cmd_schema, "action-id": cmd_action_id, "where": cmd_where, "open": cmd_open,
+            "critic": cmd_critic, "record": cmd_record, "meetings": cmd_meetings, "replay": cmd_replay,
+            "shadow": cmd_shadow}
     if a.cmd in cmds:
         try:
             return cmds[a.cmd](a)

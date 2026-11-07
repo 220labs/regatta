@@ -4,7 +4,7 @@ description: Aurora Borealis — the night job. Runs the sections due tonight (t
 disable-model-invocation: true
 model: fable
 effort: high
-argument-hint: "[<section>…] [--days N] [dream --scope <scope>]"
+argument-hint: "[<section>…] [--days N] [evolve|dream --scope <scope>]"
 ---
 
 Aurora over: $ARGUMENTS
@@ -43,7 +43,7 @@ goes on without it (charts is never due without one).
 | trim | weekly, Sunday night, last; only where a repo holds a vertical file (`bin/weekly-run`'s `trim_repos`) and plumb's `trim` is installed | none, so a by-hand `/aurora` skips it: `bin/weekly-run` runs plumb's `trim` itself, zero tokens, no session (by hand: plumb's `trim collect`, `report --write` and `verdict --write`, each with `--repo <r> --vertical <v> --night`; `bin/weekly-run` with `AURORA_SECTIONS=trim` also runs the tend, marks the week tried and may wait until 00:30) | the night's trim ledger, report and `verdict.json` in the core's log dir (`<log dir>/<host>/trim/<repo>/<vertical>/`), outside every checkout; plumb's daily usage report reads the verdict |
 | charts | weekly, Sunday night, before dream; only in a repo whose `docs/README.md` holds the map (`bin/weekly-run`'s `due`) | `sections/charts.md` | the layer's `docs/` in its own worktree — a dry-run PR `/embark` merges or closes; in mode live also its `log.md` line, launched reviewed |
 | dream | weekly, Sunday night; a missed one runs at the next wake (`bin/weekly-run`'s `due` is the one home for when) | `sections/dream.md` | `<vault>/dreams/<date>.md` — the proposal `/embark` reviews |
-| dream `--scope <scope>` | weekly per scope, by whatever schedules it (`bin/weekly-run aurora --scope <scope>`); by hand any time | `sections/dream-scope.md` | `<anchor>/dreams/<date>.md` in the scope's knowledge repo, and `<vault>/inbox/upstream/<scope>.md` — the generalised lines the global dream reads as inbox |
+| evolve `--scope <scope>` (`dream --scope` aliased) | weekly per scope, by whatever schedules it (`bin/weekly-run aurora --scope <scope>`); by hand any time | `sections/evolve-scope.md` | `<anchor>/evolve/<date>.md`, `<anchor>/evolve/<date>.findings.json` and `<anchor>/dreams/<date>.md` on the scope's records branch (`<vault>/evolve/` for `atlas`), and `<vault>/inbox/upstream/<scope>.md` — the generalised lines the global dream reads as inbox |
 
 **The order of a night is fixed: tend, classify, `branches`, `charts`, review, `dream`, `trim`** —
 mechanical and cheap first, the Fable judgement last, so the dream reads what the others left
@@ -64,8 +64,8 @@ skill, no new launchd job.
 1. **Which sections.** The arguments name them (`/aurora dream`); otherwise the ones whose
    cadence matches today and that have a file in `sections/` (`trim` has none: never yours). `bin/weekly-run` passes the due ones explicitly, so an unattended
    run never guesses. Other arguments (`--days N`) go to every section: a section that takes one uses the value
-   given here in place of its default. `--scope <scope>` runs the dream alone, as that scope's pass
-   (`sections/dream-scope.md`), never the other sections.
+   given here in place of its default. `--scope <scope>` (with `evolve` or `dream`, or alone) runs that
+   scope's pass (`sections/evolve-scope.md`, aliased by `sections/dream-scope.md`), never the other sections.
 2. **Each section in turn**, in the order above (unattended, `bin/weekly-run` gives each section
    a session of its own, `charts` run from the layer): Read its file and follow it to the end
    before starting the next. A section that fails says so in its own output, posts one bulletin

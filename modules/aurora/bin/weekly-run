@@ -348,7 +348,7 @@ tools=(Read Write Edit Glob Grep Agent)  # Agent: /sextant's reviewer before a g
 # it only reads.
 # Pinned to those base directories (the module's, the config dir's links), never `*/…`: a planted
 # weekly-run under any x/y/../../bin would match a wildcard and run unclassified (B10 review).
-tools+=("Bash($MOD/bin/weekly-run where)" "Bash($MOD/bin/week-digest:*)" "Bash($MOD/bin/scope-pass:*)")
+tools+=("Bash($MOD/bin/weekly-run where)" "Bash($MOD/bin/week-digest:*)" "Bash($MOD/bin/scope-pass:*)" "Bash($MOD/bin/evolve:*)")
 for sk in aurora embark; do
   for sb in "$MOD/skills/$sk" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$sk"; do
     tools+=("Bash($sb/../../bin/weekly-run where)")
@@ -359,7 +359,7 @@ for t in knowledge-numbers interruptions knowledge-commit bulletin.py repos docs
 done
 bases=(); [ -n "$C" ] && bases=("$C"); [ -n "$C" ] && [[ "$C" == "$HOME"/* ]] && bases+=("~${C#"$HOME"}")
 for base in ${bases[@]+"${bases[@]}"}; do
-  tools+=("Bash($base/bin/week-digest:*)" "Bash($base/bin/knowledge-numbers:*)" "Bash($base/bin/interruptions:*)"
+  tools+=("Bash($base/bin/week-digest:*)" "Bash($base/bin/evolve:*)" "Bash($base/bin/knowledge-numbers:*)" "Bash($base/bin/interruptions:*)"
           "Bash($base/bin/knowledge-commit:*)" "Bash(python3 $base/hooks/bulletin.py:*)"
           "Bash($base/bin/repos:*)" "Bash($base/bootstrap.sh --check)"
           "Bash($base/bin/docs-index:*)" "Bash(python3 $base/bin/docs-index:*)"  # Aurora's charts section
