@@ -111,6 +111,10 @@ GUARDED = helmlib.GUARDED
 # is a person's (S5, auth-required).
 NET_RE = re.compile(r"^(?:API Error\b|Your computer went to sleep|.{0,60}\bECONNREFUSED\b|You(?:'|’)ve hit your (?:5-hour |weekly |session )limit\b)")
 LOGIN_RE = re.compile(r"Not logged in|/login\b|OAuth token|authentication_error", re.I)
+# any Claude Code usage-limit end, anchored at its start (R4: a WAITING line quoting a limit is no limit stop):
+# S1 build stops carry `limit: True` so the tick re-dispatches with `--account auto` unpinned (revision 10), and
+# `judge_launches` rules S5 limit stops outside NET_RE's named windows (per-model, bare) `limit` (stuck-ships S2).
+LIMIT_RE = re.compile(r"^You(?:'|\u2019)ve hit your (?:[A-Za-z0-9_-]+ )?limit\b", re.I)
 # dispatch's own words (bin/dispatch): the run-cap refusal a `--next` ends on (S2), and deep()'s
 # depth line (S6, never retried)
 CAP_RE = re.compile(r"the next step waits for a run to end", re.I)
@@ -765,7 +769,9 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
                 else "gone, no closing line"
             if not s.get("transcript"):
                 ev.append("no transcript on %s" % host)
-            stalls.append(_stall("S1", host, st, name, why, ev, now, since, owner=f.get("owner")))
+            lim = bool(s.get("api_error") and last and LIMIT_RE.match(last))
+            stalls.append(_stall("S1", host, st, name, why, ev, now, since, owner=f.get("owner"),
+                                 **({"limit": True} if lim else {})))
             continue
         # ended idle (or exit 0) with no closing line, no WAITING, no error: the rules cannot tell
         unsure.append(_stall(None, host, st, name, "no closing line" if s.get("transcript") else "no transcript on %s" % host,
@@ -876,7 +882,9 @@ def judge_launches(host, live_branches, now):
                                          now, since, worktree=wt, by=(prev or {}).get("by"),
                                          af_rule=(prev or {}).get("rule"), **kw))
             else:
-                rule = "login" if LOGIN_RE.search(text) else "WAITING line" if "WAITING FOR YOU" in text else \
+                rule = "login" if LOGIN_RE.search(text) else \
+                    "limit" if gate == "no-landing" and LIMIT_RE.match(text) else \
+                    "WAITING line" if "WAITING FOR YOU" in text else \
                     "gate %s" % gate if re.match(r"^G\d+r?$", gate) else "stopped mid-work (%s)" % gate
                 step1 = gate in ("G1", "G1r") and rule == "gate %s" % gate   # either: a ⚠ line may name the check first
                 wts = worktrees(repo) if step1 and wts is None else wts
@@ -945,6 +953,90 @@ def judge_after_cards(host, now, queued=None):
     return out
 
 
+def _has_queue_home():
+    if os.environ.get("STALLS_DISPATCH_QUEUE") or os.environ.get("DISPATCH_QUEUE_HOME"):
+        return True
+    try:
+        vals, _ = helmlib._common().config_read("wharf-runs/queue-home")
+        return bool(vals)
+    except Exception:
+        return False
+
+
+def _entry_account(args):
+    if not isinstance(args, list):
+        return ""
+    vals = []
+    for i, f in enumerate(args):
+        if f == "--account" and i + 1 < len(args):
+            vals.append(str(args[i + 1]))
+        elif isinstance(f, str) and f.startswith("--account="):
+            vals.append(f.split("=", 1)[1])
+    return vals[-1].strip() if vals else ""
+
+
+def judge_queue_accounts(host, queued, now):
+    """S6, raised (stuck-ships S2, revision 10): a queued build entry bound by `--account LABEL` to a login that is
+    cooling down, listed once per (host, qid, label) as the owner's, suggesting `dispatch <branch> --account auto`."""
+    if queued is None or (not queued.made and not _has_queue_home()):
+        return []
+    cands = []
+    for e in queued.entries() or []:
+        if not isinstance(e, dict) or e.get("state") != "queued" or e.get("kind") == "finish":
+            continue
+        if e.get("host") and str(e.get("host")).lower() != host.lower():
+            continue
+        acct = _entry_account(e.get("args"))
+        if acct and acct not in ("auto", "bound"):
+            cands.append((e, acct))
+    if not cands:
+        return []
+    acct_exe = os.environ.get("STALLS_ACCOUNT") or os.environ.get("AUTOFINISH_ACCOUNT") or helmlib.peer("account")
+    if not acct_exe:
+        return []
+    try:
+        r = subprocess.run([str(acct_exe), "limits", "--all", "--parked", "--json", "--cached"],
+                           capture_output=True, text=True, timeout=10)
+        rows = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        rows = None
+    if not isinstance(rows, list):
+        return []
+    cooling = {}
+    for a in rows:
+        if not isinstance(a, dict) or not a.get("label"):
+            continue
+        lim = a.get("limits") if isinstance(a.get("limits"), dict) else {}
+        why = str(a.get("why") or "")
+        if lim.get("locked") or "cooling down" in why.lower():
+            lbl = str(a["label"]).strip()
+            cooling[lbl] = cooling[re.sub(r"\s+", "_", lbl)] = why or "cooling down"
+    out = []
+    for e, acct in cands:
+        norm = re.sub(r"\s+", "_", acct)
+        if acct not in cooling and norm not in cooling:
+            continue
+        br = str(e.get("branch") or "")
+        if not br:
+            continue
+        repo = str(e.get("repo") or "")
+        rname = repo_name(repo)
+        qid = str(e.get("qid") or "%s/%s" % (rname, br))
+        since = _num(e.get("queued_at") or e.get("at") or e.get("created_at")) or now
+        topic = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-", "", br.rsplit("/", 1)[-1])
+        move = "dispatch %s --account auto" % shlex.quote(br)
+        why_cool = cooling.get(acct) or cooling.get(norm) or "cooling down"
+        ev = ["guarded — open it"] if helmlib.guarded(rname) else [
+            "queue %s: --account %s (%s)" % (qid, acct, why_cool[:TEXT_LINE]),
+            "move: %s" % move,
+        ]
+        st = {"repo": repo, "topic": topic, "branch": br}
+        out.append(_stall("S6", host, st, None, "queued on %s, which is cooling down" % acct, ev, now, since,
+                          key=[host, "queue-account", qid, acct], key_kind="queue-account", raise_to="owner",
+                          suggested=move, account=acct))
+    return out
+
+
 def judge_plans(host, live_ids, all_records, now):
     """S7: a planned task whose dependencies are all done, nothing reported on it or them for
     S7_QUIET, and no live run of it. A task with no dependency is the skipper's own to start: not one."""
@@ -956,7 +1048,7 @@ def judge_plans(host, live_ids, all_records, now):
             continue   # an Orca-backed plan: its ready Tasks are judge_orca()'s (task-list --ready)
         try:
             st = helmlib.state(pid)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, ValueError, TypeError):
             continue
         tasks = {t["id"]: t for t in st["tasks"]}
         skipper = (st.get("manager") or {}).get("session")
@@ -1494,6 +1586,8 @@ def title(s, now):
         what = "handed over, its launch never started"
     elif s["class"] == "S6" and s.get("key_kind") == "question":
         what = "an Orca worker asks"
+    elif s["class"] == "S6" and s.get("key_kind") == "queue-account":
+        what = "queued on %s (cooling down)" % ("a login" if s.get("guarded") else (s.get("account") or "a login"))
     elif s["class"] == WONT_START:
         what = what % (s.get("fails") or 0)
     return "%s · %s %s" % (s.get("topic") or s.get("branch") or "?", s["class"], what)
@@ -1589,6 +1683,7 @@ def judge(peer=True, live_call=True, orca_held=None):
         dead = orca_dead(n)   # what the dead-man's count counts and names (S13a): a warning Orca answered with is not it
     stalls += judge_plans(me, live_ids, all_records, now)
     stalls += judge_after_cards(me, now, queued)   # S9: a queued step whose --after predecessor will not land
+    stalls += judge_queue_accounts(me, queued, now)   # stuck-ships S2: a queued step bound to a cooling-down login
     s, n = judge_codex(me, now)
     stalls += s
     notes += n

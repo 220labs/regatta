@@ -5756,5 +5756,106 @@ PY
 check "$(STALLS_REPOS="$QR" python3 "$T/fix-command.py" "$B" "$QR" "$QB")" "True True" \
   "the G1r card's evidence and suggestion quote a repo with spaces and an apostrophe, and a branch with shell syntax"
 
+echo "stuck-ships S2 & revision 10: S5 limit rule, S1 limit re-dispatch (--account auto, unpinned), and queued cooling-down --account"
+SL="$T/ss-s2"; mkdir -p "$SL"
+SLR="$SL/repo"; git init -q -b main "$SLR"; git -C "$SLR" commit -q --allow-empty -m init
+for b in claude/t/2026-11-02-opus-lim claude/t/2026-11-02-bare-lim claude/t/2026-11-02-win-lim claude/t/2026-11-02-wait-lim claude/t/2026-11-02-login-lim; do
+  git -C "$SLR" branch "$b"
+done
+mkdir -p "$SLR/.git/claude"
+cat > "$SLR/.git/claude/autofinished" <<EOF
+2026-11-02T01:00:00+00:00 stopped claude/t/2026-11-02-opus-lim no-landing You've hit your Opus limit · resets Fri
+2026-11-02T01:01:00+00:00 stopped claude/t/2026-11-02-bare-lim no-landing You’ve hit your limit · resets Fri
+2026-11-02T01:02:00+00:00 stopped claude/t/2026-11-02-win-lim no-landing You've hit your 5-hour limit · resets 9pm
+2026-11-02T01:03:00+00:00 stopped claude/t/2026-11-02-wait-lim no-landing $WAIT — You've hit your Opus limit
+2026-11-02T01:04:00+00:00 stopped claude/t/2026-11-02-login-lim no-landing Not logged in · Please run /login
+EOF
+git -C "$SLR" worktree add -q "$SL/wt-win" claude/t/2026-11-02-win-lim
+cat > "$SL/dq-cool" <<'SH'
+#!/bin/sh
+[ "$*" = "list --all --json" ] || { echo "dispatch-queue: bad call: $*" >&2; exit 2; }
+cat <<'JSON'
+{"entries": [
+  {"qid": "q-cool", "repo": "demo", "branch": "claude/t/2026-11-02-cool-step", "state": "queued", "queued_at": 1700000000, "args": ["--priority", "normal", "--account", "acct-cool"]},
+  {"qid": "q-ok", "repo": "demo", "branch": "claude/t/2026-11-02-ok-step", "state": "queued", "queued_at": 1700000000, "args": ["--account", "acct-ok"]},
+  {"qid": "q-auto", "repo": "demo", "branch": "claude/t/2026-11-02-auto-step", "state": "queued", "queued_at": 1700000000, "args": ["--account", "auto"]},
+  {"qid": "q-peer", "repo": "demo", "branch": "claude/t/2026-11-02-peer-step", "state": "queued", "host": "otherhost", "queued_at": 1700000000, "args": ["--account", "acct-cool"]}
+], "unreadable": false, "why": []}
+JSON
+SH
+cat > "$SL/acct-cool" <<'SH'
+#!/bin/sh
+[ "$*" = "limits --all --parked --json --cached" ] || { echo "account: bad call: $*" >&2; exit 2; }
+cat <<'JSON'
+[
+  {"label": "acct-cool", "enabled": true, "eligible": false, "limits": {"locked": ["five_hour"]}, "why": "cooling down until Mon 21:00 (a window locked)"},
+  {"label": "acct-ok", "enabled": true, "eligible": true, "limits": {"locked": []}, "why": "week 20% < 95% (rules.week_max), 5h 10% ≤ 80%"}
+]
+JSON
+SH
+chmod +x "$SL/dq-cool" "$SL/acct-cool"
+cat > "$SL/check_s2.py" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import helmlib, stalls, stalls_tick
+
+# 1. judge_launches: S5 rule == "limit" vs S4 window limit vs R4 WAITING quote vs login
+lrows, _ = stalls.judge_launches("testhost", set(), 2000000000)
+by_top = {r["topic"]: (r["class"], r["rule"]) for r in lrows}
+print("launches:", by_top["opus-lim"], by_top["bare-lim"], by_top["win-lim"], by_top["wait-lim"], by_top["login-lim"])
+
+# 2. judge_runs + dispatch_cmd: S1 build limit stop gets limit=True and re-dispatches unpinned with --account auto
+raw = {
+    "lim.json": {"repo": sys.argv[2], "topic": "lim-build", "branch": "claude/t/2026-11-02-lim-build",
+                 "session": "s-lim", "started": 1000, "ended": 1100, "end_reason": "tidied: its claude was gone",
+                 "depth": 1, "pin": "bound"},
+    "net.json": {"repo": sys.argv[2], "topic": "net-build", "branch": "claude/t/2026-11-02-net-build",
+                 "session": "s-net", "started": 1000, "ended": 1100, "end_reason": "tidied: its claude was gone",
+                 "depth": 1, "pin": "bound"},
+}
+view = {
+    "raw": raw,
+    "records": {
+        "lim.json": {"alive": False, "branch": True, "status": {"transcript": True, "api_error": True,
+                     "last_message": "You've hit your 5-hour limit · resets 9pm", "last_at": 1090}},
+        "net.json": {"alive": False, "branch": True, "status": {"transcript": True, "api_error": True,
+                     "last_message": "API Error: 500 Internal server error", "last_at": 1090}},
+    },
+}
+srows, _ = stalls.judge_runs("testhost", view, [("testhost", k, v) for k, v in raw.items()], set(), set(), 2000)
+s_by = {r["topic"]: r for r in srows}
+os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/stopped-login-dir"
+try:
+    lim_argv, lim_env = stalls_tick.dispatch_cmd(s_by["lim-build"], "redispatch", 1, 2000)
+    net_argv, net_env = stalls_tick.dispatch_cmd(s_by["net-build"], "redispatch", 1, 2000)
+finally:
+    os.environ.pop("CLAUDE_CONFIG_DIR", None)
+print("s1-limit:", s_by["lim-build"].get("limit"), s_by["net-build"].get("limit"),
+      "--account" in lim_argv and lim_argv[lim_argv.index("--account") + 1] == "auto",
+      "--on" not in lim_argv, "CLAUDE_CONFIG_DIR" not in lim_env,
+      net_argv[net_argv.index("--account") + 1], "--on" in net_argv)
+
+# 3. judge_queue_accounts: queued --account acct-cool listed as owner S6
+q = stalls.QueueRead()
+qrows = stalls.judge_queue_accounts("testhost", q, 1700000600)
+qrows[0]["title"] = stalls.title(qrows[0], 1700000600)
+print("queue-acct:", len(qrows), qrows[0]["class"], qrows[0]["topic"], qrows[0]["action"], qrows[0]["raise_to"],
+      qrows[0]["suggested"], qrows[0]["key_kind"])
+PY
+check "$(STALLS_REPOS="$SLR" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost python3 "$SL/check_s2.py" "$B" "$SLR")" \
+"launches: ('S5', 'limit') ('S5', 'limit') ('S4', 'stopped: the network, sleep or a usage limit') ('S5', 'WAITING line') ('S5', 'login')
+s1-limit: True None True True True bound True
+queue-acct: 1 S6 cool-step raise owner dispatch claude/t/2026-11-02-cool-step --account auto queue-account" \
+  "S5 files limit stops outside NET_RE as limit; S1 limit stops re-dispatch unpinned with --account auto; queued cooling-down --account listed as owner S6"
+SL_STATE="$SL/stalls-state"; mkdir -p "$SL_STATE" "$SL/hdir" "$SL/empty" "$SL/plans"
+printf '{"by": "Sam", "ts": "x", "t": %s}\n' "$(( $(date +%s) - 4 * 3600 ))" > "$SL_STATE/armed"
+SL_ENV() { HOME="$SL/hdir" PLANS_DIR="$SL/plans" PLAN_NO_WHARF=1 STALLS_REPOS="$SL/empty" STALLS_PEERS="" STALLS_ORCA=0 STALLS_CANARY=0 STALLS_STATE_DIR="$SL_STATE" STALLS_LOG="$SL/tick.jsonl" STALLS_DISPATCH_QUEUE="$SL/dq-cool" STALLS_ACCOUNT="$SL/acct-cool" SURFACES_HOST=testhost "$@"; }
+t1=$(SL_ENV "$HM" tick)
+t2=$(SL_ENV "$HM" tick)
+has "$t1" "S6 testhost demo cool-step: raised — queued on acct-cool, which is cooling down" "  first tick raises the queued cooling-down --account entry"
+hasnt "$t1" "(unchanged)" "  marked new on the first tick"
+has "$t2" "S6 testhost demo cool-step: raised — queued on acct-cool, which is cooling down (unchanged)" "  second tick marks it unchanged"
+check "$(grep -c '"key_kind": "queue-account"' "$SL/tick.jsonl")" "1" "  logged once in stalls.jsonl"
+
 echo
 [ "$fails" = 0 ] && echo "test_helm ($HELM_NAMES names): all passed" || { echo "test_helm ($HELM_NAMES names): $fails failed"; exit 1; }
