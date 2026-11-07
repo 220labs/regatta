@@ -9,7 +9,7 @@ from the secrets folders, the live settings file and the repos a login may not o
 | --- | --- |
 | `bin/health` | the unattended daily pass: fast-forward the checkouts `lighthouse/ff` names, wharf's tend, the privacy survey, the Orca serve agent's process and answer, free disk (fail under 50 GB, naming the three biggest folders; warn under 100), the overlay's check (else `regatta check`); a failure posted once to the bulletin |
 | `bin/claude-settings` | the declared settings (`check`, `apply`, `declare`): one declaration in git, applied to each config dir, drift reported |
-| `bin/account` | several Claude Code (and Codex) logins on one Mac: the registry, `pick`, `limits`, `run`, `setup`, `check` |
+| `bin/account` | several Claude Code (and Codex, Antigravity) logins on one Mac: the registry, `pick`, `limits`, `run`, `setup`, `check` |
 | `shell/cc.zsh` | `cc <label> [claude args]`: start Claude Code on a chosen login |
 | `bin/publish` | copy a file from a project to a shared drive (and a NAS), queued when a destination is away |
 | `bin/trust-projects` | accept Claude Code's folder-trust dialog for every repo under the projects folder |
@@ -69,12 +69,22 @@ row pick names: `tenant set` refuses a Codex label whose home is not that one. N
 is routing only; a tenant with a Codex login and no Claude one leaves its Claude sessions nowhere to start:
 `tenant set` refuses one, and `account doctor` names one written by hand.
 
-An Antigravity row (`"provider": "antigravity"`, its home `$GEMINI_CLI_HOME`, else `~/.gemini`) routes the same
-way: `account pick --provider antigravity --repo` answers the tenant's own and says it `owns` the repo. agy keeps
-its login in the keychain and picks it itself, so the row sets no environment, is never probed (Orca's card in
-`limits --all --orca` is its figure, and `limits --all` leaves the row out) and `tenant set` takes it only while
-its home is the one an agy run here uses. That home binds no account, as a Codex home does: the row stands for
-whichever agy login the Mac's keychain holds, so confine it (below) and sign in to that agy only where it is meant.
+An Antigravity row (`"provider": "antigravity"`, its home `$GEMINI_CLI_HOME`, else `~/.gemini`) routes and picks
+from Orca's `antigravity` card on this host: `limits()` (live and `--cached`) reads the card's 5-hour and weekly
+`usedPercent` figures, resets and sample time (`updatedAt`, weighed by `pace()` at sample time; `limits --all`
+leaves the row out so `--orca` draws one card), `judge()` applies the row's week ceiling, window rules and lock
+check as for a Codex row, and `account pick --provider antigravity` answers the row (with `--repo`, saying whether
+it `owns` the repo). It reads only while the row's home exists and is the one an `agy` run here uses (`tenant set`
+requires the same) and at most one Antigravity row is enabled there (Orca's card names no account: two enabled rows
+refuse); a card over an hour old or a headless Orca reads as unknown, failing closed: a live pick never runs it
+through the tenant's or the primary's unknown-limits fallback (a `--cached` pick, the vendor fence's, still does). So on a
+fenced repo the fence's `--cached` check refuses an Antigravity row whose fresh cached card is past its ceiling or window
+rules, while a stale or missing card still passes through the tenant fallback, and the council's Gemini arm has no live
+pick after it. Orca's card gives the fullest model family's figures, so a full Claude/GPT bucket holds Gemini runs
+too. agy keeps its login in the
+keychain and picks it itself, so the row sets no environment, and that home binds no account, as a Codex home does:
+the row stands for whichever agy login the Mac's keychain holds, so confine it (below) and sign in to that agy only
+where it is meant.
 
 A routing login (Codex or Antigravity) can be confined to part of its tenant: `account tenant set owner --repos
 … --logins … --confine agy-x='scope-*'` writes `"confined": {"agy-x": ["scope-*"]}`, and the row then owns

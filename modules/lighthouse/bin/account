@@ -59,7 +59,7 @@ no stamp where the home's login reads, is no reading of this row (own_reading: O
 dir's top-level files into a profile at each selection, usage-probe.json included; cooldown-account,
 2026-11-02).
 --cached never probes (hooks use it). One retry on a failed probe, then the last reading of any
-age; with none, the row is "unknown" and skipped — except the primary, which pick takes at once
+age; with none, the row is "unknown" and skipped — except the primary (bar an Antigravity row on a live pick, below), which pick takes at once
 rather than hand its work to a later row (one whose plan may lack Fable) or block it. Never a loop.
 
 Paid overage (costs S8, docs/host-power-costs-2026-10-24.md finding 10): the probe's answer carries
@@ -205,7 +205,7 @@ another seat. A tenant's own row is not confined to its repos: every repo no oth
 open to it (a vault tenant of your own logins is what keeps the vault off an organisation's seat), bar a routing login's `confine`. Entries are repo keys,
 or a glob (`acme-*`; `*` spans `/`) matched against the key and, when git cannot answer, the path,
 so a repo cloned later is the tenant's the day it lands. With no reading of the tenant login's
-limits, pick runs it there rather than nothing, as no other row may; a tenant of several logins runs the first unread
+limits, pick runs it there rather than nothing (bar an Antigravity row on a live pick, below), as no other row may; a tenant of several logins runs the first unread
 one only once every row was tried, so a later login of the tenant with room runs first (tenant-unknown-last), while the
 primary's rule still runs at once. `holds_denied` ignores tenancy, a folder
 holding a tenant's repo loads nothing of it, bar one tenant: the one holding the vault (`lighthouse/vault`), whose files the
@@ -303,13 +303,20 @@ rows are no registry rows: never walked, picked or probed, and gone when Orca sa
 signed out; Orca's other `unavailable` (a CLI too old, a provider switched off) and its errors keep
 the last reading (ORCA_SEEN) with its age and Orca's word, as does an Orca that cannot be read.
 An Antigravity row (`"provider": "antigravity"`, its home agy's own: `$GEMINI_CLI_HOME`, else `~/.gemini`)
-routes and nothing more (agy-tenant, 2026-10-31: the owner's word on a login of another person's put in the
-owner tenant): a tenant's `logins` may name it, so `pick --provider antigravity --repo` answers it and says it
-`owns` the tenant's repos, the vendor fence's yes. agy keeps its login in the keychain and picks it itself, so
-the row sets no environment, is never probed (its figures stay Orca's report card) and `limits --all` leaves it
-out; a label is taken only while its home is the one an agy run here uses, as a Codex row's is. Unlike a Codex
-row's, that home binds no account: the row stands for whichever agy login this Mac's keychain holds (review,
-2026-10-31), so confine it, and sign in to that agy only on a Mac where that person's login is meant to run.
+routes and picks from Orca's `antigravity` card on this host (agy-tenant, 2026-10-31; agy-pick-orca, 2026-11-06):
+a tenant's `logins` may name it, so `pick --provider antigravity --repo` answers it and says it `owns` the
+tenant's repos, the vendor fence's yes. agy keeps its login in the keychain and picks it itself, so the row sets no
+environment, is never probed directly (`limits()` reads Orca's card, and `limits --all` leaves the row out so
+`--orca` draws one card), and a label is taken only while its home is the one an agy run here uses and no second
+Antigravity row is enabled there (Orca's card names no account). A card over an hour old (`ORCA_MAX_AGE_S`, matching
+`orca_wake`) or a headless Orca reads as unknown, failing closed: a live pick never runs it through the primary's
+or the tenant's unknown-limits fallback, while a `--cached` pick (the vendor fence's ownership read) still does. So on a fenced
+repo the fence's `--cached` check refuses an Antigravity row whose fresh cached card is past its ceiling or window rules,
+while a stale or missing card still passes through the tenant fallback, and the council's Gemini arm has no live pick
+after it. `judge()` weighs `pace()` at the card's sample time
+and applies the row's week ceiling, window rules and lock check as for a Codex row. Unlike a Codex row's, that home
+binds no account: the row stands for whichever agy login this Mac's keychain holds (review, 2026-10-31), so confine
+it, and sign in to that agy only on a Mac where that person's login is meant to run.
 A tenant's entry may hold a routing login confined to part of its repos (`"confined": {label: [key or glob,
 …]}`, `tenant set --confine LABEL=KEY,…`): the row is then the tenant's, owns, and pick runs it on, only the
 tenant's repos those cover, and pick's skip line says so elsewhere in the tenant. Written for a login of
@@ -419,6 +426,7 @@ PIN_DAYS = 14         # a pin older than this is no ship any more and goes at th
 ORCA_FILE = Path(os.environ.get("ACCOUNT_ORCA_FILE") or DEFAULT_DIR / "account-orca.json")   # orca-sync's read-back, this Mac's: {label: {home, orca_id, email, enabled?}, _default?}; hooks/common.py orca_file()
 ORCA_SEEN = Path(os.environ.get("ACCOUNT_ORCA_SEEN") or DEFAULT_DIR / "account-orca-limits.json")   # limits --orca's last reading per agent, this Mac's: {label: {at, limits, enabled?}}
 ORCA_WAKE = Path(os.environ.get("ACCOUNT_ORCA_WAKE") or DEFAULT_DIR / "account-orca-wake")   # when orca_wake last opened a window, an epoch
+ORCA_MAX_AGE_S = 3600   # an Orca reading older than 1 h wakes Orca (orca_wake) and no longer stands for an agy pick
 ORCA_DATA = Path(os.environ.get("ACCOUNT_ORCA_DATA") or HOME / "Library/Application Support/orca")
 ORCA_APP_CLI = "/Applications/Orca.app/Contents/Resources/bin/orca"
 # What a secondary dir shares with the default dir by link (D3, section 2e). Never .claude.json, the
@@ -1280,7 +1288,7 @@ def drop_copy(copy):
 # an Antigravity row only routes: `pick --provider P --repo` reads it as the tenant's own (header).
 TENANT_PROVIDERS = ("claude", "codex", "antigravity")
 ROUTING_PROVIDERS = ("codex", "antigravity")
-# A vendor no probe here reads: its row is never probed, and `limits --all` leaves it out (Orca's card is its figure)
+# A vendor never probed directly: limits() reads Orca's card for it, and `limits --all` leaves it out (`--orca` draws Orca's card)
 UNPROBED = ("antigravity",)
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -1293,6 +1301,35 @@ def run_home(provider):
         return Path(os.path.expanduser(os.environ.get("CODEX_HOME") or str(HOME / ".codex"))).resolve()
     if provider == "antigravity":
         return Path(os.path.expanduser(os.environ.get("GEMINI_CLI_HOME") or str(HOME / ".gemini"))).resolve()
+    return None
+
+
+def antigravity_refusal(reg, a):
+    """Why Orca's Antigravity card on this host cannot stand for row `a`, or None: `a`'s home must exist and be the one
+    an agy run here uses (`run_home`), and at most one Antigravity row may be enabled there (Orca's card names no
+    account, so two enabled rows here cannot be told apart)."""
+    if a.get("provider") != "antigravity":
+        return None
+    if not a["home"].is_dir():
+        return f"not set up on this machine ({a['home']} missing)"
+    rh = run_home("antigravity")
+    try:
+        same = a["home"].resolve() == rh
+    except (OSError, RuntimeError):
+        same = False
+    if not same:
+        return f"home {a['home']} is not {rh}, the one an antigravity run here uses"
+    here = []
+    for r in (reg or {}).get("accounts") or []:
+        if not (r.get("enabled") and r.get("provider") == "antigravity" and r["home"].is_dir()):
+            continue
+        try:
+            if r["home"].resolve() == rh:
+                here.append(r["label"])
+        except (OSError, RuntimeError):
+            pass
+    if len(here) > 1:
+        return f"{len(here)} antigravity rows enabled for {rh} ({', '.join(here)}): Orca's card names no account"
     return None
 
 
@@ -2340,10 +2377,97 @@ def probe_state(a):
                     " next probe replaces it)", None)
 
 
-def limits(a, cached=False):
+# What Orca's Antigravity numbers mean (settled 2026-11-06 against `orca account list --json` and Orca 1.4.245's
+# app.asar): Orca runs `agy -p /usage --output-format json`, whose `command.data.groups[].buckets[]` carry
+# `remaining_fraction` (0..1) and `name` ("Weekly Limit Remaining", "Five Hour Limit Remaining"). Orca converts
+# `remaining_fraction` into percent used — `usedPercent = round((1 - remaining_fraction) * 100)` — on `session`,
+# `weekly` and each `buckets[]` entry, while keeping `agy`'s bucket `name` verbatim. On 2026-11-06 07:15 PST,
+# `session.usedPercent: 0` and `weekly.usedPercent: 26` (and untouched Claude/GPT buckets at `usedPercent: 0`) meant
+# 0% of 5h and 26% of week used (100% and 74% remaining), though `limits --orca` printed the bucket title beside
+# `usedPercent` as "Five Hour Limit Remaining 0%". `parse_orca` therefore reads `five_hour` and `seven_day` as percent
+# used (0 = untouched, 100 = exhausted), in the same direction as Claude and Codex.
+_UNKNOWN_WHY = {}   # label → why an unprobed row's reading is None, for judge() to report
+
+
+def _orca_card_fresh(at, where):
+    """None when sample epoch `at` is within ORCA_MAX_AGE_S (1 h, matching orca_wake: unfocused Orca stops polling and
+    is woken hourly at most, while an older reading can hide a spent window), else the unknown reason."""
+    if not isinstance(at, (int, float)) or isinstance(at, bool) or at <= 0:
+        return f"limits unknown ({where} has no sample time)"
+    age = now() - at
+    if age < -60:
+        return f"limits unknown ({where} has a future timestamp)"
+    if age > ORCA_MAX_AGE_S:
+        return f"limits unknown ({where} is {int(age // 60)} min old, > {ORCA_MAX_AGE_S // 60} min)"
+    return None
+
+
+def limits_antigravity(a, cached=False, reg=None):
+    """→ (limits dict or None, card sample epoch or None, unknown reason or None) from Orca's `antigravity` card on this
+    host. Reads only where the card stands for `a` (`antigravity_refusal` is None); fails closed on a headless, down,
+    errored or stale Orca. `at` is Orca's `updatedAt` (never `now()`), so `pace()` weighs the 5h window at sample time."""
+    if reg is None and REGISTRY.is_file():
+        reg = load_registry()
+    ar = antigravity_refusal(reg, a)
+    if ar:
+        return None, None, ar
+    if cached:
+        seen = read_json(ORCA_SEEN, {})
+        e = seen.get("antigravity") if isinstance(seen, dict) else None
+        if not isinstance(e, dict) or not isinstance(e.get("limits"), dict):
+            return None, None, "limits unknown (no Orca antigravity reading cached)"
+        at = e.get("at")
+        stale = _orca_card_fresh(at, "cached Orca antigravity reading")
+        if stale:
+            return None, None, stale
+        return rolled(e["limits"]), at, None
+    res, err = orca_read()
+    if err:
+        return None, None, f"limits unknown (Orca unreadable: {err})"
+    try:
+        if not orca_read_any(res):
+            return None, None, "limits unknown (Orca listed no agent's reading: headless or not ready)"
+        x = next((g for g in orca_agents(res) if g.get("provider") == "antigravity"), None)
+        if x is None:
+            return None, None, "limits unknown (no antigravity card in Orca)"
+        if x.get("status") != "ok":
+            detail = x.get("error") or (x.get("usageMetadata") or {}).get("failureKind") or x.get("status") or "unavailable"
+            return None, None, f"limits unknown (Orca's antigravity card: {detail})"
+        u = x.get("updatedAt")
+        at = u / 1000 if isinstance(u, (int, float)) and not isinstance(u, bool) and u > 0 else None
+        lim = parse_orca(x)
+    except Exception as e:  # noqa: BLE001 — a changed Orca shape fails closed, never a traceback on stderr
+        return None, None, f"limits unknown (Orca's answer unreadable: {type(e).__name__})"
+    stale = _orca_card_fresh(at, "Orca's antigravity reading")
+    if stale:
+        return None, None, stale
+    # Keep ORCA_SEEN["antigravity"] current so a `--cached` read (vendor_refusal, limits --cached) sees this fresh card;
+    # preserve any `enabled` switch (`account orca on|off antigravity`) and every other agent's entry.
+    seen = {k: v for k, v in read_json(ORCA_SEEN, {}).items() if isinstance(v, dict)}
+    prev = seen.get("antigravity", {})
+    entry = {"at": at, "limits": lim}
+    if "enabled" in prev:
+        entry["enabled"] = prev["enabled"]
+    if seen.get("antigravity") != entry:
+        seen["antigravity"] = entry
+        try:
+            write_json(ORCA_SEEN, seen)
+        except OSError:
+            pass
+    return rolled(lim), at, None
+
+
+def limits(a, cached=False, reg=None):
     """→ (limits dict or None, sampled epoch or None). Probes only when the cache is older than
-    CACHE_S and --cached was not asked for. A cached window past its reset reads 0 (rolled). A cached
-    reading that is not this login's (own_reading) is none, for the stale fallback too."""
+    CACHE_S and --cached was not asked for; an Antigravity row reads Orca's card (limits_antigravity). A cached
+    window past its reset reads 0 (rolled). A cached reading that is not this login's (own_reading) is none, for
+    the stale fallback too."""
+    _UNKNOWN_WHY.pop(a.get("label"), None)
+    if a.get("provider") == "antigravity":
+        lim, at, why = limits_antigravity(a, cached=cached, reg=reg)
+        if lim is None and why:
+            _UNKNOWN_WHY[a.get("label")] = why
+        return lim, at
     if not a["home"].is_dir():
         return None, None
     c = read_cache(a)
@@ -2917,16 +3041,18 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None, bar_why=None, finis
     if cd:
         return False, f"cooling down until {when(cd)} (a window locked)"
     if lim is None:
-        return False, "limits unknown (no probe answered, none cached)"
+        return False, _UNKNOWN_WHY.get(a.get("label")) or "limits unknown (no probe answered, none cached)"
     if overage_on(lim) and not allow_overage:
         return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
     week_max, why = (min(bar, 100), bar_why or "overdraw: no login was under its bar") if bar is not None else ceiling(a, lim, t, finish)
     m = margin(a, t)
     win_max = a["rules"].get("window_max", 100) - m
     wk, fh = lim.get("seven_day"), lim.get("five_hour")
-    if a["provider"] == "codex" and lim.get("locked"):
-        # the server said the limit is reached; with no reset time no cooldown was written to stop it
-        return False, f"locked by Codex ({', '.join(lim['locked'])}); resets {when(lim.get('seven_day_resets') or lim.get('five_hour_resets'))}"
+    if a["provider"] in ("codex", "antigravity") and lim.get("locked"):
+        # the server said the limit is reached; with no reset time or exhaustion log no cooldown was written to stop it.
+        # The lock lifts at the latest reset among the locked windows (rolled() drops each at its own)
+        who = "Codex" if a["provider"] == "codex" else "Antigravity"
+        return False, f"locked by {who} ({', '.join(lim['locked'])}); resets {when(max((lim.get(w + '_resets') or 0 for w in lim['locked']), default=0) or lim.get('seven_day_resets') or lim.get('five_hour_resets'))}"
     # a window the plan does not have is no limit (Codex prolite, a Claude plan without a session window)
     if no_five_hour(a, lim):
         return (wk < week_max, f"week {wk}% {'<' if wk < week_max else '≥'} {week_max}% ({why}); no 5-hour window")
@@ -3190,7 +3316,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
 
     def eval_row(a, walk_idx, skip_idx=None):
         nonlocal unread_own
-        lim, at = limits(a, cached=cached)
+        lim, at = limits(a, cached=cached, reg=reg)
         ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
         if ok:
             lent = lend_bar(reg, a, lim, repo, own)
@@ -3210,6 +3336,11 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             rest = skipped if skip_idx is None else skipped[:skip_idx] + skipped[skip_idx + 1:]
             return a, (f"{why}; Fable's week {lim['fable_week']}%" if room else why), rest
         unknown = lim is None or why.startswith("limits unknown")
+        # Taken unattended (the landing by typed, 2026-11-06; its review's pick B): on a live read an Antigravity row's
+        # unknown is Orca's stated failure (a stale, errored or headless card), not a login not yet probed, so neither
+        # fallback below runs it: an unreadable card never gets more than a readable one. A `--cached` pick
+        # (vendor_refusal's ownership read) keeps them; the live pick that follows it is the gate.
+        unknown = unknown and not (a["provider"] in UNPROBED and not cached)
         if unknown and a.get("primary"):
             if skip_idx is None and parked_out:
                 res = drain_parked()
@@ -3228,7 +3359,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             # primary (the owner's last-resort row since 2026-10-16) is for a primary with no room,
             # never one whose room is unknown.
             return a, "limits unknown — the primary runs it rather than nothing", rest
-        if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
+        if own_tenant(reg, a, repo) and unknown:
             # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever;
             # but a tenant has several logins, and an unread one first in the walk (a login not signed in yet)
             # must not shadow a later one that is eligible: held, and run only once every row was tried
@@ -3268,10 +3399,14 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         if re.sub(r"\s+", "_", a["label"]).lower() in skip_norm:
             skipped.append((a["label"], "skipped (--skip)"))
             continue
+        ar = antigravity_refusal(reg, a)
+        if ar:
+            skipped.append((a["label"], ar))
+            continue
         if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
             # under --room, a plan its cached reading says lacks Fable is said first: no reset lifts it
             # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts)
-            rs = room_short(a, limits(a, cached=True)[0], t, room, finish) if room and not a.get("same_as") else None
+            rs = room_short(a, limits(a, cached=True, reg=reg)[0], t, room, finish) if room and not a.get("same_as") else None
             skipped.append((a["label"], rs[0] if rs and rs[1] else judge(a, None, t)[1]))   # same_as: its own fix leads
             continue
         if logged_out(a["home"]):
@@ -3554,11 +3689,18 @@ def cmd_check(reg):
             continue
         notes = []
         if a["provider"] == "codex":  # no Claude dir: trust, settings and the guard are not its; the reading is
-            lim, at = limits(a, cached=True)
+            lim, at = limits(a, cached=True, reg=reg)
             notes.append(f"Codex, {(lim or {}).get('plan') or 'plan ?'}; " + (f"probe {int((t - at) / 60)} min old" if at else "never probed"))
             print(f"  {'ok' if at else '⚠ '}  {a['label']}: " + "; ".join(notes))
             continue
-        if a["provider"] in UNPROBED:  # its login is the agent's own (agy: the keychain), out of this tool's reach
+        if a["provider"] == "antigravity":  # its login is agy's own (the keychain); limits() reads Orca's card
+            ar = antigravity_refusal(reg, a)
+            lim, at = (None, None) if ar else limits(a, cached=True, reg=reg)
+            card = ar if ar else f"Orca card {int((t - at) / 60)} min old" if at else \
+                (_UNKNOWN_WHY.get(a["label"]) or "no fresh Orca card cached")
+            print(f"  {'⚠ ' if ar or not at else 'ok'}  {a['label']}: antigravity, picks from Orca's card; {card}")
+            continue
+        if a["provider"] in UNPROBED:  # its login is the agent's own, out of this tool's reach
             print(f"  ok  {a['label']}: {a['provider']}, routing only; its login is the agent's own, never read here")
             continue
         st = auth_status(a)
@@ -3843,7 +3985,7 @@ def orca_wake(before):
         wait = 30
     try:
         # a stamp from the future (a clock set back, a test's ACCOUNT_NOW) is stale, not "too soon"
-        if 0 <= now() - float(ORCA_WAKE.read_text().strip()) < 3600:
+        if 0 <= now() - float(ORCA_WAKE.read_text().strip()) < ORCA_MAX_AGE_S:
             return None
     except (OSError, ValueError):
         pass
@@ -4004,7 +4146,7 @@ def orca_reported(taken=(), cached=False):
         return last(f"Orca unreadable ({err}); its last reading")
     try:
         newest = orca_newest(res)
-        if newest is None or now() - newest > 3600:
+        if newest is None or now() - newest > ORCA_MAX_AGE_S:
             res = orca_wake(newest) or res
         agents = orca_agents(res)
         # no reading of any agent is Orca not ready, or headless (every entry null, or one left as
@@ -4035,7 +4177,8 @@ def orca_reported(taken=(), cached=False):
         used = set(taken)
         return last(f"Orca's answer unreadable ({type(e).__name__}); its last reading")
     # An `orca on|off` written while Orca answered wins over the switch read before (no lock: the
-    # widget's 10-minute refresh is the only other writer, and its next run honours the switch).
+    # widget's 10-minute refresh and a live Antigravity read, `limits_antigravity`, are the other writers, and the
+    # widget's next run honours the switch).
     for p, e in read_json(ORCA_SEEN, {}).items():
         if isinstance(e, dict) and "enabled" in e:
             keep[p] = dict(keep.get(p, {}), enabled=e["enabled"])
@@ -4406,20 +4549,21 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             d = denied(a, repo)
             own = scope_login_of(repo)
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
-                or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
+                or (not a["home"].is_dir() and "not here") or antigravity_refusal(reg, a) \
+                or (a.get("same_as") and "on another row's login") \
                 or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}") \
                 or confined_out(reg, a, repo) or (re.sub(r"\s+", "_", a["label"]).lower() in skip_norm and "skipped (--skip)") \
                 or (logged_out(a["home"]) and "logged out")
             if not gone:
                 t = now()
-                lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached)
+                lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached, reg=reg)
                 ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
                 if ok and lend_bar(reg, a, lim, repo, own):
                     # past its lend bar the login takes its own work only, so another repo's ship moves on, as from
                     # a plan without Fable, rather than wait for the week's reset (the lend bar's review, 2026-11-05)
                     gone = "past its lend bar for this repo"
                 # cooling down: its cached reading still says whether its plan carries Fable
-                rs = room_short(a, limits(a, cached=True)[0] if cooldown(a, t) else lim, t, room, finish) if room else None
+                rs = room_short(a, limits(a, cached=True, reg=reg)[0] if cooldown(a, t) else lim, t, room, finish) if room else None
                 unknown = rs and rs[0].startswith("Fable room unknown")
                 if rs and cooldown(a, t) and not rs[1]:
                     rs = None   # a cooldown waits as before; a plan without Fable, or a Fable room unknown, moves the ship
@@ -4429,11 +4573,12 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                     gone = "of unknown Fable room (no reading with limits[])"
                 elif rs:
                     ok, why = False, (rs[0] if ok else f"{why}; {rs[0]}")
-                elif not ok and (lim is None or why.startswith("limits unknown")) and a.get("primary") and not cooldown(a, t):
+                elif not ok and (lim is None or why.startswith("limits unknown")) and a.get("primary") and not cooldown(a, t) \
+                        and not (a["provider"] in UNPROBED and not cached):   # as pick: a live unread Orca card never runs
                     # as pick reads it: a reading with no window figures too (pick's own branch; review 2026-11-01)
                     ok, why = True, "limits unknown — the primary runs it rather than nothing"
                 elif not ok and (lim is None or why.startswith("limits unknown")) and own_tenant(reg, a, repo) \
-                        and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
+                        and not cooldown(a, t) and not (a["provider"] in UNPROBED and not cached):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
                     # and as pick walks it: another row with room runs before an unread tenant login (tenant-unknown-last)
                     try:
                         alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish, skip=skip)
@@ -5308,6 +5453,9 @@ def limits_json(a, lim, at, t, repo=None, reg=None, own=False):
     lent = lend_bar(reg, a, lim, repo, own) if ok and repo and reg is not None else None
     if lent:   # with a repo only: a listing with none says nothing of whose work it is (pick reads none as another's)
         ok, why = False, lent
+    ar = antigravity_refusal(reg, a) if reg is not None else None
+    if ar:
+        ok, why = False, ar
     d = denied(a, repo)
     if d:
         ok, why = False, off_reason(a, d)
@@ -5676,7 +5824,7 @@ def main(argv):
         out = []
         own = scope_login_of(args.repo)   # once for every row (AGENTS.md: a registry re-read mid-walk can find it torn)
         for a in rows:
-            lim, at = limits(a, cached=args.cached or (a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])))
+            lim, at = limits(a, cached=args.cached or (a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])), reg=reg)
             out.append(limits_json(a, lim, at, t, args.repo, reg, own))
         if args.orca and (args.all or not args.label):
             # an Orca agent hides by its card's label or by Orca's name for it (`antigravity`, `cursor`)
@@ -5695,7 +5843,7 @@ def main(argv):
                 print(f"{o['label']} (Orca): {'; '.join(figs) if figs else 'no reading'}; {o['why']}")
                 continue
             if not lim and o["provider"] in UNPROBED:
-                print(f"{o['label']}: never probed — {o['provider']} keeps its login to itself; `limits --all --orca` shows Orca's card")
+                print(f"{o['label']}: no Orca reading — {o['why']}; `limits --all --orca` shows Orca's card")
                 continue
             if not lim:
                 print(f"{o['label']}: {o['why'] if o.get('logged_out') else ('no cached probe' if args.cached else 'probe failed')}")
