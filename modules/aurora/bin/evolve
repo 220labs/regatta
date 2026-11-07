@@ -718,7 +718,7 @@ class Scope:
     the anchor is neither fenced nor the knowledge layer (a profile placed in the layer is a profile_error);
     the `atlas` scope (or an open scope anchored on the layer) keeps its `evolve/` records in the vault."""
 
-    def __init__(self, name, sc, repos, lens_doc, fenced_by=None, vault=None, layers=None, own_run=True):
+    def __init__(self, name, sc, repos, lens_doc, fenced_by=None, vault=None, layers=None):
         self.name, self.sc = name, sc
         self.confidential = sc.get("confidential") is True
         self.label = scope_label(name, sc)
@@ -738,11 +738,12 @@ class Scope:
         self.reg_sha = hashlib.sha256(json.dumps({"scope": sc, "members": keys}, sort_keys=True).encode()).hexdigest()
         self.refs, self.git_changed, self.sessions_at = {}, False, None
         cfg_prof = Path(common.CONFIG) / "aurora" / "scopes" / ("%s.json" % name)
-        # a confidential scope's anchor is opened only by its own run (--scope it): a global run neither opens
-        # its anchor nor lets a file there change the global answer (S3's contract; S5's landing review)
+        # a confidential scope's profile is the config dir's alone, in every run: its own run and a global run
+        # read one file, a global run never opens its anchor, and surface() fences that file's own paths
+        # (S3's contract; S5's landing review, two rounds)
         anc_prof = (self.anchor / ".claude" / "evolve-scope.json") \
-            if (self.anchor is not None and not (fenced_by and fenced_by(self.anchor))
-                and (own_run or not self.confidential)) else None
+            if (self.anchor is not None and not self.confidential
+                and not (fenced_by and fenced_by(self.anchor))) else None
         self.profile_file = cfg_prof
         self.profile, self.profile_error = {}, None
         if self.in_layer and anc_prof is not None and anc_prof.exists():
@@ -1231,8 +1232,7 @@ def cmd_coverage(a):
     ms = matchers(reg)
     vpath, _ = vault_info()
     lroots = layer_roots()
-    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots,
-                    own_run=(a.scope == n))
+    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
               for n in names if usable(reg["scopes"][n])]
     result = {"version": 1, "time": now.isoformat(timespec="seconds"), "lenses_sha": lens_doc["_sha"], "scopes": [],
               "surface": {"items": 0, "unobserved": [], "fenced": 0, "ignored": 0}, "bad_scopes": 0 if a.scope else bad_scopes,
@@ -1463,8 +1463,7 @@ def cmd_conformance(a):
                     raise ValueError("scope %s in the registry has no list of repos" % n)
                 unreadable += 1   # nothing to judge its rules on
                 continue
-            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath,
-                       layers=lroots, own_run=(a.scope == n))
+            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
             if sc.profile_error:
                 if a.scope == n:
                     raise ValueError("scope %s: %s" % (sc.label, sc.profile_error))
@@ -2226,12 +2225,27 @@ def cmd_critic(a):
     except (OSError, ValueError) as e:
         raise Refused("findings file cannot be read (%s)" % type(e).__name__)
     sc = None
-    if a.scope:
-        _, sc, _, _, _, _ = resolve_scope_one(a.scope, lens_doc)
-        if sc.profile_error:
+    named = rec.get("scope") if isinstance(rec, dict) else None
+    want = a.scope or (named if isinstance(named, str) and named else None)
+    if want:
+        try:
+            _, sc, _, _, _, _ = resolve_scope_one(want, lens_doc)
+        except Refused:
+            if a.scope:
+                raise
+            sc = None   # the file names no scope here: the guard cannot be asked, so no model call (below)
+        if sc is not None and sc.profile_error:
             raise Refused("scope %s: %s" % (sc.label, sc.profile_error))
+        if sc is not None and isinstance(named, str) and named and named not in (sc.name, sc.label):
+            raise Refused("the findings name scope %r, not %s" % (named, sc.label))
     det = _deterministic_finding_checks(rec, sc, lens_doc)
-    mod_issues, meta = _run_blinded_critic(rec, sc, require_model=a.require_model)
+    if sc is None:
+        # the guarded-source rule judges a scope's members: with none resolved, the findings never reach a model
+        if a.require_model:
+            raise Refused("%s: no scope to judge the guarded-source rule against (pass --scope)" % CRITIC_SITE)
+        mod_issues, meta = [], {"gate": "skipped", "why": "no scope resolved", "cost_usd": 0.0}
+    else:
+        mod_issues, meta = _run_blinded_critic(rec, sc, require_model=a.require_model)
     all_issues = det + mod_issues
     out = {"ok": not all_issues, "deterministic": det, "critic": mod_issues, "meta": meta}
     if a.json:

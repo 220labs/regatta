@@ -1134,15 +1134,20 @@ scope_run() {
   [ "${rc:-}" = 4 ] || words_stop "${rc:-}" "${out:-}" || {
   scope_account || return 1
   # Evolve S5: a quiet week is earned at zero tokens before any session starts (the scope-pass component's quiet
-  # receipt); exit 3 wrote the quiet receipt, which proof cannot see, so it is the pass landed. Any other exit
-  # (not quiet, not ready before S12, a collector held) leaves the night to the session, as before.
-  if out=$("$MOD/bin/evolve" open "$scope" --quiet-exit --day "$day" 2>&1); then :; else
+  # receipt); exit 3 wrote the quiet receipt, which proof cannot see, so it is the pass landed. Exit 0 (not
+  # quiet) leaves the night to the session; any other (a collector held, a profile or the registry unreadable)
+  # ends it here, as the section would at once. The caller's session id is never the pass's (empty variable).
+  if out=$(CLAUDE_CODE_SESSION_ID= "$MOD/bin/evolve" open "$scope" --quiet-exit --day "$day" 2>&1); then :; else
     rc=$?
+    echo "$out"
     if [ "$rc" = 3 ]; then
-      echo "$out"
       echo "RECEIPT quiet: evolve open $scope --day $day earned it at zero cost, no session"
       return 0
     fi
+    why="evolve open held it before any session (exit $rc): $(printf '%s\n' "$out" | tail -1)"
+    echo "FAILED scope $scope $day: $why"
+    post "Aurora's scope pass did not land" "weekly-run aurora --scope $scope $day: $why. Log: $log"
+    return 1
   fi
   snapshot
   echo "== dream --scope $scope in $cwd"
@@ -1154,7 +1159,7 @@ scope_run() {
     [ $rc = 1 ] || break
     # the pass drafted evolve/<day>.* and stopped: evolve record lands them (and the dream, through scope-pass
     # record) first; it prints "nothing drafted" where there is nothing of its own (Evolve S5)
-    rout=$("$MOD/bin/evolve" record "$scope" --day "$d" --if-drafted 2>&1); rrc=$?
+    rout=$(CLAUDE_CODE_SESSION_ID= "$MOD/bin/evolve" record "$scope" --day "$d" --if-drafted 2>&1); rrc=$?
     case $rout in
       *"nothing drafted"*) ;;
       *) echo "== the run left evolve/$d drafts unrecorded — evolve record $scope --day $d (exit $rrc)"
