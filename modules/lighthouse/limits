@@ -5,7 +5,7 @@
 lighthouse/week-max  login  -  bin/account week-max {login}
 # Finish launches alone may raise the effective week ceiling; an absent or bad line keeps it.
 lighthouse/week-max-finish  login  -  bin/account week-max {login} --for finish
-# The overdraw's week ceiling (`<login>:<pct>`, `*:<pct>`), read by account's lift() in place of 100; absent or bad, 100.
+# The overdraw's week ceiling (`<login>:<pct>`, `*:<pct>`), read by account's lift() in place of 100; a bad own line leaves `*:` to serve, else 100.
 lighthouse/overdraw-max  login  -  bin/account week-max {login} --for overdraw
 # reef's bounds (bin/reef; 2026-11-04): `mode=on|advise|off,run=<floor>-<ceiling>,check=<floor>-<ceiling>` per host,
 # a `*:` line (a host without its own) only in the base file, as `regatta limit set` takes `<host>:` or `--all`; within

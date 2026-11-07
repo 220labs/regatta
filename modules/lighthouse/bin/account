@@ -2631,9 +2631,25 @@ def live_week_max(label, finish=False, overdraw=False):
                 # a file present but unreadable is said, never silent: the README promises a line on stderr (the
                 # landing review of overdraw-max); what did read (a live layer over a torn base) still serves
                 lines, why = c.config_read(key)
+                # config_read takes a layer that will not read as no layer, and its why is the base's alone, so the
+                # live layer `regatta limit set` writes is probed here, as the finish branch does; caught inside, as
+                # the outer except speaks for finish alone (round 2 of the landing review)
+                layer = c.CONFIG / c.LIVE / key
+                try:
+                    layer.lstat()
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    why = f"its live layer: {e}"
+                else:
+                    try:
+                        layer.read_text(encoding="utf-8-sig")
+                    except (OSError, UnicodeDecodeError) as e:
+                        why = f"its live layer: {e}"
                 if why and "read" not in said:
                     said.add("read")
-                    print(f"account: {key} could not be read ({why}); {fallback}", file=sys.stderr)
+                    tail = "what did read serves, else 100" if lines else fallback
+                    print(f"account: {key} could not be read ({why}); {tail}", file=sys.stderr)
                 lines = lines or []
             else:
                 lines = c.config_lines(key) or []
