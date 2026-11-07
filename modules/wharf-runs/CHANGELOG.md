@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `builder-host`: add the `codex` vendor (`<host>-codex`, feature `codex`, `only=codex`, `CODEX_HOME` hooks and `AGENTS.md`, `codex login status` with missing login `owed`, no model call in `probe`, its own sweep LaunchDaemon label, and a shared slot folder across builders on one Mac).
 - `dispatch-queue`: no host claims a landing (a `finish` entry) below `normal` priority (landing-floor, 2026-11-06).
   A `low` finish stays queued and the listing says why and how to lift it (`autofinish-run <worktree> --priority
   high`); a landing takes a normal run slot, and builds keep no floor.
