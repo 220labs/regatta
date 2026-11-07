@@ -29,7 +29,7 @@ prompt is ever parsed as a flag). The fence (vendor-fence, 2026-10-29; F2, F3 of
 docs/codex-agy-gaps-2026-10-29.md) is Codex's own permissions profile, `regatta-fence`, extending
 `:workspace`: every entry of the home folder denied but the way down to the repo, the repo's checkout
 readable (its git dir included: git runs), the worktree and a scratch dir of the run's writable, and
-the home folder's git config (`.gitconfig`, `.config/git`) readable (fence_profile). Not `~` denied whole, as principal-tier probe
+the home folder's git config (`.gitconfig`, `.config/git`) and Codex's own install under it readable (fence_profile, _install_root). Not `~` denied whole, as principal-tier probe
 5 did for a copy under /private/tmp: a worktree lives under `~`, and with `~` denied git cannot stat the
 home folder ("fatal: Invalid path"), so nothing runs git (probed with `codex sandbox`, 0.162.1, no model
 call). An entry made under `~` after the start is not denied: the list is read once, at the start. Codex
@@ -498,29 +498,44 @@ def _toml_str(v):
     return json.dumps(v)   # a TOML basic string: JSON's escapes are TOML's for every path a Mac names
 
 
-def _install_root():
-    """The folder Codex itself is installed in, real path, kept readable under the fence: Codex's sandbox helper
+def _install_root(home, roots=()):
+    """What of Codex's own install is kept readable under the fence, real path: Codex's sandbox helper
     re-executes Codex's own binary inside its sandbox, so a home-installed Codex (npm's user prefix, `.local/lib/node_modules` in the home,
     on a Linux node) whose folder the profile denies fails every start, `bwrap: execvp …/codex: Permission denied`
-    (a Linux node, 2026-11-06). A Mac's Homebrew Codex lives outside HOME and never needed it. For an npm install
-    it is the package folder (the nearest one holding a package.json, at most three folders up); otherwise the
-    binary's own folder. None when no codex is found."""
+    (a Linux node, 2026-11-06). Only an install under HOME is kept: one outside it (a Mac's Homebrew cask) is
+    readable under `:workspace` already. For an npm install it is the package folder, the nearest one at most three
+    folders up whose package.json names `@openai/codex` (it holds the vendored native binary), unless that folder is
+    HOME or holds the checkout (ROOTS), which would open its siblings; otherwise the binary file alone, as the core's
+    fence.install_of reads a home folder: it holds the user's other tools (the landing review, 2026-11-07). A shim
+    install (volta, mise, asdf) keeps the shim, not the install, and still fails, as before. None when no codex
+    is found or it lives outside HOME."""
     found = shutil.which(_bin())
     if not found:
         return None
     real = os.path.realpath(found)
+    if not (real + os.sep).startswith(home + os.sep):
+        return None
     d = os.path.dirname(real)
     for _ in range(3):
-        if os.path.isfile(os.path.join(d, "package.json")):
-            return d
+        if d == home or not (d + os.sep).startswith(home + os.sep):
+            break
+        try:
+            with open(os.path.join(d, "package.json")) as f:
+                named = json.load(f).get("name") == "@openai/codex"
+        except (OSError, ValueError, AttributeError):
+            named = False
+        if named:
+            if not any((r + os.sep).startswith(d + os.sep) for r in roots):
+                return d
+            break
         d = os.path.dirname(d)
-    return os.path.dirname(real)
+    return real
 
 
 def fence_profile(cwd, scratch, home=None):
     """The `-c` arguments of the start's permissions profile (the module docstring): `regatta-fence`, from
     `:workspace`, with every entry of HOME denied but those on the way to a kept path, the checkout CWD sits
-    in readable, CWD and SCRATCH writable. Codex parses `-c k=v`'s value as TOML; a dotted key would split a
+    in readable, CWD and SCRATCH writable, and Codex's own install under HOME readable (_install_root). Codex parses `-c k=v`'s value as TOML; a dotted key would split a
     path at its dots (`.claude`), so the filesystem table goes as one inline table."""
     home = os.path.realpath(home or _home())
     cwd, scratch = os.path.realpath(cwd), os.path.realpath(scratch) if scratch else None
@@ -532,7 +547,7 @@ def fence_profile(cwd, scratch, home=None):
             keep[os.path.realpath(extra)] = "read"
     if scratch:
         keep[scratch] = "write"
-    inst = _install_root()
+    inst = _install_root(home, (root, cwd))
     if inst:
         keep.setdefault(inst, "read")
     under = [k for k in keep if (k + os.sep).startswith(home + os.sep) and k != home]

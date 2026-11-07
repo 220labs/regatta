@@ -1577,7 +1577,20 @@ case "$out" in *"\"$NPR\"=\"read\""*) r=kept;; *) r="missing: $out";; esac; chec
 case "$out" in *"/.ssh\"=\"deny\""*) r=denied;; *) r="open: $out";; esac; check "$r" denied "  the rest of the home stays denied (.ssh)"
 out=$(nprof "$T/no-such-codex")
 case "$out" in *node_modules*) r="kept: $out";; *) r=none;; esac; check "$r" none "  no codex found: nothing extra kept"
-unset NH NP NR NPR
+printf '#!/bin/sh\n' > "$NH/.local/bin/codex-solo"; chmod +x "$NH/.local/bin/codex-solo"; printf 'x\n' > "$NH/.local/bin/othertool"
+NBR=$(cd "$NH/.local/bin" && pwd -P)
+out=$(nprof "$NH/.local/bin/codex-solo")
+case "$out" in *"\"$NBR/codex-solo\"=\"read\""*) r=kept;; *) r="missing: $out";; esac; check "$r" kept "  a standalone binary in a home folder: the file alone is read"
+case "$out" in *"\"$NBR/othertool\"=\"deny\""*) r=denied;; *) r="open: $out";; esac; check "$r" denied "  its folder's other tools stay denied"
+mkdir -p "$NH/projects/tools"; printf '{"name": "tools"}\n' > "$NH/projects/package.json"; printf '#!/bin/sh\n' > "$NH/projects/tools/codex"; chmod +x "$NH/projects/tools/codex"
+mkdir -p "$NH/projects/sibling"; NPJ=$(cd "$NH/projects" && pwd -P)
+out=$(nprof "$NH/projects/tools/codex")
+case "$out" in *"\"$NPJ\"=\"read\""*) r="opened: $out";; *) r=closed;; esac; check "$r" closed "  a package.json not Codex's above the binary: its folder is not kept"
+case "$out" in *"\"$NPJ/sibling\"=\"deny\""*) r=denied;; *) r="open: $out";; esac; check "$r" denied "  the checkout's sibling stays denied"
+mkdir -p "$T/outside/bin"; printf '#!/bin/sh\n' > "$T/outside/bin/codex"; chmod +x "$T/outside/bin/codex"
+out=$(nprof "$T/outside/bin/codex")
+case "$out" in *outside*) r="kept: $out";; *) r=none;; esac; check "$r" none "  an install outside the home: nothing extra kept"
+unset NH NP NR NPR NBR NPJ
 
 echo "the fence, live: codex sandbox under the start's permissions profile (no model call)"
 if command -v codex > /dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
