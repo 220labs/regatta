@@ -110,6 +110,20 @@ check "$?" 2 "a finish ceiling above 100 is refused by its reader"
 "$L" limit unset --why t week-max-finish acct-x --on host-a > /dev/null 2>&1
 check "$(cat "$C/live/lighthouse/week-max-finish")" '*:96' "unset keeps other finish lines"
 
+echo "limit: an overdraw week ceiling"
+"$L" limit set --why t overdraw-max 'acct-x:60' '*:80' --on host-a > "$T/od-limit.out" 2>&1
+check "$?" 0 "the overdraw ceiling is a live login limit"
+check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-x --for overdraw 2>/dev/null)" "60 (lighthouse/overdraw-max acct-x:)" "its trial reader sees the own line"
+check "$("$ROOT/modules/lighthouse/bin/account" week-max acct-other --for overdraw 2>/dev/null)" "80 (lighthouse/overdraw-max *:)" "its trial reader sees the wildcard"
+check "$("$L" limit get overdraw-max --on host-a | grep -c 'acct-x:60')" 1 "get reports the live overdraw line"
+check "$(grep -c -E 'serves only a login whose registry|stands over its registry row' "$T/od-limit.out")" 0 "the writer does not claim week-max's registry rules for overdraw-max"
+out=$("$L" limit set --why t overdraw-max 'acct-x:101' --on host-a 2>&1)
+check "$?" 2 "an overdraw ceiling above 100 is refused by its reader"
+out=$("$L" limit set --why t overdraw-max 'acct-x:0' --on host-a 2>&1)
+check "$?" 2 "an overdraw ceiling of 0 is refused by its reader"
+"$L" limit unset --why t overdraw-max acct-x --on host-a > /dev/null 2>&1
+check "$(cat "$C/live/lighthouse/overdraw-max")" '*:80' "unset keeps other overdraw lines"
+
 python3 - "$M/hooks" > "$T/receipt.out" <<'PY'
 import os, subprocess, sys
 sys.path.insert(0, sys.argv[1])
