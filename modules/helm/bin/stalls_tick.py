@@ -555,13 +555,18 @@ def dispatch_cmd(s, what, attempt, t):
         argv += ["--effort", str(d["effort"])]
     if str(d.get("yolo") or "0") not in ("0", "", "False"):
         argv.append("--yolo")
-    if d.get("pin") == "bound":
+    if s.get("limit"):
+        # stuck-ships S2 (revision 10): a build step stopped on a usage limit re-dispatches unpinned with
+        # `--account auto`, never on the login (or host pin) that stopped it
+        argv += ["--account", "auto"]
+    elif d.get("pin") == "bound":
         argv += ["--account", "bound"]
-    if s.get("host") == helmlib.host():
-        argv += ["--on", "here"]
-    else:
-        argv += ["--on", s["host"], "--at", "@%d" % (int(t) + ON_PEER_DELAY), "--fallback", "here"]
-    env = tool_env()
+    if not s.get("limit"):
+        if s.get("host") == helmlib.host():
+            argv += ["--on", "here"]
+        else:
+            argv += ["--on", s["host"], "--at", "@%d" % (int(t) + ON_PEER_DELAY), "--fallback", "here"]
+    env = tool_env(drop=LOGIN_ENV if s.get("limit") else ())
     if arm:
         env["DISPATCH_ARM"] = arm
     # S1 and a classified retry are the same step again: dispatch adds one to DISPATCH_DEPTH
