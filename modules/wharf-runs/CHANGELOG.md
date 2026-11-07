@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The Codex fence keeps Codex's own install folder readable: a home-installed
+  Codex (npm's user prefix in the home on a Linux node) failed every vendor start with
+  `bwrap: execvp …/codex: Permission denied`, since its sandbox helper re-runs
+  Codex inside the profile that denied the whole home but the checkout.
+
 - `yard-node up` asks no Claude login on a vendor-only node (a fence that names only the walk's
   non-Claude rows, a Codex builder) and prints that node a sign-in line without `claude auth login`;
   a node where no signed-in login meets the fence is refused before anything reaches it.
