@@ -318,6 +318,36 @@ rm -f "$REGATTA_CONFIG/lighthouse/hookwatch.json"
 HEALTH_CHECK_CMD=true run
 check "$(log | grep -c '^hookwatch:'):$([ -e "$T/logs/health.last.pin" ] && echo kept || echo gone)" "0:gone" "  no pin: no line, and the posted mark goes"
 
+echo "logged-out logins (stuck-ships S2): probed by account logged-out --probe, printed and posted when still out"
+S2_CFG="$T/acct-s2-cfg"; mkdir -p "$S2_CFG"
+cat > "$T/accounts-s2.json" <<EOF
+{"accounts": [
+  {"label": "acct-s2", "provider": "claude", "home": "$S2_CFG", "rules": {"week_max": 90, "window_max": 50}}]}
+EOF
+cat > "$T/claude-s2" <<'EOF'
+#!/bin/sh
+dir="${CLAUDE_CONFIG_DIR:-}"
+if [ "$1" = auth ] && [ "${2:-}" = status ]; then
+  if [ -f "$dir/stub-login" ]; then printf '%s\n' '{"loggedIn": true, "email": "s2@t", "subscriptionType": "pro"}'
+  else printf '%s\n' '{"loggedIn": false}'; exit 1; fi
+  exit 0
+fi
+echo "claude-s2: bad call: $*" >&2
+exit 2
+EOF
+chmod +x "$T/claude-s2"
+ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" "$(dirname "$HB")/account" logged-out --set acct-s2 >/dev/null
+rm -f "$T/logs/health.last.logged_out"
+ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^logged-out: acct-s2 — sign in (claude auth login)')" 1 "a logged-out login: health prints the logged-out line"
+check "$(log | grep -c "^- posted: --post logged-out login fails")" 1 "  and posts it once to the bulletin"
+ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c 'logged-out login: failing, already posted')" 1 "  second pass: not repeated"
+touch "$S2_CFG/stub-login"
+ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^logged-out:'):$([ -e "$S2_CFG/logged-out.json" ] && echo kept || echo gone):$([ -e "$T/logs/health.last.logged_out" ] && echo kept || echo gone)" "0:gone:gone" \
+  "  signed back in: health's --probe clears logged-out.json, prints no line and drops the posted mark"
+
 echo "no core: one line, exit 2"
 cp "$HB" "$T/lonely-health"
 out=$(HEALTH_LOG_DIR="$T/logs2" "$T/lonely-health"; echo "rc=$?"); check "$out" "rc=2" "a copy with no lib/ and no core beside it exits 2"

@@ -2389,6 +2389,90 @@ def exhaustion_log(home):
     return Path(home) / "exhaustion.jsonl"
 
 
+def logged_out_file(home):
+    return Path(home) / "logged-out.json"
+
+
+@contextlib.contextmanager
+def logged_out_lock(home):
+    """logged-out.json is set and probed-to-clear under one per-home lock (stuck-ships S2)."""
+    p = logged_out_file(home)
+    with open(p.with_name(p.name + ".lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield p
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def logged_out(home):
+    """True when HOME carries logged-out.json: a torn file still parks the login until a probe clears it."""
+    try:
+        logged_out_file(home).lstat()
+        return True
+    except OSError:
+        return False
+
+
+def read_logged_out(home):
+    try:
+        d = json.loads(logged_out_file(home).read_text(errors="replace"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_logged_out(a):
+    with logged_out_lock(a["home"]) as p:
+        rec = {"at": int(now()), "label": a["label"]}
+        write_json(p, rec)
+    return rec
+
+
+def _probe_logged_out(a):
+    with logged_out_lock(a["home"]) as p:
+        if not logged_out(a["home"]):
+            return True, None, None
+        st = auth_status(a) if a.get("provider") == "claude" else None
+        if isinstance(st, dict) and st.get("loggedIn"):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+            return True, None, st
+        if st is None:
+            return False, "logged out (`claude auth status` gave no answer) — run claude auth login", None
+        return False, "logged out (claude auth status) — run claude auth login", st
+
+
+def probe_logged_out(a):
+    """Probe `auth_status(a)` under HOME's flock when logged-out.json is set — one `claude auth status` call,
+    never a usage probe — clearing the file on `loggedIn`. → (cleared, skip_why)."""
+    cleared, why, _ = _probe_logged_out(a)
+    return cleared, why
+
+
+def logged_out_rows(reg, probe=False, rows=None):
+    """Rows whose home carries logged-out.json; with PROBE, each home is probed once under its flock first."""
+    cand = rows if rows is not None else [a for a in reg["accounts"] if a.get("provider") == "claude"]
+    if probe:
+        seen = set()
+        for a in cand:
+            if not a["home"].is_dir() or not logged_out(a["home"]):
+                continue
+            h = str(a["home"].resolve())
+            if h in seen:
+                continue
+            seen.add(h)
+            probe_logged_out(a)
+    out = []
+    for a in cand:
+        if a["home"].is_dir() and logged_out(a["home"]):
+            rec = read_logged_out(a["home"])
+            out.append({"label": a["label"], "home": str(a["home"]), "at": rec.get("at")})
+    return out
+
+
 def read_exhaustion(home):
     out = []
     try:
@@ -3065,7 +3149,7 @@ def _overdraw_record(info):
 
 
 def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, allow_overage=False, room=None,
-         overdraw=False, finish=False):
+         overdraw=False, finish=False, skip=()):
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
     repo: the path the step runs in; a row the repo is routed off (tenants) is skipped unprobed.
     room: `fable` takes only a row with Fable room (header, "Room").
@@ -3081,13 +3165,91 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         rows = [a for a in rows if a.get("primary")]
     if not rows:
         raise Short([(prov, f"no enabled {prov} account{' marked primary' if bound else ''} in {REGISTRY}")])
-    skipped, over, unread_own = [], [], None
+    skip_norm = {re.sub(r"\s+", "_", s.strip()).lower() for s in (skip or ()) if s and s.strip()}
+    skipped, over_ranked, parked_out, unread_own = [], [], [], None
     own = scope_login_of(repo)
     if own and not own[1]:
         raise Short([("registry", f"{own[0]}: no run picks a seat until it does")])
     if own and not any(a["label"] == own[1] for a in rows):
         raise Short([(own[1], f"scope {own[0]} runs on {own[1]}, which is no enabled {prov} account in {REGISTRY}")])
-    for a in rows:
+
+    def ordered_over():
+        return [o[1] for o in sorted(over_ranked, key=lambda x: x[0])]
+
+    def drain_parked():
+        pending, parked_out[:] = list(parked_out), []
+        for w_idx, pa, s_idx in pending:
+            cleared, auth_why = probe_logged_out(pa)
+            if not cleared:
+                skipped[s_idx] = (pa["label"], auth_why)
+                continue
+            res = eval_row(pa, w_idx, skip_idx=s_idx)
+            if res:
+                return res
+        return None
+
+    def eval_row(a, walk_idx, skip_idx=None):
+        nonlocal unread_own
+        lim, at = limits(a, cached=cached)
+        ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
+        if ok:
+            lent = lend_bar(reg, a, lim, repo, own)
+            if lent:   # worded as judge's week refusal, so whatever reads a week bar reads this one too
+                ok, why = False, lent
+        rs = room_short(a, lim, t, room, finish)
+        if rs:   # before the fallbacks below: an unknown Fable is no room, the primary's included
+            # a plan without Fable alone: no reset lifts it, so judge's reason never leads (resets())
+            # judge's "limits unknown" is the same unread probe the room reads, so the room's reason stands alone
+            reason = rs[0] if ok or rs[1] or why.startswith("limits unknown") else f"{why}; {rs[0]}"
+            if skip_idx is None:
+                skipped.append((a["label"], reason))
+            else:
+                skipped[skip_idx] = (a["label"], reason)
+            return None
+        if ok:
+            rest = skipped if skip_idx is None else skipped[:skip_idx] + skipped[skip_idx + 1:]
+            return a, (f"{why}; Fable's week {lim['fable_week']}%" if room else why), rest
+        unknown = lim is None or why.startswith("limits unknown")
+        if unknown and a.get("primary"):
+            if skip_idx is None and parked_out:
+                res = drain_parked()
+                if res:
+                    return res
+            rest = skipped if skip_idx is None else skipped[:skip_idx] + skipped[skip_idx + 1:]
+            if overdraw:
+                # a row before it known to have credits left goes first: the primary's guess may be its own last
+                # point of the week, which the overdraw exists to spare (code review of overdraw, 2026-11-04)
+                lifted = lift(ordered_over(), t, allow_overage, rest + [(a["label"], why)])
+                if lifted:
+                    return lifted
+            # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
+            # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
+            # and a blocked start costs more than a guess (review 2026-10-03). A row after the
+            # primary (the owner's last-resort row since 2026-10-16) is for a primary with no room,
+            # never one whose room is unknown.
+            return a, "limits unknown — the primary runs it rather than nothing", rest
+        if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
+            # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever;
+            # but a tenant has several logins, and an unread one first in the walk (a login not signed in yet)
+            # must not shadow a later one that is eligible: held, and run only once every row was tried
+            # (tenant-unknown-last, 2026-11-04: a tenant's new login, not signed in yet, was picked over a sibling with room)
+            pos = len(skipped) if skip_idx is None else skip_idx
+            if unread_own is None or walk_idx < unread_own[0]:
+                unread_own = (walk_idx, a, pos)
+            if skip_idx is None:
+                skipped.append((a["label"], why))
+            else:
+                skipped[skip_idx] = (a["label"], why)
+            return None
+        if OVER_BAR_RE.match(why):
+            over_ranked.append((walk_idx, (a, lim, at, why)))
+        if skip_idx is None:
+            skipped.append((a["label"], why))
+        else:
+            skipped[skip_idx] = (a["label"], why)
+        return None
+
+    for walk_idx, a in enumerate(rows):
         if own and a["label"] != own[1]:
             skipped.append((a["label"], f"scope {own[0]} runs on {own[1]}"))
             continue
@@ -3103,58 +3265,31 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             skipped.append((a["label"], "its login is not in Orca here (no orca-sync has found it)" if via_orca(a)
                             else f"not set up on this machine ({a['home']} missing)"))
             continue
+        if re.sub(r"\s+", "_", a["label"]).lower() in skip_norm:
+            skipped.append((a["label"], "skipped (--skip)"))
+            continue
         if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
             # under --room, a plan its cached reading says lacks Fable is said first: no reset lifts it
             # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts)
             rs = room_short(a, limits(a, cached=True)[0], t, room, finish) if room and not a.get("same_as") else None
             skipped.append((a["label"], rs[0] if rs and rs[1] else judge(a, None, t)[1]))   # same_as: its own fix leads
             continue
-        lim, at = limits(a, cached=cached)
-        ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
-        if ok:
-            lent = lend_bar(reg, a, lim, repo, own)
-            if lent:   # worded as judge's week refusal, so whatever reads a week bar reads this one too
-                ok, why = False, lent
-        rs = room_short(a, lim, t, room, finish)
-        if rs:   # before the fallbacks below: an unknown Fable is no room, the primary's included
-            # a plan without Fable alone: no reset lifts it, so judge's reason never leads (resets())
-            # judge's "limits unknown" is the same unread probe the room reads, so the room's reason stands alone
-            skipped.append((a["label"], rs[0] if ok or rs[1] or why.startswith("limits unknown") else f"{why}; {rs[0]}"))
+        if logged_out(a["home"]):
+            parked_out.append((walk_idx, a, len(skipped)))
+            skipped.append((a["label"], "logged out — skipped while another login has room"))
             continue
-        if ok:
-            return a, (f"{why}; Fable's week {lim['fable_week']}%" if room else why), skipped
-        unknown = lim is None or why.startswith("limits unknown")
-        if unknown and overdraw and a.get("primary"):
-            # a row before it known to have credits left goes first: the primary's guess may be its own last
-            # point of the week, which the overdraw exists to spare (code review of overdraw, 2026-11-04)
-            lifted = lift(over, t, allow_overage, skipped + [(a["label"], why)])
-            if lifted:
-                return lifted
-        if a.get("primary") and unknown:
-            # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
-            # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
-            # and a blocked start costs more than a guess (review 2026-10-03). A row after the
-            # primary (the owner's last-resort row since 2026-10-16) is for a primary with no room,
-            # never one whose room is unknown.
-            return a, "limits unknown — the primary runs it rather than nothing", skipped
-        if own_tenant(reg, a, repo) and (lim is None or why.startswith("limits unknown")):
-            # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever;
-            # but a tenant has several logins, and an unread one first in the walk (a login not signed in yet)
-            # must not shadow a later one that is eligible: held, and run only once every row was tried
-            # (tenant-unknown-last, 2026-11-04: a tenant's new login, not signed in yet, was picked over a sibling with room)
-            if unread_own is None:
-                unread_own = (a, len(skipped))
-            skipped.append((a["label"], why))
-            continue
-        if OVER_BAR_RE.match(why):
-            over.append((a, lim, at, why))
-        skipped.append((a["label"], why))
+        res = eval_row(a, walk_idx)
+        if res:
+            return res
+    res = drain_parked()
+    if res:
+        return res
     # a row known to have credits left, overdrawn, goes before an unread tenant login that may be its own last point
-    lifted = lift(over, t, allow_overage, skipped) if overdraw else None
+    lifted = lift(ordered_over(), t, allow_overage, skipped) if overdraw else None
     if lifted:
         return lifted
     if unread_own:
-        held, at = unread_own
+        _, held, at = unread_own
         return held, "limits unknown — the tenant's own login runs it rather than nothing", skipped[:at] + skipped[at + 1:]
     raise Short(skipped)
 
@@ -4255,11 +4390,12 @@ def load_ships():
 
 
 def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, pin=True, allow_overage=False,
-                  room=None, finish=False):
+                  room=None, finish=False, skip=()):
     """pick, but a ship stays on its login (module docstring). → (row, reason, skipped); Short as pick."""
     bad = room_refusal(reg, kind, provider, room)
     if bad:
         raise Short([("room", bad)])
+    skip_norm = {re.sub(r"\s+", "_", s.strip()).lower() for s in (skip or ()) if s and s.strip()}
     with ships_lock():
         ships = load_ships()
         pinned = ships.get(key)
@@ -4272,7 +4408,8 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
                 or (not a["home"].is_dir() and "not here") or (a.get("same_as") and "on another row's login") \
                 or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}") \
-                or confined_out(reg, a, repo)
+                or confined_out(reg, a, repo) or (re.sub(r"\s+", "_", a["label"]).lower() in skip_norm and "skipped (--skip)") \
+                or (logged_out(a["home"]) and "logged out")
             if not gone:
                 t = now()
                 lim, at = (None, None) if cooldown(a, t) else limits(a, cached=cached)
@@ -4299,7 +4436,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                         and not cooldown(a, t):  # as pick reads it: a reading with no window figures too (review 2026-10-21)
                     # and as pick walks it: another row with room runs before an unread tenant login (tenant-unknown-last)
                     try:
-                        alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish)
+                        alt = pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish, skip=skip)
                     except Short:
                         alt = None
                     if alt and alt[0]["label"] != a["label"] and not alt[1].startswith("limits unknown"):
@@ -4317,10 +4454,12 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             moved = f"{pinned['label']} is {gone}"
         elif pinned:
             moved = f"{pinned.get('label')} is no row any more"
-        a, why, skipped = alt or pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish)
+        a, why, skipped = alt or pick(reg, kind, provider, False, cached, repo, allow_overage, room, finish=finish, skip=skip)
         if pin:
             ships[key] = {"label": a["label"], "at": int(now())}
             write_json(SHIPS, ships)
+        if pinned and a["label"] == pinned.get("label"):
+            return a, f"ship {key} stays on it: {why}", skipped
         return a, f"ship {key} {'moved: ' + moved + '; ' if moved else 'pinned: ' if pin else 'unpinned: '}{why}", skipped
 
 
@@ -4878,6 +5017,18 @@ def doctor_local(reg, logins, peer=None, record=True):
         out.append(dict({"mac": mac, "label": label, "level": level, "text": text, "fix": fix}, **kw))
 
     claude_rows = [a for a in reg["accounts"] if a["provider"] == "claude"]
+    probed_raw = {}
+    for a in claude_rows:
+        if not a["home"].is_dir() or not logged_out(a["home"]):
+            continue
+        h = str(a["home"].resolve())
+        if h in probed_raw:
+            continue
+        _, em = login_of(a)
+        is_blind = bool((peer or os.environ.get("SSH_CONNECTION")) and em
+                        and not ((DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json").is_file())
+        if not is_blind:
+            probed_raw[h] = _probe_logged_out(a)[2]
     for a in claude_rows:
         e = logins.get(a["label"])
         lab = a["label"]
@@ -4899,11 +5050,15 @@ def doctor_local(reg, logins, peer=None, record=True):
         # sign-in is, reads logged out to every check here though its sessions run (an Orca work login, 2026-10-18)
         # SSH_CONNECTION too: the fix line for a failed peer leg runs `doctor --local` over ssh, no --peer
         blind = bool((peer or os.environ.get("SSH_CONNECTION")) and email and not ((DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json").is_file())
-        raw = auth_status(a) if email and not blind else None
+        h = str(a["home"].resolve())
+        raw = probed_raw[h] if (email and not blind and h in probed_raw) else (auth_status(a) if email and not blind else None)
         st = raw or {}
         if blind:
             f(lab, "info", "its login is in the keychain, which ssh cannot read — auth status and the live call not checked here; "
                        f"a run that arrives over ssh reads {a['home']}/.credentials.json instead, so if one ends logged out: {login_line(a, peer)}")
+            if logged_out(a["home"]):
+                problems += 1
+                f(lab, "fix", "marked logged out (logged-out.json)", login_line(a, peer))
         want = e.get("email")
         if not email:
             problems += 1
@@ -5070,6 +5225,10 @@ def doctor_local(reg, logins, peer=None, record=True):
 def cmd_doctor(reg, local=False, as_json=False, peer=None):
     path, logins = load_logins(keep=False)   # stale_copies judges the copy as the hooks see it
     if not logins:
+        logged_out_rows(reg, probe=True, rows=[
+            a for a in reg["accounts"] if a.get("provider") == "claude" and a["home"].is_dir()
+            and not bool((peer or os.environ.get("SSH_CONNECTION")) and login_of(a)[1]
+                         and not ((DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json").is_file())])
         print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
         # the tenants link points into the same drive, so this is when its state matters most (review 2026-10-23)
         # and the roster: a stale deny row is named on a host with no logins file too (the yard node; landing review)
@@ -5144,7 +5303,8 @@ def fable_word(lim):
 
 def limits_json(a, lim, at, t, repo=None, reg=None, own=False):
     own = scope_login_of(repo) if own is False else own   # once, for the bar and the scope check below
-    ok, why = judge(a, lim, t, at=at)
+    lout = a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])
+    ok, why = (False, "logged out (claude auth status) — run claude auth login") if lout else judge(a, lim, t, at=at)
     lent = lend_bar(reg, a, lim, repo, own) if ok and repo and reg is not None else None
     if lent:   # with a repo only: a listing with none says nothing of whose work it is (pick reads none as another's)
         ok, why = False, lent
@@ -5160,6 +5320,7 @@ def limits_json(a, lim, at, t, repo=None, reg=None, own=False):
         ok, why = False, f"parked (enabled: false in {REGISTRY.name})" + (f"; {why}" if why else "")
     return {"label": a["label"], "provider": a["provider"], "primary": bool(a.get("primary")), "enabled": a["enabled"],
             "here": a["home"].is_dir(), "home": str(a["home"]), "env": env_of(a), "limits": lim, "sampled": at, "eligible": ok, "why": why,
+            "logged_out": lout,
             "denied": d or None,  # --force never crosses tenancy, a confinement or a scope's login (review 2026-10-06)
             # the plan has no 5-hour window (no_five_hour): the widget and the tier check say so, never "unknown"
             "no_five_hour": no_five_hour(a, lim),
@@ -5184,6 +5345,7 @@ def main(argv):
     p.add_argument("--repo")
     p.add_argument("--ship")
     p.add_argument("--no-pin", action="store_true")
+    p.add_argument("--skip", default="", metavar="LABELS", help="comma-separated labels to skip in this pick")
     p.add_argument("--cached", action="store_true")
     p.add_argument("--allow-overage", action="store_true",
                    help="a row whose paid extra usage is on may run it: a person's yes, refused under CLAUDE_UNATTENDED")
@@ -5257,6 +5419,11 @@ def main(argv):
     p.add_argument("--local", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--peer", help=argparse.SUPPRESS)
+    p = sub.add_parser("logged-out", help="list (or --set / --probe) logins marked logged out")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--set", metavar="LABEL", help="mark LABEL's home logged-out.json under its flock")
+    g.add_argument("--probe", action="store_true", help="probe each marked home with claude auth status and clear on loggedIn")
+    p.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "overdraw-log":   # needs no registry: what the pick decided is on stdin
         return cmd_overdraw_log()
@@ -5280,6 +5447,36 @@ def main(argv):
         global READ_LINKS
         READ_LINKS = True
     reg = load_registry()
+    if args.cmd == "logged-out":
+        if not REGISTRY.is_file():
+            if args.set:
+                print(f"account: no registry at {REGISTRY}", file=sys.stderr)
+                return 4
+            if args.json:
+                print("[]")
+            return 0
+        if args.set:
+            exp = Path(args.set).expanduser()
+            a = next((x for x in reg["accounts"]
+                      if x["label"] == args.set or re.sub(r"\s+", "_", x["label"]) == args.set or x["home"] == exp),
+                     None) or row(reg, args.set)
+            if a["provider"] != "claude":
+                sys.exit(f"account: {a['label']} is a {a['provider']} login — logged-out tracks claude logins only")
+            if not a["home"].is_dir():
+                sys.exit(f"account: {a['label']} is not set up on this machine ({a['home']} missing)")
+            rec = set_logged_out(a)
+            if args.json:
+                print(json.dumps(rec, ensure_ascii=False))
+            else:
+                print(f"{a['label']}: marked logged out ({logged_out_file(a['home'])})")
+            return 0
+        out = logged_out_rows(reg, probe=args.probe)
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False))
+        else:
+            for o in out:
+                print(f"{o['label']}: logged out ({o['home']})")
+        return 0
     if args.cmd == "tenant":
         if not REGISTRY.is_file():
             print(f"account tenant: no registry at {REGISTRY} — the logins it names must be its rows", file=sys.stderr)
@@ -5473,11 +5670,13 @@ def main(argv):
         hide = {x for x in items if ":" not in x}
         fams = [(w.strip().lower(), f.strip().lower()) for w, _, f in (x.partition(":") for x in items if ":" in x)]
         rows = [a for a in rows if a["label"] not in hide]
+        if not args.cached:
+            logged_out_rows(reg, probe=True, rows=rows)
         t = now()
         out = []
         own = scope_login_of(args.repo)   # once for every row (AGENTS.md: a registry re-read mid-walk can find it torn)
         for a in rows:
-            lim, at = limits(a, cached=args.cached)
+            lim, at = limits(a, cached=args.cached or (a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])))
             out.append(limits_json(a, lim, at, t, args.repo, reg, own))
         if args.orca and (args.all or not args.label):
             # an Orca agent hides by its card's label or by Orca's name for it (`antigravity`, `cursor`)
@@ -5499,7 +5698,7 @@ def main(argv):
                 print(f"{o['label']}: never probed — {o['provider']} keeps its login to itself; `limits --all --orca` shows Orca's card")
                 continue
             if not lim:
-                print(f"{o['label']}: {'no cached probe' if args.cached else 'probe failed'}")
+                print(f"{o['label']}: {o['why'] if o.get('logged_out') else ('no cached probe' if args.cached else 'probe failed')}")
                 continue
             # R5: the probe's plan string beside the dir's own, until the lesson says which to trust
             try:
@@ -5534,16 +5733,17 @@ def main(argv):
     except (ImportError, AttributeError):   # an older core grants no finish allowance
         receipt = False
     finish = args.purpose == "finish" and receipt
+    skip = [x.strip() for x in re.split(r"[,\n]", args.skip) if x.strip()]
     try:
         if args.ship and args.bound:
             sys.exit("account: --ship and --bound do not go together (bound work is the primary's, pinned already)")
         if args.ship:
             a, why, skipped = pick_for_ship(reg, args.ship, args.kind, args.provider, args.cached, args.repo,
                                             pin=not (args.cached or args.no_pin), allow_overage=args.allow_overage,
-                                            room=args.room, finish=finish)
+                                            room=args.room, finish=finish, skip=skip)
         else:
             a, why, skipped = pick(reg, args.kind, args.provider, args.bound, args.cached, args.repo,
-                                   args.allow_overage, args.room, overdraw=args.overdraw, finish=finish)
+                                   args.allow_overage, args.room, overdraw=args.overdraw, finish=finish, skip=skip)
     except Short as s:
         if args.json:
             print(json.dumps({"account": None, "skipped": s.args[0]}, ensure_ascii=False))

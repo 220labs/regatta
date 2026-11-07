@@ -116,6 +116,8 @@ CANARY="${HEALTH_CANARY:-on}"  # the start-path canary's line (header)
 ORCA="${HEALTH_ORCA:-on}"  # the serve agent's line (header)
 RCB="${HEALTH_RCB:-on}"    # the Remote Control hosts' line (header)
 DISK="${HEALTH_DISK:-on}"  # the free-disk line (header)
+LOGGED_OUT="${HEALTH_LOGGED_OUT:-on}"  # logged-out logins (`account logged-out --probe`)
+ACCOUNT="${HEALTH_ACCOUNT_CMD:-$BIN/account}"
 state="$LOGDIR/health.last"   # the failure last posted; a repeat posts nothing
 
 # ff <repo>: fast-forward main to origin/main when it is checked out and clean; say why not.
@@ -392,6 +394,21 @@ if isinstance(s, dict) and s.get("to"):
     print("%s pinned at %s by hookwatch (%s)%s" % (os.path.basename(str(s.get("root") or "the primary")), str(s["to"])[:12],
           s.get("why") or "a hook fault", "; revert PR %s" % s["pr"] if s.get("pr") else ""))' 2>/dev/null)
 if [ -n "$pin" ]; then echo "hookwatch: $pin"; post_once "$state.pin" "hookwatch's pin" "$pin"; else rm -f "$state.pin"; fi
+
+if [ "$LOGGED_OUT" = on ] && [ -x "$ACCOUNT" ]; then
+  lout=$("$ACCOUNT" logged-out --probe --json 2>/dev/null | python3 -I -c 'import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+print(", ".join(str(r.get("label") or "") for r in rows if isinstance(r, dict) and r.get("label")))' 2>/dev/null)
+  if [ -n "$lout" ]; then
+    echo "logged-out: $lout — sign in (claude auth login)"
+    post_once "$state.logged_out" "logged-out login" "$lout logged out (claude auth status) — sign in"
+  else
+    rm -f "$state.logged_out"
+  fi
+fi
 
 if [ -n "${HEALTH_CHECK_CMD:-}" ]; then what="$HEALTH_CHECK_CMD"; out=$($HEALTH_CHECK_CMD 2>&1); rc=$?
 elif [ -n "$C" ] && [ -x "$C/bootstrap.sh" ]; then what="bootstrap.sh --check"; out=$("$C/bootstrap.sh" --check 2>&1); rc=$?
