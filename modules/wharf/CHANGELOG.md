@@ -20,6 +20,7 @@
   the HEAD it held is kept in `end-held` (GitHub not answering included), so the SessionEnd its SIGTERM sets off, a
   detached verb, a later Stop at that HEAD, sync's push of a dead run's leftovers (kept local) and pickup's /move
   hold it as well, and an `--end` refused before it judges the PR keeps an earlier hold; the refusal names the way out (a `hold` label or a draft, then `push --end`, or a new commit).
+- A fleet node's runner login from one line (node-runner-user, 2026-11-05): `bin/runner-user`, run as root on a Linux node, makes or repairs the sudo-less login a runner runs as beside the node's sessions (the packages, its own group, subordinate ranges computed past every existing line, linger, CPUWeight 20 on its slice, one ssh key) and fails on a wall that is down: the login listing the node user's home, or `sudo -l -U` allowing it anything. A second run changes nothing. `ci-provider`'s refusal of a Linux host that lacks them names the script and its `scp` + `ssh -t … sudo` line in place of the list of steps; a user namespace, which the script does not give, is still named in full.
 - `pr hold` (check-ci-default's landing review, 2026-11-06): labels this branch's PR `hold` as build CI's own, with check_ci.py's
   marker and ownership note, through the token, so an unattended `/finish` re-landing a ready PR holds it before its push
   (it may not call `gh`); an owner's unmarked hold is kept and nothing claimed. Step 11.2 names it.

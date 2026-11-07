@@ -3054,10 +3054,21 @@ for lack in nopodman nouserns nosubuids nosubgids nolinger nousersd; do
   rm -f "$T/ssh/$lack"
 done
 touch "$T/ssh/nosubuids" "$T/ssh/nolinger"; FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
-grep -q "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: a subordinate uid and gid range for the login" "$T/out"; check "$?" "0" "…each lack named as the owner's step"
-grep -q "linger for the login (loginctl enable-linger <login>)" "$T/out"; check "$?" "0" "…all of them at once"
+# the refusal names runner-user only where it is in the checkout: the public twin, which lacks it until its publish
+# review, reads every remedy in full (round 2 of the node-runner-user review)
+RU=0; [ -f "$B/runner-user" ] && RU=1
+if [ "$RU" = 1 ]; then
+  grep -q "node-ci lacks what a rootless runner container needs (subuids, linger), the owner's to give with sudo first: wharf's runner-user gives the login all of it" "$T/out"; check "$?" "0" "…all of them at once, named as the owner's step"
+  q=$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$(cd "$B" && pwd -P)/runner-user")   # as the refusal quotes it
+  grep -qF "scp $q <key>.pub <node>: && ssh -t <node> sudo bash runner-user --node-user <the node's login> --login <node-ci's login> --key-file <key>.pub (<node> the node's own login's alias, which has sudo; <key>.pub the key node-ci logs in with; the runner login is its own, never the node's); nothing minted" "$T/out"; check "$?" "0" "…by runner-user's one line, its path this checkout's"
+else
+  grep -q "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: a subordinate uid and gid range for the login" "$T/out"; check "$?" "0" "…each lack named as the owner's step (no runner-user here)"
+  grep -q "linger for the login (loginctl enable-linger <login>)" "$T/out"; check "$?" "0" "…all of them at once"
+fi
+check "$(grep -c 'which it does not give' "$T/out")" "0" "…nothing left over for what the script gives"
 touch "$T/ssh/nopodman"; FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
-grep -q "podman (apt-get install podman)" "$T/out"; check "$?" "0" "…podman's absence among them"
+if [ "$RU" = 1 ]; then w="needs (podman, "; else w="podman (apt-get install podman)"; fi
+grep -qF "$w" "$T/out"; check "$?" "0" "…podman's absence among them"
 check "$(test -e "$RH/actions-runners/acme/demo/.runner" && echo configured || echo absent)" "absent" "…nothing configured"
 # newuidmap and slirp4netns hidden: what the probe says then depends on this machine's own, so the expectation is read
 # from the same fact (a stand-in's absence cannot hide a real one on PATH)
@@ -3066,9 +3077,10 @@ touch "$T/ssh/nouserns"; mv "$T/ssh/rbin/newuidmap" "$T/ssh/rbin/newuidmap.off";
 want=userns; command -v newuidmap > /dev/null 2>&1 || want=uidmap
 net=0; command -v slirp4netns > /dev/null 2>&1 || net=1
 FAKE_SYSTEM=Linux FAKE_ARCH=x86_64 "$CP" "$R" --runner install $LX > "$T/out" 2>&1
-case $want in uidmap) w="the uidmap package (newuidmap and newgidmap" ;; *) w="an unprivileged user namespace for podman (Ubuntu's apparmor package ships the profile" ;; esac
+case $want$RU in uidmap1) w="needs (uidmap" ;; uidmap0) w="the uidmap package (newuidmap and newgidmap" ;; *) w="an unprivileged user namespace for podman (Ubuntu's apparmor package ships the profile" ;; esac
 grep -qF "$w" "$T/out"; check "$?" "0" "a namespace podman cannot make: named by newuidmap's presence ($want)"
-check "$(grep -c "slirp4netns, podman 4.9's rootless network" "$T/out")" "$net" "…and the network helper's absence named where it is absent"
+if [ "$RU" = 1 ]; then w="needs (.*network)"; else w="slirp4netns, podman 4.9's rootless network"; fi
+check "$(grep -c "$w" "$T/out")" "$net" "…and the network helper's absence named where it is absent"
 mv "$T/ssh/rbin/newuidmap.off" "$T/ssh/rbin/newuidmap"; mv "$T/ssh/rbin/slirp4netns.off" "$T/ssh/rbin/slirp4netns"; rm -f "$T/ssh/nouserns"
 check "$(test -e "$T/ssh/sudo" && echo ran || echo none)" "none" "no sudo on any Linux road"
 cat > "$T/lacks.py" <<'PY'
@@ -3079,13 +3091,34 @@ try:
     m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, ["uidmap", "network", "subuids"]), "node-ci")
 except m.Refusal as e:
     print(e)
+for lacks in (["userns"], ["userns", "linger"], ["user-systemd"]):
+    try:
+        m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, lacks), "node-ci")
+    except m.Refusal as e:
+        print(e)
+isfile = m.os.path.isfile
+m.os.path.isfile = lambda p: False if p.endswith("/runner-user") else isfile(p)   # the twin: no runner-user beside it
+try:
+    m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, ["uidmap", "subuids"]), "node-ci")
+except m.Refusal as e:
+    print("twin: %s" % e)
+m.os.path.isfile = isfile
 m.refuse_lacks(m.Probe(False, "arm64", "Darwin", None, ["podman"]), "mac")
 print("a Mac: nothing")
 PY
 python3 "$T/lacks.py" "$CP" > "$T/out" 2>&1; check "$?" "0" "each lacks word's remedy, as the owner reads it"
-grep -qF "the uidmap package (newuidmap and newgidmap" "$T/out"; check "$?" "0" "…uidmap's"
-grep -qF "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)" "$T/out"; check "$?" "0" "…the network helper's"
-grep -qF "a subordinate uid and gid range for the login (its lines in /etc/subuid and /etc/subgid)" "$T/out"; check "$?" "0" "…the ranges'"
+if [ "$RU" = 1 ]; then
+  grep -qF "needs (uidmap, network, subuids), the owner's to give with sudo first: wharf's runner-user" "$T/out"; check "$?" "0" "…uidmap's, the network helper's and the ranges', runner-user's to give"
+  grep -qF "sudo bash runner-user --node-user" "$T/out"; check "$?" "0" "…with its one line, the copy in the node user's home"
+  grep -qF "runner-user gives the login what it can, one line from this Mac" "$T/out"; check "$?" "0" "…with a lack it does not give beside one it does: what it can, the rest named"
+else
+  grep -qF "the uidmap package (newuidmap and newgidmap" "$T/out"; check "$?" "0" "…uidmap's (no runner-user here: in full)"
+  grep -qF "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)" "$T/out"; check "$?" "0" "…the network helper's"
+  grep -qF "a subordinate uid and gid range for the login (its lines in /etc/subuid and /etc/subgid)" "$T/out"; check "$?" "0" "…the ranges'"
+fi
+grep -qF "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: an unprivileged user namespace for podman" "$T/out"; check "$?" "0" "…a user namespace alone, which it does not give: the remedy in full, no script"
+grep -qF "twin: node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: the uidmap package" "$T/out"; check "$?" "0" "…and where runner-user is not in the checkout (the twin), every remedy in full"
+grep -qF "node-ci lacks what a rootless runner container needs, the owner's to give with sudo first: the login's systemd user instance" "$T/out"; check "$?" "0" "…the user instance alone, with linger there: in full, as runner-user would not mend it"
 grep -qx "a Mac: nothing" "$T/out"; check "$?" "0" "…and a Mac's probe never refused for them"
 echo "a Linux runner's berth parts: ubuntu 26.04, the live cap, the weekly rebuild, --runner check (free CI S6)"
 rm -rf "$RH/actions-runners/acme" "$UNITS" "$RH/.config/systemd" "$T/ssh/img" "$T/ssh/vol"
