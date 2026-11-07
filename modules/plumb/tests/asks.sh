@@ -279,8 +279,10 @@ class G:
     off = False
     error = None
     seen = None
+    answered = set()
     def label(self, site, ask, labels, items, context="", sources=None):
         self.seen = items
+        self.answered |= set(items)
         return {k: "anticipated" for k in items}
 g = G()
 rows = [{"id": "p1", "date": "2026-11-05", "target": "system", "detect": "E", "project": "regatta"}]
