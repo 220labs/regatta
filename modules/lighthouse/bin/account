@@ -127,10 +127,12 @@ which the walk would take on a guess, waits for the pass: a row before it with c
 be, and with no key every row may be but the primary, whose routines break when its week runs out, so a host's
 registry without the key never lifts it; any other value lifts nothing, said on stderr (may_overdraw). A
 login's own live `lighthouse/week-max` line holds too (the owner's newest word on that seat); a `*:` line
-does not. `lighthouse/overdraw-max` (`<login>:N`, else `*:N`; a value that does not read is no line) caps a
+does not. `lighthouse/overdraw-max` (`<login>:N`, else `*:N`; a value that does not read is no line, so a
+login's bad own line leaves `*:` to serve it, and a file that cannot be read is said on stderr) caps a
 lifted row's week bar in place of 100, never above 100 (the owner, 2026-11-06: allow high and force builds
-through overdraw on a seat with a ceiling for them), and binds lifted rows alone (finishes keep
-`lighthouse/week-max-finish`, and a finish-ceiling row is still never lifted). The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
+through overdraw on a seat with a ceiling for them), and binds lifted rows alone (a finish its
+`lighthouse/week-max-finish` line judges keeps that line and is never lifted; a finish with no such line, lifted,
+meets this ceiling as a build does). The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
 the other rows, the repo and `--job`): the caller hands that object to `account overdraw-log` once its job
 has started (dispatch once its session began, in the foreground, on both roads), so a job refused after the pick, a dry
 run or a second pick for a room is never an incident, and no pick waits on GitHub. overdraw-log writes one
@@ -2625,6 +2627,14 @@ def live_week_max(label, finish=False, overdraw=False):
                 if why:
                     raise ValueError(why)
                 lines = lines or []
+            elif overdraw:
+                # a file present but unreadable is said, never silent: the README promises a line on stderr (the
+                # landing review of overdraw-max); what did read (a live layer over a torn base) still serves
+                lines, why = c.config_read(key)
+                if why and "read" not in said:
+                    said.add("read")
+                    print(f"account: {key} could not be read ({why}); {fallback}", file=sys.stderr)
+                lines = lines or []
             else:
                 lines = c.config_lines(key) or []
             # the core's entry reader: an entry the overlay wrote one word per line (`acct:` then `80`) and a note
@@ -2657,18 +2667,30 @@ def live_week_max(label, finish=False, overdraw=False):
             _OVERDRAW_MAX = table
         else:
             _WEEK_MAX = table
+    bad = None
     for name in (str(label).lower(), "*"):
         if name in table:
             v = table[name]
             n = ceiling_value(v)
             if n is None:
+                if overdraw and name != "*":
+                    # overdraw-max only narrows, so a login's own line that does not read is no line and its `*:`
+                    # serves it (the brief's "a value that does not read is no line"; the landing review's pick A):
+                    # stopping here lifted the login to 100, past the fleet line. The bad line is still returned,
+                    # so `week-max --for overdraw` exits 2 and `regatta limit set` refuses it.
+                    if name not in said:
+                        said.add(name)
+                        print(f"account: {key} {name}:{v} is no ceiling (a number above 0, at most 100); "
+                              f"its `*:` line, else 100, serves {name}", file=sys.stderr)
+                    bad = f"{name}:{v}"
+                    continue
                 if name not in said:
                     said.add(name)
                     print(f"account: {key} {name}:{v} is no ceiling (a number above 0, at most 100); "
                           f"{fallback}", file=sys.stderr)
-                return None, None, f"{name}:{v}"
-            return (int(n) if n == int(n) else n), f"{key} {name}:", None
-    return None, None, None
+                return None, None, bad or f"{name}:{v}"
+            return (int(n) if n == int(n) else n), f"{key} {name}:", bad
+    return None, None, bad
 
 
 def week_ceiling(a, lim, t):
