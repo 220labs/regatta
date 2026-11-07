@@ -588,6 +588,49 @@ hasnt "$T/cl" "00000001-0000" "claude-code's list leaves the agy record out"
 H list --harness agy --json > "$T/al" 2>/dev/null; has "$T/al" "conv-0012list" "  agy's list has it"
 H stop conv-0012list --harness agy > /dev/null 2>&1
 
+if [ -f "$B/../../lighthouse/bin/account" ]; then
+  echo "agy-pick-orca: with HARNESS_ACCOUNT unset, agy.py's _pick runs lighthouse's bin/account against Orca's card"
+  cat > "$T/orca-real" <<'SH'
+#!/bin/sh
+if [ "$#" -ne 3 ] || [ "$1" != account ] || [ "$2" != list ] || [ "$3" != --json ]; then
+  printf '%s\n' "orca: expected account list --json, got: $*" >&2
+  exit 2
+fi
+cat "$ORCA_REAL_JSON"
+SH
+  chmod +x "$T/orca-real"
+  printf '{"accounts": [{"label": "agy-orca", "provider": "antigravity", "home": "%s", "rules": {"week_max": 90, "window_max": 50}}]}\n' "$HD/.gemini" > "$T/accts-real.json"
+  echo '{}' > "$T/tenants-real.json"
+  python3 - "$T/orca-real-ok.json" "$T/orca-real-over.json" <<'PY'
+import json, sys, time
+now_ms = int(time.time() * 1000)
+for path, wk in ((sys.argv[1], 26), (sys.argv[2], 95)):
+    json.dump({"ok": True, "result": {"rateLimits": {"antigravity": {
+        "provider": "antigravity", "status": "ok", "updatedAt": now_ms - 60000,
+        "session": {"usedPercent": 0, "windowMinutes": 300, "resetsAt": now_ms + 14400000},
+        "weekly": {"usedPercent": wk, "windowMinutes": 10080, "resetsAt": now_ms + 259200000},
+        "buckets": [{"name": "Gemini Models \u00b7 Weekly Limit Remaining", "usedPercent": wk, "windowMinutes": 10080, "resetsAt": now_ms + 259200000},
+                    {"name": "Gemini Models \u00b7 Five Hour Limit Remaining", "usedPercent": 0, "windowMinutes": 300, "resetsAt": now_ms + 14400000}]}}}},
+        open(path, "w"))
+PY
+  : > "$STUB_AGY_CALLS"
+  (unset HARNESS_ACCOUNT; ACCOUNTS_FILE="$T/accts-real.json" TENANTS_FILE="$T/tenants-real.json" \
+    ACCOUNT_ORCA="$T/orca-real" ACCOUNT_ORCA_SEEN="$T/orca-real.seen" ACCOUNT_ORCA_FILE="$T/no-orca.json" \
+    ORCA_REAL_JSON="$T/orca-real-ok.json" H run --harness agy --cwd "$WT" --prompt x --name t13orca --json > "$T/out" 2>"$T/err")
+  check "$?" 0 "with HARNESS_ACCOUNT unset and a fresh Orca card under ceiling: harness run --harness agy starts"
+  check "$(jget "$T/out" harness)/$(jget "$T/out" account)" "agy/agy-orca" "  picked agy-orca through lighthouse's bin/account"
+  check "$(ended t13orca)" "completed" "  and ended completed"
+  : > "$STUB_AGY_CALLS"
+  (unset HARNESS_ACCOUNT; ACCOUNTS_FILE="$T/accts-real.json" TENANTS_FILE="$T/tenants-real.json" \
+    ACCOUNT_ORCA="$T/orca-real" ACCOUNT_ORCA_SEEN="$T/orca-real.seen" ACCOUNT_ORCA_FILE="$T/no-orca.json" \
+    ORCA_REAL_JSON="$T/orca-real-over.json" H run --harness agy --cwd "$WT" --prompt x > /dev/null 2>"$T/err")
+  check "$?" 2 "with HARNESS_ACCOUNT unset and Orca's card over ceiling: refused before agy starts"
+  has "$T/err" "agy-orca: week 95% ≥ 90% (week ceiling)" "  carrying bin/account's ceiling refusal"
+  check "$(grep -vc '"--help"' "$STUB_AGY_CALLS")" "0" "  agy itself never ran"
+else
+  echo "  skip agy-pick-orca: no lighthouse/bin/account beside wharf-runs"
+fi
+
 echo
 [ "$fails" = 0 ] && echo "test_agy: all passed" || echo "test_agy: $fails failed"
 [ "$fails" = 0 ]
