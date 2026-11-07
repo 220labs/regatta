@@ -427,6 +427,26 @@ try:
         m.record(tree(), st_net, 0, 0, None, [])
     check(open(lo_calls).read().splitlines(), ["acct-pro"],
           "  oauth-token and non-login stops leave logged-out untouched")
+    # a refused mark (account exits 1) is said in the run's end line, not lost (the landing review, 2026-11-07)
+    stub_no = os.path.join(T, "account-stub-refuses")
+    with open(stub_no, "w") as f:
+        f.write("#!/bin/sh\n"
+                "if [ \"$1\" = 'logged-out' ] && [ \"$2\" = '--set' ] && [ $# -eq 3 ]; then\n"
+                "  echo \"account: no account $3\" >&2; exit 1\n"
+                "fi\n"
+                "echo \"account: bad call: $*\" >&2; exit 2\n")
+    os.chmod(stub_no, 0o755)
+    m.ACCOUNT, said_lines, real_log = stub_no, [], m.log
+    m.log = lambda line: said_lines.append(line)
+    m.read_outcome = lambda t, sid, lf: ("stopped", None, "no-landing", ["Not logged in · Please run /login"])
+    try:
+        st_no = set_prev(outcome=None, ended=None, gate=None, account="acct-pro")
+        with redirect_stdout(io.StringIO()):
+            m.record(tree(), st_no, 0, 0, None, [])
+    finally:
+        m.ACCOUNT, m.log = stub, real_log
+    check(any("logged-out not set (exit 1: account: no account acct-pro)" in x for x in said_lines), True,
+          "  a refused logged-out mark is said in the end line (exit and why)")
 finally:
     m.read_outcome, m.comment = real_ro, real_comment
 clear_store()
@@ -534,6 +554,17 @@ try:
     r = judge("lander", "limit")
     check((r[0], "resets at" in r[1]), (3, True), "a newer row of another seat (copied into the profile) never lifts the road: its own reset waits")
     os.remove(os.path.join(acct_home, ".claude.json"))
+
+    # a stopped run recorded by its config dir (its `account which` failed) is the same login as its label: pick's
+    # --skip reads labels, so limit_pick names the row's label and compares homes (the landing review, 2026-11-07)
+    POOL[:] = ["acct-pro", "acct-new"]
+    with open(ex, "w") as f:
+        f.write(json.dumps({"at": time.time() - 1200, "window": "five_hour", "resets_at": time.time() + 7200}) + "\n")
+    lp = m.limit_pick(None, {"account": acct_home, "started": iso(3600)}, "You've hit your 5-hour limit · resets 9pm")
+    check((lp[0], lp[3]), ("acct-new", None), "a stopped login recorded by its home is skipped by its label: acct-new picked")
+    POOL[:] = ["acct-pro"]
+    lp = m.limit_pick(None, {"account": acct_home, "started": iso(3600)}, "You've hit your 5-hour limit · resets 9pm")
+    check((lp[0], isinstance(lp[3], m.Refusal)), (None, True), "  with only it left, it waits for its reset (no relaunch onto it)")
 
     # S2 & Revision 10(b): at most one road=limit relaunch per target login (`account=`) per 5-hour window.
     POOL[:] = ["acct-new", "acct-third"]
