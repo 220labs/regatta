@@ -17,6 +17,8 @@ CALLER_CONFIG="${REGATTA_CONFIG:-}"
 export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
 # the fake gh logs a token call by GH_TOKEN, and ci-provider reads WHARF_READ_TOKEN: neither from the caller
 unset GH_TOKEN GITHUB_TOKEN WHARF_READ_TOKEN
+# share.sh's pool cases assert its default of 2: never the caller's (check.yml's `whole --scoped` step passes it)
+unset CI_SHARE_JOBS
 : > "$GIT_CONFIG_GLOBAL"
 # A scratch config dir of its own, whatever the caller's REGATTA_CONFIG: every key a case reads is
 # pinned here, so the suite passes the same on a Mac whose login names real hosts and on a runner
@@ -1907,6 +1909,83 @@ if [ -f "$SH" ]; then
   grep -q "names helm more than once" "$T/out"; check "$?" "0" "…naming it"
   : > "$S/.github/ci/linux-ids"
   bash "$S/.github/ci/share.sh" linux-ids > /dev/null 2>&1; check "$?" "2" "an empty linux-ids: refused, never an empty matrix"
+  # The shares' commands at once, bounded by CI_SHARE_JOBS (mac-share-speed, 2026-11-06): stand-in suites a, b and
+  # c in the macOS share, d on the Linux list. a waits for c to start, so it says whether two ran at once; b fails
+  # at once and marks its end, so c says whether it waited for b's slot (2 at once: a and b, then c)
+  P="$T/pool"; PX="$T/pool-fx"; mkdir -p "$P/.github/ci" "$P/.github/workflows" "$P/modules/wharf-runs/bin"
+  cp "$SH" "$P/.github/ci/share.sh"; cp "$M/../wharf-runs/bin/check_scope.py" "$P/modules/wharf-runs/bin/" 2>/dev/null || true
+  printf '%s\n' 'jobs:' '  check:' '    steps:' '      - name: check' '        run: |' \
+    '          bash modules/a/tests/check.sh && bash modules/b/tests/check.sh && bash modules/c/tests/check.sh && bash modules/d/tests/check.sh' \
+    > "$P/.github/workflows/check.yml"
+  printf 'd\n' > "$P/.github/ci/linux-ids"
+  for x in a b c d; do mkdir -p "$P/modules/$x/tests"; done
+  printf '%s\n' 'n=0; while [ ! -f "$PX/c-started" ] && [ "$n" -lt "${WAIT:-120}" ]; do sleep 0.5; n=$((n + 1)); done' \
+    '[ -f "$PX/c-started" ] && echo "a saw c" || echo "a alone"; echo a-out' > "$P/modules/a/tests/check.sh"
+  printf '%s\n' 'echo b-out; sleep 2; : > "$PX/b-done"; exit 1' > "$P/modules/b/tests/check.sh"
+  printf '%s\n' '[ -f "$PX/b-done" ] && echo "c after b" || echo "c before b"; : > "$PX/c-started"; echo c-out' > "$P/modules/c/tests/check.sh"
+  printf '%s\n' 'echo d-out' > "$P/modules/d/tests/check.sh"
+  pool() { rm -rf "$PX"; mkdir -p "$PX"; PX="$PX" bash "$P/.github/ci/share.sh" "$@" > "$T/out" 2> "$T/err"; }
+  seq_of() { grep -E '^(=== (bash|rc=)|SKIP [abcd]:|[abcd]-out$)' "$T/out" | sed -E 's/^=== rc=([0-9]+) .*/rc=\1/; s/^=== bash modules\/(.)\/.*/run \1/; s/^(SKIP .):.*/\1/' | tr '\n' '|'; }
+  pool macos; check "$?" "1" "share.sh macos at once: a failing command fails the share"
+  check "$(seq_of)" "run a|a-out|rc=0|run b|b-out|rc=1|run c|c-out|rc=0|" "…each command printed whole, in the line's order, though b ended first"
+  check "$(grep -c -e '^a saw c$' -e '^c after b$' "$T/out")" "2" "…two at once by default (a saw c start), never three (c waited for b's slot)"
+  check "$(grep -c '^=== commands: at most 2 at once' "$T/out")" "1" "…said once"
+  check "$(sed -n '/^=== the macOS share/,$p' "$T/out" | sed -E 's/ [0-9]+s / /' | tr '\n' '|')" \
+    "=== the macOS share: 1 failed (a LINUX line is check-linux's, which scopes its own)|PASS  a|FAIL  b|PASS  c|LINUX  d|" "…the verdict and the summary as before, in the line's order"
+  WAIT=0 CI_SHARE_JOBS=1 pool macos; check "$?" "1" "CI_SHARE_JOBS=1: one after another, the failure kept"
+  check "$(seq_of):$(grep -c -e '^a alone$' -e '^c after b$' "$T/out"):$(grep -c '^=== commands:' "$T/out")" \
+    "run a|a-out|rc=0|run b|b-out|rc=1|run c|c-out|rc=0|:2:0" "…in the line's order, streamed, no pool"
+  CI_SHARE_JOBS=x pool macos; check "$?:$(grep -c 'CI_SHARE_JOBS=x is no count' "$T/err"):$(grep -c '^a saw c$' "$T/out")" "1:1:1" "a CI_SHARE_JOBS that is no count: said, and two at once"
+  CI_SHARE_JOBS=0 pool macos; check "$(grep -c 'CI_SHARE_JOBS=0 is no count' "$T/err"):$(grep -c '^=== commands: at most 2' "$T/out")" "1:1" "…0 too: never a share that runs nothing"
+  CI_SHARE_JOBS=99999999999999999999 pool macos; check "$?:$(grep -c 'is no count from 1 to 9999' "$T/err"):$(grep -c '^=== commands: at most 2' "$T/out")" "1:1:1" "…a count past bash's integer test too: said, and two at once, never a pool that starts nothing"
+  check "$(grep -c '^=== started [abc]$' "$T/out")" "3" "…each command named live as it starts, so a killed step still says what ran"
+  # a runner killed before it writes its end (SIGKILL, a failed write): read from its status, a failure, never a hang.
+  # c kills share.sh's own child, found by walking up from itself: how many shells sit between depends on the bash
+  # (5.1+ execs the last command of a subshell, macOS's 3.2 forks), so never `$PPID`
+  cp "$P/modules/c/tests/check.sh" "$T/c.keep"
+  printf '%s\n' 'echo c-out; top=$(cat "$PX/share.pid"); p=$$' \
+    'while pp=$(ps -o ppid= -p "$p" | tr -d " "); [ -n "$pp" ] && [ "$pp" != 1 ] && [ "$pp" != "$top" ]; do p=$pp; done' \
+    '[ "$pp" = "$top" ] && kill -9 "$p"; sleep 5' > "$P/modules/c/tests/check.sh"
+  rm -rf "$PX"; mkdir -p "$PX"
+  WAIT=0 PX="$PX" bash -c 'echo $$ > "$PX/share.pid"; exec bash "$0" macos' "$P/.github/ci/share.sh" > "$T/out" 2>&1 & sp=$!
+  n=0; while kill -0 "$sp" 2>/dev/null && [ "$n" -lt 120 ]; do sleep 0.5; n=$((n + 1)); done
+  kill -0 "$sp" 2>/dev/null && { kill "$sp"; echo "share.sh hung" >> "$T/out"; }; wait "$sp"; r=$?
+  check "$r:$(grep -c '^=== c ended with no end file' "$T/out"):$(grep -c 'share.sh hung' "$T/out")" "1:1:0" "a pool runner that died with no end file: c failed, the share ended"
+  check "$(sed -n '/^=== the macOS share/,$p' "$T/out" | sed -E 's/ [0-9]+s / /' | tr '\n' '|')" \
+    "=== the macOS share: 2 failed (a LINUX line is check-linux's, which scopes its own)|PASS  a|FAIL  b|FAIL  c|LINUX  d|" "…in the summary as a failure"
+  cp "$T/c.keep" "$P/modules/c/tests/check.sh"
+  # a cancel: TERM to share.sh while b runs (its own TERM trap prints) and a, after it in the line, has ended unprinted
+  Q="$T/pool-term"; mkdir -p "$Q/.github/ci" "$Q/.github/workflows" "$Q/modules/a/tests" "$Q/modules/b/tests" "$Q/modules/d/tests"
+  cp "$SH" "$Q/.github/ci/share.sh"; printf 'd\n' > "$Q/.github/ci/linux-ids"
+  printf '%s\n' 'jobs:' '  check:' '    steps:' '      - name: check' '        run: |' \
+    '          bash modules/b/tests/check.sh && bash modules/a/tests/check.sh && bash modules/d/tests/check.sh' > "$Q/.github/workflows/check.yml"
+  printf '%s\n' 'echo a-out; : > "$PX/a-done"' > "$Q/modules/a/tests/check.sh"
+  # b's pid is what the case watches (never a ps grep: another run on this login has a b too), and its loop is bounded
+  printf '%s\n' 'trap "echo b-trapped; exit 143" TERM' 'echo b-start; echo $$ > "$PX/b-pid"; : > "$PX/b-live"' \
+    'n=0; while [ "$n" -lt 600 ]; do sleep 0.2; n=$((n + 1)); done' > "$Q/modules/b/tests/check.sh"
+  printf '%s\n' 'echo d-out' > "$Q/modules/d/tests/check.sh"
+  rm -rf "$PX"; mkdir -p "$PX"; PX="$PX" bash "$Q/.github/ci/share.sh" macos > "$T/out" 2>&1 & sp=$!
+  n=0; while { [ ! -f "$PX/a-done" ] || [ ! -f "$PX/b-live" ]; } && [ "$n" -lt 120 ]; do sleep 0.5; n=$((n + 1)); done
+  sleep 2; kill -TERM "$sp"; wait "$sp"; r=$?
+  check "$r:$(grep -E '^(=== [ab] \(|b-start|b-trapped|a-out)' "$T/out" | tr '\n' '|')" "143:=== b (interrupted)|b-start|b-trapped|=== a (ended)|a-out|" \
+    "a cancel: the running command stopped and its own trap's lines printed, the ended one after it printed once, in the line's order"
+  bp="$(cat "$PX/b-pid" 2>/dev/null)"
+  n=0; while [ -n "$bp" ] && kill -0 "$bp" 2>/dev/null && [ "$n" -lt 10 ]; do sleep 0.5; n=$((n + 1)); done
+  check "$([ -n "$bp" ] && ! kill -0 "$bp" 2>/dev/null && echo gone)" "gone" "…and no command left running"
+  [ -z "$bp" ] || kill -9 "$bp" 2>/dev/null
+  # --scoped: the pull request's merge commit changes b's suite alone, so a and c print their SKIP line in their place
+  if [ -f "$P/modules/wharf-runs/bin/check_scope.py" ]; then
+    g() { git -C "$P" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+    g init -q && g checkout -q -b base && g add -A && g commit -qm base && g checkout -q -b head \
+      && echo note > "$P/modules/b/tests/note" && g add -A && g commit -qm head && g checkout -q base \
+      && g merge -q --no-ff --no-edit head
+    pool macos --scoped; check "$?" "1" "share.sh macos --scoped at once: b runs and fails"
+    check "$(seq_of)" "SKIP a|run b|b-out|rc=1|SKIP c|" "…the SKIP lines unchanged, in the line's order"
+    check "$(sed -n '/^=== the macOS share/,$p' "$T/out" | sed -E 's/ [0-9]+s / /' | tr '\n' '|')" \
+      "=== the macOS share: 1 failed (a LINUX line is check-linux's, which scopes its own)|SKIP  a|FAIL  b|SKIP  c|LINUX  d|" "…and in the summary"
+  else
+    echo "  skip no wharf-runs check_scope.py beside wharf: the scoped share case"
+  fi
   # check.yml's two roads: the shares' jobs only where no runner variable is set, each behind check's own
   # condition, and their verdict under `check` only when every share passed (free CI's S2)
   cat > "$T/roads.py" <<'PY'
@@ -1928,6 +2007,10 @@ if "share.sh rest" not in [s.get("run", "") for s in j["check"]["steps"] if s.ge
 for n in ("check", "check, the macOS share"):
     if "(vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)" not in steps[n]: bad.append(n + " runs on the shares' road too")
 if "share.sh linux" not in j["suite"]["steps"][-1]["run"]: bad.append("suite's step")
+# the three share steps run their commands CI_SHARE_JOBS at once: the repository variable, passed in (mac-share-speed)
+for n in ("check, the macOS share", "check, the rest", "check, the scoped whole line"):
+    st = [s for s in j["check"]["steps"] if s.get("name") == n][0]
+    if (st.get("env") or {}).get("CI_SHARE_JOBS") != "${{ vars.CI_SHARE_JOBS }}": bad.append(n + " passes no CI_SHARE_JOBS")
 print(bad or "ok")
 PY
   check "$(python3 "$T/roads.py" "$M/../../.github/workflows/check.yml" 2>&1)" "ok" "check.yml: the shares' road beside the runner's, one verdict named check"

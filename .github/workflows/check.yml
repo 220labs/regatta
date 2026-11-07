@@ -204,6 +204,11 @@ jobs:
       # the `nightly <id>` steps stand in for the `check` step, one suite each, so a red suite never hides the
       # rest. The `check` step keeps its name and its one
       # `run:` block: share.sh, twin-linux.sh and ci-provider read the line from it.
+      # The shares run their commands at once, at most the repository variable CI_SHARE_JOBS at a time (unset: 2;
+      # 1: one after another), each printed whole, in the line's order (mac-share-speed, 2026-11-06). `exec`: a
+      # cancel signals the step shell's pid alone (actions/runner), so share.sh must be that pid for its trap to stop
+      # the commands and print what each logged; a `=== started <id>` line names each as it starts. The series road
+      # (CI_SHARE_JOBS 1, or nothing to run) sets no trap and streams, as before: a cancel there leaves what main's did.
       # The share is scoped (free-ci S3, 2026-11-04): on a pull request only the suites the head's change
       # reaches run, by wharf-runs' check_scope.py, the verdicts a session's `check <worktree>` gives, and
       # the rest print `SKIP <id>`. A head whose change cannot be read, or that changes anything under .github/
@@ -254,7 +259,9 @@ jobs:
           echo "carry=true" >> "$GITHUB_OUTPUT"
       - name: check, the macOS share
         if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE == 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
-        run: bash .github/ci/share.sh macos --scoped
+        env:
+          CI_SHARE_JOBS: ${{ vars.CI_SHARE_JOBS }}
+        run: exec bash .github/ci/share.sh macos --scoped
       # Separate steps keep every suite running after a red and expose each verdict to
       # helm's main-check reader. The ordinary check below stays the canonical line;
       # helm's test_main_check suite checks that these steps cover it exactly.
@@ -316,10 +323,14 @@ jobs:
           { [ ! -f TODO.md ] || python3 modules/wharf/bin/todo-md lint .; }
       - name: check, the rest
         if: ${{ steps.carry.outputs.carry != 'true' && !vars.CI_RUNS_ON && !vars.CI_RUNS_ON_FULL }}
-        run: bash .github/ci/share.sh rest
+        env:
+          CI_SHARE_JOBS: ${{ vars.CI_SHARE_JOBS }}
+        run: exec bash .github/ci/share.sh rest
       - name: check, the scoped whole line
         if: steps.carry.outputs.carry != 'true' && vars.CI_LINUX_ELSEWHERE != 'true' && github.event_name == 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
-        run: bash .github/ci/share.sh whole --scoped
+        env:
+          CI_SHARE_JOBS: ${{ vars.CI_SHARE_JOBS }}
+        run: exec bash .github/ci/share.sh whole --scoped
       - name: check
         if: github.event_name != 'schedule' && steps.carry.outputs.carry != 'true' && github.event_name != 'pull_request' && (vars.CI_RUNS_ON || vars.CI_RUNS_ON_FULL)
         run: |

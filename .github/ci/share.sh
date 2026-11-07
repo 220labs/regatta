@@ -23,6 +23,8 @@
 #   share.sh whole [--scoped]  every command, Linux-list suites included, past a failure; --scoped
 #                           is the Macs' PR road while CI_LINUX_ELSEWHERE is not true
 #   share.sh rest [--scoped]   the same as macos, where the rest runs on Linux (the twin)
+#                           macos, whole and rest run up to CI_SHARE_JOBS commands at once (default
+#                           2, 1 = in series), each printed whole, in the line's order, once it ends
 #   share.sh macos-scope    the verdicts `macos --scoped` runs by, said, nothing run (it reads GitHub's
 #                           merge ref: HEAD^1 is the base, HEAD the PR's merge commit; on a local
 #                           merge it reads only that merge's first-parent delta, not a branch's fork)
@@ -236,6 +238,64 @@ run_one() {
     return $rc
 }
 
+share_jobs() {
+    # How many of a share's commands run at once: CI_SHARE_JOBS, the repository variable check.yml passes
+    # into the share steps (unset or empty: 2, so a Mac shared by several whole-line runners is not
+    # multiplied by every command at once; 1: one after another, as before mac-share-speed, 2026-11-06).
+    # A value that is no count is said and read as 2: never a refusal, never fewer commands.
+    local j="${CI_SHARE_JOBS:-}"
+    case "$j" in
+        "") echo 2 ;;
+        # five digits or more: past any Mac's cores, and past bash's integer test at twenty (a pool that starts nothing)
+        *[!0-9]*|0*|?????*) echo "share.sh: CI_SHARE_JOBS=$j is no count from 1 to 9999: 2 at once" >&2; echo 2 ;;
+        *) echo "$j" ;;
+    esac
+}
+
+unblock_out() {
+    # The step's stdout and stderr blocking again before a log is printed: the claude CLI leaves CI's step
+    # pipe O_NONBLOCK, and cat then stops at the first full pipe (EAGAIN, the log cut near 64 KiB; AGENTS.md
+    # Traps, docs/runner-interference-2026-11-02.md; wharf-runs' lanes do the same). Stderr is cleared as
+    # fd 3, a copy of it: a plain 2>/dev/null would clear /dev/null's flag and leave the pipe's.
+    python3 -c 'import fcntl, os; [fcntl.fcntl(f, fcntl.F_SETFL, fcntl.fcntl(f, fcntl.F_GETFL) & ~os.O_NONBLOCK) for f in (1, 3)]' 3>&2 2>/dev/null || true
+}
+
+tree() {
+    # <pid>: it and every descendant, parents first
+    local c
+    echo "$1"
+    for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done
+}
+
+stop_pool() {
+    # <exit code>: a cancelled share stops every running command's whole tree, so no suite outlives the
+    # step, and prints what each logged so far, in the line's order
+    local i p n=0 live killed=""
+    # once: a second signal (the runner's TERM 7.5 s after its INT) must not start this over
+    trap '' INT TERM HUP
+    for i in "${!pids[@]}"; do
+        # an ended command's pid may be reused by now: its end file says so
+        [ -n "${ended[$i]:-}" ] || [ -f "$pool/$i.end" ] || killed="$killed $(tree "${pids[$i]}")"
+    done
+    # shellcheck disable=SC2086 — the pids are words
+    [ -z "$killed" ] || kill -TERM $killed 2>/dev/null
+    # a suite's own TERM trap prints what its lanes logged (wharf-runs', keel's, helm's): up to 5 s for every
+    # process of the trees to end, the pool's subshells being the first to go; the runner kills 10 s after its INT
+    while [ "$n" -lt 10 ]; do
+        live=""
+        for p in $killed; do ! kill -0 "$p" 2>/dev/null || live=1; done
+        [ -n "$live" ] || break
+        sleep 0.5; n=$((n + 1))
+    done
+    # from the first command not yet printed: one printed whole above is not printed again
+    for i in "${!pids[@]}"; do
+        [ "$i" -ge "$printed" ] && [ -f "$pool/$i.log" ] || continue
+        if [ -n "${ended[$i]:-}" ] || [ -f "$pool/$i.end" ]; then echo "=== ${eid[$i]} (ended)"; else echo "=== ${eid[$i]} (interrupted)"; fi
+        cat "$pool/$i.log"
+    done
+    exit "$1"
+}
+
 case "${1:-}" in
     ids) ids ;;
     line)
@@ -262,43 +322,132 @@ case "${1:-}" in
         verify || exit 2
         lx="$(linux_ids)" || exit 2
         all="$(ids)" || exit 2
+        njobs="$(share_jobs)"
         verdict=""
         if [ -n "$scoped" ]; then
             verdict="$(printf '%s\n' "$all" | macos_scope)"
             printf '%s\n' "$verdict" | awk -F'\t' '$1 == "SCOPE" { print "=== scope: " $2 }'
         fi
-        summary=(); failed=0
+        # The plan, in the line's order: kind[i] is LINUX (its Linux job's), SKIP (out of scope, why in
+        # note[i]), IN (a shard `whole` runs inside an earlier entry's command, ref[i]) or RUN (cmd[i]).
         # `whole` runs a command ids split into shards once, as the line names it (a Mac's three lanes),
         # not shard by shard in one lane each; every shard of it shares one module's scope verdict
+        kind=(); eid=(); cmd=(); note=(); ref=()
         line=""; [ "$1" != whole ] || { line="$(line_of "$repo")" || exit 2; }
-        ran_base=""; ran_id=""; ran_rc=""
-        while IFS=$'\t' read -r id cmd; do
+        ran_base=""; ran_i=""; n=0
+        while IFS=$'\t' read -r id c; do
+            eid[n]="$id"; cmd[n]=""; note[n]=""; ref[n]=""
             # `whole` runs every line here; the other shares leave a Linux-list id (a wharf-runs shard included:
             # each shard is its own id since wharf-runs-linux) to its Linux job
-            if [ "$1" != whole ] && on_linux "$id" "$lx"; then summary+=("LINUX  $id"); continue; fi
+            if [ "$1" != whole ] && on_linux "$id" "$lx"; then kind[n]=LINUX; n=$((n + 1)); continue; fi
             if [ -n "$scoped" ]; then
                 # a command the verdicts do not name runs: never fewer than the line
                 sk="$(printf '%s\n' "$verdict" | awk -F'\t' -v id="$id" '$1 == id && $2 == "SKIP" { print $3; exit }')"
-                if [ -n "$sk" ]; then echo "SKIP $id: $sk"; summary+=("SKIP  $id"); continue; fi
+                if [ -n "$sk" ]; then kind[n]=SKIP; note[n]="$sk"; n=$((n + 1)); continue; fi
             fi
-            base="${cmd% --shard *}"
-            if [ -n "$line" ] && [ "$base" != "$cmd" ] && printf '%s\n' "$line" | grep -Fxq -- "$base"; then
-                if [ "$base" = "$ran_base" ]; then
-                    if [ "$ran_rc" = 0 ]; then summary+=("PASS  $id (in $ran_id's run)"); else summary+=("FAIL  $id (in $ran_id's run)"); fi
-                    continue
-                fi
-                ran_base="$base"; ran_id="$id"; cmd="$base"
+            base="${c% --shard *}"
+            if [ -n "$line" ] && [ "$base" != "$c" ] && printf '%s\n' "$line" | grep -Fxq -- "$base"; then
+                if [ "$base" = "$ran_base" ]; then kind[n]=IN; ref[n]="$ran_i"; n=$((n + 1)); continue; fi
+                ran_base="$base"; ran_i=$n; c="$base"
             fi
-            t0=$(date +%s)
-            if run_one "$cmd"; then r=0; summary+=("PASS $(( $(date +%s) - t0 ))s  $id")
-            else r=1; failed=$((failed + 1)); summary+=("FAIL $(( $(date +%s) - t0 ))s  $id"); fi
-            [ "$cmd" != "$ran_base" ] || ran_rc=$r
+            kind[n]=RUN; cmd[n]="$c"; n=$((n + 1))
         done <<< "$all"
+        # The runs: one after another, streamed, with CI_SHARE_JOBS=1 (the road before mac-share-speed);
+        # otherwise up to that many at once, each command's output in a file of its own, printed whole and in
+        # the line's order once it and every one before it ended, as wharf-runs' lanes print. The commands
+        # share the job's HOME and TMPDIR, as those lanes' suites always have: each suite makes its scratch
+        # with mktemp (a fixed name under TMPDIR is a trap, AGENTS.md); a TMPDIR per command would lengthen
+        # every socket path the suites make under it, near macOS's 104-byte cap.
+        rcs=(); secs=()
+        unblock_out
+        any=""; i=0
+        while [ "$i" -lt "$n" ]; do [ "${kind[i]}" != RUN ] || any=1; i=$((i + 1)); done
+        # nothing to run (a scoped change that reaches no suite of the share): the series road, which prints the SKIPs
+        if [ "$njobs" = 1 ] || [ -z "$any" ]; then
+            i=0
+            while [ "$i" -lt "$n" ]; do
+                case "${kind[i]}" in
+                    SKIP) echo "SKIP ${eid[i]}: ${note[i]}" ;;
+                    RUN) t0=$(date +%s); run_one "${cmd[i]}"; rcs[i]=$?; secs[i]=$(( $(date +%s) - t0 )) ;;
+                esac
+                i=$((i + 1))
+            done
+        else
+            echo "=== commands: at most $njobs at once (CI_SHARE_JOBS), each printed whole, in the line's order"
+            pool="$(mktemp -d "${TMPDIR:-/tmp}/share.XXXXXX")" || exit 2
+            pids=(); ended=()
+            trap 'rm -rf "$pool"' EXIT
+            trap 'stop_pool 130' INT; trap 'stop_pool 143' TERM; trap 'stop_pool 129' HUP
+            started=0; printed=0; running=0
+            while [ "$printed" -lt "$n" ]; do
+                # count the runs that ended, in any order, then fill the free slots in the line's order
+                i=0
+                while [ "$i" -lt "$started" ]; do
+                    if [ -n "${pids[i]:-}" ] && [ -z "${ended[i]:-}" ]; then
+                        if [ -f "$pool/$i.end" ]; then
+                            read -r 'rcs[i]' 'secs[i]' < "$pool/$i.end"; ended[i]=1; running=$((running - 1))
+                        elif ! kill -0 "${pids[i]}" 2>/dev/null; then
+                            # a runner that died (SIGKILL, a write that failed) leaves no end file. Its status once reaped,
+                            # then the end file read again: one written between the two tests above is the real verdict.
+                            # Kept in memory, so a write that fails here too cannot hold the loop
+                            wait "${pids[i]}"; r=$?
+                            if [ -f "$pool/$i.end" ]; then read -r 'rcs[i]' 'secs[i]' < "$pool/$i.end"
+                            else
+                                [ "$r" != 0 ] || r=1
+                                rcs[i]=$r; secs[i]=0
+                                echo "=== ${eid[i]} ended with no end file (status $r): counted as failed" >> "$pool/$i.log" 2>/dev/null
+                            fi
+                            ended[i]=1; running=$((running - 1))
+                        fi
+                    fi
+                    i=$((i + 1))
+                done
+                while [ "$running" -lt "$njobs" ] && [ "$started" -lt "$n" ]; do
+                    if [ "${kind[started]}" = RUN ]; then
+                        # the end file is written whole, then renamed: its presence is the end
+                        ( t0=$(date +%s); run_one "${cmd[started]}" > "$pool/$started.log" 2>&1; r=$?
+                          echo "$r $(( $(date +%s) - t0 ))" > "$pool/$started.end.tmp" && mv "$pool/$started.end.tmp" "$pool/$started.end" ) &
+                        pids[started]=$!; running=$((running + 1))
+                        # live, so a step killed mid-run still names what was running (its log is printed once it ends)
+                        echo "=== started ${eid[started]}"
+                    fi
+                    started=$((started + 1))
+                done
+                moved=""
+                while [ "$printed" -lt "$n" ]; do
+                    i=$printed
+                    [ "${kind[i]}" != RUN ] || [ -n "${ended[i]:-}" ] || break
+                    # counted printed before its cat: a cancel during the cat must not print it again
+                    printed=$((i + 1)); moved=1
+                    case "${kind[i]}" in
+                        RUN) cat "$pool/$i.log" 2>/dev/null || echo "=== ${eid[i]}: no log" ;;
+                        SKIP) echo "SKIP ${eid[i]}: ${note[i]}" ;;
+                    esac
+                done
+                [ -n "$moved" ] || sleep 1
+            done
+            wait
+            trap - INT TERM HUP
+        fi
+        summary=(); failed=0; i=0
+        while [ "$i" -lt "$n" ]; do
+            case "${kind[i]}" in
+                LINUX) summary+=("LINUX  ${eid[i]}") ;;
+                SKIP) summary+=("SKIP  ${eid[i]}") ;;
+                IN)
+                    if [ "${rcs[${ref[i]}]}" = 0 ]; then summary+=("PASS  ${eid[i]} (in ${eid[${ref[i]}]}'s run)")
+                    else summary+=("FAIL  ${eid[i]} (in ${eid[${ref[i]}]}'s run)"); fi ;;
+                RUN)
+                    if [ "${rcs[i]}" = 0 ]; then summary+=("PASS ${secs[i]}s  ${eid[i]}")
+                    else failed=$((failed + 1)); summary+=("FAIL ${secs[i]}s  ${eid[i]}"); fi ;;
+            esac
+            i=$((i + 1))
+        done
         echo
         if [ "$1" = whole ]; then echo "=== the whole line: $failed failed"
         elif [ "$1" = rest ]; then echo "=== the rest of the line: $failed failed (the LINUX lines run in jobs of their own)"
         else echo "=== the macOS share: $failed failed (a LINUX line is check-linux's, which scopes its own)"; fi
-        printf '%s\n' "${summary[@]}"
+        [ "$n" -eq 0 ] || printf '%s\n' "${summary[@]}"
         [ "$failed" -eq 0 ]
         ;;
     scope)
@@ -371,5 +520,5 @@ print(" ".join(i for i, v in zip(ids, vs) if v == "RUN"))')" || exit 2
         done
         exit $bad
         ;;
-    *) sed -n '2,43p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,45p' "$0" >&2; exit 2 ;;
 esac

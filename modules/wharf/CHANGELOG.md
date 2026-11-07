@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `.github/ci/share.sh`'s `macos`, `rest` and `whole` run their commands at once, at most `CI_SHARE_JOBS` at a time
+  (a repository variable check.yml passes; unset: 2, `1`: one after another, streamed, as before), each command's
+  output printed whole and in the line's order once it ends, the verdict and summary as before; a cancelled share
+  stops every running command's tree (mac-share-speed, 2026-11-06). Cases in `test_ci_provider.sh`.
 - ci-provider's status reads a repo's own `${{ fromJSON(vars.X || '["self-hosted",…]') }}` runs-on (a JSON label list as
   the default; an overlay repo's `suites` job since coding-ci-linux): the variable's labels when set, the default's when unset,
   so `no online runner labelled` warns again there, once per label set, beside a literal job's (ci-provider-fromjson-list,

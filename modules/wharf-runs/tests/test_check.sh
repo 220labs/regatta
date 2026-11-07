@@ -601,13 +601,14 @@ PYLINE
   # wharf-runs runs as shards (`wharf-runs-<shard>` ids): judge a Linux one and a Mac one, never the gone `wharf-runs`
   # id, whose empty line number made `sed -n "p"` print every verdict
   for m in lighthouse plumb aurora atlas helloworld; do
-    for id in wharf-runs-core wharf-runs-queue; do
+    for id in wharf-runs-core wharf-runs-macos; do
       check "$(verdict_of "modules/$m/bin/zz" "$id")" "RUN" "wharf-runs' suite ($id) is reached by modules/$m, which its tools resolve by name"
     done
   done
-  check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "steps.carry.outputs.carry != 'true'")" "1" "check.yml's macOS step yields to a carried green"
-  check "$(grep -c -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml")" "1" "check.yml's macOS step asks for the scope"
-  check "$(grep -B2 -F 'run: bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "github.event_name == 'pull_request'")" "1" "…on a pull_request event only"
+  # -B4: the step's `env:` (CI_SHARE_JOBS, mac-share-speed) sits between its `if:` and its `run:`
+  check "$(grep -B4 -F 'run: exec bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "steps.carry.outputs.carry != 'true'")" "1" "check.yml's macOS step yields to a carried green"
+  check "$(grep -c -F 'run: exec bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml")" "1" "check.yml's macOS step asks for the scope"
+  check "$(grep -B4 -F 'run: exec bash .github/ci/share.sh macos --scoped' "$ROOT/.github/workflows/check.yml" | grep -c "github.event_name == 'pull_request'")" "1" "…on a pull_request event only"
   check "$(grep -c "fetch-depth: \${{ github.event_name == 'pull_request' && 2 || 1 }}" "$ROOT/.github/workflows/check.yml")" "1" "…its checkout holds both parents of the merge commit"
 else
   echo "  --   skipped: no .github/ci/share.sh or not a git checkout"
