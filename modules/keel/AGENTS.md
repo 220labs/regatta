@@ -17,6 +17,14 @@ Read `README.md` first: it is the chart. For an agent:
   loads one as a module or runs it keeps working. Edit here, never the shim.
 - `tests/keel.sh` runs alone: it races under load ("a wait wakes on a Save a pull drained" is a
   known flake). Its headless-Chrome case is bounded at 90 s and skips when Chrome never returns.
+  A missing pin's `KeyError` can hide an earlier fixture failure: use `deployspace` for a setup
+  deploy that sets a pin's `space`, and `sdeploy` for one whose output or pin the case reads next.
+  Both retain the command's output and stop at its refusal;
+  `mkclone` likewise stops on failed setup. A case expecting no file change asserts that directly,
+  rather than trying a commit and ignoring its failure.
+  Its bare remote can auto-pack after a push: `mkclone` uses `--no-local` so git's transport
+  serves reachable objects, instead of hardlinking a temporary pack index that changes mid-copy
+  ("hardlink different from source"). Keep that flag on a local GitHub stand-in that receives pushes.
 - The lookout (crosstalk S3, `docs/crosstalk-2026-10-20.md`) never takes a `sheep wait` lock to test
   it: a `LOCK_EX|LOCK_NB` take ends a wait starting that instant. `lock_held` reads it (F_GETLK on
   macOS, which sees a flock; /proc/locks on Linux; lsof elsewhere). Its run (S5, `lookout_gone`) writes a `dispatching`
