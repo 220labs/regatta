@@ -391,4 +391,47 @@ for sc in regatta atlas film; do
     "0 0 (False, True)" "shadow pass on $sc: valid findings (<= 5, every one with a runnable check), split_needed=False"
 done
 
+# ---- 12. The landing review's fixes (S5's finish, 2026-11-07) ----------------------------------------------
+echo "landing review — own session from the environment, --if-drafted, guarded critic, global runs, confidential receipt"
+CLAUDE_CODE_SESSION_ID=pass-s5-env "$E" open film --day 2026-11-20 --json > /dev/null
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pass_session"))' "$EVOLVE_STATE/manifests/film.opening.json")" \
+  "pass-s5-env" "open takes the pass's own session from CLAUDE_CODE_SESSION_ID, so its transcript never wakes next week"
+out=$("$E" record film --day 2026-12-04 --if-drafted 2>&1); rc=$?
+check "$rc $(printf '%s' "$out" | grep -c 'nothing drafted')" "0 1" "record --if-drafted with nothing drafted: exit 0, one line (weekly-run's fallback)"
+
+cp "$REGATTA_CONFIG/regatta/guarded" "$T/guarded.keep"
+printf 'regatta-repo\n' > "$REGATTA_CONFIG/regatta/guarded"
+rm -f "$T/critic-guarded.json"
+CLAUDE_BIN="$T/claude-stub.py" STUB_LOG="$T/critic-guarded.json" "$E" critic "$T/reg-good.json" --scope regatta --json > "$T/crit-g.json"
+check "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["meta"]["gate"])' "$T/crit-g.json" 2>/dev/null) $([ -f "$T/critic-guarded.json" ] && echo sent || echo unsent)" \
+  "skipped unsent" "a guarded scope's findings never reach the critic's model without the owner's quote (gate.vet, every vendor)"
+CLAUDE_BIN="$T/claude-stub.py" "$E" critic "$T/reg-good.json" --scope regatta --require-model > /dev/null 2>&1
+check "$?" 2 "  with --require-model the guarded scope is refused"
+cp "$T/guarded.keep" "$REGATTA_CONFIG/regatta/guarded"
+GATE_LOG="$T/gate-critic.jsonl" CLAUDE_BIN="$T/claude-stub.py" "$E" critic "$T/reg-good.json" --scope regatta --json > /dev/null
+check "$(grep -c '"site": "evolve.critic"' "$T/gate-critic.jsonl" 2>/dev/null)" 1 "  each critic call writes one gate.jsonl row, so the meters see its spend"
+
+cp "$P/secret-node/.claude/evolve-scope.json" "$T/secret-prof.json"
+g1=$("$E" coverage --json --no-record 2>/dev/null | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["surface"], sort_keys=True))')
+printf '{"sources": "not a list"}\n' > "$P/secret-node/.claude/evolve-scope.json"
+g2=$("$E" coverage --json --no-record 2>/dev/null | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["surface"], sort_keys=True))')
+cp "$T/secret-prof.json" "$P/secret-node/.claude/evolve-scope.json"
+check "$([ -n "$g1" ] && [ "$g1" = "$g2" ] && echo same)" same "a global coverage run never opens a confidential scope's anchor profile (a torn one changes nothing)"
+
+cat > "$T/vcommit-noop.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$T/vcommit-noop.sh"
+python3 "$T/mk_finding.py" "$D/lib" "$MARK" secret_milestone 2026-11-13 2026-W46 "$P/secret-node/evolve/2026-11-13.findings.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["findings"][0]["privacy_class"]="confidential"; json.dump(d, open(sys.argv[1],"w"))' "$P/secret-node/evolve/2026-11-13.findings.json"
+printf '# Evolve — confidential — 2026-11-13\n' > "$P/secret-node/evolve/2026-11-13.md"
+printf '# Dream — 2026-11-13\nA note.\n' > "$P/secret-node/dreams/2026-11-13.md"
+printf '# Upstream — 2026-11-13\n\nU1. Validate schemas before export — rules/engineering.md\n' > "$P/secret-node/dreams/2026-11-13-upstream.md"
+out=$(SCOPE_PASS_COMMIT="$T/vcommit-noop.sh" CLAUDE_BIN="$T/claude-stub.py" "$E" record clientx --day 2026-11-13 2>&1); rc=$?
+printf '%s\n' "$out" > "$T/conf-noop.out"
+check "$rc $(printf '%s' "$out" | grep -c 'does not verify')" "1 1" "a confidential scope whose export receipt does not verify is never recorded complete"
+check "$([ -f "$EVOLVE_STATE/receipts/$(printf '%s' "$MARK" | tr ':' '-')/2026-11-13-receipt.json" ] && echo written || echo none)" none \
+  "  and no receipt is written for it"
+
 echo; [ "$fails" -eq 0 ] && echo "evolve-pass: all ok" || { echo "evolve-pass: $fails failed"; exit 1; }

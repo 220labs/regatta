@@ -26,7 +26,8 @@ Run the zero-token collectors and open the collector manifest:
 <module>/bin/evolve open <scope> --quiet-exit
 ```
 
-`open` runs the installed collectors, writes their run receipts, reads `<module>/lenses.json` (never copy
+`open` and `record` take this session's id from the environment as the pass's own (`--session` names another),
+so the pass's transcript never wakes next week's run. `open` runs the installed collectors, writes their run receipts, reads `<module>/lenses.json` (never copy
 the lens list into prose or another file), checks tonight's `research` artefact (`{log}/sextant/research`
 or `sextant/<date>-research.json`, marking `outside: stale` when absent or incomplete), reconciles carried
 findings, picks this cycle's `<deep-lens>`, and runs `evolve coverage --scope <scope> --open`.
