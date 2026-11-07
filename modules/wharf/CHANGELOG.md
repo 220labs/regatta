@@ -5,6 +5,21 @@
 - review-gate's principal route picks as a finish, with the receipt, so it names the login a landing started on under
   lighthouse's `week-max-finish`; `plan --phase build`, which a build round's prompt passes, keeps a plain pick
   (finish-ceiling's landing review, 2026-11-06).
+- `checkpoint.py` pushes mid-turn (run-push-midturn): a Bash or write call's PreToolUse on a claude/* branch origin has (an
+  upstream, or the remote-tracking ref of a `--no-track` branch) and with commits origin lacks starts a detached `checkpoint.py push … --spaced` once PUSH_EVERY has passed, so a long
+  turn (an unattended run is one) is on GitHub as it goes: on the side ref `refs/wip/<branch>`, forced (it holds the
+  newest head only), never the branch (D1-B, the owner 2026-11-06). A rewrite after it (an amend, a rebase) strands
+  nothing, no PR, automerge or CI hears of it, and no branch scanner reads it as work; the branch, its `pushed`
+  marker and the Stop's paging of the answer docs are as before. Every repo's pre-push template (and the knowledge
+  variant) lets an agent push `refs/wip/claude/**`, never a deletion; a repo whose copy predates that refuses the child,
+  once per HEAD in `push.log`: `repos --hooks` and the overlay's `bootstrap.sh --hooks` refresh the copies. New verb `checkpoint.py push <worktree>`, which dispatch runs before a lifetime end; a refused push
+  names its `[rejected] … (non-fast-forward)` line, "not forced", instead of git's last hint line. One push of a
+  checkout at a time (`push.lock`): a push that cannot have it steps back rather than push the same ref beside another,
+  and the Stop's or SessionEnd's step-back leaves a detached verb to push the rest. `push --end`, the run's end, holds an unheld
+  ready PR back too (a run ended unfinished has a half-done head), and both fail closed when GitHub does not answer;
+  the HEAD it held is kept in `end-held` (GitHub not answering included), so the SessionEnd its SIGTERM sets off, a
+  detached verb, a later Stop at that HEAD, sync's push of a dead run's leftovers (kept local) and pickup's /move
+  hold it as well, and an `--end` refused before it judges the PR keeps an earlier hold; the refusal names the way out (a `hold` label or a draft, then `push --end`, or a new commit).
 - `pr hold` (check-ci-default's landing review, 2026-11-06): labels this branch's PR `hold` as build CI's own, with check_ci.py's
   marker and ownership note, through the token, so an unattended `/finish` re-landing a ready PR holds it before its push
   (it may not call `gh`); an owner's unmarked hold is kept and nothing claimed. Step 11.2 names it.

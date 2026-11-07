@@ -9,7 +9,8 @@
 #   * main that is NOT a fast-forward — the remote tip must be an ancestor of what is pushed.
 #     A hook can pull --rebase; it may never overwrite what the other machine sent.
 #   * any deletion;
-#   * every other ref: branches other than claude/**, tags, notes.
+#   * every other ref: branches other than claude/**, tags, notes — bar refs/wip/claude/**, the side
+#     refs checkpoint.py's mid-turn push writes (a push, never a deletion; run-push-midturn, 2026-11-06).
 # THE CHECK READS STDIN, NOT THE COMMAND LINE — one line per ref: <local ref> <local sha>
 # <remote ref> <remote sha>. Test with: bash the overlay's hooks/test_hooks.sh
 [ "${GIT_PUSH_OK:-}" = "1" ] && exit 0
@@ -21,7 +22,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 	case "$local_sha" in
 		*[!0]*)
 			case "$remote_ref" in
-				refs/heads/claude/*) ;;
+				refs/heads/claude/*|refs/wip/claude/*) ;;
 				refs/heads/main)
 					case "$remote_sha" in
 						*[!0]*)
@@ -40,7 +41,7 @@ done
 
 [ -z "$refused" ] && exit 0
 
-printf 'refusing this push (knowledge repo): main moves forward only, and only main or claude/**.\n\n' >&2
+printf 'refusing this push (knowledge repo): main moves forward only, and only main, claude/** or refs/wip/claude/**.\n\n' >&2
 printf 'Not allowed here:\n%s\n' "$refused" >&2
 printf 'The owner pushes anything with:  GIT_PUSH_OK=1 git push  — or VS Code'"'"'s Push button.\n' >&2
 exit 1

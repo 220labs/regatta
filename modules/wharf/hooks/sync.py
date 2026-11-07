@@ -357,7 +357,9 @@ def push_left(cp, state, name, sid):
     (publish refuses it, cp.landed), True with a one-line note: it is never retried. A miss leaves
     the UNPUSHED marker, so the next session start tries again — the worktree is clean by then and
     nothing else would look at it (review, 2026-09-25)."""
-    pushed = cp.publish(state, name, sid, force=True)
+    # no wait for another push of the checkout (a dead run's detached verb): its ↷ leaves UNPUSHED, and the
+    # pass keeps its TEND_BUDGET (run-push-midturn's round 5)
+    pushed = cp.publish(state, name, sid, force=True, lock_wait=0, hold=lambda: cp.end_held(state))
     spent = cp.landed(state, name, ask=False)  # publish already asked GitHub and kept any yes
     if spent:
         (state / UNPUSHED).unlink(missing_ok=True)
@@ -382,6 +384,7 @@ def commit_left(repo, main, path, name, gitdir, deadline, merged=False):
     sid = owner.get("session") or next((e["session"] for e in reversed(queue) if e.get("session")), None) \
         or "unknown"
     cp.ROOT, cp.MAIN = str(path), main
+    held = cp.end_held(state)  # a run push --end held back: what it left is half-done too, kept local with it
     fallback = (f"wip: left by session {sid[:8]}, committed at session start "
                 f"({cp.common.host_name()}, {time.strftime('%Y-%m-%d %H:%M')})")
     try:
@@ -397,6 +400,9 @@ def commit_left(repo, main, path, name, gitdir, deadline, merged=False):
     said = f"{repo.name}: committed what session {sid[:8]} left in {path.name} ({sha})"
     if merged:
         return said + f" — kept local: {name} was merged and deleted on GitHub; look before pushing"
+    if held:
+        (state / cp.END_HELD).write_text(git(path, "rev-parse", "HEAD").stdout.strip() + "\n")
+        return said + f" — kept local: {held}"
     if time.monotonic() > deadline:
         (state / UNPUSHED).write_text(sid)
         return said + " — not pushed yet, out of time; the next session start pushes it"
