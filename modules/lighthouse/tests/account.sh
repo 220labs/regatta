@@ -48,7 +48,7 @@ mkdir -p "$P1" "$S1"
 # what a plain bootstrap.sh run leaves in ~/.claude: the full memory file and the employer one
 # (bin/account links a dir's CLAUDE.md to them, and never to a file that does not exist)
 printf '@~/projects/privy/me/core.md\n' > "$P1/CLAUDE.md"; printf '@~/projects/privy/me/core.md\n' > "$P1/CLAUDE-work.md"
-export ACCOUNTS_FILE="$T/accounts.json" ACCOUNT_CLAUDE="$T/claude" ACCOUNT_CODE="$T/no-code"   # never the real VS Code
+export ACCOUNTS_FILE="$T/accounts.json" ACCOUNT_CLAUDE="$T/claude" ACCOUNT_CODE="$T/no-code" ACCOUNT_ORCA="$T/no-orca"   # never the real VS Code or Orca
 cat > "$ACCOUNTS_FILE" <<'EOF'
 {"accounts": [
   {"label": "spare", "provider": "claude", "home": "~/.claude-spare",
@@ -2948,15 +2948,17 @@ json.dump(d, open(sys.argv[2], "w"))
 PYEOF
 python3 "$T/mkva.py" "$ACCOUNTS_FILE.vx" "$ACCOUNTS_FILE.va"
 echo '{"acme": {"repos": ["acme-*"], "logins": ["lab"]}}' > "$T/vt/cx.json"
+# Orca is unreadable here (ACCOUNT_ORCA=no-orca): these routing cases read as the vendor fence does, `--cached`,
+# where a tenant's own unread row still runs; a live pick fails closed on it (agy-pick-orca's tenant cases)
 VA() { GEMINI_CLI_HOME="${AGRUN:-$AGH}" CODEX_HOME="$CXH" VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" ACCOUNT_CODEX="$T/codex" VT "$@"; }
 check "$(AGRUN="$AGO" VA tenant set owner --repos privy --logins main codex-own agy-own)" 1 "an agy label whose home is not the one an agy run uses: refused"
 has "$T/out" "agy-own is an antigravity row whose home is not" "…the vendor fence would pass a run on another login"
 check "$(VA tenant set owner --repos privy --logins main codex-own agy-own)" 0 "tenant set with an agy label beside the Codex one: written"
 has "$T/out" "runs on main, codex-own, agy-own only" "…naming both"
 has "$T/out" "refused to work, lab, spare, codex-other, agy-other" "…the other rows of every vendor are refused"
-check "$(VA pick --provider antigravity --repo "$PR/privy" --json) $(field "['account']")" "0 agy-own" "pick --provider antigravity --repo a tenant's repo → the tenant's agy login"
-check "$(VA pick --provider antigravity --repo "$PR/privy" --json) $(field "['owns'], d['env']")" "0 True {}" "…it owns the repo, and sets no environment (agy picks its keychain login itself)"
-check "$(VA pick --provider antigravity --repo "$PR/acme-one" --json)" 3 "an agy pick in another tenant's repo: every agy row refused (acme has none)"
+check "$(VA pick --provider antigravity --cached --repo "$PR/privy" --json) $(field "['account']")" "0 agy-own" "pick --provider antigravity --repo a tenant's repo → the tenant's agy login"
+check "$(VA pick --provider antigravity --cached --repo "$PR/privy" --json) $(field "['owns'], d['env']")" "0 True {}" "…it owns the repo, and sets no environment (agy picks its keychain login itself)"
+check "$(VA pick --provider antigravity --cached --repo "$PR/acme-one" --json)" 3 "an agy pick in another tenant's repo: every agy row refused (acme has none)"
 has "$T/out" "acme-one is acme's: it runs on no antigravity login only (tenants)" "…with that tenant's line, naming agy rows alone"
 check "$(VA pick --provider codex --repo "$PR/privy" --json) $(field "['account']")" "0 codex-own" "…the Codex pick is unchanged beside it"
 check "$(VA limits --all --cached --json) $(field "[0:0] or [o['label'] for o in d if o['provider'] == 'antigravity']")" "0 []" "limits --all leaves an agy row out: Orca's card is its figure"
@@ -2970,8 +2972,8 @@ check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own=cv
 has "$T/out" "runs on main only; agy-own confined to cv" "…naming the confine"
 check "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["owner"]; print(t["logins"], t["confined"], "confine" in t)' "$T/vt/cx.json")" \
   "['main'] {'agy-own': ['cv']} False" "…in the tenants file as \"confined\", the label out of \"logins\" (agy-confine-fail-closed)"
-check "$(VA pick --provider antigravity --repo "$PR/cv" --json) $(field "['account'], d['owns']")" "0 agy-own True" "a confined login's pick in its confine: runs it, owns it"
-check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "…the tenant's repo outside its confine: refused (the vendor fence's no)"
+check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json) $(field "['account'], d['owns']")" "0 agy-own True" "a confined login's pick in its confine: runs it, owns it"
+check "$(VA pick --provider antigravity --cached --repo "$PR/privy" --json)" 3 "…the tenant's repo outside its confine: refused (the vendor fence's no)"
 has "$T/out" "agy-own is confined to cv of owner's repos (tenants)" "…its skip line says why"
 check "$(VA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "the tenant's Claude login is untouched: privy still runs on main"
 check "$(VA tenant set beta --repos zed --logins spare --confine agy-own=zed)" 1 "a login confined in another tenant: refused (one tenant per login)"
@@ -3013,7 +3015,7 @@ has "$T/out" "--confine agy-own: cv is no repo of owner's --repos" "…saying so
 check "$(VA tenant set owner --repos privy cv --logins main --confine)" 0 "a bare --confine: written"
 hasnt "$T/out" "confined" "…drops every confine"
 check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["owner"]))' "$T/vt/cx.json")" "['logins', 'repos']" "…and the key with it"
-check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "…so the login is no tenant's, and refused the tenant's repos"
+check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json)" 3 "…so the login is no tenant's, and refused the tenant's repos"
 check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine agy-own=cv)" 1 "--confine on a label --logins names too: refused"
 has "$T/out" "--confine names agy-own, which --logins names too" "…an older account would read --logins whole"
 check "$(VA tenant set owner --repos privy cv --logins main --confine main=cv)" 1 "--confine on a Claude row: refused (a seat's guard reads its tenant whole)"
@@ -3031,21 +3033,21 @@ hasnt "$T/out" "typo, a claude row" "…and never called a claude row"
 echo "  confined fails closed, never open (the landing review, 2026-10-31)"
 TS() { VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ts"; }
 echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": {"agy-own": "cv"}}}' > "$T/vt/cx.json"
-check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "a confined value that is no list: the row confined to nothing"
+check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json)" 3 "a confined value that is no list: the row confined to nothing"
 has "$T/out" "agy-own is confined to nothing of owner's repos" "…saying so"
 VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy "$roster" > "$T/roster"
 has "$T/roster" "antigravity: agy-own confined to nothing (routing only)" "the roster shows a confine"
 TS; has "$T/ts" "agy-own's entry in owner's \"confined\" in cx.json is no list of repo keys" "…and doctor names it"
 for c in '["agy-own", "cv"]' '"agy-own=cv"'; do
   echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main"], "confined": '"$c"'}}' > "$T/vt/cx.json"
-  check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "a confined of $c: no login joins the tenant, so none runs its repos"
+  check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json)" 3 "a confined of $c: no login joins the tenant, so none runs its repos"
   TS; has "$T/ts" "owner in cx.json: its \"confined\" is no object" "…and doctor names it"
 done
 echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confined": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
-check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "a label in logins and confined both, by hand: confined all the same"
+check "$(VA pick --provider antigravity --cached --repo "$PR/privy" --json)" 3 "a label in logins and confined both, by hand: confined all the same"
 TS; has "$T/ts" "agy-own is in both owner's \"logins\" and its \"confined\" in cx.json" "…and doctor says an older account gives it the tenant"
 echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
-check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "the first form (#350's \"confine\" beside logins): every routing login confined to nothing"
+check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json)" 3 "the first form (#350's \"confine\" beside logins): every routing login confined to nothing"
 TS; has "$T/ts" "owner's \"confine\" in cx.json is the first form" "…and doctor says to rewrite it as \"confined\""
 check "$(VA tenant drop owner)" 0 "a drop of the vault's tenant in the first form"
 has "$T/out" "--logins main --confine agy-own=cv" "…its restore line moves the label out of --logins into --confine, never the whole tenant"
@@ -3060,7 +3062,7 @@ check "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["owner"]; p
 echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "codex-own", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
 check "$(VA pick --provider codex --repo "$PR/privy" --json) $(field "['account'], d['owns']")" "0 codex-own True" \
   "the first form confines only the labels it names: the owner's own Codex beside it runs the tenant whole"
-check "$(VA pick --provider antigravity --repo "$PR/cv" --json)" 3 "…the label it names, confined to nothing"
+check "$(VA pick --provider antigravity --cached --repo "$PR/cv" --json)" 3 "…the label it names, confined to nothing"
 echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "agy-own"], "confine": {"agy-own": ["cv"]}}}' > "$T/vt/cx.json"
 check "$(VA tenant set owner --repos privy cv --logins main agy-own --confine codex-own=cv)" 1 "an explicit --confine over the first form, its label still in --logins: refused, never widened"
 has "$T/out" "agy-own is confined by owner's \"confine\" (the first form) in cx.json, and --logins names it while --confine does not" "…saying which"
@@ -3088,7 +3090,7 @@ check "$(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))[
 echo "  a confined that does not read narrows every routing login in logins to nothing (the landing review, 2026-11-01)"
 for c in '["agy-own"]' '"agy-own=cv"' '7' '{"agy-onw": ["cv"]}'; do
   echo '{"owner": {"repos": ["privy", "cv"], "logins": ["main", "codex-own", "agy-own"], "confined": '"$c"'}}' > "$T/vt/cx.json"
-  check "$(VA pick --provider antigravity --repo "$PR/privy" --json)" 3 "a confined of $c with agy-own in logins: refused the vault's repo, never owned"
+  check "$(VA pick --provider antigravity --cached --repo "$PR/privy" --json)" 3 "a confined of $c with agy-own in logins: refused the vault's repo, never owned"
   check "$(VA pick --provider codex --repo "$PR/privy" --json)" 3 "…the Codex beside it too"
   check "$(VA pick --repo "$PR/privy" --json) $(field "['account']")" "0 main" "…while the tenant's Claude seat runs (a seat is never confined)"
 done
@@ -3115,12 +3117,12 @@ check "$(VA tenant set owner --repos privy cv --logins main --confine agy-own=cv
 check "$(VA limits agy-own --repo "$PR/privy" --cached --json) $(field "[0]['eligible'], d[0]['why']")" \
   "0 False agy-own is confined to cv of owner's repos (tenants)" "limits LABEL --repo reads the confine"
 check "$(VA limits agy-own --cached)" 0 "limits on an agy row: answered"
-has "$T/out" "agy-own: never probed" "…as never probed, not as a failed probe"
+has "$T/out" "agy-own: no Orca reading" "…as no Orca reading, not as a failed probe"
 check "$(VA add agy-own)" 0 "add on an agy row: nothing to add"
 has "$T/out" "agy keeps its login itself; nothing to add" "…saying so"
 hasnt "$T/out" "codex login" "…never the Codex sign-in line"
-check "$(VA pick --provider antigravity --ship agyship --repo "$PR/cv" --json) $(field "['account']")" "0 agy-own" "a ship on the confined login, in its confine"
-check "$(VA pick --provider antigravity --ship agyship --repo "$PR/privy" --json)" 3 "…the same ship outside its confine: moved off it, never kept on it"
+check "$(VA pick --provider antigravity --cached --ship agyship --repo "$PR/cv" --json) $(field "['account']")" "0 agy-own" "a ship on the confined login, in its confine"
+check "$(VA pick --provider antigravity --cached --ship agyship --repo "$PR/privy" --json)" 3 "…the same ship outside its confine: moved off it, never kept on it"
 check "$(VA tenant drop owner)" 0 "a drop of the vault's tenant"
 has "$T/out" "--logins main --confine agy-own=cv" "…its restore line carries the confine, the label out of --logins"
 python3 -c 'import json,sys; p=sys.argv[1]; json.dump({"solo": {"repos": ["zed"], "logins": ["codex-own", "agy-own"]}}, open(p, "w"))' "$T/vt/cx.json"
@@ -3199,6 +3201,190 @@ check "$(ALO pick --ship s2ship --json) $(field "['account']")" "0 spare" "ship 
 ALO logged-out --set spare >/dev/null
 check "$(ALO pick --ship s2ship --json) $(field "['account']")" "0 main" "a ship pinned to a logged-out row moves to main while main has room"
 lo_reset
+
+echo "agy-pick-orca: pick --provider antigravity judges Orca's card on this host (2026-11-06)"
+AG1="$T/ag-one"; AG2="$T/ag-two"; mkdir -p "$AG1" "$AG2"
+cat > "$T/orca-ag" <<'SH'
+#!/bin/sh
+if [ "$#" -ne 3 ] || [ "$1" != account ] || [ "$2" != list ] || [ "$3" != --json ]; then
+  printf '%s\n' "orca: expected account list --json, got: $*" >&2
+  exit 2
+fi
+printf '%s\n' call >> "$ORCA_AG_CALLS"
+[ -f "$ORCA_AG_DOWN" ] && { printf '%s\n' "connect ECONNREFUSED" >&2; exit 1; }
+cat "$ORCA_AG_JSON"
+SH
+chmod +x "$T/orca-ag"
+check "$("$T/orca-ag" account list >/dev/null 2>&1; echo $?)" 2 "the orca stub refuses arguments without --json"
+orca_ag_card() {   # FH WK UPDATED_OFFSET_S FH_RESET_OFFSET_S [STATUS [ERR]]
+  python3 - "$T/orca-ag.json" "$WED" "$@" <<'PY'
+import json, sys
+out, wed, fh, wk, upd, fhr = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), float(sys.argv[5]), float(sys.argv[6])
+st = sys.argv[7] if len(sys.argv) > 7 else "ok"
+err = sys.argv[8] if len(sys.argv) > 8 else None
+ms = lambda off: int((wed + off) * 1000)
+ag = {"provider": "antigravity", "status": st, "updatedAt": ms(upd),
+      "session": {"usedPercent": fh, "windowMinutes": 300, "resetsAt": ms(fhr)},
+      "weekly": {"usedPercent": wk, "windowMinutes": 10080, "resetsAt": ms(259200)},
+      "buckets": [{"name": "Gemini Models \u00b7 Weekly Limit Remaining", "usedPercent": wk, "windowMinutes": 10080, "resetsAt": ms(259200)},
+                  {"name": "Gemini Models \u00b7 Five Hour Limit Remaining", "usedPercent": fh, "windowMinutes": 300, "resetsAt": ms(fhr)},
+                  {"name": "Claude and GPT models \u00b7 Weekly Limit Remaining", "usedPercent": 0, "windowMinutes": 10080, "resetsAt": ms(259200)},
+                  {"name": "Claude and GPT models \u00b7 Five Hour Limit Remaining", "usedPercent": 0, "windowMinutes": 300, "resetsAt": ms(fhr)}]}
+if err:
+    ag["error"] = err
+doc = {"ok": True, "result": {"rateLimits": {
+    "antigravity": ag,
+    "cursor": {"provider": "cursor", "status": "ok", "updatedAt": ms(-60),
+               "monthly": {"usedPercent": 5, "windowMinutes": 44640, "resetsAt": ms(864000)}}}}}
+json.dump(doc, open(out, "w"))
+PY
+}
+cat > "$ACCOUNTS_FILE.agp" <<EOF
+{"accounts": [
+  {"label": "spare", "provider": "claude", "home": "$S1", "rules": {"week_max": 70, "window_max": 50}},
+  {"label": "main", "provider": "claude", "home": "$P1", "primary": true, "rules": {"week_max": 95, "window_max": 80}},
+  {"label": "codex-own", "provider": "codex", "home": "$CXH", "rules": {"week_max": 90, "window_max": 50}},
+  {"label": "agy-a", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90, "window_max": 50}}]}
+EOF
+echo '{}' > "$T/vt/open.json"
+reset; use "$S1" "10 10"; use "$P1" "10 10"; echo "13 10080" > "$CXH/stub-limits"
+# signed in on their own: an earlier block's lo_reset (stuck-ships S2) removes the stub-login files
+echo t@example.com > "$S1/stub-login"; echo p@example.com > "$P1/stub-login"
+rm -f "$T/orca-ag.calls" "$T/orca-ag.down" "$T/orca-ag.seen"
+AP() { GEMINI_CLI_HOME="${AGRUN:-$AG1}" CODEX_HOME="$CXH" REGATTA_CONFIG="$T/cfg-vt" TENANTS_FILE="${AG_TENANTS:-$T/vt/open.json}" \
+  ACCOUNTS_FILE="${AG_ACCTS:-$ACCOUNTS_FILE.agp}" ACCOUNT_CODEX="$T/codex" ACCOUNT_ORCA="$T/orca-ag" \
+  ACCOUNT_ORCA_SEEN="$T/orca-ag.seen" ACCOUNT_ORCA_FILE="$T/no-orca.json" ORCA_AG_CALLS="$T/orca-ag.calls" \
+  ORCA_AG_DOWN="$T/orca-ag.down" ORCA_AG_JSON="$T/orca-ag.json" ACCOUNT_NOW=$WED A "$@"; }
+
+# Reading 1 (2026-11-06 07:15 PST): 5h 0%, week 26%, with agy's "Limit Remaining" bucket names — usedPercent is used
+orca_ag_card 0 26 -600 14400
+: > "$T/orca-ag.calls"
+check "$(AP pick --provider antigravity --repo "$PR/app" --json) $(field "['account'], d['provider'], d['env']")" \
+  "0 agy-a antigravity {}" "a fresh Orca card under the ceiling (5h 0%, week 26% used): picks the Antigravity row"
+has "$T/out" "week 26% < 90% (week ceiling), 5h 0% ≤ 50%" "…judged as percent used against week_max and window_max"
+check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "1" "…asked Orca once"
+check "$(AP pick --provider antigravity --repo "$PR/app" --cached --json) $(field "['account']") $(wc -l < "$T/orca-ag.calls" | tr -d ' ')" \
+  "0 agy-a 1" "…--cached reads ORCA_SEEN without calling Orca again"
+check "$(AP limits agy-a --cached --json) $(field "[0]['sampled'] == $WED - 600, d[0]['eligible']")" "0 True True" \
+  "…limits() keeps Orca's own sample time (updatedAt), never now()"
+
+# Reading 2: over the week ceiling (92% >= 90%) refuses; 5h at 100% locks even at default window_max 100
+orca_ag_card 10 92 -300 14400
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "a fresh card over the week ceiling (92% >= 90%): refused"
+has "$T/out" "week 92% ≥ 90% (week ceiling)" "…naming the week ceiling refusal"
+cat > "$ACCOUNTS_FILE.ag100" <<EOF
+{"accounts": [{"label": "agy-a", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90}}]}
+EOF
+orca_ag_card 100 26 -300 14400
+check "$(AG_ACCTS="$ACCOUNTS_FILE.ag100" AP pick --provider antigravity --json)" 3 "5h at 100% with default window_max 100: still refused"
+has "$T/out" "locked by Antigravity (five_hour)" "…locked by parse_orca's five_hour lock"
+AG_FH_RESET="$(python3 -c 'import datetime as d,sys; print(d.datetime.fromtimestamp(float(sys.argv[1]) + 14400).strftime("%a %H:%M"))' "$WED")"
+has "$T/out" "locked by Antigravity (five_hour); resets $AG_FH_RESET" "…naming the 5-hour window's reset, not the week's"
+check "$(vpy 'import time; n = time.time(); r = {"label": "cx", "provider": "codex", "home": "/nonexistent-cx", "rules": {}}; lim = {"five_hour": 20, "seven_day": 100, "locked": ["five_hour", "seven_day"], "five_hour_resets": n + 3600, "seven_day_resets": n + 432000}; ok, why = a.judge(r, lim, n); print(ok, why.endswith(a.when(n + 432000)))' | tail -1)" \
+  "False True" "a Codex lock over both windows names the latest reset, the week's"
+
+# Clock trap: pace() weighs the 5h window at the card's sample time (updatedAt), never a later now()
+# Sampled 40 min ago ($WED - 2400) with 4 h left then (20% elapsed at sample time; 33% elapsed at $WED): 25% > 20% pace
+cat > "$ACCOUNTS_FILE.agpace" <<EOF
+{"accounts": [{"label": "agy-a", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90, "window_max": 20}}]}
+EOF
+orca_ag_card 25 26 -2400 12000
+check "$(AG_ACCTS="$ACCOUNTS_FILE.agpace" AP pick --provider antigravity --json)" 3 "pace weighed at sample time (20% then, 33% now): 5h 25% refused"
+has "$T/out" "5h 25% > 20%, over pace 20%" "…naming the 20% sample-time pace, not wall-clock 33%"
+# Sampled 40 min ago with 3 h left then (40% elapsed at sample time): 25% < 40% pace with >= 10 headroom -> picked
+orca_ag_card 25 26 -2400 8400
+check "$(AG_ACCTS="$ACCOUNTS_FILE.agpace" AP pick --provider antigravity --json) $(field "['account']")" "0 agy-a" \
+  "…under sample-time pace (25% < 40%): picked"
+has "$T/out" "5h 25% under pace 40%" "…naming sample-time pace"
+
+# Stale card (> 60 min old, and a future stamp): fails closed with its reason, live and --cached
+orca_ag_card 0 26 -3660 14400
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "a card 61 min old (> 60 min): refused (fails closed)"
+has "$T/out" "limits unknown (Orca's antigravity reading is 61 min old, > 60 min)" "…saying the card's age and bound"
+python3 -c 'import json,sys; json.dump({"antigravity": {"at": float(sys.argv[2]) - 3660, "limits": {"five_hour": 0, "seven_day": 10, "locked": []}}}, open(sys.argv[1], "w"))' "$T/orca-ag.seen" "$WED"
+check "$(AP pick --provider antigravity --repo "$PR/app" --cached --json)" 3 "a stale cached card in ORCA_SEEN: refused too"
+has "$T/out" "limits unknown (cached Orca antigravity reading is 61 min old, > 60 min)" "…saying the cached card's age"
+orca_ag_card 0 26 3600 14400
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "a card with a future timestamp (clock set back): refused"
+has "$T/out" "limits unknown (Orca's antigravity reading has a future timestamp)" "…saying so"
+
+# Headless Orca (orca_read_any false), card error, and Orca down: each fails closed, ignoring any fresh ORCA_SEEN
+orca_ag_card 0 26 -300 14400
+AP pick --provider antigravity --repo "$PR/app" --json > /dev/null   # seeds a fresh ORCA_SEEN
+cat > "$T/orca-ag.json" <<'J'
+{"ok": true, "result": {"rateLimits": {"claude": null, "antigravity": null,
+  "cursor": {"provider": "cursor", "status": "unavailable", "usageMetadata": {"failureKind": "missing-credentials"}}}}}
+J
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "a headless Orca (orca_read_any false): refused, fresh ORCA_SEEN notwithstanding"
+has "$T/out" "limits unknown (Orca listed no agent's reading: headless or not ready)" "…with the headless reason"
+orca_ag_card 0 26 -300 14400 error "token expired"
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "an errored Antigravity card while another agent is ok: refused"
+has "$T/out" "limits unknown (Orca's antigravity card: token expired)" "…with Orca's card error"
+: > "$T/orca-ag.down"
+check "$(AP pick --provider antigravity --repo "$PR/app" --json)" 3 "Orca down (ECONNREFUSED): refused"
+has "$T/out" "limits unknown (Orca unreadable:" "…with the unreadable reason"
+rm -f "$T/orca-ag.down"
+orca_ag_card 0 26 -300 14400
+
+# Two Antigravity rows enabled at this host's home: refused with that reason; parking one picks the enabled one
+cat > "$ACCOUNTS_FILE.ag2" <<EOF
+{"accounts": [
+  {"label": "agy-a", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90, "window_max": 50}},
+  {"label": "agy-b", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90, "window_max": 50}}]}
+EOF
+: > "$T/orca-ag.calls"
+check "$(AG_ACCTS="$ACCOUNTS_FILE.ag2" AP pick --provider antigravity --repo "$PR/app" --json)" 3 \
+  "two Antigravity rows enabled here: refused (Orca's card names no account)"
+has "$T/out" "2 antigravity rows enabled for" "…naming the count"
+has "$T/out" "(agy-a, agy-b): Orca's card names no account" "…and both labels with the reason"
+check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "0" "…without calling Orca"
+cat > "$ACCOUNTS_FILE.ag2p" <<EOF
+{"accounts": [
+  {"label": "agy-a", "provider": "antigravity", "home": "$AG1", "rules": {"week_max": 90, "window_max": 50}},
+  {"label": "agy-b", "provider": "antigravity", "home": "$AG1", "enabled": false, "rules": {"week_max": 90, "window_max": 50}}]}
+EOF
+check "$(AG_ACCTS="$ACCOUNTS_FILE.ag2p" AP pick --provider antigravity --repo "$PR/app" --json) $(field "['account']")" "0 agy-a" \
+  "…with the second row parked (enabled: false), one is enabled here and picked"
+
+# A tenant's own Antigravity row (agy-pick-orca's landing review, pick B): a live pick on an unread card fails closed,
+# never the tenant fallback; the vendor fence's --cached read still answers the tenant's own row
+echo '{"owner": {"repos": ["app"], "logins": ["main", "agy-a"]}}' > "$T/vt/agt.json"
+APT() { AG_TENANTS="$T/vt/agt.json" AP "$@"; }
+orca_ag_card 99 99 -7200 14400
+rm -f "$T/orca-ag.seen"
+check "$(APT pick --provider antigravity --repo "$PR/app" --json)" 3 "a tenant's row, its card 2 h old at 99%: a live pick refuses (no tenant fallback)"
+has "$T/out" "limits unknown (Orca's antigravity reading is 120 min old, > 60 min)" "…with the card's age"
+orca_ag_card 0 26 -300 14400 error "token expired"
+check "$(APT pick --provider antigravity --repo "$PR/app" --json)" 3 "…an errored card on the tenant's row: refused too"
+check "$(APT pick --provider antigravity --repo "$PR/app" --cached --json) $(field "['account'], d['owns']")" "0 agy-a True" \
+  "…the --cached read (the vendor fence's) still answers the tenant's own row"
+orca_ag_card 99 99 -300 14400
+check "$(APT pick --provider antigravity --repo "$PR/app" --json)" 3 "…a fresh card at 99% on the tenant's row: refused by the ceiling"
+has "$T/out" "week 99% ≥ 90% (week ceiling)" "…naming it"
+orca_ag_card 0 26 -300 14400
+check "$(APT pick --provider antigravity --repo "$PR/app" --json) $(field "['account'], d['owns']")" "0 agy-a True" "…a fresh card with room: picked, owning the repo"
+rm -f "$T/orca-ag.seen"
+check "$(AP check)" 0 "account check passes with no Orca card cached"
+has "$T/out" "⚠   agy-a: antigravity, picks from Orca's card; limits unknown (no Orca antigravity reading cached)" "…marking the row ⚠ with the reason"
+
+# Row on another host (missing dir, or home != run_home("antigravity")): refused with its reason, Orca unasked
+cat > "$ACCOUNTS_FILE.aghost" <<EOF
+{"accounts": [
+  {"label": "agy-away", "provider": "antigravity", "home": "$T/other-host-gemini", "rules": {"week_max": 90, "window_max": 50}},
+  {"label": "agy-wrong", "provider": "antigravity", "home": "$AG2", "rules": {"week_max": 90, "window_max": 50}}]}
+EOF
+: > "$T/orca-ag.calls"
+check "$(AG_ACCTS="$ACCOUNTS_FILE.aghost" AP pick --provider antigravity --repo "$PR/app" --json)" 3 \
+  "rows on another host or another home: refused"
+has "$T/out" "not set up on this machine ($T/other-host-gemini missing)" "…missing dir refused as not on this machine"
+has "$T/out" "is not $(cd "$AG1" && pwd -P), the one an antigravity run here uses" "…another home refused as not run_home"
+check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "0" "…without calling Orca"
+
+# Claude and Codex picks in the same registry: unchanged, and Orca is never called for them
+: > "$T/orca-ag.calls"
+check "$(AP pick --repo "$PR/app" --json) $(field "['account'], d['provider']")" "0 spare claude" "Claude pick alongside the agy row: unchanged"
+check "$(AP pick --provider codex --repo "$PR/app" --json) $(field "['account'], d['provider']")" "0 codex-own codex" "Codex pick alongside the agy row: unchanged"
+check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "0" "…neither called Orca"
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
