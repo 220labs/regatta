@@ -92,6 +92,8 @@
   leaves out the stops `fin_pass` reads as unknown (`fin_stop`).
 - usage-report's trim line fences a key `repo_key` leaves absolute (outside this Mac's projects folder), where it
   tested `repo_key(key) == key`, which a worktree path from another Mac no longer met (S6's sixth landing review).
+- `asks` reads a finding's `status["proposal"]` where S3/S5's three-family `status` object sits in
+  `<log dir>/evolve/findings/*.json`, keeping a bare string as before (Evolve S5).
 - `asks` (new; evolve S1): the owner's typed asks as the weekly loop's miss signal. `asks run` reads
   `week-digest --json`, takes the zero-token sieve as a pre-label, sends every owner prompt through the gate
   (one batched classify call per dimension per 50 prompts, per repo, on the row `evolve.ask`: target, kind, level,
