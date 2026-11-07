@@ -3091,7 +3091,7 @@ try:
     m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, ["uidmap", "network", "subuids"]), "node-ci")
 except m.Refusal as e:
     print(e)
-for lacks in (["userns"], ["userns", "linger"], ["user-systemd"]):
+for lacks in (["userns"], ["userns", "linger"], ["user-systemd"], ["podman", "linger"]):
     try:
         m.refuse_lacks(m.Probe(False, "x86_64", "Linux", None, lacks), "node-ci")
     except m.Refusal as e:
@@ -3111,6 +3111,8 @@ if [ "$RU" = 1 ]; then
   grep -qF "needs (uidmap, network, subuids), the owner's to give with sudo first: wharf's runner-user" "$T/out"; check "$?" "0" "…uidmap's, the network helper's and the ranges', runner-user's to give"
   grep -qF "sudo bash runner-user --node-user" "$T/out"; check "$?" "0" "…with its one line, the copy in the node user's home"
   grep -qF "runner-user gives the login what it can, one line from this Mac" "$T/out"; check "$?" "0" "…with a lack it does not give beside one it does: what it can, the rest named"
+  grep -qF "needs (podman, linger), the owner's to give with sudo first: wharf's runner-user gives the login what it can" "$T/out"; check "$?" "0" "…podman missing: what it can, never all of it"
+  grep -qF "unread until podman is there: an unprivileged user namespace for podman" "$T/out"; check "$?" "0" "…the user namespace named as unread"
 else
   grep -qF "the uidmap package (newuidmap and newgidmap" "$T/out"; check "$?" "0" "…uidmap's (no runner-user here: in full)"
   grep -qF "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)" "$T/out"; check "$?" "0" "…the network helper's"

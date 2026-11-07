@@ -2972,6 +2972,10 @@ def refuse_lacks(probe, host):
             return w in RUNNER_USER_GIVES and (w != "user-systemd" or "linger" in probe.lacks)
         gives = [w for w in probe.lacks if given(w)]
         rest = [LACKS.get(w, w) for w in probe.lacks if not given(w)]
+        # without podman the probe reads no namespace, ranges or uidmap, so the user namespace, which runner-user does
+        # not give, is unread, never "all of it" (the landing review's round 2, 2026-11-06)
+        if "podman" in probe.lacks and "userns" not in probe.lacks:
+            rest.append("unread until podman is there: " + LACKS["userns"])
         if not gives or not os.path.isfile(script):
             raise Refusal("%s lacks what a rootless runner container needs, the owner's to give with sudo first: %s; "
                           "nothing minted" % (host, "; ".join(LACKS.get(w, w) for w in probe.lacks)))
