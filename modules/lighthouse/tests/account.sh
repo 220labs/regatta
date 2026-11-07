@@ -67,6 +67,7 @@ cat > "$T/claude" <<'EOF'
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 [ "$1" = --version ] && { [ -f "$T_NOVERSION" ] || echo "2.1.310 (Claude Code)"; exit 0; }
 if [ "$1" = auth ]; then
+  [ -n "${T_AUTH_PROBES:-}" ] && echo "$dir" >> "$T_AUTH_PROBES"
   if [ -f "$dir/stub-login" ]; then echo "{\"loggedIn\": true, \"email\": \"$(cat "$dir/stub-login")\", \"subscriptionType\": \"pro\"}"
   else echo '{"loggedIn": false}'; exit 1; fi
   exit 0
@@ -3125,6 +3126,79 @@ has "$T/out" "--logins main --confine agy-own=cv" "…its restore line carries t
 python3 -c 'import json,sys; p=sys.argv[1]; json.dump({"solo": {"repos": ["zed"], "logins": ["codex-own", "agy-own"]}}, open(p, "w"))' "$T/vt/cx.json"
 VT_TENANTS="$T/vt/cx.json" VT_ACCOUNTS="$ACCOUNTS_FILE.va" vpy 'for t in a.tenancy_state(reg): print(t[1], t[2], "|", t[3])' > "$T/ts"
 has "$T/ts" "codex-own, a codex login, agy-own, an antigravity login: they route \`pick --provider codex\`, \`pick --provider antigravity\`" "doctor names each routing vendor, with its article"
+
+echo "logged-out.json — S2's login road (stuck-ships S2, 2026-11-02)"
+ALO_F="$T/accounts.lo.json"
+cat > "$ALO_F" <<'EOF'
+{"accounts": [
+  {"label": "spare", "provider": "claude", "home": "~/.claude-spare",
+   "rules": {"week_max": 70, "window_max": 50}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true,
+   "rules": {"week_max": 95, "window_max": 80}}]}
+EOF
+ALO() { T_AUTH_PROBES="$T/auth-probes" ACCOUNTS_FILE="$ALO_F" TENANTS_FILE="$T/no-tenants.json" ACCOUNT_ORCA_FILE="$T/no-orca.json" ACCOUNT_NOW=$WED python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
+lo_reset() { reset; rm -f "$P1/logged-out.json" "$S1/logged-out.json" "$P1/stub-login" "$S1/stub-login" "$T/auth-probes" "$P1/account-ships.json"; }
+lo_reset; use "$S1" "10 40"; use "$P1" "10 20"
+check "$(ALO logged-out --set spare)" 0 "logged-out --set writes logged-out.json"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 0 "…file present in spare's home"
+check "$(ALO logged-out --set ghost)" 1 "logged-out --set on an unknown label: refused"
+check "$(ALO logged-out --json) $(field "[0]['label']")" "0 spare" "logged-out --json lists the parked row without probing"
+check "$(test -f "$T/auth-probes"; echo $?)" 1 "…zero auth status calls on a plain listing"
+check "$(ALO pick --json) $(field "['account']")" "0 main" "a logged-out row is skipped by pick while another login has room"
+has "$T/out" "logged out — skipped while another login has room" "…skipping reason named"
+check "$(wc -l < "$T/probes" | tr -d ' ')" 1 "…only main was usage-probed (spare skipped unprobed)"
+check "$(test -f "$T/auth-probes"; echo $?)" 1 "…and zero auth status calls while another login has room"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 0 "…logged-out.json still set on spare"
+# Now main is out of room, and spare is STILL logged out (no stub-login): pick probes spare and leaves logged-out.json, refusing exit 3
+rm -f "$P1/usage-probe.json" "$T/probes"; use "$P1" "10 96"
+check "$(ALO pick --json)" 3 "when no other login has room and auth_status says logged out, pick refuses exit 3"
+has "$T/out" "logged out (claude auth status)" "…with the auth status refusal"
+check "$(wc -l < "$T/auth-probes" | tr -d ' ')" 1 "…one auth status call on spare"
+check "$(wc -l < "$T/probes" | tr -d ' ')" 1 "…and spare was never usage-probed after auth status said logged out"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 0 "…logged-out.json kept on spare"
+# Even primary when marked logged out does NOT fall back to 'limits unknown' or overdraw when auth_status says logged out
+lo_reset; rm -f "$P1/stub-usage"; use "$S1" "10 100"
+ALO logged-out --set main >/dev/null
+rm -f "$T/probes" "$T/auth-probes"
+check "$(ALO pick --overdraw --json)" 3 "a logged-out primary whose auth_status says logged out refuses exit 3 (no unknown/overdraw fallback)"
+check "$(test -f "$P1/logged-out.json"; echo $?)" 0 "…logged-out.json kept on main"
+# Probed and cleared when it is the only login with room — including on a --cached pick (1 auth status, 0 usage probes!)
+lo_reset; use "$S1" "10 40"; use "$P1" "10 96"
+ALO limits --all --json >/dev/null   # warm both usage caches first
+ALO logged-out --set spare >/dev/null
+echo spare@t > "$S1/stub-login"
+rm -f "$T/probes" "$T/auth-probes"
+check "$(ALO pick --cached --json) $(field "['account']")" "0 spare" "a --cached pick probes auth_status when spare is the only one with room, clears it and picks spare"
+check "$(wc -l < "$T/auth-probes" | tr -d ' ')" 1 "…one claude auth status call"
+check "$(test -f "$T/probes"; echo $?)" 1 "…zero usage probes on a --cached pick"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 1 "…logged-out.json cleared"
+# Torn logged-out.json fails closed until probed clean
+printf '{torn' > "$S1/logged-out.json"
+rm -f "$S1/stub-login" "$P1/usage-probe.json"; use "$P1" "10 20"
+check "$(ALO pick --json) $(field "['account']")" "0 main" "a torn logged-out.json still parks spare while main has room"
+echo spare@t > "$S1/stub-login"
+check "$(ALO logged-out --probe --json) $(field "")" "0 []" "logged-out --probe clears a signed-in login's logged-out.json"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 1 "…file unlinked by --probe"
+# limits --all --cached never probes logged-out; limits --all (without --cached) probes and clears it
+ALO logged-out --set "$S1" >/dev/null
+rm -f "$T/auth-probes"
+check "$(ALO limits --all --cached --json) $(field "[0]['eligible'], d[0]['logged_out']")" "0 False True" "limits --all --cached marks spare ineligible without probing auth_status"
+check "$(test -f "$T/auth-probes"; echo $?)" 1 "…zero auth status calls under --cached"
+check "$(ALO limits --all --json) $(field "[0]['eligible'], d[0]['logged_out']")" "0 True False" "limits --all without --cached probes and clears logged-out.json"
+check "$(test -f "$S1/logged-out.json"; echo $?)" 1 "…file unlinked by limits --all"
+# doctor runs --probe too
+ALO logged-out --set spare >/dev/null
+ALO doctor --local >/dev/null 2>&1
+check "$(test -f "$S1/logged-out.json"; echo $?)" 1 "doctor probes and clears a signed-in login's logged-out.json"
+# --skip skips named labels unprobed; --ship moves off a logged-out row when another has room
+lo_reset; use "$S1" "10 40"; use "$P1" "10 20"
+rm -f "$T/probes"
+check "$(ALO pick --skip spare --json) $(field "['account']")" "0 main" "pick --skip skips the named login unprobed"
+check "$(wc -l < "$T/probes" | tr -d ' ')" 1 "…only main probed"
+check "$(ALO pick --ship s2ship --json) $(field "['account']")" "0 spare" "ship pinned to spare"
+ALO logged-out --set spare >/dev/null
+check "$(ALO pick --ship s2ship --json) $(field "['account']")" "0 main" "a ship pinned to a logged-out row moves to main while main has room"
+lo_reset
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }
