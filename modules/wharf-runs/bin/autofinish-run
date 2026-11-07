@@ -146,15 +146,17 @@ name (exit 2 without one, and `--road` with any other `by`), judged in refusal()
     re-finish), origin's main is not in HEAD's history (read from git, never the run's `base_tip`, which is main at
     the run's end), and the last run launched, stopped no-landing with a ready PR, or stopped at G11; `login`: the
     branch's last `autofinished` stop is a no-landing one matching LOGIN_RE (the class, never the logged-out row a
-    probe may clear); `limit`: that stop is the 5-hour usage-limit line, and the newest `five_hour` row of the run's
-    window (written after its start, or resetting after it: one row per window) in the `exhaustion.jsonl` of the
-    login it ran on (its `account`, a label or a home read through `account limits --all --parked --json --cached`)
-    has passed its `resets_at`; `stand`: that stop is G4 and `keel status --json` reads no open item on any D-list
+    probe may clear; record() sets `<home>/logged-out.json` through `account logged-out --set` on a login stop, S2);
+    `limit`: that stop is the usage-limit line (5-hour, weekly or session), and `account pick` returns a login with
+    room whose 5-hour window has not yet taken a `road=limit` relaunch (`account=`, read across the day logs the
+    window spans, leaving out `never-started`), the stopped run's own login eligible only once its recorded
+    `resets_at` has passed (S2, revision 10); `stand`: that stop is G4 and `keel status --json` reads no open item on any D-list
     doc of keel's memo set (docs/, docs/record/, docs/embark/, the top level) the branch changed, and none `taken`
-    (keel yolo's answers never land so: DEAD_ROAD_RC). A predicate that can never hold — a PR labelled `hold`, no
-    exhaustion row, no registry login, a G4 stop with no D-list doc keel reads items in, or a doc keel refuses (its
+    (keel yolo's answers never land so: DEAD_ROAD_RC). A predicate that can never hold — a PR labelled `hold`,
+    a G4 stop with no D-list doc keel reads items in, or a doc keel refuses (its
     `memo:` exit 1) — exits DEAD_ROAD_RC
-    (8), which the tick raises once as the owner's; one not holding yet (main unmoved, a reset to come, an open item)
+    (8), which the tick raises once as the owner's; one not holding yet (main unmoved, no login with room or a reset
+    to come, an open item)
     is exit 3. The tick names no `--road limit` for a landing: main's chain relaunch takes a limit stop first (the
     design's revision 11);
   - then today's same-tip test, which a holding predicate lifts.
@@ -533,11 +535,11 @@ HOLD_REASONS = ("refinish", "relaunch", "round")
 LANDER_HOLD = "lander-hold"
 STUCK_RC = 9       # state `stuck`, or the road's cap spent: the owner's (never 1, a crash; never 7; never 6, the
                    # origin gate's ORIGIN_RC, which cold_prompt blocks on)
-DEAD_ROAD_RC = 8   # the road's predicate can never hold (a hold label, no exhaustion row, no D-list doc): raised once (S3)
+DEAD_ROAD_RC = 8   # the road's predicate can never hold (a hold label, no D-list doc): raised once (S3)
 REFUSAL_LOG_S = 3600   # a same-tip refusal is logged once an hour per branch; every one is counted in lander.json
-# the usage-limit end, as `autofinished` keeps it: `You've hit your 5-hour limit · resets 9pm`. The 5-hour window's
-# alone: the road reads `five_hour` exhaustion rows, so a weekly or a model's limit is no stop it can tell (review 1)
-LIMIT_RE = re.compile(r"^You(?:'|\u2019)ve hit your 5-hour limit\b", re.I)
+# the usage-limit end, as `autofinished` keeps it: `You've hit your 5-hour limit · resets 9pm` (and weekly/session:
+# S4_RE's windows, which `account pick` judges; an Opus/Sonnet/Fable or bare limit stays out, revision 10).
+LIMIT_RE = re.compile(r"^You(?:'|\u2019)ve hit your (?:5-hour |weekly |session )limit\b", re.I)
 BY_WORDS = ("sweep", "override", "brief", "typed", "yolo", "dnd", "chain", "ship", HANDED, "lander")   # --by; dispatch-queue's FINISH_BY
 REFUSED = common.REFUSED   # the gate of a start dispatch refused before any session; was "not-launched"
 REFUSED_GATES = common.REFUSED_GATES   # read both forever: old run records and dated logs keep the old word
@@ -1088,31 +1090,54 @@ def road_login(t, prev):
     return None
 
 
-def account_home(label):
-    """(home, None) for the login a run recorded, or (None, Refusal): a dir is its own home; a label is read from
-    `account limits --all --parked --json --cached` by its label (spaces as the run lines write them, `_`)."""
-    if not label or label == "oauth-token":
-        return None, Refusal("its run recorded no registry login (%s): the limit road can never read its window"
-                             % (label or "none"), DEAD_ROAD_RC)
-    if label.startswith(("/", "~")) and os.path.isdir(os.path.expanduser(label)):
-        return os.path.expanduser(label), None
+FIVE_HOUR_S = 5 * 3600
+LIMIT_LOG_LINE = re.compile(r"^(\S+) run (\S+) (\S+) (\w[\w-]*)(?: (.*))?$")
+LIMIT_ACCT_RE = re.compile(r"\baccount=(.+?) window=\"")
+LIMIT_SID_RE = re.compile(r"\bsession=(\S+)")
+
+
+def _norm_acct(label):
+    s = re.sub(r"\s+", "_", str(label or "").strip()).lower()
+    return "" if s in ("", "-") else s
+
+
+def limit_now():
+    return time.time()
+
+
+def cached_limit_rows():
+    """Rows from `account limits --all --parked --json --cached`, or None when `account` did not answer."""
     if not ACCOUNT:
-        return None, Refusal("no account tool here: the limit road cannot read %s's window now" % label)
+        return None
     try:
         r = common.run_group([ACCOUNT, "limits", "--all", "--parked", "--json", "--cached"], 10)
         rows = json.loads(r.stdout)
-    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
-        return None, Refusal("account limits did not read (%s): the limit road waits" % type(e).__name__)
-    if not isinstance(rows, list) or not rows:
-        # no rows at all is a cache not written yet, never "no such login" (round 1): a wait
-        return None, Refusal("account limits --cached read no rows: the limit road waits for a reading")
-    for a in rows:
-        # a label as pick records it, as the run lines write it (spaces as `_`), or a home recorded the latter way
-        if isinstance(a, dict) and a.get("home") and label in (str(a.get("label") or ""),
-                                                               re.sub(r"\s+", "_", str(a.get("label") or "")),
-                                                               re.sub(r"\s+", "_", str(a["home"]))):
-            return os.path.expanduser(a["home"]), None
-    return None, Refusal("no registry row is labelled %s: the limit road can never read its window" % label, DEAD_ROAD_RC)
+        return rows if isinstance(rows, list) else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+def home_from_rows(label, rows):
+    if not label or label in ("-", "oauth-token"):
+        return None
+    if str(label).startswith(("/", "~")) and os.path.isdir(os.path.expanduser(str(label))):
+        return os.path.expanduser(str(label))
+    norm = _norm_acct(label)
+    for a in rows or ():
+        if isinstance(a, dict) and a.get("home") and norm in (_norm_acct(a.get("label")), _norm_acct(a["home"])):
+            return os.path.expanduser(a["home"])
+    return None
+
+
+def account_home(acct):
+    """(home, refusal) for ACCT: plain wait (exit 3) when `account limits --cached` read no rows or no row matches
+    (revision 10: never DEAD_ROAD_RC)."""
+    rows = cached_limit_rows()
+    home = home_from_rows(acct, rows)
+    if home:
+        return home, None
+    why = "account limits --cached read no rows" if not rows else "no registry row is labelled %s" % (acct or "none")
+    return None, Refusal("%s: the limit road waits" % why)
 
 
 def seat_rows(home):
@@ -1131,46 +1156,197 @@ def seat_rows(home):
         return lambda r: True
 
 
-def road_limit(t, prev):
-    """(c): the last stop is the usage-limit line, and the newest `five_hour` exhaustion row written after the run's
-    start, in the exhaustion.jsonl of the login the run ran on (its `account`), has passed its `resets_at`."""
-    gate, _, text = (stop_line(t, prev) or "").partition(" ")
-    if gate != "no-landing" or not LIMIT_RE.search(text) or not stopped_at(prev, "no-landing"):
-        return Refusal("the branch's last autofinished line is no usage-limit end: no limit road")
-    home, why = account_home(prev.get("account"))
-    if why:
-        return why
+def own_reset_state(prev, text, rows, now_ts):
+    """(ready, detail) for the login the stopped run ran on (`prev.account`): True only once a recorded exhaustion row
+    for its window (`seven_day` on a weekly limit, else `five_hour`), on its own seat, has passed `resets_at`."""
+    acct = (prev or {}).get("account")
+    if not acct or acct in ("-", "oauth-token"):
+        return False, "stopped run recorded no registry login (%s)" % (acct or "none")
+    home = home_from_rows(acct, rows)
+    if not home:
+        return False, ("account limits --cached read no rows" if not rows else "no registry row is labelled %s" % acct)
+    want_win = "seven_day" if "weekly limit" in (text or "").lower() else "five_hour"
     try:
-        since = datetime.datetime.fromisoformat(prev.get("started") or "").timestamp()
+        since = datetime.datetime.fromisoformat((prev or {}).get("started") or "").timestamp()
     except ValueError:
         since = 0
-    rows, own = [], seat_rows(home)
+    matching, own = [], seat_rows(home)
     try:
-        with open(os.path.join(home, "exhaustion.jsonl")) as f:
+        with open(os.path.join(home, "exhaustion.jsonl"), errors="replace") as f:
             for l in f:
                 try:
                     r = json.loads(l)
                 except ValueError:
                     continue
-                # the window the run ran in: a row written after its start, or one written before whose reset is
-                # after it (record_exhaustion writes one row per window, so a probe's earlier row is that window's)
-                if isinstance(r, dict) and r.get("window") == "five_hour" and isinstance(r.get("at"), (int, float)) \
+                if isinstance(r, dict) and r.get("window") == want_win and isinstance(r.get("at"), (int, float)) \
                         and (r["at"] >= since or (isinstance(r.get("resets_at"), (int, float)) and r["resets_at"] > since)) \
                         and own(r):
-                    rows.append(r)
+                    matching.append(r)
     except OSError:
         pass
-    if not rows:
-        return Refusal("no five_hour exhaustion row for %s's window (written after its run started, or resetting "
-                       "after it): the limit road can never tell its reset" % prev.get("account"), DEAD_ROAD_RC)
-    newest = max(rows, key=lambda r: r["at"])
+    if not matching:
+        return False, "no %s exhaustion row for %s's window" % (want_win, acct)
+    newest = max(matching, key=lambda r: r["at"])
     reset = newest.get("resets_at")
     if not isinstance(reset, (int, float)):
-        return Refusal("%s's newest five_hour row has no reset: the limit road can never tell it" % prev.get("account"),
-                       DEAD_ROAD_RC)
-    if reset > time.time():
-        return Refusal("%s's 5-hour window resets at %s: the limit road waits for it" % (
-            prev.get("account"), datetime.datetime.fromtimestamp(reset).isoformat(timespec="minutes")))
+        return False, "%s's newest %s row has no reset" % (acct, want_win)
+    if reset > now_ts:
+        return False, "%s's window resets at %s" % (
+            acct, datetime.datetime.fromtimestamp(reset).isoformat(timespec="minutes"))
+    return True, None
+
+
+def spent_limit_logins(rows, now_ts):
+    """Normalized logins that already took a `road=limit` relaunch (`account=<login>`, never `stopped_on=`) in their
+    active 5-hour window, across every `autofinish-<date>.log` the window spans, excluding `never-started` sessions."""
+    win_starts = {}
+    for a in rows or ():
+        if not isinstance(a, dict) or not a.get("label"):
+            continue
+        norm = _norm_acct(a["label"])
+        if not norm:
+            continue
+        lim = a.get("limits") if isinstance(a.get("limits"), dict) else {}
+        span = lim.get("five_hour_window_s") or FIVE_HOUR_S
+        ws = now_ts - span
+        end = lim.get("five_hour_resets")
+        if isinstance(end, (int, float)) and 0 < end - now_ts <= span:
+            ws = max(ws, end - span)
+        home = os.path.expanduser(a["home"]) if a.get("home") else ""
+        if home and os.path.isdir(home):
+            own = seat_rows(home)
+            try:
+                with open(os.path.join(home, "exhaustion.jsonl"), errors="replace") as f:
+                    for l in f:
+                        try:
+                            r = json.loads(l)
+                        except ValueError:
+                            continue
+                        ra = r.get("resets_at") if isinstance(r, dict) else None
+                        if isinstance(ra, (int, float)) and r.get("window") == "five_hour" \
+                                and now_ts - span < ra <= now_ts and own(r):
+                            ws = max(ws, ra)
+            except OSError:
+                pass
+        win_starts[norm] = ws
+    min_ws = min(list(win_starts.values()) + [now_ts - FIVE_HOUR_S])
+    d0 = datetime.datetime.fromtimestamp(min_ws).astimezone().date() - datetime.timedelta(days=1)
+    d1 = datetime.datetime.fromtimestamp(now_ts).astimezone().date() + datetime.timedelta(days=1)
+    days, seen = [], set()
+    cur = d0
+    while cur <= d1:
+        ds = cur.isoformat()
+        seen.add(ds)
+        days.append(ds)
+        cur += datetime.timedelta(days=1)
+    env_day = os.environ.get("AUTOFINISH_DAY")
+    if env_day:
+        try:
+            ed = datetime.date.fromisoformat(env_day)
+            for off in (-1, 0, 1):
+                ds = (ed + datetime.timedelta(days=off)).isoformat()
+                if ds not in seen:
+                    seen.add(ds)
+                    days.append(ds)
+        except ValueError:
+            if env_day not in seen:
+                days.append(env_day)
+    parsed = []
+    for ds in days:
+        p = os.path.join(LOGS, "autofinish-%s.log" % ds)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, errors="replace") as f:
+                for line in f:
+                    m_line = LIMIT_LOG_LINE.match(line.rstrip("\n"))
+                    if not m_line:
+                        continue
+                    ts_s, repo, branch, outcome, rest = m_line.groups()
+                    try:
+                        ts_val = datetime.datetime.fromisoformat(ts_s).timestamp()
+                    except ValueError:
+                        continue
+                    parsed.append((ts_val, repo, branch, outcome, rest or ""))
+        except OSError:
+            continue
+    never = {(repo, branch, sm.group(1))
+             for _, repo, branch, outcome, rest in parsed if outcome == "never-started"
+             for sm in [LIMIT_SID_RE.search(rest)] if sm}
+    spent = set()
+    for ts_val, repo, branch, outcome, rest in parsed:
+        if outcome != "started" or not re.search(r"\broad=limit\b", rest):
+            continue
+        sm = LIMIT_SID_RE.search(rest)
+        if sm and (repo, branch, sm.group(1)) in never:
+            continue
+        am = LIMIT_ACCT_RE.search(rest)
+        norm = _norm_acct(am.group(1)) if am else ""
+        if not norm:
+            continue
+        ws = win_starts.get(norm, now_ts - FIVE_HOUR_S)
+        if ws <= ts_val <= now_ts + 60:
+            spent.add(norm)
+    return spent
+
+
+def limit_pick(t, prev, text, cached=False):
+    """(label, cfg, picked, refusal) for `--road limit` (stuck-ships S2, revision 10): any login with room in `account
+    pick` whose 5-hour window has not yet taken a `road=limit` relaunch (`account=`), with the stopped run's own login
+    eligible only once its recorded `resets_at` has passed. No login with room is always a plain wait (exit 3)."""
+    now_ts = limit_now()
+    rows = cached_limit_rows()
+    own_ready, own_wait = own_reset_state(prev, text, rows, now_ts)
+    spent = spent_limit_logins(rows, now_ts)
+    stopped_raw = (prev or {}).get("account")
+    stopped_norm = _norm_acct(stopped_raw)
+    blocked_norm = set(spent)
+    if stopped_norm and not own_ready:
+        blocked_norm.add(stopped_norm)
+    skip_raw = []
+    if stopped_raw and stopped_raw != "-" and not own_ready:
+        skip_raw.append(str(stopped_raw))
+    for a in rows or ():
+        if isinstance(a, dict) and a.get("label") and _norm_acct(a["label"]) in blocked_norm:
+            if str(a["label"]) not in skip_raw:
+                skip_raw.append(str(a["label"]))
+    for s in sorted(spent):
+        if s not in {_norm_acct(x) for x in skip_raw}:
+            skip_raw.append(s)
+    try:
+        try:
+            label, cfg, picked = account_pick(t, cached=cached, skip=skip_raw)
+        except TypeError:
+            label, cfg, picked = account_pick(t, cached=cached)
+    except NoAccount as e:
+        extra = "; %s" % own_wait if own_wait and (not e.args or own_wait not in str(e)) else ""
+        return None, None, None, Refusal("no login has room now (%s%s): the limit road waits" % (e, extra))
+    if not label:
+        extra = "; %s" % own_wait if own_wait else ""
+        return None, None, None, Refusal("account pick named no login with room (%s%s): the limit road waits"
+                                         % (picked, extra))
+    lnorm = _norm_acct(label)
+    if lnorm in spent:
+        extra = " (%s)" % own_wait if own_wait else ""
+        return None, None, None, Refusal("%s already took a limit relaunch in this 5-hour window%s: the limit road waits"
+                                         % (label, extra))
+    if stopped_norm and lnorm == stopped_norm and not own_ready:
+        return None, None, None, Refusal("%s: the limit road waits" % (own_wait or ("%s has not reset" % label)))
+    return label, cfg, picked, None
+
+
+def road_limit(t, prev):
+    """(c): the last stop is the usage-limit line, and `account pick` returns a login with room — any login whose
+    window has not yet taken a `road=limit` relaunch, the stopped run's own only once its `resets_at` has passed.
+    No login with room is a plain wait (exit 3), never DEAD_ROAD_RC (revision 10)."""
+    gate, _, text = (stop_line(t, prev) or "").partition(" ")
+    if gate != "no-landing" or not LIMIT_RE.search(text) or not stopped_at(prev, "no-landing"):
+        return Refusal("the branch's last autofinished line is no usage-limit end: no limit road")
+    cached = bool(getattr(t, "dry_pred", False) or getattr(t, "pick_cached", False))
+    label, cfg, picked, why = limit_pick(t, prev, text, cached=cached)
+    if why:
+        return why
+    t.limit_pick = (label, cfg, picked)
     return None
 
 
@@ -1345,6 +1521,7 @@ def lander_refusal(t, prev, road, e, dry=False):
                        STUCK_RC)
     if not prev:
         return Refusal("no run on this worktree to road: the %s road takes a stop" % road)
+    t.dry_pred = bool(dry)
     return moved_since_stop(t, prev, road) or ROAD_PREDICATES[road](t, prev)
 
 
@@ -1756,11 +1933,13 @@ class NoAccount(Exception):
     """No row of the registry may run this now; args[0] is each row's reason."""
 
 
-def account_pick(t, cached=False):
+def account_pick(t, cached=False, skip=()):
     """(label, dir, why) of the login the session runs on (header, the login). dir: the
     CLAUDE_CONFIG_DIR to start with, "" for the default login (unset), None to leave the env as
     it is. Raises NoAccount on the pick's exit 3."""
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    skip_list = [str(s).strip() for s in (skip or ()) if str(s).strip()]
+    skip_norm = {_norm_acct(s) for s in skip_list if _norm_acct(s)}
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and "oauth-token" not in skip_norm:
         # the token outranks any dir (bin/account's header): `account which` reads only the dir
         os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)   # an overdraw is this run's own pick's word alone
         return "oauth-token", None, "the caller's CLAUDE_CODE_OAUTH_TOKEN, kept"
@@ -1779,14 +1958,21 @@ def account_pick(t, cached=False):
         # ~/.claude set explicitly is the default login, which runs logged out unless unset
         # (bin/account's header) — bin/autofinish passes it for a pick of the default row
         default = os.path.realpath(os.path.expanduser(cfg)) == os.path.realpath(os.path.expanduser("~/.claude"))
+        skipped_cfg = _norm_acct(label or cfg) in skip_norm or _norm_acct(cfg) in skip_norm
         cooling = cooling_down(cfg)
         if cooling:
             label = cooling
-        else:
+        elif not skipped_cfg:
             # no spaces: the run lines are key=value, split on whitespace
             os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)
             return re.sub(r"\s+", "_", label or cfg), "" if default else None, "the caller's CLAUDE_CONFIG_DIR, kept"
+        elif not ACCOUNT:
+            return None, None, "no account tool (lighthouse not installed) — the login this run was started with"
+    if not ACCOUNT:
+        return None, None, "no account tool (lighthouse not installed) — the login this run was started with"
     cmd = [ACCOUNT, "pick", "--for", "finish", "--repo", t.primary, "--json"]
+    if skip_list:
+        cmd += ["--skip", ",".join(skip_list)]
     overdraw = ["--overdraw", "--job", t.branch]
     os.environ.pop("ACCOUNT_OVERDRAW_PICK", None)   # an overdraw is this pick's word alone
     def run_pick(cached, timeout=PICK_TIMEOUT):
@@ -1853,6 +2039,7 @@ def use_account(cfg):
     """The pick's dir into this process's env, so the start and the transcript's reader follow it."""
     if cfg is None:
         return
+    os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     if cfg:
         os.environ["CLAUDE_CONFIG_DIR"] = cfg
     else:
@@ -2990,6 +3177,12 @@ def record(t, st, log_from, rc, why, notes):
             except OSError:
                 pass
     first = lines[0] if lines else ""
+    if (outcome == "stopped" and gate == "no-landing" and LOGIN_RE.search(first)
+            and ACCOUNT and st.get("account") not in (None, "", "-", "oauth-token")):
+        try:
+            common.run_group([ACCOUNT, "logged-out", "--set", str(st["account"])], 10)
+        except Exception as e:  # noqa: BLE001 — a lost logged-out mark is said, never a lost record
+            notes = list(notes) + ["logged-out not set (%s)" % type(e).__name__]
     line = record_line(st["ended"], outcome, t.branch, gate, pr, first, t.tip)
     if gate not in REFUSED_GATES:   # nothing ran: no record for the session start to report
         os.makedirs(os.path.join(t.common, "claude"), exist_ok=True)
@@ -4548,14 +4741,25 @@ def start(t, args):
 def start_here(t, args, prev, by, via):
     """The run on this Mac: the login, the warm run, the writes and the detach."""
     hold, mode, keel_hold, eff = t.ladder
-    try:
-        # cached for --dry, and for a typed hand-off: cold_prompt waits 45 s on this, in a prompt hook.
-        # Before the warm run's end below: a run no account can take ends nothing, bar a tip behind origin,
-        # whose warm run the origin gate ended before moving the tree
-        label, cfg, picked = account_pick(t, cached=args.dry or (args.by == "typed" and not args.queue) or getattr(t, "pick_cached", False))
-    except NoAccount as e:
-        why = "no account may run this now — %s" % e
-        return refuse(t, args, why)
+    cached_pick = args.dry or (args.by == "typed" and not args.queue) or getattr(t, "pick_cached", False)
+    if args.by == "lander" and args.road == "limit":
+        if getattr(t, "limit_pick", None):
+            label, cfg, picked = t.limit_pick
+        else:
+            stop_prev = getattr(t, "stop", None) or prev
+            _, _, text = (stop_line(t, stop_prev) or "").partition(" ")
+            label, cfg, picked, why = limit_pick(t, stop_prev, text, cached=cached_pick)
+            if why:
+                return refuse(t, args, why)
+    else:
+        try:
+            # cached for --dry, and for a typed hand-off: cold_prompt waits 45 s on this, in a prompt hook.
+            # Before the warm run's end below: a run no account can take ends nothing, bar a tip behind origin,
+            # whose warm run the origin gate ended before moving the tree
+            label, cfg, picked = account_pick(t, cached=cached_pick)
+        except NoAccount as e:
+            why = "no account may run this now — %s" % e
+            return refuse(t, args, why)
     if getattr(t, "stay", None):
         picked += "; here: %s" % t.stay
     # route() or the origin gate ended it already. Capped by the budget: past it no caller is still waiting
