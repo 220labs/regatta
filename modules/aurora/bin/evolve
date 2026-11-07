@@ -113,6 +113,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -717,7 +718,7 @@ class Scope:
     the anchor is neither fenced nor the knowledge layer (a profile placed in the layer is a profile_error);
     the `atlas` scope (or an open scope anchored on the layer) keeps its `evolve/` records in the vault."""
 
-    def __init__(self, name, sc, repos, lens_doc, fenced_by=None, vault=None, layers=None):
+    def __init__(self, name, sc, repos, lens_doc, fenced_by=None, vault=None, layers=None, own_run=True):
         self.name, self.sc = name, sc
         self.confidential = sc.get("confidential") is True
         self.label = scope_label(name, sc)
@@ -737,8 +738,11 @@ class Scope:
         self.reg_sha = hashlib.sha256(json.dumps({"scope": sc, "members": keys}, sort_keys=True).encode()).hexdigest()
         self.refs, self.git_changed, self.sessions_at = {}, False, None
         cfg_prof = Path(common.CONFIG) / "aurora" / "scopes" / ("%s.json" % name)
+        # a confidential scope's anchor is opened only by its own run (--scope it): a global run neither opens
+        # its anchor nor lets a file there change the global answer (S3's contract; S5's landing review)
         anc_prof = (self.anchor / ".claude" / "evolve-scope.json") \
-            if (self.anchor is not None and not (fenced_by and fenced_by(self.anchor))) else None
+            if (self.anchor is not None and not (fenced_by and fenced_by(self.anchor))
+                and (own_run or not self.confidential)) else None
         self.profile_file = cfg_prof
         self.profile, self.profile_error = {}, None
         if self.in_layer and anc_prof is not None and anc_prof.exists():
@@ -1227,7 +1231,8 @@ def cmd_coverage(a):
     ms = matchers(reg)
     vpath, _ = vault_info()
     lroots = layer_roots()
-    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
+    scopes = [Scope(n, reg["scopes"][n], repos, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots,
+                    own_run=(a.scope == n))
               for n in names if usable(reg["scopes"][n])]
     result = {"version": 1, "time": now.isoformat(timespec="seconds"), "lenses_sha": lens_doc["_sha"], "scopes": [],
               "surface": {"items": 0, "unobserved": [], "fenced": 0, "ignored": 0}, "bad_scopes": 0 if a.scope else bad_scopes,
@@ -1458,7 +1463,8 @@ def cmd_conformance(a):
                     raise ValueError("scope %s in the registry has no list of repos" % n)
                 unreadable += 1   # nothing to judge its rules on
                 continue
-            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath, layers=lroots)
+            sc = Scope(n, scopes_reg[n], reg.get("repos") or {}, lens_doc, fenced_by=fence_for(ms, own=n), vault=vpath,
+                       layers=lroots, own_run=(a.scope == n))
             if sc.profile_error:
                 if a.scope == n:
                     raise ValueError("scope %s: %s" % (sc.label, sc.profile_error))
@@ -1974,7 +1980,14 @@ def _write_state_receipt(sc, day, rc_obj):
     return p
 
 
+def own_session(a):
+    """--session, else the Claude Code session this verb runs inside (its Bash calls carry the id): the pass's own
+    transcript is then no change to the next run, and the section needs no variable expansion (S5's landing review)."""
+    return a.session or os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+
+
 def cmd_open(a):
+    a.session = own_session(a)
     day = day_or_today(a.day)
     cycle = cycle_for_day(day, a.cycle)
     reg, sc, own_fence, vpath, vname, lens_doc = resolve_scope_one(a.scope)
@@ -2096,6 +2109,14 @@ def _load_gate_mod():
     return SourceFileLoader("gate", str(gpath)).load_module()
 
 
+def _gate_log(gate_mod, rec):
+    """One gate.jsonl row per critic call, through the gate's own writer, so the meters see the critic's spend."""
+    try:
+        gate_mod._log(rec)
+    except Exception:   # noqa: BLE001
+        pass
+
+
 def _run_blinded_critic(rec, sc, require_model=False):
     """Run the gate's `evolve.critic` row over a stripped cold packet; return (issues, meta)."""
     fs = [f for f in (rec.get("findings") or []) if isinstance(f, dict) and isinstance(f.get("id"), str)]
@@ -2125,6 +2146,19 @@ def _run_blinded_critic(rec, sc, require_model=False):
             raise
         except Exception:   # noqa: BLE001
             raise Refused("%s: guard list unreadable for provider %r" % (CRITIC_SITE, row.get("provider")))
+    # The gate's guarded-source rule, for every vendor (Anthropic included): the critic calls `claude -p` itself, so
+    # it asks gate.vet per member as classify() would, and skips (never sends) where the owner's quote is needed.
+    sources = []
+    if sc is not None:
+        try:
+            jm = gate_mod._jev_module()
+            sources = sorted({jm.repo_of(str(m)) or m.name for m in sc.members} | {m.name for m in sc.members})
+            for src in sources:
+                gate_mod.vet(row, src, None)
+        except Exception as e:   # noqa: BLE001  (GateError: a guarded source; anything else: the rule could not be read)
+            if require_model:
+                raise Refused("%s: %s" % (CRITIC_SITE, str(e).splitlines()[0][:160] if str(e) else type(e).__name__))
+            return [], {"gate": "skipped", "why": "guarded source or guard list unreadable", "cost_usd": 0.0}
     cold = []
     for f in fs:
         refs = [{"source": ("source-%d" % (j + 1) if sc and sc.confidential else r.get("source")), "count": r.get("count")}
@@ -2149,9 +2183,13 @@ def _run_blinded_critic(rec, sc, require_model=False):
         if require_model:
             raise Refused("%s: claude binary not found" % CRITIC_SITE)
         return [], {"gate": "skipped", "why": "claude not installed", "cost_usd": 0.0}
-    cmd = [cbin, "-p", *gate_mod.claude_flags(row), "--output-format", "json",
-           "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(jschema)]
+    rec_log = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": socket.gethostname().split(".")[0],
+               "caller": PROG, "site": CRITIC_SITE, "provider": row.get("provider"), "model": row.get("model"),
+               "source": ",".join(sources) or None, "items": len(ids)}
+    t0 = time.time()
     try:
+        cmd = [cbin, "-p", *gate_mod.claude_flags(row), "--output-format", "json",
+               "--tools", "", "--setting-sources", "", "--no-session-persistence", "--json-schema", json.dumps(jschema)]
         p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300,
                            env={k: v for k, v in os.environ.items() if k != "CLAUDECODE"})
         res = json.loads(p.stdout)
@@ -2161,10 +2199,14 @@ def _run_blinded_critic(rec, sc, require_model=False):
         cost = float(res.get("total_cost_usd") or 0.0)
         if res.get("is_error") or not isinstance(got, dict):
             raise ValueError("bad critic reply")
-    except (OSError, ValueError, subprocess.SubprocessError) as e:
+    except Exception as e:   # noqa: BLE001  (claude_flags' GateError on a non-claude row included)
+        rec_log.update(status="error", ms=int((time.time() - t0) * 1000), error=str(e)[:200])
+        _gate_log(gate_mod, rec_log)
         if require_model:
             raise Refused("%s failed: %s" % (CRITIC_SITE, type(e).__name__))
         return [], {"gate": "skipped", "why": "call failed (%s)" % type(e).__name__, "cost_usd": 0.0}
+    rec_log.update(status="ok", cost_usd=cost, ms=int((time.time() - t0) * 1000))
+    _gate_log(gate_mod, rec_log)
     issues = []
     for fid in ids:
         v = got.get(fid) if isinstance(got.get(fid), dict) else {}
@@ -2289,6 +2331,7 @@ def _promote_scope_baseline(sc, session=None):
 
 
 def cmd_record(a):
+    a.session = own_session(a)
     day = day_or_today(a.day)
     cycle = cycle_for_day(day, a.cycle)
     _, sc, own_fence, vpath, vname, lens_doc = resolve_scope_one(a.scope)
@@ -2338,6 +2381,9 @@ def cmd_record(a):
         alt_m = sc.records_home / "evolve" / ("%s.md" % day)
         if alt_j.is_file():
             f_json, f_md = alt_j, alt_m
+    if a.if_drafted and not ((f_json and f_json.is_file()) or (f_md and f_md.is_file())):
+        print("evolve record %s: nothing drafted for %s" % (sc.label, day))
+        return 0
     if not f_json or not f_json.is_file() or not f_md or not f_md.is_file():
         print("%s record: missing drafted evolve/%s.findings.json or evolve/%s.md in %s" % (PROG, day, day, stg), file=sys.stderr)
         return 1
@@ -2427,6 +2473,12 @@ def cmd_record(a):
                     sp_rc_obj = json.loads(sp_r.stdout)
                 except ValueError:
                     sp_rc_obj = {}
+        if sc.confidential and not (isinstance(sp_rc_obj, dict) and sp_rc_obj.get("verified") is True
+                                    and sp_rc_obj.get("sha256") and sp_rc_obj.get("judge_rev")):
+            # never `complete` without the export receipt that binds what left to the bytes judged (S5's landing review)
+            print("%s record: confidential scope %s: scope-pass receipt does not verify — not complete" % (PROG, sc.label),
+                  file=sys.stderr)
+            return 1
         rc_obj = {
             "receipt": "complete", "scope": sc.label, "cycle": cycle, "day": day,
             "cutoff": findings_obj.get("cutoff") or m.get("cutoff"),
@@ -2858,6 +2910,8 @@ def main(argv=None):
     p.add_argument("--session")
     p.add_argument("--cost", type=float)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--if-drafted", action="store_true",
+                   help="weekly-run's fallback: exit 0 with one line when the pass drafted no evolve/<day>.* files")
     p = sub.add_parser("meetings", help="repo-committed meeting pre-briefs and dated if-then commitments")
     p.add_argument("path", nargs="?")
     p.add_argument("--scope")

@@ -1133,6 +1133,17 @@ scope_run() {
   # write over it, so none runs; any other exit 2 (a torn registry) still runs the pass
   [ "${rc:-}" = 4 ] || words_stop "${rc:-}" "${out:-}" || {
   scope_account || return 1
+  # Evolve S5: a quiet week is earned at zero tokens before any session starts (the scope-pass component's quiet
+  # receipt); exit 3 wrote the quiet receipt, which proof cannot see, so it is the pass landed. Any other exit
+  # (not quiet, not ready before S12, a collector held) leaves the night to the session, as before.
+  if out=$("$MOD/bin/evolve" open "$scope" --quiet-exit --day "$day" 2>&1); then :; else
+    rc=$?
+    if [ "$rc" = 3 ]; then
+      echo "$out"
+      echo "RECEIPT quiet: evolve open $scope --day $day earned it at zero cost, no session"
+      return 0
+    fi
+  fi
   snapshot
   echo "== dream --scope $scope in $cwd"
   run_claude "dream --scope $scope"; rc=$?
@@ -1141,6 +1152,16 @@ scope_run() {
   for d in $(run_days); do
     out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
     [ $rc = 1 ] || break
+    # the pass drafted evolve/<day>.* and stopped: evolve record lands them (and the dream, through scope-pass
+    # record) first; it prints "nothing drafted" where there is nothing of its own (Evolve S5)
+    rout=$("$MOD/bin/evolve" record "$scope" --day "$d" --if-drafted 2>&1); rrc=$?
+    case $rout in
+      *"nothing drafted"*) ;;
+      *) echo "== the run left evolve/$d drafts unrecorded — evolve record $scope --day $d (exit $rrc)"
+         echo "$rout"
+         out=$("$MOD/bin/scope-pass" proof "$scope" --day "$d" 2>&1); rc=$?
+         [ $rc = 1 ] || break ;;
+    esac
     # wrote its files and stopped (or an earlier record committed the dream on the records branch, or moved
     # the draft, and a later commit failed, or the judge could not tell): record here, once; record reads
     # a committed dream from its branch, and bytes a complete receipt names are not judged again
