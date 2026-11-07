@@ -176,8 +176,8 @@ def _guards_why():
     cmds = [c for c in cmds if isinstance(c, str) and "vendor_hook.py" in c and "guards" in c]
     if not cmds:
         return "agy's regatta entry in %s runs no vendor_hook.py guards — lighthouse's `vendor-hooks apply`" % path
-    # the hook it names must be there: vendor-hooks' launcher answers `{}` (allow) when vendor_hook.py is gone, so an
-    # entry naming a moved checkout's path runs no guard at all (the build review, 2026-11-05)
+    # the hook it names must be there: vendor-hooks' launcher answers `{}` when vendor_hook.py is gone (a deny on agy
+    # 1.5.2, an allow on an agy that reads it as carry-on), so an entry naming a moved checkout's path runs no guard (the build review, 2026-11-05)
     gone = []
     for c in cmds:
         try:
