@@ -39,16 +39,17 @@ guard's alone, never a copy, and this file only translates. One adapter per payl
     one would be judged. The cwd is `Cwd`, else the first of `workspacePaths`, else this process's.
 - Out: a guard's `permissionDecision: deny` (or its exit 2, stderr the reason) is the CLI's deny. Codex
   takes Claude's own shape (its `pre-tool-use.command.output`), so the reason passes as it is; an allow
-  prints nothing. Antigravity reads stdout as its answer and takes anything but JSON as a deny
-  (sessionpipe's adapters/antigravity.ts), so it gets exactly one JSON object on every path: `{}` to
-  carry on, `{"decision": "deny", "reason": …}` to refuse.
+  prints nothing. Antigravity reads stdout as its answer: nothing to carry on (its own permission flow
+  then decides), `{"decision": "deny", "reason": …}` to refuse. Never `{}`: agy 1.5.2 denies the call on
+  it, as on an `overwrite` with no `decision` (live probes on a Linux node, 2026-11-06:
+  docs/agy-linux-probe-2026-11-06.md item 7; every tool of an Argon build whose only hook was this one would
+  be denied at its first turn). Probed on agy 1.5.2 alone.
 - `trailer` (F12): Claude Code adds its own Co-Authored-By; nothing did for the others. A Bash call whose
   whole command is one simple `git commit` (simple_commit: no operator, substitution, heredoc or newline,
   so nothing else rides along) with no Co-Authored-By in it gains `--trailer 'Co-Authored-By: <CLI> <model>
   <noreply@vendor>'`, the model read from the payload (`model`, `modelName`), through the CLI's input
-  rewrite. Antigravity's is `overwrite`, sent without a `decision` so its own permission flow is unchanged
-  (its embedded hook docs list `decision` as required, yet it takes `{}` as carry on; not probed live: a
-  probe needs a model call). Codex 0.162.1 refuses `updatedInput` without `permissionDecision: allow` (its
+  rewrite. Antigravity's is `overwrite` with `"decision": "allow"`, which agy 1.5.2 needs to run it (the
+  same probes: without the decision it denies the call). Codex 0.162.1 refuses `updatedInput` without `permissionDecision: allow` (its
   binary's "PreToolUse hook returned updatedInput without permissionDecision:allow"), so its rewrite is an
   allow: given only to that one simple commit, and only once both guards pass the rewritten command
   (decide), so the allow never carries a command a guard would refuse.
@@ -439,14 +440,14 @@ def answer(cli, ev, verdict, value):
         return ""
     if verdict == "deny":
         return json.dumps({"decision": "deny", "reason": value}, ensure_ascii=False)
-    if verdict == "rewrite":   # no `decision`: the rewrite leaves agy's own permission flow as it is
-        return json.dumps({"overwrite": {"CommandLine": value}}, ensure_ascii=False)
-    return "{}"
+    if verdict == "rewrite":   # agy runs an `overwrite` only beside an allow (the docstring)
+        return json.dumps({"decision": "allow", "overwrite": {"CommandLine": value}}, ensure_ascii=False)
+    return ""   # never "{}": agy denies on it (the docstring)
 
 
 def main(argv, data):
     if len(argv) != 2 or argv[0] not in CLIS:
-        return "{}" if argv and argv[0] == "antigravity" else ""
+        return ""
     cli, guard = argv
     if guard not in ENTRIES and not os.path.isfile(guard):
         sys.stderr.write(f"regatta vendor-hooks: {guard} is no entry form and no guard file, so no guard ran; "
@@ -465,8 +466,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     try:
         out = main(args, sys.stdin.read())
-    except BaseException:   # fail open: the CLI's own "carry on"
-        out = "{}" if args[:1] == ["antigravity"] else ""
+    except BaseException:   # fail open: the CLI's own "carry on", an empty stdout for both
+        out = ""
     if out:
         sys.stdout.write(out + "\n")
     sys.exit(0)

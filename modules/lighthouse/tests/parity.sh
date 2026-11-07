@@ -54,9 +54,9 @@ check "$([ -f "$(git -C "$WT" rev-parse --absolute-git-dir)/claude/owner.json" ]
 
 echo "== the adapter's edges"
 VH="$LH/hooks/vendor_hook.py"
-check "$(printf 'not json' | python3 "$VH" antigravity "$LH/hooks/secrets_guard.py")" "{}" "Antigravity, stdin that is no JSON: one {} (it reads anything else as a deny)"
+check "$(printf 'not json' | python3 "$VH" antigravity "$LH/hooks/secrets_guard.py")" "" "Antigravity, stdin that is no JSON: nothing, its carry-on (agy 1.5.2 denies on {})"
 check "$(printf 'not json' | python3 "$VH" codex "$LH/hooks/secrets_guard.py")" "" "Codex, the same: nothing, an allow"
-check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}' | python3 "$VH" antigravity "$T/no-such-guard.py")" "{}" "a guard that is not there: allowed (fails open, as the guards do)"
+check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}' | python3 "$VH" antigravity "$T/no-such-guard.py")" "" "a guard that is not there: allowed, nothing printed (fails open, as the guards do)"
 has "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}' | python3 "$VH" antigravity "$T/no-such-guard.py" 2>&1 >/dev/null)" "no guard ran" "  said on stderr"
 check "$(printf '{"tool_name":"mcp__fs__read","tool_input":{"path":"%s/_secrets/app.env"},"cwd":"%s"}' "$SGV" "$WT" | python3 "$VH" codex "$LH/hooks/secrets_guard.py")" "" \
   "an MCP tool: not translated, so not judged (docstring; the table has no MCP row)"
@@ -70,8 +70,8 @@ check "$(printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m x\\n
 check "$(printf '{"tool_name":"Bash","tool_input":{"command":"echo git commit"},"cwd":"%s","model":"m"}' "$WT" | python3 "$VH" codex trailer)" "" \
   "\`git commit\` as an argument, not a command: left as it is"
 check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"git -C %s commit -qm z","Cwd":"%s"}},"workspacePaths":["%s"],"modelName":"auto"}' "$WT" "$WT" "$WT" | python3 "$VH" antigravity trailer)" \
-  "{\"overwrite\": {\"CommandLine\": \"git -C $WT commit --trailer 'Co-Authored-By: Antigravity <noreply@google.com>' -qm z\"}}" \
-  "Antigravity: \`overwrite\` alone, no \`decision\` (its permission flow unchanged); model \`auto\` names the CLI alone"
+  "{\"decision\": \"allow\", \"overwrite\": {\"CommandLine\": \"git -C $WT commit --trailer 'Co-Authored-By: Antigravity <noreply@google.com>' -qm z\"}}" \
+  "Antigravity: \`overwrite\` beside \`decision: allow\` (agy 1.5.2 denies a bare overwrite); model \`auto\` names the CLI alone"
 
 echo "== the trailer rewrites one simple commit, and allows nothing a guard refuses"
 trl() { printf '%s' "$1" | python3 "$VH" codex trailer; }
@@ -102,7 +102,7 @@ check "$(printf '{"tool_name":"write_stdin","tool_input":{"session_id":3,"chars"
   deny "Codex's write_stdin typing a read of _secrets: denied"
 
 echo "== Antigravity's other readers and shell input"
-ag() { printf '{"toolCall":{"name":"%s","args":%s},"workspacePaths":["%s"]}' "$1" "$2" "$WT" | python3 "$VH" antigravity "$LH/hooks/secrets_guard.py" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("decision","allow"))'; }
+ag() { printf '{"toolCall":{"name":"%s","args":%s},"workspacePaths":["%s"]}' "$1" "$2" "$WT" | python3 "$VH" antigravity "$LH/hooks/secrets_guard.py" | python3 -c 'import json,sys; t=sys.stdin.read().strip(); print(json.loads(t).get("decision","allow") if t else "allow")'; }   # nothing printed is agy's allow
 check "$(ag send_command_input "{\"CommandId\":\"c1\",\"Input\":\"cat $SGV/_secrets/app.env\"}")" deny "send_command_input typing a read of _secrets: denied"
 check "$(ag codebase_search "{\"Query\":\"KEY\",\"TargetDirectories\":[\"$SGV/_secrets\"]}")" deny "codebase_search over _secrets: denied"
 check "$(ag view_code_item "{\"File\":\"$SGV/_secrets/app.env\",\"NodePaths\":[\"x\"]}")" deny "view_code_item of a _secrets file: denied"
@@ -260,7 +260,7 @@ check "$(gs "$HOME/.codex-work/hooks.json")" "guards - orca-hook" \
 check "$(python3 "$VHK" apply | grep -c "codex-work/hooks.json: up to date")" 1 "  and a re-apply leaves it as it is"
 cmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["regatta"]["PreToolUse"][0]["hooks"][0]["command"])' "$HOME/.gemini/config/hooks.json")
 moved=${cmd//vendor_hook.py/vendor_hook_moved.py}
-check "$(echo '{}' | sh -c "$moved" 2>"$T/moved.err"; echo " rc=$?")" "{} rc=0" "an entry whose adapter moved: agy gets its carry-on, exit 0 (not python's exit 2, a deny)"
+check "$(echo '{}' | sh -c "$moved" 2>"$T/moved.err"; echo " rc=$?")" "{} rc=0" "an entry whose adapter moved: agy gets {}, exit 0 (not python's exit 2; agy 1.5.2 denies on {}, so it fails closed)"
 has "$(cat "$T/moved.err")" "is gone, so no guard ran" "  one line on stderr says so"
 check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"cat %s/_secrets/app.env"}},"workspacePaths":["%s"]}' "$SGV" "$WT" | sh -c "$cmd" | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])')" deny "  and the entry as written still runs the guard"
 echo '{not json' > "$HOME/.gemini/config/hooks.json"

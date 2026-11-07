@@ -48,7 +48,9 @@ asks again; `apply` names every Codex entry it changed. A run Regatta starts can
 `--dangerously-bypass-hook-trust` instead (the vendor-fence slice's `_argv`).
 
 Each entry runs the adapter through a two-line python launcher (LAUNCHER): when a re-layout moved the
-adapter away, the entry prints one stderr line and the CLI's "carry on" (nothing for Codex, `{}` for agy)
+adapter away, the entry prints one stderr line and nothing for Codex, `{}` for agy (which agy 1.5.2 reads as a deny,
+so a moved adapter refuses agy's calls: kept so, as a change to this text rewrites every entry, and agy's builder
+compares its entry exactly; vendor_hook.py itself prints nothing for agy's carry-on)
 rather than python's exit 2, which Codex would read as a deny of every call. A group of ours that loses its
 entry stays, empty, while a later group has a handler, so no later group's index (Codex's review key) shifts;
 empty ones at the end are dropped.

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- vendor_hook answers Antigravity with nothing on an allow, and its trailer
+  rewrite as `overwrite` beside `"decision": "allow"`: agy 1.5.2 denies a call
+  on `{}` and on an `overwrite` with no decision (probed on a Linux node), so
+  an Argon build whose only hook was regatta's would have every tool denied at
+  its first turn, and agy's simple commits were refused on the laptop. The
+  entry's launcher text is unchanged (its gone-adapter `{}` stays, a deny on
+  agy): a change there rewrites every Codex and agy entry, and agy's builder
+  compares its entry exactly with no re-apply in its sweep (TODO.md
+  [agy-ff-reapply]).
+
 - agy-pick-orca (2026-11-06): for an Antigravity row (`"provider": "antigravity"`), `account`'s `limits()` (live and
   `--cached`) reads Orca's `antigravity` card on this host (`session.usedPercent`, `weekly.usedPercent`, resets, and
   `updatedAt` as the reading's sample time, settled as percent used against Orca 1.4.245's `1 - remaining_fraction`),

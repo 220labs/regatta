@@ -145,14 +145,18 @@ def verdict(cli, out, rc, err):
     """deny | rewrite | allow | broken (an answer the CLI would not read, or more than one), from what the CLI
     would read."""
     if cli == "antigravity":
+        if not out:
+            return "allow"   # nothing printed: agy's carry-on (agy 1.5.2, probed)
         try:
-            v = json.loads(out.splitlines()[-1]) if out else None
+            v = json.loads(out.splitlines()[-1])
         except ValueError:
             return "broken"
         if not isinstance(v, dict) or len(out.splitlines()) != 1:
-            return "broken"   # Antigravity takes anything but one JSON object as a deny
+            return "broken"
         if v.get("decision") == "deny":
             return "deny"
+        if v.get("decision") != "allow":
+            return "broken"   # `{}` or an overwrite with no decision: agy 1.5.2 denies the call (probed)
         return "rewrite" if "overwrite" in v else "allow"
     if rc == 2:
         return "deny"
