@@ -343,6 +343,10 @@ check "$(log | grep -c '^logged-out: acct-s2 — sign in (claude auth login)')" 
 check "$(log | grep -c "^- posted: --post logged-out login fails")" 1 "  and posts it once to the bulletin"
 ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
 check "$(log | grep -c 'logged-out login: failing, already posted')" 1 "  second pass: not repeated"
+printf '#!/bin/sh\necho boom >&2\nexit 1\n' > "$T/account-crash"; chmod +x "$T/account-crash"
+HEALTH_ACCOUNT_CMD="$T/account-crash" HEALTH_BULLETIN_CMD="$T/bulletin.py" HEALTH_COMMIT="$T/kc" HEALTH_CHECK_CMD=true run
+check "$(log | grep -c '^logged-out: could not tell (exit 1)'):$([ -e "$T/logs/health.last.logged_out" ] && echo kept || echo gone)" "1:kept" \
+  "  a probe that fails: could not tell, and the posted mark stays"
 touch "$S2_CFG/stub-login"
 ACCOUNTS_FILE="$T/accounts-s2.json" ACCOUNT_CLAUDE="$T/claude-s2" HEALTH_CHECK_CMD=true run
 check "$(log | grep -c '^logged-out:'):$([ -e "$S2_CFG/logged-out.json" ] && echo kept || echo gone):$([ -e "$T/logs/health.last.logged_out" ] && echo kept || echo gone)" "0:gone:gone" \

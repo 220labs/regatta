@@ -13,7 +13,9 @@
 # that is on main and clean — sync.py's rule at every session start, never a rebase, reset or
 # stash — (2) the tend below, and (3) one bulletin line, committed and pushed through
 # knowledge-commit, when the check or the tend fails in a way it has not already reported, so the
-# next session on either Mac sees it. It never runs bootstrap --hooks. The tend is sync.py's tend
+# next session on either Mac sees it; and (4) `account logged-out --probe`, which clears a signed-in
+# login's `logged-out.json` (stuck-ships S2; HEALTH_LOGGED_OUT=off skips it, HEALTH_ACCOUNT_CMD names
+# the account tool). It never runs bootstrap --hooks. The tend is sync.py's tend
 # only (`sync.py --tend`): no declared settings, no `secrets check --fix`, which launchd could not
 # read Drive for. No model runs; the log is health.log in LOGDIR below.
 #
@@ -396,13 +398,20 @@ if isinstance(s, dict) and s.get("to"):
 if [ -n "$pin" ]; then echo "hookwatch: $pin"; post_once "$state.pin" "hookwatch's pin" "$pin"; else rm -f "$state.pin"; fi
 
 if [ "$LOGGED_OUT" = on ] && [ -x "$ACCOUNT" ]; then
-  lout=$("$ACCOUNT" logged-out --probe --json 2>/dev/null | python3 -I -c 'import json, sys
+  # a probe that fails or prints no list is "could not tell": the posted state stays, so a recovery never posts a
+  # parked login again as new (the landing review, 2026-11-07); only a clean list clears it
+  lraw=$("$ACCOUNT" logged-out --probe --json 2>/dev/null); lrc=$?
+  lout=$(printf '%s' "$lraw" | python3 -I -c 'import json, sys
 try:
     rows = json.load(sys.stdin)
 except Exception:
-    rows = []
-print(", ".join(str(r.get("label") or "") for r in rows if isinstance(r, dict) and r.get("label")))' 2>/dev/null)
-  if [ -n "$lout" ]; then
+    sys.exit(3)
+if not isinstance(rows, list):
+    sys.exit(3)
+print(", ".join(str(r.get("label") or "") for r in rows if isinstance(r, dict) and r.get("label")))' 2>/dev/null); prc=$?
+  if [ "$lrc" -ne 0 ] || [ "$prc" -ne 0 ]; then
+    echo "logged-out: could not tell (exit $lrc) — skipped"
+  elif [ -n "$lout" ]; then
     echo "logged-out: $lout — sign in (claude auth login)"
     post_once "$state.logged_out" "logged-out login" "$lout logged out (claude auth status) — sign in"
   else
