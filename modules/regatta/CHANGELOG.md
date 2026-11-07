@@ -131,6 +131,9 @@
   rest); a node queue's claim runs the unpushed check; `unpushed_beyond` reads a merge by `--cc`, so a local
   merge of origin's work is no unpushed path while an evil merge's own text is; a review that arrived inside
   a merge is judged at the tip by the newest-brief rule. `_same_repo` uses `git_checkout`: one checkout rule.
+- Gate row `evolve.critic` in `settings/models.json` (evolve S5): aurora's `evolve critic`, the scope pass's
+  blinded critic over a findings artefact, never told the owner's preference (`claude-sonnet-5-5`, `high`,
+  `when_off: skip`).
 - Gate rows `evolve.ask`, `evolve.theme` and `evolve.match` in `settings/models.json` (evolve S1): plumb's `asks`
   classifies the owner's prompts, names themes and matches asks to findings through them. Their prompts and label
   set are the owner's (Ring 0).
