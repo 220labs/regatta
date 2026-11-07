@@ -3063,17 +3063,24 @@ try:
         main = "main"
     cp.ROOT, cp.MAIN = wt, main
     sid = marker.get("from_session") or "unknown"
+    # read before the commit: the commit moves HEAD past the held sha (the fourth landing review)
+    held = cp.end_held(state) if hasattr(cp, "end_held") else None
     if git("--no-optional-locks", "status", "--porcelain"):
         queue = cp.load_queue(state / "prompts.json")
         note, made = cp.checkpoint(None, [e["prompt"] for e in queue], "wip: moved to %s" % marker.get("to"),
                                    claude_made_it=False, session=sid)
         if made:
             cp.save_queue(state / "prompts.json", [])
+            if held:  # what a held run left is half-done too: the hold moves to the new HEAD, as sync's commit_left
+                (state / cp.END_HELD).write_text(git("rev-parse", "HEAD") + "\n")
         out["commit"] = note
     if git("--no-optional-locks", "status", "--porcelain"):
         out["error"] = out.get("commit") or "files are still uncommitted"
     else:
-        out["push"] = cp.publish(state, branch, sid, force=True)
+        # never a HEAD `push --end` held back; a peer whose main predates end_held has no hold to honour,
+        # and its publish() takes no `hold` (run-push-midturn's third landing review)
+        kw = {"hold": lambda: cp.end_held(state)} if hasattr(cp, "end_held") else {}
+        out["push"] = cp.publish(state, branch, sid, force=True, **kw)
         if git("rev-list", "--count", "@{u}..HEAD") != "0":
             out["error"] = "its tip is not on origin: %s" % (out["push"] or "push failed or no upstream")
 except Exception as exc:
@@ -3422,6 +3429,8 @@ def save_and_push(root, main, b, wt, sid, host, notes, dry):
         return
     cp.ROOT, cp.MAIN = str(wt), main
     state.mkdir(parents=True, exist_ok=True)  # publish() keeps its push stamp there
+    has_hold = hasattr(cp, "end_held")  # a wharf older than this wharf-runs has none (each plugin its own version)
+    held = cp.end_held(state) if has_hold else None  # before the commit, which moves HEAD past the held sha
     if dirty:
         queue = cp.load_queue(state / "prompts.json")
         try:
@@ -3432,10 +3441,13 @@ def save_and_push(root, main, b, wt, sid, host, notes, dry):
             raise Stop(f"not moved: the commit failed: {short(exc.stderr or str(exc), 160)}", code=3)
         if made:
             cp.save_queue(state / "prompts.json", [])
+            if held:  # what a held run left is half-done too: the hold moves to the new HEAD, as sync's commit_left
+                (state / cp.END_HELD).write_text(out(wt, "rev-parse", "HEAD") + "\n")
         if out(wt, "--no-optional-locks", "status", "--porcelain"):
             raise Stop(f"not moved: {note or 'the uncommitted files did not commit'}", code=3)
         notes.append(note)
-    pushed = cp.publish(state, b["name"], sid, force=True)
+    kw = {"hold": lambda: cp.end_held(state)} if has_hold else {}
+    pushed = cp.publish(state, b["name"], sid, force=True, **kw)  # never a HEAD `push --end` held back
     if out(wt, "rev-list", "--count", "@{u}..HEAD") != "0":
         raise Stop(f"not moved: {b['name']} is not on origin — {pushed or 'the push did not go through'}", code=3)
     b["dirty"] = 0

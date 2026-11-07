@@ -291,6 +291,7 @@
 #
 # Limits (review of 2026-10-05: nothing bounded an unattended chain):
 #   - a run is ended at DISPATCH_MAX_H hours (default 8) even if never idle, and caffeinate ends with it;
+#     its branch is pushed first (`dispatch-rc push`, wharf's checkpoint push: never --force), the outcome logged;
 #     a run idle a minute on its closing line — done, WAITING, RELAYED, the hand-over; not WAITING FOR
 #     SOMETHING — is ended then, its slot free (the owner, 2026-10-31: "They should exit as soon as their
 #     work is done"; a relayed answer starts a fresh run of the branch, helm's `ask answer`); one idle
@@ -2622,7 +2623,8 @@ if [ -n "$at" ]; then
   [ "$probe" = 1 ] || [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
   [ -n "$on" ] || physical_ok >&2 || exit 2   # with --on, the peer's dispatch checks its own copy
   # fail now, not at fire time after the job has removed itself
-  git -C "$repo" ls-remote --exit-code origin "$branch" >/dev/null 2>&1 || { echo "dispatch: $branch is not on origin" >&2; exit 1; }
+  # refs/heads/ spelt out: a bare name matches a ref's tail, so wharf's side ref refs/wip/<branch> (the mid-turn push) passed for the branch
+  git -C "$repo" ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1 || { echo "dispatch: $branch is not on origin" >&2; exit 1; }
   # bound: the pick is made at fire time, but a primary already out of room this week is said now,
   # not in a log after the caller reported the run as started (review 2026-10-10); --at reset waits for it
   if [ "$account" = bound ]; then case "$at" in reset*) ;; *)
@@ -3314,7 +3316,9 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   # the maximum lifetime: a -p session has no idle to wait for, only an end
   # (its sleep dies with it, and neither leaves a "Terminated" line in the log)
   ( trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$max_s" & wait $!
-    kill -0 "$cpid" 2>/dev/null && { echo "$(date +%T) ending claude $cpid: still running after ${DISPATCH_MAX_H:-8} h (DISPATCH_MAX_H)"; kill -TERM "$cpid"; } ) 2>/dev/null & dog=$!
+    kill -0 "$cpid" 2>/dev/null && { echo "$(date +%T) ending claude $cpid: still running after ${DISPATCH_MAX_H:-8} h (DISPATCH_MAX_H)"
+      python3 "$here/bin/dispatch-rc" push "$state" 2>&1   # a -p run is one turn: its Stop push never came
+      kill -0 "$cpid" 2>/dev/null && kill -TERM "$cpid"; } ) 2>/dev/null & dog=$!   # again: the push takes time
   # no caffeinate off macOS (a node that never sleeps): the wait alone
   command -v caffeinate >/dev/null && { caffeinate -i -w "$kpid" & }; wait "$kpid"; rc=$?
   # its sleep first: a TERM that reaches the watchdog after its trap is set but before its `wait`
