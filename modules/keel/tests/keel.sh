@@ -351,7 +351,16 @@ G="$T/git"; mkdir -p "$G"
 git init -q --bare "$G/gh.git"
 URL=https://github.com/owner/repo.git
 gitc() { git -C "$1" -c user.name=t -c user.email=t@t -c "url.$G/gh.git.insteadOf=$URL" "${@:2}"; }
-mkclone() { git clone -q "$G/gh.git" "$1" 2>/dev/null; git -C "$1" remote set-url origin "$URL"; }
+mkclone() {
+  # The bare remote can be auto-packing after a push. A local clone walks its temporary
+  # pack indexes too, and can fail "hardlink different from source"; use the transport.
+  git clone --no-local -q "$G/gh.git" "$1" > "$T/clone.out" 2>&1 || {
+    printf '  FAIL fixture clone %s\n' "$1"; cat "$T/clone.out"; exit 1;
+  }
+  gitc "$1" remote set-url origin "$URL" || {
+    printf '  FAIL fixture clone origin %s\n' "$1"; exit 1;
+  }
+}
 mkclone "$G/here"
 gitc "$G/here" checkout -q -b claude/x
 mkdir -p "$G/here/docs"; cp "$T/memo.md" "$G/here/docs/m.md"
@@ -390,6 +399,14 @@ has "$T/l1.out" "not on GitHub yet" "…and says so"
 has "$T/l1.out" "push -u origin claude/x" "…with the branch's own push"
 
 gitc "$G/here" push -q -u origin claude/x 2>/dev/null
+# An entry not used by any ref stands in for an auto-pack's temporary index. The local-copy
+# path rejects this link; upload-pack serves the reachable objects and leaves the entry behind.
+mkdir -p "$G/gh.git/objects/pack"; : > "$G/temporary-index"
+ln -s "$G/temporary-index" "$G/gh.git/objects/pack/tmp_idx_fixture"
+mkclone "$G/transport-clone"
+check "$(git -C "$G/transport-clone" rev-parse origin/claude/x)" "$(git -C "$G/here" rev-parse HEAD)" "fixture clone reads the remote's reachable objects through the transport"
+check "$([ -e "$G/transport-clone/.git/objects/pack/tmp_idx_fixture" ] || [ -L "$G/transport-clone/.git/objects/pack/tmp_idx_fixture" ]; echo "$?")" "1" "…without copying a temporary pack index"
+rm -f "$G/gh.git/objects/pack/tmp_idx_fixture"
 run url "$M" > "$T/u2.out" 2> "$T/u2.err"; rc=$?
 check "$(cat "$T/u2.out")" "[course]($FORM) | [github]($BLOB) — [m.md]($MP#L1)" "url (line's old name): the running form reused, then GitHub's read view, then the file"
 check "$rc" "0" "…exit 0: every part owed is there"
@@ -1819,7 +1836,7 @@ python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); [v.update(take
 srun sheep pull --write "$SM" > "$T/m4c.out" 2>&1
 check "$(grep -c 'first loose thought' "$SM") $(grep -c 'second loose thought' "$SM")" "1 1" "M4: with the taken list lost, the pull still drops feedback already in the doc"
 has "$T/m4c.out" "[f1] → open feedback" "…while the thread itself is still taken and replied to"
-gitc "$G/sh" commit -qam "again" 2>/dev/null
+check "$(git -C "$G/sh" status --porcelain -- docs/s.md)" "" "…the duplicate take leaves the committed memo unchanged"
 
 # M20: a reply under a thread already taken, and a thread resolved on the page unread
 cat > "$S/comments.txt" <<'EOF'
@@ -2448,6 +2465,15 @@ deployspace() {  # A missing setup pin must name the deploy error, before later 
   fi
 }
 lastspace() { grep '^deploy' "$S/cli.log" | tail -1 | grep -o -- '--space [^ ]*' | cut -d' ' -f2; }
+# Keep setup deploy failures and their output in the check log before missing pins cascade
+# through KeyErrors. The page assertions below still inspect the successful deploy's output.
+sdeploy() {
+  local log="${2:-$T/fixture-deploy.out}" rc
+  srun sheep "$1" > "$log" 2>&1; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '  FAIL fixture deploy %s (exit %s)\n' "$1" "$rc"; cat "$log"; exit 1
+  fi
+}
 doc() { printf '# %s\n\n%b- **D1 — %s?** Body.\n\n  ➤ Recommended: yes\n\n  ➤ Answer:\n\n---\n' "$1" "$2" "$1"; }
 doc Idle "" > "$G/lm/docs/z.md"; gitc "$G/lm" add docs/z.md; gitc "$G/lm" commit -qm "z on main"
 gitc "$G/lm" checkout -q -b claude/lm4
@@ -2625,22 +2651,22 @@ rm -f "$S/web-comments.json"
 doc Forked "" > "$G/lm/docs/f.md"; gitc "$G/lm" add docs/f.md; gitc "$G/lm" commit -qm "f on main"
 F0=$(git -C "$G/lm" rev-parse main)
 gitc "$G/lm" checkout -q -b claude/lm11; doc Forked "Changed on lm11.\n\n" > "$G/lm/docs/f.md"; gitc "$G/lm" commit -qam "f on lm11"
-srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1
+sdeploy "$G/lm/docs/f.md"
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm11; gitc "$G/lm" checkout -q claude/lm11
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]["fmt"]="an older format"; json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@claude/lm11:docs/f.md
-srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1; setspace lm@claude/lm11:docs/f.md sp-f
+deployspace "$G/lm/docs/f.md" lm@claude/lm11:docs/f.md sp-f
 check "$(kp pin lm@claude/lm11:docs/f.md fork)" "\"$F0\"" "finding 14: a redeploy after main fast-forwarded keeps the fork recorded before"
 gitc "$G/lm" checkout -q main
-srun sheep "$G/lm/docs/f.md" > /dev/null 2>&1
+sdeploy "$G/lm/docs/f.md"
 check "$(lastspace)" "sp-f" "…so main still proves the landing and takes the page"
 # finding 12: on main, a landed branch's page of a renamed doc wins over main's page of the old path
 doc Renamed "" > "$G/lm/docs/a12.md"; gitc "$G/lm" add docs/a12.md; gitc "$G/lm" commit -qm "a12 on main"
-srun sheep "$G/lm/docs/a12.md" > /dev/null 2>&1; setspace lm@main:docs/a12.md sp-a12m
+deployspace "$G/lm/docs/a12.md" lm@main:docs/a12.md sp-a12m
 gitc "$G/lm" checkout -q -b claude/lm12; gitc "$G/lm" mv docs/a12.md docs/b12.md; gitc "$G/lm" commit -qm "a12 renamed b12"
 doc Renamed "Changed on lm12.\n\n" > "$G/lm/docs/b12.md"; gitc "$G/lm" commit -qam "b12 on lm12"
-srun sheep "$G/lm/docs/b12.md" > /dev/null 2>&1; setspace lm@claude/lm12:docs/b12.md sp-b12
+deployspace "$G/lm/docs/b12.md" lm@claude/lm12:docs/b12.md sp-b12
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm12
-srun sheep "$G/lm/docs/b12.md" > "$T/f12.out" 2>&1
+sdeploy "$G/lm/docs/b12.md" "$T/f12.out"
 check "$(lastspace)" "sp-b12" "finding 12: on main, the landed branch's page wins over main's page of the doc's old path"
 has "$T/f12.out" "docs/b12.md landed from claude/lm12" "…and says so"
 # findings 9 and 6: main's page gives way only when its comments read, and its room holds no Save
@@ -2650,7 +2676,7 @@ gitc "$G/lm" checkout -q -b claude/lm13; doc Unread "Changed on lm13.\n\n" > "$G
 deployspace "$G/lm/docs/g2.md" lm@claude/lm13:docs/g2.md sp-g13
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm13
 rm -f "$S/web-comments.json"; cp "$S/comments.txt" "$T/comments.kept" 2>/dev/null || :; printf 'a shape this tool has never seen\n' > "$S/comments.txt"
-srun sheep "$G/lm/docs/g2.md" > "$T/f9.out" 2>&1
+sdeploy "$G/lm/docs/g2.md" "$T/f9.out"
 cp "$T/comments.kept" "$S/comments.txt" 2>/dev/null || :
 check "$(lastspace)" "sp-g2m" "finding 9: main's page whose comments come back unreadable does not give way"
 has "$T/f9.out" "cannot read" "…and says why"
@@ -2659,7 +2685,7 @@ echo '{"comments": []}' > "$S/web-comments.json"
 cat > "$S/events.json" <<'EOF'
 [{"seq": 1, "at": "2026-10-25T10:00:00Z", "name": "memo-save", "data": {"items": {"D1": "no, wait"}, "comments": [], "feedback": ""}}]
 EOF
-srun sheep "$G/lm/docs/g2.md" > "$T/f6.out" 2>&1
+sdeploy "$G/lm/docs/g2.md" "$T/f6.out"
 rm -f "$S/events.json"
 check "$(kp pin lm@main:docs/g2.md kept_over) $(kp pin lm@main:docs/g2.md space)" '["lm@claude/lm13:docs/g2.md"] "sp-g2m"' "finding 6: a Save still in main's room keeps main's page"
 has "$T/f6.out" "a Save not taken in" "…and says so"
@@ -2670,7 +2696,7 @@ python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]]
 gitc "$G/lm" checkout -q -b claude/lm14; doc Cursor "Changed on lm14.\n\n" > "$G/lm/docs/g3.md"; gitc "$G/lm" commit -qam "g3 on lm14"
 deployspace "$G/lm/docs/g3.md" lm@claude/lm14:docs/g3.md sp-g14
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm14
-srun sheep "$G/lm/docs/g3.md" > /dev/null 2>&1
+sdeploy "$G/lm/docs/g3.md"
 check "$(lastspace) $(kp pin lm@main:docs/g3.md events_after) $(kp pin lm@main:docs/g3.md receipt) $(kp pin lm@main:docs/g3.md opens_seen)" "sp-g14 null null null" "finding 10: main's page giving way drops main's cursors and receipt with it"
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d[sys.argv[2]].pop("sha", None); d[sys.argv[2]].pop("branch", None); json.dump(d, open(f, "w"))' "$S/state/sheep.json" lm@main:docs/g3.md
 srun sheep check "$G/lm/docs/g3.md" > "$T/f8.out" 2>&1; rc=$?
@@ -2684,7 +2710,7 @@ gitc "$G/lm" checkout -q -b claude/lm15; doc Refused "Changed on lm15.\n\n" > "$
 deployspace "$G/lm/docs/g4.md" lm@claude/lm15:docs/g4.md sp-g15
 gitc "$G/lm" checkout -q main; gitc "$G/lm" merge -q --ff-only claude/lm15
 echo '{"comments": []}' > "$S/web-comments.json"
-srun sheep "$G/lm/docs/g4.md" > /dev/null 2>&1
+sdeploy "$G/lm/docs/g4.md"
 check "$(kp pin lm@main:docs/g4.md kept_over) $(kp pin lm@main:docs/g4.md refused_saves)" '["lm@claude/lm15:docs/g4.md"] [{"D1": "C, with a cap"}]' "the finish review: set-aside words on main's pin keep main's page"
 rm -f "$S/web-comments.json"
 
