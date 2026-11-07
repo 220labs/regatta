@@ -340,7 +340,11 @@ elif case == "alive":
     # a live pid whose start time is not the record's: someone else's process (a reused pid)
     q = importlib.machinery.SourceFileLoader("dq", sys.argv[3]).load_module()
     pid = os.getpid()
-    print(q.rec_alive({"pid": pid, "proc_start": "Thu Jan  1 00:00:00 1970"}), q.rec_alive({"pid": pid, "proc_start": rc.proc_start(pid)}))
+    # The pid is real; its start reading is a fixture. A sandbox may refuse ps, whose blank answer
+    # production deliberately keeps alive, so a real ps cannot establish the mismatch this case tests.
+    start = "Wed Nov 4 12:00:00 2026"
+    q.rc_mod().proc_start = lambda *a, **k: start
+    print(q.rec_alive({"pid": pid, "proc_start": "Thu Jan  1 00:00:00 1970"}), q.rec_alive({"pid": pid, "proc_start": start}))
 PY
 rcpy() { python3 "$T/rc.py" "$B/dispatch-rc" "$@"; }
 
