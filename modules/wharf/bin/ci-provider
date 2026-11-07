@@ -2975,12 +2975,14 @@ def refuse_lacks(probe, host):
         if not gives or not os.path.isfile(script):
             raise Refusal("%s lacks what a rootless runner container needs, the owner's to give with sudo first: %s; "
                           "nothing minted" % (host, "; ".join(LACKS.get(w, w) for w in probe.lacks)))
+        # no key in the line: this refusal comes only after configured() logged in as the runner login, so its key is
+        # there and runner-user keeps it; a key path pasted for scp's source and --key-file's both never matched on the
+        # node (the landing review, 2026-11-06)
         raise Refusal("%s lacks what a rootless runner container needs (%s), the owner's to give with sudo first: "
-                      "wharf's runner-user gives the login %s, one line from this Mac: scp %s <key>.pub "
+                      "wharf's runner-user gives the login %s, one line from this Mac: scp %s "
                       "<node>: && ssh -t <node> sudo bash runner-user --node-user <the node's login> --login "
-                      "<%s's login> --key-file <key>.pub (<node> the node's own login's alias, which has sudo; "
-                      "<key>.pub the key %s logs in with; the runner login is its own, never the node's)%s; "
-                      "nothing minted"
+                      "<%s's login> (<node> the node's own login's alias, which has sudo; the key %s already logs "
+                      "in with is kept; the runner login is its own, never the node's)%s; nothing minted"
                       % (host, ", ".join(probe.lacks), "what it can" if rest else "all of it", shlex.quote(script),
                          host, host, ("; and, which it does not give: " + "; ".join(rest)) if rest else ""))
 
