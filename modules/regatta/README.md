@@ -84,10 +84,11 @@ value; `regatta check` prints one note per live key. Which keys are limits, thei
 before it is written are in each module's `limits` file and `libexec/limit`'s header; a value the key's own reader
 would read as anything else is refused, and a host the verb cannot reach is named, its value unchanged.
 
-Lighthouse's `week-max-finish` is a login limit beside `week-max`: `regatta limit set week-max-finish
-'<login>:97' --all --why '…'`. It raises the effective week ceiling for a launcher's finish pick
-alone; its own line wins over `*:`, a `*:` line serves only a login that sets no week ceiling of its own, as
-`week-max`'s does, and a lower or malformed value leaves the normal ceiling.
+Lighthouse's `week-max-finish` and `overdraw-max` are login limits beside `week-max`: `regatta limit set
+week-max-finish '<login>:97' --all --why '…'` raises the effective week ceiling for a launcher's finish pick
+alone (its own line wins over `*:`, a `*:` line serves only a login that sets no week ceiling of its own, as
+`week-max`'s does, and a lower or malformed value leaves the normal ceiling); `regatta limit set overdraw-max
+'<login>:60' --all --why '…'` caps the week bar `account pick --overdraw` lifts a row to in place of 100.
 
   | File | What it holds | Without it |
   | --- | --- | --- |

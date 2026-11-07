@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `regatta limit` supports lighthouse's `overdraw-max` login limit and notes its overdraw-only effect.
 - `ready_pr` releases build CI's owned hold as well as the draft fallback's, spending either
   ownership note once so later manual holds remain in place.
 

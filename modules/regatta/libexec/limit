@@ -1102,10 +1102,15 @@ def cmd_set(a, tab):
         print("regatta limit: the finish ceiling raises the week ceiling only for a launcher's finish pick; "
               "a login's own line wins over `*:`, a `*:` line serves only a login that sets no week ceiling of its "
               "own, and a lower value leaves the week ceiling", file=sys.stderr)
+    elif key == "lighthouse/overdraw-max":
+        print("regatta limit: the overdraw ceiling caps lifted rows in `account pick --overdraw` in place of 100; "
+              "a login's own line wins over `*:`, and an own live week-max or finish ceiling still holds",
+              file=sys.stderr)
     elif spec["shape"] == "login" and any(w == "*" for _, w, _ in plan):
         print("regatta limit: a `*:` line serves only a login whose registry row sets no week ceiling of its own; "
               "name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
-    if key != "lighthouse/week-max-finish" and spec["shape"] == "login" and any(w not in (None, "*") for _, w, _ in plan):
+    if (key not in ("lighthouse/week-max-finish", "lighthouse/overdraw-max")
+            and spec["shape"] == "login" and any(w not in (None, "*") for _, w, _ in plan)):
         # a second home for a login's ceiling beside budgets.json (main, 2026-10-31): this line outranks it on these
         # hosts until unset, so say it at the set (the round-1 review of the laptop run)
         print("regatta limit: a login's line stands over its registry row's and budgets.json's week ceiling on these "
