@@ -33,7 +33,11 @@ class ForNow(v.Refused):
 # A builder's hold is its last line, opening WAITING FOR, or the house closing line: never a mention, and never
 # WAITING FOR NOTHING or SOMETHING, which a build that read the rules may end on.
 # The house line may carry no name (a row with no regatta/owner), or a name with a space or an accent.
-HOLD_RE = re.compile(r"[\W_]*(?:(?:[^\W\d_][^,\n]*, )?THIS SESSION IS )?WAITING FOR\b(?! NOTHING| SOMETHING)")
+# Nor a bare line that is only a wait on the launcher's own next stage: three Codex builds (2026-11-06) ended
+# "WAITING FOR launcher checks and review." (the prompt says the launcher runs them), which held each one before
+# its review loop. An allowlist that names the launcher, never a skip list: a bare "WAITING FOR review" may mean
+# the owner's, and any other word (a D-item, the owner, a reason) or the house line still holds (the landing reviews).
+HOLD_RE = re.compile(r"(?![*_`\s]*WAITING FOR:?\s+(?i:(?:the )?launcher(?:'s|’s)?(?: (?:the )?(?:checks?|reviews?|review rounds?|CI)(?:(?:,? and |, |/| & | \+ )(?:the )?(?:checks?|reviews?|review rounds?|CI))*)?)[\W_]*$)[\W_]*(?:(?:[^\W\d_][^,\n]*, )?THIS SESSION IS )?WAITING FOR\b(?! NOTHING| SOMETHING)")
 
 CHECK_FOR_NOW = ("ps cannot read", "cannot make")
 CHECK_RETRY_S = int(os.environ.get("VENDOR_CHECK_RETRY_S", "30"))
@@ -284,7 +288,8 @@ def run(a):
             prompt = ("Build the task in the brief at %s. Read it and AGENTS.md, including its Traps, "
                       "with your own tools before editing. Work only here on %s. You are unattended; "
                       "decide routine details; leave an unresolved decision as a committed D-item and make your last line "
-                      "start WAITING FOR. "
+                      "start WAITING FOR, naming the doc and the D-item (only then: a finished build ends on its summary, never WAITING FOR the "
+                      "launcher's checks or reviews). "
                       "Commit small changes with clear module-prefixed messages and the trailer "
                       "%s. The launcher runs checks and review rounds. "
                       "Never fetch, merge, rebase, push, run /finish, pr, dispatch, or start other agents. "

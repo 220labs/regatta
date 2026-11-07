@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- run-vendor no longer reads a builder's wait on the launcher's own next stage
+  as a hold: three Codex builds ended "WAITING FOR launcher checks and review."
+  (the prompt says the launcher runs them), and each stopped before its review
+  loop. The hold rule skips only a bare line that is nothing but a wait on the
+  launcher (and its checks, review or CI); a bare "WAITING FOR review", any other
+  word (a D-item, the owner, a reason) and the house line still hold. The build
+  prompt asks a hold to name its doc and D-item, and a finished build to end on
+  its summary.
+
 - The Codex fence keeps Codex's own install folder readable: a home-installed
   Codex (npm's user prefix in the home on a Linux node) failed every vendor start with
   `bwrap: execvp …/codex: Permission denied`, since its sandbox helper re-runs
