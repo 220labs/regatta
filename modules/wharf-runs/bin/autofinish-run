@@ -1299,10 +1299,18 @@ def limit_pick(t, prev, text, cached=False):
     own_ready, own_wait = own_reset_state(prev, text, rows, now_ts)
     spent = spent_limit_logins(rows, now_ts)
     stopped_raw = (prev or {}).get("account")
-    stopped_norm = _norm_acct(stopped_raw)
+    # the stopped login by every spelling: a run whose `account which` failed recorded its config dir, and pick's
+    # --skip reads labels only, so the row's label and home stand beside the raw value (the landing review, 2026-11-07)
+    stopped_home = home_from_rows(stopped_raw, rows)
+    stopped_real = os.path.realpath(stopped_home) if stopped_home else ""
+    stopped_norms = {n for n in [_norm_acct(stopped_raw)] if n}
+    for a in rows or ():
+        if (stopped_real and isinstance(a, dict) and a.get("label") and a.get("home")
+                and os.path.realpath(os.path.expanduser(str(a["home"]))) == stopped_real):
+            stopped_norms.add(_norm_acct(a["label"]))
     blocked_norm = set(spent)
-    if stopped_norm and not own_ready:
-        blocked_norm.add(stopped_norm)
+    if not own_ready:
+        blocked_norm |= stopped_norms
     skip_raw = []
     if stopped_raw and stopped_raw != "-" and not own_ready:
         skip_raw.append(str(stopped_raw))
@@ -1330,7 +1338,9 @@ def limit_pick(t, prev, text, cached=False):
         extra = " (%s)" % own_wait if own_wait else ""
         return None, None, None, Refusal("%s already took a limit relaunch in this 5-hour window%s: the limit road waits"
                                          % (label, extra))
-    if stopped_norm and lnorm == stopped_norm and not own_ready:
+    on_stopped = lnorm in stopped_norms or bool(
+        stopped_real and cfg and os.path.realpath(os.path.expanduser(str(cfg))) == stopped_real)
+    if on_stopped and not own_ready:
         return None, None, None, Refusal("%s: the limit road waits" % (own_wait or ("%s has not reset" % label)))
     return label, cfg, picked, None
 
@@ -3180,7 +3190,10 @@ def record(t, st, log_from, rc, why, notes):
     if (outcome == "stopped" and gate == "no-landing" and LOGIN_RE.search(first)
             and ACCOUNT and st.get("account") not in (None, "", "-", "oauth-token")):
         try:
-            common.run_group([ACCOUNT, "logged-out", "--set", str(st["account"])], 10)
+            r = common.run_group([ACCOUNT, "logged-out", "--set", str(st["account"])], 10)
+            if r.returncode:   # run_group raises on a timeout only: a refusal is said too (the landing review)
+                why = ((r.stderr or "").strip().splitlines() or [""])[0][:120]
+                notes = list(notes) + ["logged-out not set (exit %d%s)" % (r.returncode, ": " + why if why else "")]
         except Exception as e:  # noqa: BLE001 — a lost logged-out mark is said, never a lost record
             notes = list(notes) + ["logged-out not set (%s)" % type(e).__name__]
     line = record_line(st["ended"], outcome, t.branch, gate, pr, first, t.tip)
