@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `regatta limit` supports lighthouse's five account limit pair keys (`week-soft-max`, `week-hard-max`,
+  `week-finish-hard-max`, `window-soft-max`, `window-hard-max`), marks `# alias:` keys as aliases in `regatta limit list`
+  (`week-max`, `week-max-finish`, `overdraw-max`), and detects peer checkouts whose `limits` file predates a newly added key.
+- Closing lines have a `lander` kind with ⏳ for a stopped finish whose next move belongs to the
+  armed lander, distinct from work the session watches itself (stuck-ships S7).
 - `regatta limit` supports lighthouse's `overdraw-max` login limit and notes its overdraw-only effect.
 - `ready_pr` releases build CI's owned hold as well as the draft fallback's, spending either
   ownership note once so later manual holds remain in place.

@@ -2,9 +2,16 @@
 
 ## Unreleased
 
+- The sessionpipe gate allows Antigravity tools with empty stdout, including when a private reporting event is dropped; sessionpipe's `{}` is discarded because agy 1.5.2 reads it as a denial. Builder trust checks can derive the exact reporting entries from sheep's own writer and installed gate path.
+- The Stop lint accepts the lander's ⏳ closing line for a stopped finish, keeps owner asks out
+  of it, and requires the external-finish command only on the owner's stop (stuck-ships S7).
 - The Porthole look (the helm council's round 7, the owner's pick, 2026-11-06): the decision component, the Course page's cards,
   source and text boxes and the shared tokens take the rounder shape — a double rim round a compact row group, a round number window, pill keys and chips, rounded system type (`ui-rounded`, no download); density, the keys and the colour meanings are round 6's, and the B and C shapes were not built.
 - `sheep_gate.py` folds sessionpipe's safe session ids to lower case before hashing a denial marker: ids such as `ABC` and `abc` share facts on case-insensitive filesystems and now share the privacy fence on every host. Replay regressions cover both case directions and every supported harness id field at Stop and SessionEnd, with a shared transcript even on case-sensitive filesystems.
+- `sheep` writes Antigravity's gated `sessionpipe` entries with `"timeout": 15` (Claude Code's and Codex's stay at 5):
+  Antigravity reads a killed hook as a tool denial, so a slow `sessionpipe` on a loaded host otherwise denies every tool
+  call of a build (vendor-road-fixes, 2026-11-06).
+
 - The hold and the pick class after #504's review rounds (rabbit-holes S3): a doc in no commit stays could-not-tell
   (exit 4), so a brief must name a doc the repo holds; the hold follows a `git mv` of the doc, reads branches and remote
   branches only (never `refs/archive` or the stash), and lets the newer release in a worktree the brief names beat the

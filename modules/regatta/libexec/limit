@@ -6,7 +6,7 @@ no build, no landing, no overlay run. Stdlib, Python 3.9.
     regatta limit get KEY [--on H[,H…] | --all]       one limit the same way
     regatta limit set KEY H:VALUE [H:VALUE…] --why TEXT          a host's value, written on that host
     regatta limit set KEY VALUE --all --why TEXT                 the same value on every host of the fleet
-    regatta limit set KEY LOGIN:VALUE (--on H… | --all) --why TEXT   a login's value (the week ceiling), on those hosts
+    regatta limit set KEY LOGIN:VALUE (--on H… | --all) --why TEXT   a login's value (an account limit), on those hosts
     regatta limit unset KEY H [H…] | --all --why TEXT            back to what the config says
     regatta limit unset KEY LOGIN (--on H… | --all) --why TEXT
     (set and unset take --over too: see History)
@@ -28,11 +28,11 @@ leaves what the host reads as it was is never held. `get` and `list` end each li
 
 KEY is a key's whole name (`wharf-runs/run-cap`) or its last part (`run-cap`). The limits are what the
 modules declare in their `limits` file (wharf-runs': the run cap, the check slots, the memory headroom,
-the load rule; lighthouse's: the week ceiling), each with its shape and its trial read:
+the load rule; lighthouse's: the account week/window soft and hard pairs and their old aliases, plus reef), each with its shape and its trial read:
 
   host    a line `<host>:<value>` each host reads for itself (`run-cap`, `headroom`, `check-slots`)
   plain   one value the host reads whole (`load-max`: the rule berth on that host judges every candidate by)
-  login   lines `<login>:<value>`, `*:` for any login (`week-max`), the same on every host they are set on
+  login   lines `<login>:<value>`, `*:` for any login (`week-soft-max`, `week-hard-max`, `window-soft-max`, `window-hard-max`, …), the same on every host they are set on
 
 Where it writes (why: live-limits, 2026-11-01). Each host's own config dir, in its live layer:
 `<config>/live/<key>`, which the core's config_read reads in front of `<config>/<key>` (common.py's
@@ -45,7 +45,7 @@ its next fetch, but a read of a limit would then wait on the network, and a cap 
 
 Refusals. A value is tried before anything is written: the key's reader runs on a scratch config dir that
 holds only that value, for the host it is meant for, and must read back the value given (dispatch's `--cap`,
-check's `--slots`, headroom's `limits`, berth's `--load-key`, account's `week-max`). A value it reads as
+check's `--slots`, headroom's `limits`, berth's `--load-key`, account's `limit-read` and `week-max`). A value it reads as
 anything else — the default, a parse error — is refused, with what the reader said, and nothing is
 written anywhere (exit 2). `DISPATCH_MAX_RUNS` and `CHECK_SLOTS`, which override the files, are dropped
 for the trial; they still win on a host that sets them (`get` cannot see a host's environment: `dispatch
@@ -122,9 +122,10 @@ def module_dirs():
 
 
 def table():
-    """{key: {shape, default, probe, star, module}} from each module's `limits` file:
+    """{key: {shape, default, probe, star, module, alias}} from each module's `limits` file:
     `<key> <shape>[*] <default|-> <probe…>`, the probe run from the module's folder, `{host}` and `{login}`
-    its placeholders. A line it cannot read is said on stderr and skipped."""
+    its placeholders. An `# alias: <what>` comment before a key names what `list` marks it an alias of.
+    A line it cannot read is said on stderr and skipped."""
     out = {}
     for name, m in module_dirs():
         f = m / "limits"
@@ -132,17 +133,25 @@ def table():
             lines = f.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
+        alias = None
         for l in lines:
             l = l.strip()
-            if not l or l.startswith("#"):
+            if not l:
+                alias = None
+                continue
+            if l.startswith("#"):
+                m_al = re.match(r"^#\s*alias:\s*(.+)$", l)
+                alias = m_al.group(1).strip() if m_al else alias
                 continue
             parts = l.split(None, 3)
             if len(parts) < 4 or not KEY_RE.match(parts[0]) or parts[1].rstrip("*") not in SHAPES:
                 print("regatta limit: %s: a line it cannot read: %s" % (f, l), file=sys.stderr)
+                alias = None
                 continue
             out[parts[0]] = {"shape": parts[1].rstrip("*"), "star": parts[1].endswith("*"),
                              "default": None if parts[2] == "-" else parts[2], "probe": parts[3], "module": m,
-                             "name": name}
+                             "name": name, "alias": alias}
+            alias = None
     return out
 
 
@@ -732,12 +741,14 @@ def peer_reads(alias, host, items):
     for i, (key, spec, word) in enumerate(items):
         if not re.match(r"^[a-z0-9][a-z0-9-]*$", spec["name"]):
             continue
-        # a checkout without the module's `limits` file predates the live layer: its readers lack the verbs
-        # the probes call, so its exit would read as a refusal (round 2)
+        # a checkout without the module's `limits` file (or without this key in it) predates the live key: its readers
+        # lack the verb or key the probe calls, so its exit would read as a refusal (round 2)
         parts.append('echo @@q%d; if [ -z "$r" ] || [ ! -d "$r/modules/%s" ]; then echo @@none; '
-                     'elif [ ! -f "$r/modules/%s/limits" ]; then echo @@old; else (cd "$r/modules/%s" && %s) '
-                     '</dev/null 2>/dev/null; echo "@@rc$?"; fi'
-                     % (i, spec["name"], spec["name"], spec["name"], probe_cmd(spec, host, word)))
+                     'elif [ ! -f "$r/modules/%s/limits" ]; then echo @@old; '
+                     'elif ! grep -Eq %s "$r/modules/%s/limits"; then echo @@nokey; '
+                     'else (cd "$r/modules/%s" && %s) </dev/null 2>/dev/null; echo "@@rc$?"; fi'
+                     % (i, spec["name"], spec["name"], shlex.quote("^%s[[:space:]]" % key), spec["name"],
+                        spec["name"], probe_cmd(spec, host, word)))
     parts.append("echo @@end")
     out = run_ssh(alias, "; ".join(parts))
     if "@@end" not in out:
@@ -755,12 +766,18 @@ def peer_reads(alias, host, items):
         if part.startswith("@@old"):
             got[i] = (None, OLD)
             continue
+        if part.startswith("@@nokey"):
+            got[i] = (None, NOKEY)
+            continue
         m = re.search(r"@@rc(\d+)\s*$", part)
         got[i] = answer(int(m.group(1)), part[:m.start()]) if m else (None, "its reader did not answer")
     return got
 
 
 OLD = "its checkout predates the live layer and reads the config until it updates"
+# a checkout whose limits file lacks the key has no reader for it at all, in the config or the layer (the landing
+# review's round 3, 2026-11-07: OLD said it read the config, which a key newer than the checkout never does)
+NOKEY = "its checkout predates this key and reads no value for it until it updates"
 
 
 def reads(host, alias, items):
@@ -801,7 +818,7 @@ def show(keys, tab, hosts, fl, rows):
             if rb is not None and canon(rb) != canon(v):
                 where += "; its reader reads %s" % rb
                 v = rb
-            elif why in (OLD, unasked) and why:
+            elif why in (OLD, NOKEY, unasked) and why:
                 where += "; " + why   # said, as a peer with no checkout is: the value is written, unread there
             elif why:
                 where += "; " + why
@@ -834,7 +851,10 @@ def cmd_list(a, tab, keys):
     wh = max([len(r[1]) for r in rows] + [4])
     wv = max([len(r[2]) for r in rows] + [5])
     for r, last in zip(rows, lasts):
-        print("%-*s  %-*s  %-*s  %s · %s" % (wk, r[0], wh, r[1], wv, r[2], r[3], last))
+        where = r[3]
+        if a.verb == "list" and tab[r[0]].get("alias"):
+            where = "%s; alias of %s" % (where, tab[r[0]]["alias"])
+        print("%-*s  %-*s  %-*s  %s · %s" % (wk, r[0], wh, r[1], wv, r[2], where, last))
     return 3 if bad else 0
 
 
@@ -1068,8 +1088,8 @@ def verify(key, spec, plan, fl, done):
             if rb is None and why is None:
                 print("regatta limit: %s on %s: written; no regatta checkout there to read it back" % (key, h),
                       file=sys.stderr)
-            elif why == OLD:
-                print("regatta limit: %s on %s: written, but %s" % (key, h, OLD), file=sys.stderr)
+            elif why in (OLD, NOKEY):
+                print("regatta limit: %s on %s: written, but %s" % (key, h, why), file=sys.stderr)
                 bad = 1
             elif rb is None or canon(rb) != canon(want):
                 print("regatta limit: %s on %s: written, but %s" % (key, h, "its reader reads %s, not %s (an override in "
@@ -1098,7 +1118,7 @@ def cmd_set(a, tab):
     if held:
         return held
     done, unreached = apply(key, fl, plan, "set", spec, a.why, skip, overrode)
-    if key == "lighthouse/week-max-finish":
+    if key in ("lighthouse/week-max-finish", "lighthouse/week-finish-hard-max"):
         print("regatta limit: the finish ceiling raises the week ceiling only for a launcher's finish pick; "
               "a login's own line wins over `*:`, a `*:` line serves only a login that sets no week ceiling of its "
               "own, and a lower value leaves the week ceiling", file=sys.stderr)
@@ -1107,14 +1127,22 @@ def cmd_set(a, tab):
               "a login's own line wins over `*:`, and an own live week-max or finish ceiling still holds",
               file=sys.stderr)
     elif spec["shape"] == "login" and any(w == "*" for _, w, _ in plan):
-        print("regatta limit: a `*:` line serves only a login whose registry row sets no week ceiling of its own; "
-              "name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
-    if (key not in ("lighthouse/week-max-finish", "lighthouse/overdraw-max")
+        if key == "lighthouse/week-max":
+            print("regatta limit: a `*:` line serves only a login whose registry row sets no week ceiling of its own; "
+                  "name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
+        else:
+            print("regatta limit: a `*:` line serves only a login that sets no own rule for this limit in "
+                  "accounts.json or budgets.json; name the login to stand over one (LOGIN:VALUE)", file=sys.stderr)
+    if (key not in ("lighthouse/week-max-finish", "lighthouse/week-finish-hard-max", "lighthouse/overdraw-max")
             and spec["shape"] == "login" and any(w not in (None, "*") for _, w, _ in plan)):
         # a second home for a login's ceiling beside budgets.json (main, 2026-10-31): this line outranks it on these
         # hosts until unset, so say it at the set (the round-1 review of the laptop run)
-        print("regatta limit: a login's line stands over its registry row's and budgets.json's week ceiling on these "
-              "hosts until `regatta limit unset`", file=sys.stderr)
+        if key == "lighthouse/week-max":
+            print("regatta limit: a login's line stands over its registry row's and budgets.json's week ceiling on these "
+                  "hosts until `regatta limit unset`", file=sys.stderr)
+        else:
+            print("regatta limit: a login's line stands over its registry row and budgets.json on these hosts until "
+                  "`regatta limit unset`", file=sys.stderr)
     unread = verify(key, spec, plan, fl, done)
     return 3 if unreached or unread else 0
 

@@ -96,6 +96,9 @@ TEXT_LINE = 160         # an evidence line's length
 # rule), a crash or an API error (S1's retry), its own pending work, an ask or a relay (asks N, the live skipper)
 # dispatch's no_handover: a default or ask run that had no hand-over to land it (the landing review's pick B)
 NO_HANDOVER = "no launch — no hand-over:"
+# a clean vendor run's hand-over, which dispatch's shell runs after run-vendor exits, takes seconds; past this a
+# record with no `launch` raises though that shell still lives (S5's landing review, round 3)
+HANDOVER_GRACE = 30 * 60
 # refusals that are the ask itself (the judge read the closing line's question as the owner's): the ask's rules card them
 ASK_REFUSALS = ("no launch — open for", "no launch — its last reply stops for", "no launch — its relayed or waiting question",
                 "no launch — its last reply contains a ⚠")
@@ -271,7 +274,12 @@ def facts(records, ad, same, watcher_gone, guarded, waiting=None):
             # helmlib.guarded's rule, spelled out: this function's source runs on the peer too, without helmlib
             g = any(part.casefold() in {x.casefold() for x in guarded} for part in str(st.get("repo") or "").split("/"))
             try:
-                f["status"] = ad.status(st["session"], read_reply=not g)
+                if st.get("mode") == "vendor" or "last_answer" in st:
+                    f["status"] = {"state": "working" if f["alive"] and not st.get("ended") else "ended",
+                                   "last_message": "" if g else st.get("last_answer") or "",
+                                   "last_at": st.get("ended") or st.get("started"), "record": True}
+                else:
+                    f["status"] = ad.status(st["session"], read_reply=not g)
             except Exception as e:
                 f["status"] = {"error": str(e)[:200]}
             f["owner"] = owner(st.get("wt"))
@@ -350,6 +358,17 @@ def probe_source(rc):
     return "\n\n".join(parts)
 
 
+def _loopback_target(target):
+    t = target.strip().strip("[]").lower().rstrip(".")
+    if t == "localhost" or t.endswith(".localhost"):
+        return True
+    try:
+        import ipaddress
+        return ipaddress.ip_address(t.partition("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
 def peers():
     """{host: ssh alias} to read, this Mac left out. STALLS_PEERS overrides: `name=alias,…`, empty for none.
     Every peer is read, a yard too: its records and live sessions are the facts both Macs share (the
@@ -358,7 +377,24 @@ def peers():
         spec = os.environ["STALLS_PEERS"].strip()
         out = dict(x.split("=", 1) for x in spec.split(",") if "=" in x)
     else:
-        out = dict(PEERS)
+        try:
+            c = helmlib._common()
+        except Exception:
+            out = {h: a for h, a in PEERS.items() if h and a}
+        else:
+            self_host = helmlib.host().lower()
+            out = {h: a for h, a in c.config_entries(c.config_lines("wharf-runs/ssh") or []) if h and a}
+            # Builder users live in fleet-ssh as <vendor>@<host>, or <vendor>@localhost for this Mac's own rows.
+            fleet_lines = [re.sub(r"^(\s*[^\s:#(]+:)\s+(\S+@\S+)", r"\1\2", l)
+                           for l in (c.config_lines("regatta/fleet-ssh") or [])]
+            for h, a in c.config_entries(fleet_lines):
+                user, sep, target = a.partition("@")
+                user, target = user.strip().lower(), target.strip()
+                if not (h and sep and target and user in ("antigravity", "codex")):
+                    continue
+                if _loopback_target(target) and h.lower() not in (self_host + "-antigravity", self_host + "-codex"):
+                    continue
+                out.setdefault(h, a)
     out.pop(helmlib.host(), None)
     return out
 
@@ -541,11 +577,12 @@ class QueueRead:
 
 
 WAITING_ON_OWNER = "waiting on the owner"
+WAITING_ON_LANDER = "waiting on the lander"
 
 
 def reply_kind(text):
     """bin/session_status.py's closing() on the last reply: done | waiting on the owner (WAITING_ON_OWNER,
-    whatever wharf's WAITING says) | waiting on skipper (manager) | handed to its launch | waiting on its own work | None — the
+    whatever wharf's WAITING says) | waiting on skipper (manager) | handed to its launch | waiting on the lander | waiting on its own work | None — the
     Stop hook's own reading of the line, so the same line counts here or none."""
     if not text:
         return None
@@ -557,9 +594,22 @@ def reply_kind(text):
             sys.path.insert(0, str(p.parent))
         import session_status
         kind = session_status.closing(text)
+        if kind == getattr(session_status, "LANDER", WAITING_ON_LANDER):
+            return WAITING_ON_LANDER
         return WAITING_ON_OWNER if kind == getattr(session_status, "WAITING", None) else kind
     except Exception:
         return None
+
+
+def _handed_reply(text, kind):
+    if kind == "handed to its launch":
+        return True
+    if kind is not None or not text:
+        return False
+    try:
+        return helmlib._common().ending(text)[0] == "handed"
+    except Exception:
+        return False
 
 
 def evidence_line(s, n=2):
@@ -641,6 +691,44 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
         ended, alive = bool(st.get("ended")), bool(f.get("alive"))
         skipper = st.get("manager")
 
+        if st.get("mode") == "vendor":
+            # The launcher stays alive during checks/reviews and between CLI
+            # turns. No registry row is expected for its private conversation.
+            if alive and not ended:
+                continue
+            if not ended and f.get("watcher"):
+                continue
+            if st.get("outcome") == "fallback":
+                continue
+            launch = str(st.get("launch") or "")
+            if st.get("outcome") == "clean":
+                if launch.startswith("queued") or st.get("next_scheduled"):
+                    continue
+                if not launch and f.get("watcher") and now - (_num(st.get("ended")) or now) < HANDOVER_GRACE:
+                    # run-vendor wrote `ended` and exited; dispatch's shell, the record's watcher, is running
+                    # `run-vendor --handover` now, which writes `launch`. A dead watcher with no launch still raises,
+                    # and so does a live one past the grace: a hand-over that hangs is a stall, not a wait.
+                    continue
+                detail = ["guarded — open it"] if guarded else (
+                    ["dispatch: %s" % _launch_line(launch)] if launch else ["dispatch: no launch recorded"])
+                if launch.startswith(NO_HANDOVER) or not _handed_reply(text, kind):
+                    rule = "done, no hand-over: it waits for /finish"
+                else:
+                    rule = "closing line: hand-over, its launch never started"
+                stalls.append(_stall("S6", host, st, name, rule, detail + ev, now,
+                                     _num(st.get("ended")) or since, action="raise", harness=st.get("agent")))
+                continue
+            if (st.get("exit") == 4 or st.get("retry_claude")) and queued is not None and queued(repo, st.get("branch")):
+                if queued_out is not None:
+                    why_q = ("unreadable queue" if getattr(queued, "last_bad", False)
+                             else ("retry queued" if st.get("retry_claude") else "in dispatch's queue"))
+                    queued_out.append({"host": host, "repo": repo, "branch": st.get("branch"),
+                                       "topic": st.get("topic"), "run": name, "why": why_q})
+                continue
+            stalls.append(_stall("S1", host, st, name, "vendor build %s" % (st.get("outcome") or "gone without an end"),
+                                 ev, now, _num(st.get("ended")) or since, action="raise", harness=st.get("agent")))
+            continue
+
         if st.get("mode") == "agy" or st.get("harness") == "agy":
             # dispatch's agy road (`dispatch --harness agy`, agy-road): no Claude transcript to read, and a retry
             # here would start a Claude build on the branch (dispatch_cmd carries no --harness), in the worktree
@@ -721,6 +809,8 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
             continue
         if kind == "done" or (kind or "").startswith("done"):
             continue
+        if kind == WAITING_ON_LANDER:
+            continue   # the landing record's S4/S5 owns this stop; never retry the build as S1's pending work
         # the queue-first rule on the exact pending line, judged by the branch it names: the run's own, or the
         # one it queued (a run of X that queued Y waits on Y, which the queue holds; read for X, it was S1's
         # retry of finished work) — S3's third landing review, item 6
@@ -775,7 +865,7 @@ def judge_runs(host, view, all_records, live_ids, asked, now, live_count=None, r
                                  **({"limit": True} if lim else {})))
             continue
         # ended idle (or exit 0) with no closing line, no WAITING, no error: the rules cannot tell
-        unsure.append(_stall(None, host, st, name, "no closing line" if s.get("transcript") else "no transcript on %s" % host,
+        unsure.append(_stall(None, host, st, name, "no closing line" if s.get("transcript") or s.get("record") else "no transcript on %s" % host,
                              ev, now, since, action="classify", reply=text[-REPLY_CHARS:] or None,
                              end_reason=reason or None, owner=f.get("owner")))
     return stalls, unsure

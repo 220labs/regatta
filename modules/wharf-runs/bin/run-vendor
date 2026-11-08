@@ -9,6 +9,7 @@ builder. Every failure after the first process starts counts against the vendor.
 import argparse
 import contextlib
 import fcntl
+import importlib.machinery
 import json
 import os
 import re
@@ -33,16 +34,72 @@ class ForNow(v.Refused):
 # A builder's hold is its last line, opening WAITING FOR, or the house closing line: never a mention, and never
 # WAITING FOR NOTHING or SOMETHING, which a build that read the rules may end on.
 # The house line may carry no name (a row with no regatta/owner), or a name with a space or an accent.
-# Nor a bare line that is only a wait on the launcher's own next stage: three Codex builds (2026-11-06) ended
+# Nor a line that is only a wait on the launcher's own next stage: three Codex builds (2026-11-06) ended
 # "WAITING FOR launcher checks and review." (the prompt says the launcher runs them), which held each one before
-# its review loop. An allowlist that names the launcher, never a skip list: a bare "WAITING FOR review" may mean
-# the owner's, and any other word (a D-item, the owner, a reason) or the house line still holds (the landing reviews).
-HOLD_RE = re.compile(r"(?![*_`\s]*WAITING FOR:?\s+(?i:(?:the )?launcher(?:'s|’s)?(?: (?:the )?(?:checks?|reviews?|review rounds?|CI)(?:(?:,? and |, |/| & | \+ )(?:the )?(?:checks?|reviews?|review rounds?|CI))*)?)[\W_]*$)[\W_]*(?:(?:[^\W\d_][^,\n]*, )?THIS SESSION IS )?WAITING FOR\b(?! NOTHING| SOMETHING)")
+# its review loop (#577). A wait that opens on the launcher releases, bare or in the house line's pending form, unless
+# it also names a decision: a D-item, a doc, or a person (the owner by role or by regatta/owner's name, you, a
+# skipper). A bare "WAITING FOR review" names no launcher and still holds. S5's landing review, round 3: a whole-line
+# allowlist of stage words held the prompt's own "checks or reviews" and "the launcher's review loop", and a false
+# hold costs the build its review loop, while a released decision wait is still held by the hand-over's judge (an
+# open D-item, an unanswered relay) once the build ends on its hand-over line.
+HOLD_RE = re.compile(r"[\W_]*(?:(?:[^\W\d_][^,\n]*, )?THIS SESSION IS )?WAITING FOR\b(?! NOTHING| SOMETHING)")
+BARE_WAIT_RE = re.compile(r"[*_`\s]*WAITING FOR:?\s+(.*)$")
+LAUNCHER_START_RE = re.compile(r"[\W_]*(?i:(?:the )?launcher(?:'s|’s)?)\b")
+DECISION_RE = re.compile(r"(?i)\bD\d+\b|\.md\b|\b(?:owner|owner's|you|your|skipper|human|person)\b")
+
+
+def launcher_only(wait):
+    """Whether a wait names the launcher's next stage and nothing a decision would: no D-item, doc or person."""
+    if not LAUNCHER_START_RE.match(wait or ""):
+        return False
+    if DECISION_RE.search(wait):
+        return False
+    name = (getattr(v.common, "OWNER_NAME", "") or "").strip()
+    return not (name and re.search(r"(?i)\b%s\b" % re.escape(name.replace("’", "'")), wait.replace("’", "'")))
+
+
+def held_by(answer):
+    """Whether a builder's reply ends on a hold: HOLD_RE's last line, or a waiting or relayed house line, or a pending
+    one whose wait does not name the launcher."""
+    last = ([l for l in (answer or "").splitlines() if l.strip()] or [""])[-1]
+    bare = BARE_WAIT_RE.match(last)
+    if bare and not re.match(r"[*_`\s]*WAITING FOR (?:NOTHING|SOMETHING)\b", last):
+        return not launcher_only(bare.group(1))
+    if HOLD_RE.match(last):
+        return True
+    kind, line, _ = v.common.ending(answer)
+    if kind in ("waiting", "relayed"):
+        return True
+    if kind == "pending":
+        wait = line.split("—", 1)[1] if "—" in (line or "") else ""
+        return not launcher_only(wait)
+    return False
+
+
+CONFLICT_RE = re.compile(rb"^(?:<{7}|>{7})(?: |\r?$)", re.M)
+VENDORS = {"codex": ("Codex", "noreply@openai.com"), "antigravity": ("Antigravity", "noreply@google.com")}
+_VENDORS = []
+
+
+def vendor_identity(cli):
+    """(name, noreply address) for CLI's Co-Authored-By trailer, from lighthouse's vendor_hook.py when present."""
+    if not _VENDORS:
+        table = dict(VENDORS)
+        tool = v.common.tool("vendor-hooks")
+        if tool:
+            vh = Path(tool).resolve().parents[1] / "hooks/vendor_hook.py"
+            if vh.is_file():
+                with contextlib.suppress(Exception):
+                    mod = importlib.machinery.SourceFileLoader("vendor_hook_id", str(vh)).load_module()
+                    table.update(getattr(mod, "VENDORS", {}))
+        _VENDORS.append(table)
+    return _VENDORS[0][cli]
 
 CHECK_FOR_NOW = ("ps cannot read", "cannot make")
 CHECK_RETRY_S = int(os.environ.get("VENDOR_CHECK_RETRY_S", "30"))
 
-FOR_NOW = ("does not read", "does not walk", "did not answer", "another vendor launcher", "another session holds")
+FOR_NOW = ("does not read", "does not walk", "did not answer", "another vendor launcher", "another session holds",
+           "vendor-hooks apply")
 
 
 def run(a):
@@ -142,9 +199,13 @@ def run(a):
 
         owner_thread = threading.Thread(target=keep_owner, daemon=True)
         owner_thread.start()
+        dispatch_mode = ("unreadable" if state.get("mode_unread")
+                         else (os.environ.get("DISPATCH_MODE") or state.get("task_mode") or "default"))
         state.update(pid=os.getpid(), proc_start=v.codex._pstart(os.getpid()), turn_pid=None,
-                     branch=branch, wt=str(wt), model=a.model, effort=a.effort,
-                     mode="vendor", cli=v.CLIS[a.cli], agent=a.cli, turns=0, rounds=0,
+                     branch=branch, wt=str(wt), brief=state.get("brief") or str(brief.relative_to(wt)),
+                     review_mode="finish_only" if finish_only else "build", dispatch_mode=dispatch_mode,
+                     model=a.model, effort=a.effort,
+                     mode="vendor", cli=v.CLIS[a.cli], agent=a.cli, turns=0, rounds=0, launcher_commits=0,
                      conversation=None, cost={"openai": {}, "anthropic": {"input_tokens": 0, "output_tokens": 0}},
                      started=int(time.time()))
         save_state()
@@ -156,6 +217,7 @@ def run(a):
                    "DISPATCH_TASK", "DISPATCH_MODE"}
         env = {k: val for k, val in os.environ.items() if not k.startswith("DISPATCH_") or k in routing}
         env.update(REGATTA_UNATTENDED="vendor-build", CLAUDE_UNATTENDED="vendor-build",
+                   REGATTA_BUILD_AGENT=a.cli,
                    CLAUDE_CODE_SESSION_ID=sid, DISPATCH_DEPTH=str(state.get("depth") or 0),
                    DISPATCH_REPO=state["repo"], CHECK_HOST=v.common.host_name())
         br = str(v.HERE / "build-review")
@@ -185,6 +247,61 @@ def run(a):
             state["conversation"] = t
             save_state()
 
+        def dirty_files():
+            r = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(wt),
+                                "status", "--porcelain=v1", "-z", "-uall"], capture_output=True)
+            if r.returncode:
+                raise v.Refused("git status failed: " + r.stderr.decode("utf-8", "replace").strip()[-800:])
+            if not r.stdout:
+                return []
+            parts = r.stdout.split(b"\0")
+            paths, i = [], 0
+            while i < len(parts) and parts[i]:
+                entry = parts[i]
+                xy, rel = entry[:2].decode("ascii", "replace"), os.fsdecode(entry[3:])
+                if "U" in xy or xy in ("DD", "AA"):
+                    raise v.Refused("builder left unmerged paths: " + rel)
+                paths.append(rel)
+                i += 2 if xy[:1] in ("R", "C") else 1
+            return paths
+
+        def commit_dirty():
+            # Never stage, commit, or leave committed a path the vendor fence closes (.codex/, .gemini/, leave_paths).
+            v.fence(wt, a.cli, a.origin, paths=True)
+            paths = dirty_files()
+            if not paths:
+                return
+            for rel in paths:
+                p = wt / rel
+                if p.is_file() and not p.is_symlink():
+                    try:
+                        data = p.read_bytes()
+                    except OSError as ex:
+                        raise v.Refused("cannot read %s: %s" % (rel, ex)) from ex
+                    if CONFLICT_RE.search(data):
+                        raise v.Refused("builder left conflict markers in " + rel)
+            v.git(wt, "add", "-A")
+            try:
+                v.fence(wt, a.cli, a.origin, paths=True)
+            except BaseException:
+                with contextlib.suppress(v.Refused):
+                    v.git(wt, "reset")
+                raise
+            if not v.git(wt, "diff", "--cached", "--name-only"):
+                return
+            name, addr = vendor_identity(a.cli)
+            msg = ("%s: %s turn %d \u2014 committed by the launcher\n\n"
+                   "The builder's sandbox could not write the worktree's git folder, "
+                   "so the launcher committed the turn's changes.\n\n"
+                   "Co-Authored-By: %s <%s>" % (state["topic"], a.cli, state["turns"], name, addr))
+            cfg = []
+            for key, val in (("user.name", name), ("user.email", addr)):
+                if subprocess.run(["git", "-C", str(wt), "config", key], capture_output=True).returncode:
+                    cfg += ["-c", "%s=%s" % (key, val)]
+            v.git(wt, *cfg, "commit", "-m", msg)
+            state["launcher_commits"] += 1
+            save_state()
+
         def build_turn(prompt):
             state["turns"] += 1
             result = v.turn(a.cli, wt, prompt, model=a.model, effort=a.effort,
@@ -193,12 +310,21 @@ def run(a):
             state.update(conversation=result["conversation"], last_answer=result["last_answer"],
                          turn_pid=None)
             save_state()
-            # before push(), which refuses a dirty tree: a D-item left uncommitted is still a hold (the except pushes)
-            if HOLD_RE.match(([l for l in result["last_answer"].splitlines() if l.strip()] or [""])[-1]):
+            # before push(), which refuses a dirty tree: a D-item left uncommitted is still a hold, which the
+            # launcher commits for the builder where its sandbox could not (main's vendor-road fixes)
+            if held_by(result["last_answer"]):
+                try:
+                    commit_dirty()
+                except v.Held:
+                    raise
+                except v.Refused:
+                    pass
                 raise v.Held("builder held: " + result["last_answer"][-500:])
+            commit_dirty()
             push()
 
         def push():
+            v.fence(wt, a.cli, a.origin, paths=True)
             # Explicit ref: pre-push judges this same branch; never force.
             v.git(wt, "push", "origin", "HEAD:refs/heads/" + branch)
             if v.git(wt, "status", "--porcelain"):
@@ -229,10 +355,19 @@ def run(a):
                         lines += log.read_text(errors="replace").splitlines()[-30:]
             return "\nThe check failed:\n" + ("\n".join(lines)[-12000:] or "(it left no summary)") + "\n"
 
+        closing_prompt = (
+            "If a next step is needed, write its brief "
+            "and name it in your final answer; the launcher schedules it after a clean end. "
+            "When this is the last step and nothing is open, end your final answer with exactly: "
+            + v.common.HANDOVER_LINE
+        )
+
         def fix_turn(text):
             v.fence(wt, a.cli, a.origin, text)
             build_turn("Fix only the confirmed WRONG S1/S2 findings below, and any failing check shown below; "
-                       "commit the fixes. The launcher's network and review rules still hold.\n" + text)
+                       "commit the fixes (or leave them in the worktree if your sandbox refuses git writes). "
+                       "The launcher's network, step-stamp and review rules still hold. "
+                       + closing_prompt + "\n" + text)
 
         def check():
             exe = os.environ.get("VENDOR_CHECK") or str(v.HERE / "check")
@@ -285,18 +420,24 @@ def run(a):
             base_tip = v.git(wt, "rev-parse", "HEAD")
             first_brief = v.git(wt, "rev-parse", "HEAD:" + str(brief.relative_to(wt)))
             env["DISPATCH_BRIEF"] = first_brief
-            prompt = ("Build the task in the brief at %s. Read it and AGENTS.md, including its Traps, "
+            name, addr = vendor_identity(a.cli)
+            title = v.common.session_name("build", state["topic"])
+            prompt = ("%s\n\n"
+                      "Build the task in the brief at %s. Read it and AGENTS.md, including its Traps, "
                       "with your own tools before editing. Work only here on %s. You are unattended; "
                       "decide routine details; leave an unresolved decision as a committed D-item and make your last line "
-                      "start WAITING FOR, naming the doc and the D-item (only then: a finished build ends on its summary, never WAITING FOR the "
+                      "start WAITING FOR, naming the doc and the D-item (only then: a finished build ends on its summary, or on its last step with the hand-over line below; never WAITING FOR the "
                       "launcher's checks or reviews). "
                       "Commit small changes with clear module-prefixed messages and the trailer "
-                      "%s. The launcher runs checks and review rounds. "
+                      "Co-Authored-By: %s <%s> (if your sandbox refuses git writes, leave the clean edits in the worktree "
+                      "for the launcher to commit). "
+                      "When the brief names steps of a Course doc (a `Steps:` line, or a task to build S<n> of docs/<doc>.md), "
+                      "mark each one done once its suites pass \u2014 `python3 modules/keel/bin/keel step <doc> S<n> done --branch %s --stamp` \u2014 "
+                      "and include that change: a landing may not stamp, and keel's landing gate refuses a branch whose step is "
+                      "still open. "
+                      "The launcher runs checks and review rounds. "
                       "Never fetch, merge, rebase, push, run /finish, pr, dispatch, or start other agents. "
-                      "Leave design step stamps to the landing. If a next step is needed, write its brief "
-                      "and name it in your final answer; the launcher schedules it after a clean end." %
-                      (brief, branch, "Co-Authored-By: Codex <noreply@openai.com>" if a.cli == "codex" else
-                       "Co-Authored-By: Antigravity <noreply@google.com>"))
+                      % (title, brief.relative_to(wt), branch, name, addr, branch)) + closing_prompt
             if state.get("note"):
                 prompt += "\n\n" + state["note"]
             build_turn(prompt)
@@ -401,7 +542,8 @@ def run(a):
                 except Exception as ex:   # a lost row must not lose --next or the owner's release below
                     print("== vendor end: the rotation row was not written: %s" % ex)
         print("== vendor end: %s — %s" % (outcome, why))
-        # Only --next, never a landing. S5 adds the finish hand-over and readers.
+        # The shell ends this claim before calling --handover. A next step
+        # takes precedence and never also queues a finish.
         own = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-%s\.md" % re.escape(state["topic"]))
         latest = sorted(p for p in (wt / "docs/handoff").glob("*.md") if own.fullmatch(p.name))
         # A next brief is a new file, or this brief rewritten and named in the final answer:
@@ -420,7 +562,13 @@ def run(a):
             # and a --next claimed on this host would read this ended run as live.
             fcntl.flock(lock, fcntl.LOCK_UN)
             r = subprocess.run([str(v.HERE / "dispatch"), branch, "--next", "--repo", state["repo"]], env=env)
-            if r.returncode:
+            if r.returncode == 0:
+                state["next_scheduled"] = True
+                save_state()
+            else:
+                state["next_scheduled"] = False
+                state["launch"] = "declined: the next step was not scheduled (dispatch --next exit %d)" % r.returncode
+                save_state()
                 print("== vendor end: the next step was not scheduled (dispatch --next exit %d)" % r.returncode)
                 v.common.write_owner(gd, sid, branch, handover=True)
         elif outcome == "clean":
@@ -445,6 +593,7 @@ def main():
     ap.add_argument("--record", default="")
     ap.add_argument("--brief", default="")
     ap.add_argument("--preflight", action="store_true")
+    ap.add_argument("--handover", action="store_true", help="queue a clean last step's finish after its build claim ends")
     ap.add_argument("--coin", action="store_true", help="a coin draw's pre-flight uses the current builder on a fence refusal")
     ap.add_argument("--next", action="store_true")
     ap.add_argument("--timeout", type=int, default=7200)
@@ -452,6 +601,10 @@ def main():
         raise v.Refused("launcher stopped by signal %d" % signum)
     signal.signal(signal.SIGTERM, stopped)
     args = ap.parse_args()
+    if args.handover:
+        import vendorhandover
+        vendorhandover.handover(args.worktree, args.record)
+        return 0
     try:
         code = run(args)
     except (v.Refused, OSError, ValueError) as ex:

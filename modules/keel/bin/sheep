@@ -186,9 +186,14 @@ _HOME = _home()
 # The list is empty without a home: its element is built before the filter runs, so `_HOME / …` on
 # None raised at import and no caller could load this file on a machine with no `home` (CI, a
 # stranger's install; the checkpoint's mirror note fell back to the plain URL).
-GATE = Path(os.environ.get("SHEEP_GATE") or next(
-    (p for p in ([_HOME / "modules" / "keel" / "hooks" / "sheep_gate.py"] if _HOME else []) if p.is_file()),
-    HERE.parent / "hooks" / "sheep_gate.py"))
+def default_gate():
+    """The installed gate path, also used by headless builders to judge hook trust."""
+    return next(
+        (p for p in ([_HOME / "modules" / "keel" / "hooks" / "sheep_gate.py"] if _HOME else []) if p.is_file()),
+        HERE.parent / "hooks" / "sheep_gate.py")
+
+
+GATE = Path(os.environ.get("SHEEP_GATE") or default_gate())
 _gate = SourceFileLoader("sheep_gate", str(HERE.parent / "hooks" / "sheep_gate.py")).load_module()
 
 # sessionpipe 0.5.0's CLAUDE_EVENTS, in its order (core/src/adapters/claude-code.ts).
@@ -203,7 +208,8 @@ EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Post
 # review in `codex` → /hooks, which check notes; a notify that runs sessionpipe (its own install's)
 # is ungated and counted so (codex_notify()). Antigravity: $GEMINI_CLI_HOME/config/hooks.json
 # ($GEMINI_CLI_HOME defaults to .gemini in the home folder), top-level keys are hook names, ours
-# "sessionpipe": {enabled, <Event>: [handler] or, for tool events, [{matcher "*", hooks: [handler]}]}.
+# "sessionpipe": {enabled, <Event>: [handler] or, for tool events, [{matcher "*", hooks: [handler]}]},
+# every timeout 15 (agy reads a killed hook as a deny).
 CODEX_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop",
                 "Interrupt", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "SessionEnd"]
 AG_EVENTS = ["PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"]
@@ -419,6 +425,16 @@ def state_dir():
     return Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "sessionpipe"
 
 
+def reporting_env():
+    """Pin the installed delivery and privacy stores before a builder changes HOME."""
+    if not _gate.policy_home_valid():
+        raise Refused("SHEEP_POLICY_HOME is not an absolute policy home")
+    return {"SESSIONPIPE_CONFIG": str(config_file().resolve()),
+            "SESSIONPIPE_STATE": str(state_dir().resolve()),
+            "XDG_STATE_HOME": str(_gate._state_root().resolve()),
+            "SHEEP_POLICY_HOME": str(_gate.policy_home().absolute())}
+
+
 def sessionpipe_bin():
     for c in (os.environ.get("SHEEP_SESSIONPIPE"), shutil.which("sessionpipe"),
               str(HOME / ".local" / "bin" / "sessionpipe"), "/opt/homebrew/bin/sessionpipe"):
@@ -604,6 +620,14 @@ def _base_exe(base, name):
         raise Refused(f"{missing} is missing — run `sessionpipe install --backfill 0 --claude-code` first")
 
 
+def hook_group(base, name, ev):
+    """The Claude-shaped group gate_file writes, shared with the builder trust check."""
+    group = {"matcher": ""} if re.search(r"Tool|Permission", ev) else {}
+    group["hooks"] = [{"type": "command", "command": gated(f"{base} {name} {ev}"),
+                       "timeout": 130 if name == "claude-code" and ev == "PermissionRequest" else 5}]
+    return group
+
+
 def gate_file(path, dry, seed=None, name="claude-code"):
     """Gate every sessionpipe entry and add the missing events; returns (changes, survey) —
     the survey as the file stands after the write, or as it stands now on a dry run. A file
@@ -648,10 +672,7 @@ def gate_file(path, dry, seed=None, name="claude-code"):
                 continue  # a malformed event value is left as it is
             if not any(ours(g) for g in hooks.get(ev) or []):
                 _base_exe(base, name)
-                e = {"matcher": ""} if re.search(r"Tool|Permission", ev) else {}
-                e["hooks"] = [{"type": "command", "command": gated(f"{base} {name} {ev}"),
-                               "timeout": 130 if claude and ev == "PermissionRequest" else 5}]
-                hooks.setdefault(ev, []).append(e)
+                hooks.setdefault(ev, []).append(hook_group(base, name, ev))
                 changes.append(f"added {ev}")
         cfg["hooks"] = hooks
         if not changes or dry:
@@ -689,11 +710,34 @@ def ag_survey(cfg):
 def ag_entry(base, enabled=True):
     """sessionpipe's own entry (antigravity.ts entry(), not lean), each command gated."""
     def handler(ev):
-        return {"type": "command", "command": gated(f"{base} antigravity {ev}"), "timeout": 5}
+        # 15 s (Claude's and Codex's stay 5): agy reads a killed hook as a deny, so a slow sessionpipe on a loaded
+        # host takes every tool from a build (vendor-road-fixes, 2026-11-06).
+        return {"type": "command", "command": gated(f"{base} antigravity {ev}"), "timeout": 15}
     out = {"enabled": enabled}
     for ev in AG_EVENTS:
         out[ev] = [{"matcher": "*", "hooks": [handler(ev)]}] if "Tool" in ev else [handler(ev)]
     return out
+
+
+def builder_hooks(name):
+    """Exactly the optional reporting hooks a headless builder may trust.
+
+    Read the same installed seed as gate. A wrapper, interpreter, argument or shell
+    expansion in that seed is never safe to trust through a headless bypass. The
+    gate itself must be the installed one, even when SHEEP_GATE overrides the writer.
+    """
+    base = seed_command()
+    match = re.fullmatch(r'"(/[^"\n]+/sessionpipe-hook)"', base or "")
+    if not match or any(c in base for c in ("$", "`", "\\")):
+        raise Refused("the installed sessionpipe seed is not a bare sessionpipe-hook")
+    _base_exe(base, name)
+    if GATE != default_gate() or not GATE.is_file():
+        raise Refused("the reporting gate is not the installed sheep_gate.py")
+    if name == "antigravity":
+        return {AG_KEY: ag_entry(base)}
+    if name == "codex":
+        return {"hooks": {ev: [hook_group(base, name, ev)] for ev in CODEX_EVENTS}}
+    raise Refused(f"no builder reporting hooks for {name}")
 
 
 def gate_ag(path, dry, seed=None):

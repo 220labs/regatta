@@ -86,7 +86,7 @@ git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"
   && git checkout -q -b claude/h1/2026-10-21-demo && mkdir -p docs/handoff && echo "# b" > docs/handoff/2026-10-21-demo.md \
   && git add . && git commit -qm seed && git remote add origin "$T/origin.git" && git push -q origin claude/h1/2026-10-21-demo 2>/dev/null \
   && git checkout -q main) || cp -R "$T/repo/.git/." "$T/origin.git/"
-printf -- '- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '# Test repository\n' > "$T/repo/AGENTS.md"
 mkdir -p "$HOME/projects"; ln -s "$T/repo" "$HOME/projects/pub"; ln -s "$T/repo" "$HOME/projects/far"
 cat > "$T/launchctl" <<EOF
 #!/bin/sh

@@ -2593,11 +2593,11 @@ def handoff(sid):
 # below starts with _TO.
 # Before the address, one mark per state, so a panel of sessions reads at a glance (the owner,
 # 2026-10-29): ✅ closeable — a done line or WAITING FOR NOTHING; ⏳ work goes on without the owner —
-# WAITING FOR SOMETHING, the hand-over, RELAYED; 🛑 the owner owes the next move — WAITING FOR YOU.
+# WAITING FOR SOMETHING, the hand-over, the lander, RELAYED; 🛑 the owner owes the next move — WAITING FOR YOU.
 # The constants and CLOSING stay unmarked: bare() drops a leading mark, so every reader compares as
 # before, and keel's Stop lint (mark_findings) holds a reply to the mark its kind names. A producer
 # that prints a line for a session to end on prints `marked(kind, line)`.
-MARKS = {"done": "✅", "idle": "✅", "pending": "⏳", "handed": "⏳", "relayed": "⏳", "waiting": "🛑"}
+MARKS = {"done": "✅", "idle": "✅", "pending": "⏳", "handed": "⏳", "lander": "⏳", "relayed": "⏳", "waiting": "🛑"}
 # Any leading pictograph run, and the space after it — not only MARKS, so a wrong mark is read as one, and
 # a missing space still strips (the lint names it): without it the line read as no closing line at all.
 _MARK_RE = re.compile("^([\u2190-\u2bff\U0001F000-\U0001FAFF\ufe0f\u200d]+)([*_`]*[ \t]*)")   # "**🛑** " too
@@ -2630,6 +2630,11 @@ IDLE_PREFIX = ADDRESS + "THIS SESSION IS WAITING FOR NOTHING — "
 HANDOVER_LINE = PENDING_PREFIX + "dispatch's launch (autofinish-run)"
 HANDED_WHAT = (r"(?:[Dd]ispatch's (?:(?:yolo|dnd) )?launch\b|[Dd]ispatch to start the (?:(?:yolo|dnd) )?launch\b"
                r"|autofinish-run\b).*")
+# A stopped finish's next move belongs to the lander, not to work this session watches.
+# The finish uses this only after `autofinish-run lander armed` succeeds (stuck-ships S7).
+# Anchor at the what's start, as handed does: "the reviewers, then the lander's ..." stays pending; and "road: " after
+# it, so a plain wait on "the lander's suite, then the reviewers" stays pending too (S7's landing review).
+LANDER_PREFIX = PENDING_PREFIX + "the lander's road: "
 # /autofinish (autofinish design E6, D7): the session is done and the launcher takes the branch.
 # Allowed only when the session's own dry run says `start` — checkpoint.py's Stop checks it
 # (autofinish_at_stop) and blocks the reply once otherwise; bin/autofinish lets it skip rule C's
@@ -2655,6 +2660,7 @@ CLOSING = (
     ("waiting", _TO + r"THIS SESSION WAITS TO MOVE TO \S+ — .+"),                   # /move, peer away
     ("waiting", re.escape(WAITING_PREFIX) + r"\S.*"),                               # A1: any ask
     ("handed", re.escape(PENDING_PREFIX) + HANDED_WHAT),                            # before pending: its landing is dispatch's
+    ("lander", re.escape(LANDER_PREFIX) + r"\S.*"),                                # before pending: the tick owns the next move
     ("pending", re.escape(PENDING_PREFIX) + r"\S.*"),                               # no ask: it carries on by itself
     ("idle", re.escape(IDLE_PREFIX) + r"\S.*"),                                     # no ask, nothing going on: a plain answer
     # session-asks R4: a dispatched run that relayed its ask waits on its skipper, not on the owner
@@ -2735,7 +2741,7 @@ def mark_of(line):
 
 
 def closing_kind(line):
-    """'done', 'waiting', 'handed', 'pending', 'idle', 'relayed' or None for one line of a reply. Markup around it doesn't change what
+    """'done', 'waiting', 'handed', 'lander', 'pending', 'idle', 'relayed' or None for one line of a reply. Markup around it doesn't change what
     it says, so it doesn't change the answer."""
     line = bare(line)
     for kind, rx in _CLOSING_RE:

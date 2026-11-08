@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A lander closing line belongs to the landing rules; the run rules never retry it as abandoned
+  work or classify it as an unknown ending (stuck-ships S7).
+- Vendor stalls read the launcher's end and last reply, including between turns with no vendor child. Builder hosts are read through `regatta/fleet-ssh`; failed, held and capped builds are raised from their recorded outcome, and a queued finish is left to its claiming owner's landing.
+
+- `stalls_tick.LANDER_ROADS` (False until stuck-ships S3) says whether the tick roads a lander stop;
+  `autofinish-run lander armed` reads it.
 - The board takes keel's Porthole tokens (rounded type, pill chips) and rounder cards, timeline and comment sheet (28 px).
 - A refused build's card puts dispatch's cause and next action first, so the evidence summary keeps them visible.
 - Landing retries use the finish week ceiling in their preflight, so a login past its build ceiling

@@ -10,9 +10,10 @@ and, when the event is private, exits 0 having sent nothing: sessionpipe never r
 outbox line, no sink. Otherwise it runs sessionpipe's command with the same stdin bytes; its
 stdout (a PermissionRequest answer) passes through, its exit code does not — a script under
 hooks/ never exits non-zero (AGENTS.md), and a crashing sessionpipe must not block a tool or
-erase a prompt. Antigravity reads a hook's stdout as its answer and takes anything but JSON as a
-deny (sessionpipe's adapters/antigravity.ts), so for it the gate prints `{}` before anything
-else, on every path, and discards sessionpipe's stdout (0.5.0 only ever answers `{}` there).
+erase a prompt. Antigravity 1.5.2 reads `{}` as a deny. For it the gate prints nothing
+on every path and discards sessionpipe's stdout (0.5.0 only ever answers `{}` there).
+Dropping a private reporting event does not deny the tool: Regatta's separate guard
+handler owns tool decisions, including its decision/reason JSON on a denial.
 
 Where a session runs, per harness: Claude Code and Codex put `cwd` in the event (Codex's
 `transcript_path` is a rollout under $CODEX_HOME/sessions, which says nothing of the folder, so only
@@ -94,6 +95,9 @@ sessionpipe to refuse a session by id (an upstream ask). A root named only as th
 longer name (`know.`, `know-wt/…`, a Codex cwd `know-topic`) drops that event, as before this
 branch, with no lasting marker: a later open Stop sends its turns, as main did.
 Changing HOME or an absolute XDG_STATE_HOME moves the store: carry the markers with it.
+Builders pin SHEEP_POLICY_HOME to the original absolute home before installing a scratch
+HOME. Guarded roots, confidential roots and ~ expansion keep that policy home; delivery
+and marker stores remain pinned separately. A malformed policy home drops every event.
 
 A council arm sends nothing either (wharf's bin/council): an event whose hook runs with
 REGATTA_COUNCIL_ARM set, or whose folder lies under a council run dir (its `.council-run` marker): the
@@ -135,11 +139,28 @@ import urllib.parse
 from pathlib import Path
 
 
+def policy_home_valid():
+    return "SHEEP_POLICY_HOME" not in os.environ or os.path.isabs(os.environ["SHEEP_POLICY_HOME"])
+
+
+def policy_home():
+    """The builder's original policy home, independent of its disposable login HOME."""
+    value = os.environ.get("SHEEP_POLICY_HOME")
+    return Path(value) if value and os.path.isabs(value) else Path.home()
+
+
+def _expanduser(path):
+    value = str(path)
+    if value == "~" or value.startswith("~/"):
+        return str(policy_home()) + value[1:]
+    return os.path.expanduser(value)
+
+
 
 def _config_lines(name):
     """`<config>/<name>`'s non-blank lines as the core's config_read reads them, without the core;
     None when the file is absent or does not read."""
-    cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    cfg = Path(_expanduser(os.environ.get("REGATTA_CONFIG") or policy_home() / ".config" / "regatta"))
     try:
         text = (cfg / name).read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
@@ -148,7 +169,7 @@ def _config_lines(name):
 
 
 def _overlay():
-    cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    cfg = Path(_expanduser(os.environ.get("REGATTA_CONFIG") or policy_home() / ".config" / "regatta"))
     return (cfg / "regatta" / "overlay").exists()   # the overlay's marker (B14a; the only one since B14b)
 
 
@@ -174,7 +195,7 @@ def _fold(p):
 def _registry_file():
     """Whether a registry file is there, without the core: the core's repos_json() order."""
     v = os.environ.get("CLAUDE_REPOS_JSON")
-    cfg = Path(os.environ.get("REGATTA_CONFIG") or Path.home() / ".config" / "regatta").expanduser()
+    cfg = Path(_expanduser(os.environ.get("REGATTA_CONFIG") or policy_home() / ".config" / "regatta"))
     p = Path(v) if v else cfg / "wharf" / "repos.json"
     return p.exists() or p.is_symlink()   # a dangling link is a registry gone, not none (the core's rule)
 
@@ -200,13 +221,27 @@ def confidential_roots():
             return ()
         if getattr(common, "registry_unreadable", lambda: False)():
             return None
-        return tuple(common.confidential_roots())
+        roots = tuple(common.confidential_roots())
+        if policy_home() != Path.home():
+            # The core's default PROJECTS was loaded under the scratch HOME too.
+            configured = common.config_line("regatta/projects")
+            value = _expanduser(configured) if configured else ""
+            projects = Path(value) if os.path.isabs(value) else policy_home() / "projects"
+            rebased = []
+            for root in roots:
+                try:
+                    root = projects / root.relative_to(common.PROJECTS)
+                except ValueError:   # an absolute registry key outside PROJECTS stays absolute
+                    pass
+                rebased.append(root)
+            roots = tuple(rebased)
+        return roots
     except Exception:
         return None if _registry_file() else ()
 
 
 def _roots():
-    home = Path.home()
+    home = policy_home()
     projects = home / "projects"
     return home, [projects / r for r in PRIVATE_REPOS] + list(confidential_roots() or ()), projects
 
@@ -222,7 +257,7 @@ def private_part(path):
         return None
     names = {r.name.casefold(): r.name for r in confidential_roots() or ()}
     names.update({r.casefold(): r for r in PRIVATE_REPOS})
-    for part in Path(os.path.expanduser(str(path))).parts:
+    for part in Path(_expanduser(path)).parts:
         if part.casefold() in names:
             return names[part.casefold()]
     return None
@@ -235,7 +270,7 @@ def slug(path):
 
 def _real(p):
     try:
-        return Path(os.path.realpath(os.path.expanduser(str(p))))
+        return Path(os.path.realpath(_expanduser(p)))
     except Exception:
         return Path(str(p))
 
@@ -244,7 +279,7 @@ def _path_reason(p):
     if not p or not isinstance(p, str):
         return None
     home, subtree, projects = _roots()
-    for cand in {Path(os.path.abspath(os.path.expanduser(p))), _real(p)}:
+    for cand in {Path(os.path.abspath(_expanduser(p))), _real(p)}:
         c = _fold(cand)
         if any(_fold(seg) + "/" in c + "/" for seg in SECRETS_SEGMENTS):
             return f"{cand} is in Drive's _secrets"
@@ -517,6 +552,8 @@ def main(argv, data):
         return
     if not isinstance(event, dict) or not argv:
         return
+    if not policy_home_valid():
+        return   # an unreadable policy home never selects the disposable HOME's roots
     name = harness(argv)
     if session_dropped(name, event, False):
         return   # a fenced session needs no policy read (which can be slow or broken)
@@ -540,8 +577,7 @@ def main(argv, data):
         return   # the run's own approver answers; no owner attention, no approval decision here
     # communicate() feeds stdin without the 64 KB pipe-buffer deadlock. Claude Code and Codex:
     # stdout and stderr are inherited (a PermissionRequest answer goes straight back).
-    # Antigravity: the answer was written before anything else, and sessionpipe 0.5.0's own is `{}`
-    # on every path (antigravity.ts fromHook), so its stdout goes nowhere: a second answer is noise.
+    # Antigravity: silence allows the tool; sessionpipe 0.5.0's `{}` would deny it.
     out = subprocess.DEVNULL if name == "antigravity" else None
     subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out).communicate(data)
     if name == "codex" and argv[-1] == "PreToolUse" and not session_dropped(name, event, False):
@@ -552,13 +588,6 @@ def main(argv, data):
 
 
 if __name__ == "__main__":
-    # Antigravity: `{}` first, as sessionpipe's own hook.js does, so a crash or Antigravity's 5 s
-    # timeout killing this process still leaves it an answer (module docstring).
-    if harness(sys.argv[1:]) == "antigravity":
-        try:
-            os.write(1, b"{}\n")
-        except BaseException:
-            pass
     try:
         main(sys.argv[1:], sys.stdin.buffer.read())
     except BaseException:  # SystemExit included: this hook's only exit code is 0

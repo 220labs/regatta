@@ -22,7 +22,9 @@ and its vendor arms weigh 0. A run that carries an origin marker draws nothing.
 While BOTH Claude weights are zero (Codex takes every new build, the owner, 2026-11-04), a worker or Sonnet brief
 takes only gpt-mid and an sr-worker or Opus one only gpt-big (`gpt_class`), Claude tier lines with reasons or an
 explicit effort included; a principal tier and every other class keep their Claude route, and any positive Claude
-weight restores the old class rule. A zero-weight arm is never drawn, even by DISPATCH_COIN.
+weight restores the old class rule. With the size's GPT arm at 0 too (Codex off, the owner, 2026-11-07), such a
+brief draws among the other vendor arms by weight (Argon), never the other GPT size; with those at 0 as well it
+draws nothing. A zero-weight arm is never drawn, even by DISPATCH_COIN.
 
 An arm whose agent is no `claude` (Argon's `antigravity`, agy-road's provider word; `codex`, S8's) runs only on a builder host, one whose
 `wharf-runs/features` line names the agent's feature (`agy`, `codex`): the draw asks the hosts ref for a fresh row of such a host
@@ -259,7 +261,8 @@ def rotates(text):
 
 def gpt_class(text):
     """While BOTH Claude weights are zero, worker/Sonnet and sr-worker/Opus
-    briefs draw only their size's GPT arm. Principal and every other class stay
+    briefs draw only their size's GPT arm, or, with that arm at 0 too (Codex off), the other vendor arms by weight
+    (sized_keeps). Principal and every other class stay
     on the old rule. Any positive Claude weight restores that rule at the next draw (a word already drawn keeps its
     arm: dispatch's arm_keep_gpt).
     """
@@ -267,6 +270,16 @@ def gpt_class(text):
     if w is None or any(w[:2]):
         return None
     return gpt_size(text)
+
+
+def sized_keeps(coin, size):
+    """Whether arm COIN may take a brief of GPT SIZE: the size's own arm, or, when Codex is off for it, an arm of
+    another vendor (Argon) — never the Claude arms and never the other GPT size. One rule for the draw and for
+    dispatch's arm_keep_gpt at fire (`keeps`), so a word drawn here is never dropped there for its arm."""
+    if ARMS[coin][0] == size:
+        return True
+    own = [a[3] for a in ARMS if a[0] == size]
+    return bool(own) and ARMS[coin][3] not in ("claude", own[0])
 
 
 def gpt_size(text):
@@ -357,7 +370,12 @@ def draw(primary, needs=(), pin="", brief_class="", origin=""):
         return None, "builder rotation off: %s" % owhy
     # A size-pinned override never swaps sr-worker for the mid arm (or vice versa).
     if brief_class in ("gpt-big", "gpt-mid") and not any(weights[:2]):
-        weights = tuple(w if ARMS[i][0] == brief_class else 0 for i, w in enumerate(weights))
+        sized = tuple(w if ARMS[i][0] == brief_class else 0 for i, w in enumerate(weights))
+        # Codex off (its size's arm weighs 0, the owner, 2026-11-07): the other vendor arms take the brief by their
+        # weights (Argon), never the other GPT size and never the Claude arms, which the owner keeps for finishes (a
+        # draw with no fresh builder host still falls back to Opus); dispatch's arm_keep_gpt keeps such a word at fire
+        weights = sized if sum(sized) else tuple(
+            w if sized_keeps(i, brief_class) else 0 for i, w in enumerate(weights))
     if not sum(weights):
         return None, "builder rotation off: %s gives every arm 0" % ODDS_KEY
     rolled = road_weights(weights, True)
@@ -482,6 +500,7 @@ def main(argv):
     sub.add_parser("specced"); sub.add_parser("rotates"); sub.add_parser("odds"); sub.add_parser("grammar")
     n = sub.add_parser("need"); n.add_argument("word")
     fb = sub.add_parser("fallback"); fb.add_argument("word")
+    k = sub.add_parser("keeps"); k.add_argument("word"); k.add_argument("size")
     a = ap.parse_args(argv)
     if a.cmd == "grammar":
         print(WORD_GRAMMAR)
@@ -540,6 +559,9 @@ def main(argv):
                 arm = arm_of(fallback_word(a.word))
         print(arm["model"], arm["effort"], word_of(arm), json.dumps(arm, separators=(",", ":")))
         return 0
+    if a.cmd == "keeps":
+        # dispatch's arm_keep_gpt: exit 0 when a word drawn for a brief of this GPT size stays on its coin
+        return 0 if sized_keeps(arm["coin"], a.size) else 1
     if a.cmd == "need":
         print(need_of(a.word) or "")
         return 0

@@ -1269,6 +1269,19 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='handed-step'])")" \
     "[]" "  its launch started: no card here (a launch that stops is S4 or S5)"
   rm -f "$R/14-handed.json" "$HOME/.claude/projects/-t/sid-handed-step.jsonl"
+  # stuck-ships S7: the landing record owns a lander stop. Never retry it as a pending build,
+  # or classify its ending as unsure, after the minute that releases the finish's lock.
+  git -C "$D" branch claude/t/2026-10-14-lander-step
+  rec 14-lander.json lander-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 1 min"
+  say sid-lander-step "⚠ step 1 — review findings remain.
+
+⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
+  check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls; print(stalls.reply_kind(sys.argv[2]))' "$B" \
+    "⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3")" "waiting on the lander" "reply_kind maps the lander by name"
+  lj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$lj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['class'] for x in d['stalls'] + d['unsure'] if x['topic']=='lander-step'])")" \
+    "[]" "an ended lander stop leaves its next move to the landing rules, never a build retry"
+  rm -f "$R/14-lander.json" "$HOME/.claude/projects/-t/sid-lander-step.jsonl"
   printf '{"pid": %s, "sessionId": "mgr-1", "status": "busy", "statusUpdatedAt": %s000}' "$$" "$now" > "$T/sess/mgr.json"
   check "$(python3 "$B/stalls.py" --json | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['class']=='S7'][0]; print(s['raise_to'], s['column'])")" \
     "skipper Blocked" "  S7 goes to its skipper (raise_to, rename S5) while that session is live"

@@ -16,6 +16,7 @@
     account env LABEL                                           the start env: CLAUDE_CONFIG_DIR=… (or nothing)
     account run LABEL [CLAUDE ARGS…]                            exec claude on that login here; refuses a denied cwd or a disabled row
     account exhausted --window W --resets-at T [--session S]    record a locked window (bin/statusline calls it)
+    account limit-read KEY LABEL                                a login's live limit for regatta limit's trial read, or none; exit 2 on a bad line
     account check                                               per row: login, links, first-start keys, settings, probe age, cooldowns
     account add LABEL [--no-login]                              make a Claude row's config dir, its first-start keys, then its /login
     account setup [--host PEER] [--no-record]                   build this Mac (or the peer) from the logins file; every dir's first-start keys
@@ -62,6 +63,26 @@ dir's top-level files into a profile at each selection, usage-probe.json include
 age; with none, the row is "unknown" and skipped — except the primary (bar an Antigravity row on a live pick, below), which pick takes at once
 rather than hand its work to a later row (one whose plan may lack Fable) or block it. Never a loop.
 
+The login guard (the owner, 2026-11-06: "keep the login list the same everywhere, just make sure the logins that
+aren't signed in are not picked"): one registry is shared by every host, and a home may hold no login there, or
+another account's (a node's default dir signed in as a tenant's seat). A Claude row is refused, before every other
+reason and on every road that judges it (pick and `--cached`, a pinned ship, the finish pick, the overdraw pass, the
+primary's at-once road and an unread tenant login's, `limits`, `check`, doctor), when (a) its home is not signed in:
+`.claude.json` holds no `oauthAccount`, or the credential store holds no login (`<home>/.credentials.json`, and on a
+Mac the keychain entry, read by its attributes alone: a store that cannot answer without a prompt is skipped, never
+read as empty); or (b) it is signed in as another account than the logins file's entry for the row (its `email`, or
+`account_uuid` where one is written); a login another row shares goes to the row the guard passes, never to a refused
+one. The logins file is read as a hook reads it, by every caller (doctor too): a link into a drive, outside claude-host,
+only through its local copy, never opened (with no copy, (b) is unknown); elsewhere the file, then its copy. A row it
+does not describe, or one whose entry names neither
+key, is judged as before, and doctor says so; a key that is present but does not read refuses, and so does a file
+or copy that is there but does not read (every row, till it is fixed or removed). Where `account_uuid` is written it
+alone decides (an e-mail can change under one account). With neither the
+file nor its copy, (b) cannot be told: the primary is refused (its at-once road would run owner work on whatever
+seat its home holds), the other rows are judged as before, and doctor says so. A refused row is never probed.
+Codex rows read their sign-in through their own probe (a signed-out home is "limits unknown") and agy rows through
+their own keychain login: neither is judged here.
+
 Paid overage (costs S8, docs/host-power-costs-2026-10-24.md finding 10): the probe's answer carries
 `rate_limits.extra_usage`, read by the core's `extra_usage()` (plumb's usage-report reads the /usage
 cache with it) into the cached reading. judge refuses a row whose extra usage is on, since work there
@@ -94,77 +115,65 @@ records, and loses its own, until it records again. Nothing here rewrites that f
 the next selection; with the filter the primary's records are skipped, a link (should one be made) is read the same
 way, and check and doctor name a log holding another seat's records (cooldown-account, 2026-11-02).
 
-Pace (2026-10-30, the owner: "if the spend is lower than pace and we still have 5-10% to go, we should
-just launch"): a row over its 5-hour limit (window_max less the margin) still runs while its 5-hour
-spend is under the window's elapsed share, `pace = 100 * (1 - (five_hour_resets - now) / 5 h)`, and
-`rules.pace_headroom` points (PACE_HEADROOM, 10) are left. 45% four hours and 35 minutes in reads
-"5h 45% under pace 92% (10 points headroom)". With no reset inside the window's future, the flat
-limit alone. Pace is read at the reading's own sample time, not now: a cached 60% with 3 h left
-stays refused however old it grows (else a failed probe's stale reading, which pick falls back
-to, would turn eligible on the clock alone; the landing review, 2026-10-30). A non-number in
-either rule is off, with one stderr line, so a hand-edited registry never stops every pick. Pace lifts only that limit: the week ceiling, a cooldown, paid overage, tenancy
-and a scope's login judge as before, and every caller (pick, limits, dispatch, pickup, tier_check, helm) takes
-judge's verdict, so none keeps a 5-hour rule of its own.
+Limit pairs (account-limit-pairs, 2026-11-07; the owner: "let's have similar approach for both weekly and window
+limits", "call free_below soft_max, and call each variable either max/hard_max (ceiling that can't be lifted by pace
+or overdraft) and soft_max for anything that can"): every account limit has one shape, a `soft_max` (a lift may pass
+it: pace on either window, and `--overdraw` on the week) and a `hard_max` (nothing passes it), per window (`week`,
+and `window` = the 5-hour window). Every caller (pick, limits, dispatch, pickup, tier_check, helm) takes `judge`'s
+verdict, so none keeps a window rule of its own. A non-number in an optional rule reads as its default, said once on
+stderr, so a hand-edited registry never stops every pick; old registry, budgets.json and live names keep reading as
+aliases, and when a row sets both an old and a new key the new wins, said once on stderr.
 
-Free below (the owner, 2026-10-30: "if the window is under 70% then the pace rule doesn't apply. Under 70% we can run anything."):
-a 5-hour spend under a row's `rules.free_below` (FREE_BELOW, 0: off unless a row sets it; the owner's
-registry is to set 70) runs whatever window_max, the margin or the pace
-say; the flat limit, the margin and pace judge only from there up. The week ceiling still judges below it.
+The 5-hour window (`window_soft_max`, `window_hard_max`): a 5-hour spend under `window_soft_max` less the exhaustion
+margin (`MARGIN` points per exhaustion in `MARGIN_DAYS`, up to `MARGIN_CAP`) runs whatever the pace; at or above it,
+the row still runs while its spend is under the window's elapsed share, `pace = 100 * (1 - (five_hour_resets - at) / 5 h)`,
+and under `window_hard_max` (default 90, `100 - PACE_HEADROOM`). Nothing passes `window_hard_max`, even a higher soft
+line. The pair applies once a row (budgets.json's `*` included) or a live line sets a new window key; a row with only old
+keys, or none, keeps the old reading: flat up to `window_max` (100 when unset), `pace_headroom` gating the pace road only. With no reset inside the window's future, pace lifts nothing. Pace is read at the reading's own sample time `at`,
+never wall-clock `now` (2026-10-30: a failed probe's stale reading, which pick falls back to, must never turn eligible
+on the clock alone). Live `lighthouse/window-soft-max` and `lighthouse/window-hard-max` (`<login>:N`, else `*:N`) stand
+over budgets.json and the registry on that host. Old `rules.free_below`, `rules.window_max` and `rules.pace_headroom`
+(`100 - pace_headroom`) keep reading as aliases; an old `free_below` keeps its margin-free reading, so moving it to
+`window_soft_max` takes the exhaustion margin.
 
-Overdraw (the owner, 2026-11-04: every login's dispatch bar at 90% or lower, "but when there are no accounts
-on the node, it can be overridden so that the job can still start, so long as there is scope-applicable account
-with credits left. Each incident like this should be logged in logbook"): `pick --overdraw`, which dispatch's
-fire-time pick, autofinish-run's pick and autofinish's week() pass, for a job that ranks high enough (the owner,
-2026-11-05: "only … priority high or higher, and finishes at normal"): a build at `--priority` high or force, a
-finish at any of its ranks, which start at normal (the callers judge it; this verb takes no priority), judges the walk as ever; only when no row
-is eligible does it take, in walk order, the first row whose refusal was its week ceiling (judge's `week N% ≥
-M%`) and judge it again with the ceiling at 100 (lift). Every refusal before the ceiling still stands, so a
-scope, a tenant, a confine, a room (Fable's own week included: it is judged at the row's ceiling),
-a cooldown or paid overage is never crossed, and nor are the 5-hour rules after it: a week under 100% and a
-5-hour window within its rules are the credits left. A primary or tenant login whose limits are unknown,
-which the walk would take on a guess, waits for the pass: a row before it with credits left goes first.
-`rules.overdraw` narrows and fails closed: `false` (a seat kept low on purpose) is never lifted, `true` may
-be, and with no key every row may be but the primary, whose routines break when its week runs out, so a host's
-registry without the key never lifts it; any other value lifts nothing, said on stderr (may_overdraw). A
-login's own live `lighthouse/week-max` line holds too (the owner's newest word on that seat); a `*:` line
-does not. `lighthouse/overdraw-max` (`<login>:N`, else `*:N`; a value that does not read is no line, so a
-login's bad own line leaves `*:` to serve it, and a file that cannot be read is said on stderr) caps a
-lifted row's week bar in place of 100, never above 100 (the owner, 2026-11-06: allow high and force builds
-through overdraw on a seat with a ceiling for them), and binds lifted rows alone (a finish its
-`lighthouse/week-max-finish` line judges keeps that line and is never lifted; a finish with no such line, lifted,
-meets this ceiling as a build does). The pick only decides, and its answer carries `overdraw` (the row, the bar, the week, the reason,
-the other rows, the repo and `--job`): the caller hands that object to `account overdraw-log` once its job
-has started (dispatch once its session began, in the foreground, on both roads), so a job refused after the pick, a dry
-run or a second pick for a room is never an incident, and no pick waits on GitHub. overdraw-log writes one
-line in the log dir's overdraw.jsonl and a note in the logbook through helm's ask (`issue_note`: one issue
-per login and week, titled by the week's UTC reset date and led by helm/mention, then a comment per
-incident, from any host); a logbook that does not answer is said in its output, never raised. `--ship`
-keeps a ship's own road. Known gaps: two hosts overdrawing in the same seconds may open two issues, the
-issues are never closed, and the lookup needs the `overdraw` label on the issue (GitHub drops labels
-for a token without push access): TODO.md [overdraw-followups].
+The week (`week_soft_max`, `week_hard_max`) and week pace (D1, 2026-11-07): a week spend under `week_soft_max` (raised
+as a soft line on `rules.reserve.day` or within `rules.reserve.last_hours`, `reserve.week_soft_max` or alias `week_max`)
+runs while under `week_hard_max` (default 100). At or above `week_soft_max`, the row still runs while its week spend is
+under the week's elapsed share at the reading's own sample time `at`, `100 * (1 - (seven_day_resets - at) / 7 d)`, and
+under `week_hard_max`. Nothing passes `week_hard_max` — neither a reserve, week pace, nor `--overdraw`. Live
+`lighthouse/week-soft-max` and `lighthouse/week-hard-max` (`<login>:N`, else `*:N`) stand over budgets.json and the
+registry on that host; the old live `lighthouse/week-max` keeps its meaning (`<login>:N` hard, `*:N` soft over a row
+that sets no week soft rule of its own), and `rules.week_max` reads as an alias of `week_soft_max`.
 
-Finish ceiling (the owner, 2026-11-05: landings may run past a login's week ceiling, to a line of its own): `lighthouse/week-max-finish`, read
-only by a pick that holds a launcher's one-use receipt (`--for finish` and the core's finish_pick_env; the flag or an
-environment word alone is a build). A login's own line stands wherever it is higher than the week ceiling that would
-judge the row; `*:` reads as week-max's `*:` does, over a row that sets no ceiling of its own, never over a reserve, a
-registry or budget week_max, an own live week-max line or a row kept out of the overdraw (may_overdraw). A line that
-does not read raises nothing, and takes `*:` with it, as it may be some login's own line mistyped. A row the finish
-ceiling judged is never lifted by the overdraw: the line is how far the owner said a landing may go, and every
-launcher's pick passes `--overdraw`. The line binds finishes alone (a high build may still overdraw that row), and a
-line at or below the ceiling that would judge the row changes nothing.
+Overdraw (2026-11-04): `pick --overdraw`, which dispatch's fire-time pick, autofinish-run's pick and autofinish's
+`week()` pass for a build at `--priority` high or force or a finish at normal or higher, walks the registry as ever;
+only when no row is eligible does `lift()` take, in walk order, the first row whose refusal was `week_soft_max` alone
+(`week N% ≥ M%`, never `week_hard_max`, `week_finish_hard_max`, `week_lend_hard_max` or an own live `week-max` line)
+and judge it again with its week ceiling lifted to `week_hard_max` (from live `lighthouse/week-hard-max`, else old live
+`lighthouse/overdraw-max`, else `week_hard_max` in budgets.json or the registry, else 100, never above 100). Every
+refusal before the week ceiling still stands (scope, tenant, confine, Fable's own week, cooldown, paid overage), as do
+the 5-hour rules after it. A primary or tenant login whose limits are unknown waits for the pass so a row before it
+with credits left goes first. `rules.overdraw` narrows and fails closed: `false` is never lifted, `true` may be, and
+with no key every row may be but the primary; any other value lifts nothing, said once on stderr (`may_overdraw`). The
+pick only decides, and its answer carries `overdraw`, which the caller hands to `account overdraw-log` once its job
+starts (`overdraw.jsonl` and one logbook issue per login and UTC reset week through helm's `ask.issue_note`, fenced
+scopes unnamed on GitHub; TODO.md [overdraw-followups]).
 
-The lend bar (the owner, 2026-11-05: a tenant's login at 50%, after that only its tenant's work):
-`rules.lend_max`, or budgets.json's, is a week ceiling for every repo that is not the row's own (owns_repo: its
-scope's login names it, or its tenant's repos cover it); its own work keeps `week_max`. A row under its week
-ceiling at or past the bar is refused another's repo as `week N% ≥ M% (lend bar…)`, judge's own week wording,
-so a reader of a week refusal reads it alike: dispatch's resets() requeues it, and the overdraw pass lifts it as a
-week bar, but last: a lent row only after every other row refused by its own week ceiling (lift's order, so the
-tenant's own room is spent last). pick, a pinned ship and `limits --repo`
-(dispatch's --account) all judge it; past it a pinned ship moves to another login, and `limits --repo`'s `lends`
-tells dispatch's --next to walk rather than inherit the login, so another repo's work moves on instead of
-waiting for the reset. A pick with no repo is not the row's own, so the bar judges it; `limits` with no repo
-never does. No key, no bar; a key that is present but no number from 0 to 100 lends nothing (0), said on
-stderr outside --json: it only narrows.
+Finish ceiling (`week_finish_hard_max`, live `lighthouse/week-finish-hard-max`, alias `lighthouse/week-max-finish`;
+2026-11-05): read only by a pick that holds a launcher's one-use receipt (`--for finish` and the core's
+`finish_pick_env`; a bare flag or environment word is still a build). Where higher than the normal effective week
+ceiling, it stands in its place as a hard max (`finish ceiling`): neither week pace nor `--overdraw` lifts past it, and
+a lower value leaves the normal ceiling. Live `<login>:N` stands over budgets.json and the registry; a live `*:N` line
+serves only a row that sets no week ceiling of its own and `may_overdraw` allows, and because the live key widens it
+fails closed (an unreadable file or layer raises nothing, and any bad line disables `*:`).
+
+The lend bar (`week_lend_hard_max`, alias `lend_max`; 2026-11-05, hardened 2026-11-07): in budgets.json or the
+registry, a hard week ceiling for every repo that is not the row's own (`owns_repo`: its scope's login names it, or its
+tenant's repos cover it); its own work keeps `week_soft_max` / `week_hard_max`. At or past it the row is refused
+another's repo as `week N% ≥ M% (lend bar…)`, and neither week pace nor `--overdraw` ever lifts it. `pick`, a pinned
+ship (which moves on past it) and `limits --repo` (whose `lends` tells dispatch's `--next` to walk) all judge it; a
+pick with no repo counts as another's, while `limits` with no repo never judges it. No key, no bar; a key that is
+present but no number from 0 to 100 lends nothing (0), said on stderr outside `--json`: it only narrows.
 
 The logins file (work-account design E1, docs/work-account-2026-10-06.md) is what the owner would
 otherwise carry in mind: per label, the e-mail, plan, who pays and which Macs carry a dir — kept
@@ -241,8 +250,11 @@ links and rewrites the copies; the usage tick runs it every 15 min through claud
 reaches the hooks within 15 min. doctor and setup read the links themselves: a person runs them.
 
 The budgets file (`lighthouse/budgets.json`, since 2026-10-31: the owner, "put the budget caps in a regatta
-config that I can edit myself, quickly"), `{label: {"week_max": N, "window_max": N, "free_below": N, "lend_max": N}}`,
-overrides those rules of a registry row; a key starting `_` is a comment. Where it links into a shared
+config that I can edit myself, quickly"), `{label: {"week_soft_max": N, "week_hard_max": N, "week_finish_hard_max": N,
+"week_lend_hard_max": N, "window_soft_max": N, "window_hard_max": N}}` (with `"*"` for global defaults across every row
+and old `week_max`, `window_max`, `free_below`, `pace_headroom`, `lend_max` read as aliases), overrides those rules of
+a registry row in order: `budgets.json` row, `budgets.json` `*`, registry row, code default; a key starting `_` is a
+comment. Where it links into a shared
 drive (refresh makes that link, below), one edit reaches every host whose key links there within the usage tick's 15 min
 (`refresh` copies it, as it does the tenants file); a host with no drive keeps a plain file. Optional
 in every way: absent (and with no `budgets.json` beside the tenants link's target to link), the registry's own rules stand; torn, its last good copy holds, else the
@@ -252,10 +264,10 @@ yet, the hooks never open the link to seed one: the registry's rules stand until
 fails open for a budget that tightens a row (a new host before its first tick, or a copy refresh dropped)
 for up to the tick's 15 min — the trade taken so that no hook ever blocks on an ungranted drive. A ceiling it sets says `week ceiling, budgets.json`.
 An owner's cap is a cap (budgets-edges, 2026-11-02): inside a row's `reserve` window (`day` or `last_hours`) a
-budgeted `week_max` that tightens the row (below the registry's own `week_max`) and is lower than the reserve's
+budgeted `week_soft_max` (`week_max`) that tightens the row (below the registry's own) and is lower than the reserve's
 own reads in its place, said `<the window>, capped by budgets.json`; a loosening budget leaves the reserve's, and the login's
 own live line, where one stands, takes the budget's place (a tighter one caps the reserve, said so); a row
-budgets.json does not tighten judges as before, a live line with no budget included. A label no row has changes nothing and is said on stderr (outside
+budgets.json does not tighten judges as before, a live line with no budget included. A label other than `"*"` that no row has changes nothing and is said on stderr (outside
 --json, and not for a label the logins file lists for another host only) and by doctor: a fix, or info where
 the logins file lists that login for another host only.
 The key's link is made by `refresh` itself (budgets-link, 2026-11-01), not by an overlay line; by hand only where refresh refuses (doctor says why):
@@ -403,8 +415,9 @@ SAME_RESET = 300      # seconds: two exhaustion records whose resets are this cl
 MARGIN = 10           # D6: points of 5-hour headroom an exhaustion asks for…
 MARGIN_DAYS = 7       # …for this long…
 MARGIN_CAP = 30       # …stacking to at most this
-FIVE_HOUR_S = 5 * 3600   # the 5-hour window's length, where a reading does not say its own
-PACE_HEADROOM = 10    # points a row under pace keeps free to start (rules.pace_headroom): the owner's "5-10%", its safe end
+FIVE_HOUR_S = 5 * 3600    # the 5-hour window's length, where a reading does not say its own
+SEVEN_DAY_S = 7 * 86400   # the 7-day window's length, where a reading does not say its own
+PACE_HEADROOM = 10    # points a row under pace keeps free to start (window_hard_max default 90 = 100 - PACE_HEADROOM)
 FREE_BELOW = 0        # a 5-hour spend under a row's rules.free_below runs whatever the limit, margin or pace; off by default
 WINDOWS = ("five_hour", "seven_day")
 
@@ -724,12 +737,102 @@ def load_logins(local=False, keep=True):
     return p, logins
 
 
-BUDGET_KEYS = ("week_max", "window_max", "free_below", "lend_max")
+PAIR_KEYS = ("week_soft_max", "week_hard_max", "week_finish_hard_max", "week_lend_hard_max",
+             "window_soft_max", "window_hard_max")
+OLD_RULE_KEYS = ("week_max", "window_max", "free_below", "pace_headroom", "lend_max")
+BUDGET_KEYS = PAIR_KEYS + OLD_RULE_KEYS
+RULE_ALIAS_PAIRS = (
+    ("week_soft_max", ("week_max",)),
+    ("week_lend_hard_max", ("lend_max",)),
+    ("window_soft_max", ("window_max", "free_below")),
+    ("window_hard_max", ("pace_headroom",)),
+)
+_ALIAS_SAID = set()
+
+
+def warn_alias_once(token, msg):
+    # quiet under --json, as budget_warn: aurora's scope pass parses `pick --json 2>&1` with stderr merged in, and an
+    # old key beside its new one is a valid migration state, not a fault (the landing review, 2026-11-07)
+    if token not in _ALIAS_SAID:
+        _ALIAS_SAID.add(token)
+        if "--json" not in sys.argv:
+            print(msg, file=sys.stderr)
+
+
+def resolve_rule_aliases(rules, label, source):
+    """Return a copy of RULES with old+new conflicts on the same row resolved in favour of the new key,
+    said once on stderr (account-limit-pairs: a row that sets both an old and a new key takes the new)."""
+    if not isinstance(rules, dict):
+        return {}
+    out = dict(rules)
+    for new_k, old_ks in RULE_ALIAS_PAIRS:
+        if new_k in out:
+            both = [ok for ok in old_ks if ok in out]
+            if both:
+                warn_alias_once(
+                    ("rule", source, str(label), new_k, tuple(both)),
+                    f"account: {label} ({source}): {new_k} and alias {', '.join(both)} both set; {new_k} wins",
+                )
+                for ok in both:
+                    out.pop(ok, None)
+    if isinstance(out.get("reserve"), dict):
+        res = dict(out["reserve"])
+        if "week_soft_max" in res and "week_max" in res:
+            warn_alias_once(
+                ("reserve", source, str(label), "week_soft_max"),
+                f"account: {label} ({source} reserve): week_soft_max and alias week_max both set; week_soft_max wins",
+            )
+            res.pop("week_max", None)
+        out["reserve"] = res
+    return out
+
+
+def rules_of(a):
+    """Row a's rules dict with any same-row old+new alias conflicts resolved once on stderr, even when
+    judge/ceiling/lend_value is called directly on an unloaded row dict."""
+    r = a.get("rules")
+    if not isinstance(r, dict):
+        return {}
+    res = r.get("reserve")
+    if (any(nk in r and any(ok in r for ok in oks) for nk, oks in RULE_ALIAS_PAIRS)
+            or (isinstance(res, dict) and "week_soft_max" in res and "week_max" in res)):
+        return resolve_rule_aliases(r, a.get("label") or "?", "rules")
+    return r
+
+
+def merge_rule_layer(base, over):
+    """Merge OVER (a higher-precedence layer: budgets.json * over registry, budgets.json row over *) onto BASE,
+    replacing any alias of the same limit family when OVER sets the family's new or old key."""
+    if not over:
+        return dict(base) if isinstance(base, dict) else {}
+    out = dict(base) if isinstance(base, dict) else {}
+    for fam in (("week_soft_max", "week_max"), ("week_lend_hard_max", "lend_max"),
+                ("window_hard_max", "pace_headroom")):
+        if any(k in over for k in fam):
+            for k in fam:
+                out.pop(k, None)
+    if "free_below" in over and not ("window_soft_max" in over or "window_max" in over) and "window_soft_max" in out:
+        # a higher layer's free_below beside a lower layer's window_soft_max keeps its old floor meaning, the soft line
+        # and its hard 90 kept: it rides as window_floor, which no same-row alias resolution pops, and the pair reading
+        # takes max(soft - margin, floor) (the landing review's round 3, 2026-11-07, pick A)
+        over = dict(over)
+        out["window_floor"] = over.pop("free_below")
+    if "window_soft_max" in over:
+        out.pop("window_max", None)
+        out.pop("free_below", None)
+        out.pop("window_floor", None)
+    elif "window_max" in over:
+        # free_below alone never drops a base's window_soft_max (above): dropping it read a flat window to 100 (the
+        # landing review, 2026-11-07); a window_max does, the old reading taking over
+        out.pop("window_soft_max", None)
+        out.pop("window_floor", None)
+    out.update(over)
+    return out
 
 
 def load_budgets(keep=True, labels=None):
-    """→ {label: {rule: number}}, the budgets file's overrides of the registry rows' rules (header, "The
-    budgets file"). Optional: absent, unreadable or malformed reads as {} with one stderr line, so the
+    """→ {label: {rule: number}}, the budgets file's overrides of the registry rows' rules, including `"*"` global
+    defaults (header, "The budgets file"). Optional: absent, unreadable or malformed reads as {} with one stderr line, so the
     registry's own ceilings stand; a value that is not a number, or a key outside BUDGET_KEYS, is dropped
     the same way (AGENTS.md's optional-key trap: a bad edit must never fail every pick). Drive-backed like
     the logins file: outside claude-host the local copy answers first. labels (load_registry's KnownLabels: this host's
@@ -772,17 +875,19 @@ def load_budgets(keep=True, labels=None):
             budget_warn(f"account: {p}: {label} is not an object; skipped")
             continue
         for k, v in rules.items():
-            if k == "lend_max":   # a narrowing key: a bad value rides through, and lend_value reads it as lending nothing
+            if k in ("week_lend_hard_max", "lend_max"):   # narrowing keys: a bad value rides through, and lend_value reads it as lending nothing
                 out.setdefault(label, {})[k] = v
                 continue
             # json reads NaN and Infinity as numbers, and a NaN ceiling never refuses (budgets review)
             if (k not in BUDGET_KEYS or isinstance(v, bool) or not isinstance(v, (int, float))
-                    or not math.isfinite(v) or not 0 <= v <= 100):
+                    or not math.isfinite(v) or not (0 < v <= 100 if k == "week_finish_hard_max" else 0 <= v <= 100)):
                 budget_warn(f"account: {p}: {label}.{k} {v!r} is not one of {', '.join(BUDGET_KEYS)} as a number from 0 to 100; skipped")
                 continue
             out.setdefault(label, {})[k] = v
+        if label in out:
+            out[label] = resolve_rule_aliases(out[label], label, p.name)
     for label in sorted(out):
-        if labels is not None and label not in labels:   # a typo, or a row gone: no row changes, never silent
+        if labels is not None and label != "*" and label not in labels:   # a typo, or a row gone: no row changes, never silent
             budget_warn(f"account: {p} names {label}, which no login row has; its rules reach nothing")
     return out
 
@@ -884,14 +989,25 @@ def load_registry():
     # holds, an Orca one synced there only: budgets-edges) or doctor runs, which names it itself
     known = KnownLabels(labels)
     budgets = load_budgets(keep=not READ_LINKS, labels=None if READ_LINKS else known)   # doctor's read keeps the copy as it was
-    reg["budgets_unmatched"] = sorted(l for l in budgets if l not in labels)   # doctor judges each (doctor_local)
+    reg["budgets_unmatched"] = sorted(l for l in budgets if l != "*" and l not in labels)   # doctor judges each (doctor_local)
+    star_budget = budgets.get("*") or {}
     for a in reg.get("accounts") or []:
-        mine = budgets.get(a.get("label")) or {}
-        if mine and isinstance(a["rules"], dict) and "week_max" in a["rules"]:
-            a["registry_week_max"] = a["rules"]["week_max"]   # ceiling(): does a budget tighten the row?
+        reg_rules = resolve_rule_aliases(a["rules"], a.get("label"), REGISTRY.name) if isinstance(a["rules"], dict) else {}
+        row_budget = budgets.get(a.get("label")) or {}
+        mine = merge_rule_layer(star_budget, row_budget)
+        # an implicit row's ORCA_ROW keys count as its own, as `"week_max" in a["rules"]` did before the pairs: a
+        # fleet `*:` live line never raises an Orca seat past its row's ceiling (the landing review, 2026-11-07)
+        own_rules = set(reg_rules) | set(row_budget)
+        reg_soft = reg_rules.get("week_soft_max", reg_rules.get("week_max"))
+        if mine and reg_soft is not None:
+            a["registry_week_max"] = reg_soft   # ceiling(): does a budget tighten the row?
         if mine:
-            a["rules"] = {**(a["rules"] if isinstance(a["rules"], dict) else {}), **mine}
+            a["rules"] = merge_rule_layer(reg_rules, mine)
             a["budgeted"] = sorted(mine)
+            a["budgeted_own"] = sorted(row_budget)
+        else:
+            a["rules"] = reg_rules
+        a["own_rules"] = sorted(own_rules)
     mark_same_logins(reg)
     apply_tenants(reg)
     return reg
@@ -1749,22 +1865,163 @@ def login_of(a):
     return (o["accountUuid"], o.get("organizationUuid")), o.get("emailAddress")
 
 
+KEYCHAIN_GONE = 44   # security(1)'s exit for "The specified item could not be found in the keychain."
+
+
+def credential_held(a):
+    """Does the row's credential store hold a Claude login? True, False, or None when it cannot be told without a
+    prompt (header, "The login guard"). The plaintext store first, `<home>/.credentials.json` (Linux's, and a Mac's
+    for a login made over ssh); then, on a Mac (or with ACCOUNT_SECURITY, a test's stand-in), the keychain entry
+    `Claude Code-credentials[-<sha256(home)[:8]>]` by its attributes alone: find-generic-password without -w or -g
+    reads no secret, so it asks nothing. Any answer but found or not found (a locked keychain over ssh, a refusal, a
+    timeout) is None: the store is skipped, never read as empty. The token is never returned, printed or logged. A
+    keychain hit by attributes cannot tell a Claude login from an item holding only an MCP server's OAuth: the
+    oauthAccount check in .claude.json, which runs first, is what catches a logout there."""
+    try:
+        o = json.loads((a["home"] / ".credentials.json").read_text()).get("claudeAiOauth")
+        if isinstance(o, dict) and (o.get("accessToken") or o.get("refreshToken")):
+            return True
+    except (OSError, ValueError, AttributeError):
+        pass
+    sec = os.environ.get("ACCOUNT_SECURITY") or ("/usr/bin/security" if sys.platform == "darwin" else None)
+    if not sec:
+        return False
+    svc = "Claude Code-credentials" + ("" if is_default(a) else "-" + hashlib.sha256(str(a["home"]).encode()).hexdigest()[:8])
+    try:
+        r = subprocess.run([sec, "find-generic-password", "-s", svc], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return True if r.returncode == 0 else False if r.returncode == KEYCHAIN_GONE else None
+
+
+def guard_logins():
+    """→ the logins file's {label: entry} as the login guard reads it, or None (guard_source)."""
+    return guard_source()[0]
+
+
+@functools.lru_cache(maxsize=None)
+def guard_source():
+    """→ (the logins file's {label: entry}, the path it was read from), or (None, None) when nothing reads (header, "The
+    login guard"). Read as a hook reads it, whoever asks (doctor's READ_LINKS included, so doctor says what a pick
+    does): a link into a drive, outside claude-host, is never opened, only its local copy (`.logins.json.last`), and
+    with no copy (b) is unknown: a hook must never hang on a drive no grant reaches (AGENTS.md), nor read one per call.
+    Elsewhere the file first, then its copy, so a node that holds only the copy is judged by it. A file that does not
+    read, or whose `logins` is no object (null included), is no answer; when one is there and none reads, guard_unread()
+    names it and the guard refuses every row (a narrowing input that is present but does not read narrows: AGENTS.md).
+    Never writes the copy (load_logins' and refresh's)."""
+    global _GUARD_UNREAD
+    p = logins_path()
+    copy = local_copy(p or CONFIG / "lighthouse" / "logins.json")
+    hooks_copy_only = bool(p) and not on_host() and drive_link(p)
+    for f in ([copy] if hooks_copy_only else [p, copy]):
+        if f is None:
+            continue
+        got = read_copy(f)   # the JSON object in f, or None
+        if got is not None and isinstance(got.get("logins", {}), dict):
+            return got.get("logins") or {}, f
+        if _GUARD_UNREAD is None and (f.is_symlink() or f.exists()):
+            _GUARD_UNREAD = f
+    return None, None
+
+
+_GUARD_UNREAD = None
+
+
+def guard_unread():
+    """→ the logins file (or its copy) that is there but does not read, when nothing else did; else None."""
+    guard_source()
+    return _GUARD_UNREAD
+
+
+def login_refusal(a):
+    """Why row a may not run on the login its home holds, or None; read once per row (header, "The login guard")."""
+    if "_login_off" not in a:
+        a["_login_off"] = _login_refusal(a)
+    return a["_login_off"]
+
+
+def _login_refusal(a):
+    # Codex reads its sign-in through its probe (account/read: a signed-out home is "limits unknown"); agy's is the
+    # keychain login it picks itself (header); an Orca report row is never walked
+    if a.get("provider") != "claude" or a.get("report") or not a["home"].is_dir():
+        return None   # a home that is not here: pick's "not set up on this machine" says so
+    uid, email = login_of(a)
+    if not uid:
+        return (f"not signed in: {claude_json(a)} holds no login (oauthAccount) — sign it in: {relogin_line(a)}")
+    if credential_held(a) is False:
+        where = a["home"] / ".credentials.json"
+        return (f"not signed in: its credential store holds no login ({where}"
+                + (", nor the keychain" if (os.environ.get("ACCOUNT_SECURITY") or sys.platform == "darwin") else "")
+                + f") — sign it in: {relogin_line(a)}")
+    logins = guard_logins()
+    if logins is None and guard_unread():
+        return (f"its login cannot be checked: {guard_unread()} is there but does not read as a logins file — "
+                "fix it or remove it")
+    if logins is None:
+        if a.get("primary"):   # its at-once road would run owner work on whatever seat the home holds (header)
+            return ("its login cannot be checked: no logins file here (lighthouse/logins.json, nor its local copy), "
+                    "and the primary is never taken on an account it cannot check")
+        return None
+    e = logins.get(a["label"])
+    if e is None:   # a row the logins file does not describe: as before (doctor says so)
+        return None
+    if not isinstance(e, dict):
+        return f"its login cannot be checked: the logins file's entry for {a['label']} is no object"
+    for k in ("email", "account_uuid"):   # a narrowing key that is present but does not read narrows (AGENTS.md)
+        v = e.get(k)
+        if v is not None and not (isinstance(v, str) and v.strip()):
+            return f"its login cannot be checked: the logins file's {k} for {a['label']} does not read ({v!r})"
+    want_uuid, want_email = e.get("account_uuid"), e.get("email")
+    if want_uuid and uid[0].lower() != want_uuid.strip().lower():
+        return (f"signed in as another account: {claude_json(a)} holds account {id_prefix(uid[0])}, the logins file's "
+                f"{a['label']} is {id_prefix(want_uuid.strip())} — {relogin_line(a)}")
+    if want_email and not want_uuid and not (isinstance(email, str) and email.strip().lower() == want_email.strip().lower()):
+        # no e-mail in the reason: it reaches the overdraw logbook; doctor names both
+        return (f"signed in as another account than the logins file's {a['label']} ({claude_json(a)}"
+                + ("" if isinstance(email, str) and email else ", which names no e-mail") + f") — {relogin_line(a)}")
+    a["_login_match"] = bool(want_uuid or want_email)   # its entry names the account its home holds (mark_same_logins)
+    return None
+
+
+OWN_SIGNIN_OFF = ("not signed in", "signed in as another account")   # the guard's refusals about the home's own sign-in
+
+
+def takes_shared_login(held, a):
+    """Whether row a, signed in to the same seat as `held` (the row mark_same_logins kept it for), takes that login
+    instead: only when the guard refuses `held` for its own sign-in (not signed in, or another account than its entry)
+    and row a's own logins entry names that account. A refusal that only cannot tell ("cannot be checked"), or a row the
+    file does not describe, changes nothing: the duplicate stays marked as before (round 2 of the build review)."""
+    off = login_refusal(held)
+    return bool(off and off.startswith(OWN_SIGNIN_OFF) and not login_refusal(a) and a.get("_login_match"))
+
+
 def mark_same_logins(reg):
     """A second dir signed in to a login another row already has is no second account: its limits
     are that account's, so spilling to it spends the same week. Mark it `same_as` (the primary
     keeps the login; otherwise the earlier row) — `judge` refuses it and `check` flags it. Found
     2026-10-05: the Pro fallback's dir had been logged in as the primary's address, and pick read
     the primary's 57% as the fallback's. A parked row is judged too, after every enabled one, so it never takes a login from
-    one — else `limits --all --parked` draws one week as two cards (review 2026-10-18)."""
-    seen = {}
+    one — else `limits --all --parked` draws one week as two cards (review 2026-10-18). The one exception is the login
+    guard's: a row whose logins entry names the login takes it from an earlier row refused it (`takes_shared_login`),
+    parked or not, and the rows already marked as the earlier one's then name the row that took it."""
+    seen, marked = {}, {}
     rows = sorted((a for a in reg["accounts"] if (a["enabled"] or a.get("parked")) and a["provider"] == "claude" and a["home"].is_dir()),
                   key=lambda a: (not a["enabled"], not a.get("primary")))
     for a in rows:
         uid, email = login_of(a)
         if not uid:
             continue
-        if uid in seen:
+        if uid in seen and takes_shared_login(seen[uid], a):
+            # the earlier row is refused its login (the login guard: a primary whose home holds another row's account),
+            # so the row whose entry names it keeps it; the guard's refusal stays the earlier row's reason.
+            # Asked on a collision only: no keychain read for a load that finds none
+            seen[uid] = a
+            for m in marked.get(uid, ()):
+                m["same_as"] = (a["label"], m["same_as"][1])
+        elif uid in seen:
             a["same_as"] = (seen[uid]["label"], email)
+            marked.setdefault(uid, []).append(a)
         else:
             seen[uid] = a
 
@@ -2223,8 +2480,7 @@ def parse_codex(rl, acct=None):
         if out[w] is not None and out[w] >= x["usedPercent"]:
             continue  # two windows of one class: the fuller one binds
         out[w], out[w + "_resets"] = x["usedPercent"], epoch(x.get("resetsAt"))
-        if w == "five_hour":
-            out["five_hour_window_s"] = x["windowDurationMins"] * 60   # pace()'s span: not every plan's is five hours
+        out[w + "_window_s"] = x["windowDurationMins"] * 60   # pace()'s and week_pace()'s span
         if w not in out["kinds"]:
             out["kinds"].append(w)
         if x["usedPercent"] >= 100 and w not in out["locked"]:
@@ -2405,7 +2661,8 @@ def _orca_card_fresh(at, where):
 def limits_antigravity(a, cached=False, reg=None):
     """→ (limits dict or None, card sample epoch or None, unknown reason or None) from Orca's `antigravity` card on this
     host. Reads only where the card stands for `a` (`antigravity_refusal` is None); fails closed on a headless, down,
-    errored or stale Orca. `at` is Orca's `updatedAt` (never `now()`), so `pace()` weighs the 5h window at sample time."""
+    errored or stale Orca. `at` is Orca's `updatedAt` (never `now()`), so `pace()` and `week_pace()` weigh both windows
+    at sample time."""
     if reg is None and REGISTRY.is_file():
         reg = load_registry()
     ar = antigravity_refusal(reg, a)
@@ -2778,48 +3035,84 @@ def when(t):
     return dt.datetime.fromtimestamp(t).strftime("%a %H:%M" if t - now() < 7 * 86400 else "%b %-d %H:%M")
 
 
+WEEK_SOFT_MAX_KEY = "lighthouse/week-soft-max"
+WEEK_HARD_MAX_KEY = "lighthouse/week-hard-max"
+WEEK_FINISH_HARD_MAX_KEY = "lighthouse/week-finish-hard-max"
+WINDOW_SOFT_MAX_KEY = "lighthouse/window-soft-max"
+WINDOW_HARD_MAX_KEY = "lighthouse/window-hard-max"
+SOFT_LIVE_KEYS = (WEEK_SOFT_MAX_KEY, WINDOW_SOFT_MAX_KEY)
 WEEK_MAX_KEY = "lighthouse/week-max"
 OVERDRAW_MAX_KEY = "lighthouse/overdraw-max"
 WEEK_MAX_FINISH_KEY = "lighthouse/week-max-finish"
+LIVE_LIMIT_KEYS = {
+    "week-soft-max": WEEK_SOFT_MAX_KEY,
+    "week-hard-max": WEEK_HARD_MAX_KEY,
+    "week-finish-hard-max": WEEK_FINISH_HARD_MAX_KEY,
+    "window-soft-max": WINDOW_SOFT_MAX_KEY,
+    "window-hard-max": WINDOW_HARD_MAX_KEY,
+    "week-max": WEEK_MAX_KEY,
+    "overdraw-max": OVERDRAW_MAX_KEY,
+    "week-max-finish": WEEK_MAX_FINISH_KEY,
+}
 _WEEK_MAX = None
 _WEEK_MAX_SAID = set()
 _OVERDRAW_MAX = None
 _OVERDRAW_MAX_SAID = set()
 _WEEK_MAX_FINISH = None
 _WEEK_MAX_FINISH_SAID = set()
+_LIVE_TABLES = {}
+_LIVE_SAID = {}
 _OVERDRAW_SAID = set()
+_RULE_NUM_SAID = set()
+_FINISH_RULE_SAID = set()
+# the said sets also hold lower-cased login labels, so the markers are tuples no label can equal: a login named `read`
+# once voided every row's finish ceiling (the landing review, 2026-11-07)
+READ_SAID, LINE_SAID = ("@", "read"), ("@", "line")
 
 
-def ceiling_value(v):
-    """A week-max line's value as a number above 0 and at most 100, else None."""
+def ceiling_value(v, allow_zero=False):
+    """A live limit line's value as a finite number in (0, 100] (or [0, 100] when allow_zero), else None."""
     try:
         n = float(v)
     except ValueError:
         return None
-    return None if n != n or not 0 < n <= 100 else n
+    ok = (0 <= n <= 100) if allow_zero else (0 < n <= 100)
+    return None if not math.isfinite(n) or not ok else n
 
 
-def live_week_max(label, finish=False, overdraw=False):
-    """(ceiling, where from, bad line) from the config's `lighthouse/week-max` (live-limits, 2026-11-01): lines
-    `<login>:<pct>`, `*:<pct>` for any login without one, a number above 0 and at most 100. `regatta limit` writes it
-    in the config dir's live layer, so a ceiling changes on the next pick, with no registry edit and no landing.
-    The login's own line first; none naming it is (None, None, None). A line that is no ceiling reads as none, said
-    on stderr once and returned as the bad line, never a crash of every pick (AGENTS.md's optional-key trap). The
-    table is read once per run: a pick judges every row, some twice. OVERDRAW reads `lighthouse/overdraw-max` the same
-    way for lift(). FINISH reads `lighthouse/week-max-finish`, which
-    widens, so it fails closed: an unreadable read leaves the table empty, and a line that is no ceiling (it may be a
-    login's own, mistyped, which `*:` would then serve) takes `*:` out of it; good own lines stand."""
+_LIVE_SPEC = {
+    WEEK_MAX_KEY: ("legacy_week", False, "the registry's rules.week_max judges", None),
+    WEEK_MAX_FINISH_KEY: ("widen", False, "the week ceiling judges", None),
+    WEEK_FINISH_HARD_MAX_KEY: ("widen", False, "the week ceiling judges", None),
+    OVERDRAW_MAX_KEY: ("narrow", False, "the overdraw lifts to 100", "100"),
+    WEEK_SOFT_MAX_KEY: ("narrow", True, "the row's week_soft_max judges", "the row's week_soft_max"),
+    WEEK_HARD_MAX_KEY: ("narrow", True, "the row's week_hard_max judges", "the row's week_hard_max"),
+    WINDOW_SOFT_MAX_KEY: ("narrow", True, "the row's window_soft_max judges", "the row's window_soft_max"),
+    WINDOW_HARD_MAX_KEY: ("narrow", True, "the row's window_hard_max judges", "the row's window_hard_max"),
+}
+
+
+def live_limit(key, label):
+    """(value, where from, bad line) from the config's live login limit KEY (`<login>:<pct>`, `*:<pct>`).
+    Widening keys (`week-finish-hard-max`, `week-max-finish`) fail closed on an unreadable layer/base or stray line;
+    narrowing pair keys (`week-soft-max`, `week-hard-max`, `window-soft-max`, `window-hard-max`, `overdraw-max`) warn
+    once on an unreadable base/layer and let `*:` serve when a login's own line does not read (still returning `bad`
+    so `limit-read` exits 2 and `regatta limit set` refuses it)."""
     global _WEEK_MAX, _OVERDRAW_MAX, _WEEK_MAX_FINISH
-    if finish:
-        key, table, said, fallback = WEEK_MAX_FINISH_KEY, _WEEK_MAX_FINISH, _WEEK_MAX_FINISH_SAID, "the week ceiling judges"
-    elif overdraw:
-        key, table, said, fallback = OVERDRAW_MAX_KEY, _OVERDRAW_MAX, _OVERDRAW_MAX_SAID, "the overdraw lifts to 100"
+    mode, allow_zero, fallback, alt_fallback = _LIVE_SPEC[key]
+    if key == WEEK_MAX_KEY:
+        table, said = _WEEK_MAX, _WEEK_MAX_SAID
+    elif key == OVERDRAW_MAX_KEY:
+        table, said = _OVERDRAW_MAX, _OVERDRAW_MAX_SAID
+    elif key == WEEK_MAX_FINISH_KEY:
+        table, said = _WEEK_MAX_FINISH, _WEEK_MAX_FINISH_SAID
     else:
-        key, table, said, fallback = WEEK_MAX_KEY, _WEEK_MAX, _WEEK_MAX_SAID, "the registry's rules.week_max judges"
+        table = _LIVE_TABLES.get(key)
+        said = _LIVE_SAID.setdefault(key, set())
     if table is None:
         try:
             c = core()
-            if finish:
+            if mode == "widen":
                 lines, why = c.config_read(key)
                 # config_read can return a readable layer alongside an unreadable base. Widening
                 # requires the whole read to succeed, never a fallback onto a stale base or wildcard.
@@ -2835,13 +3128,10 @@ def live_week_max(label, finish=False, overdraw=False):
                 if why:
                     raise ValueError(why)
                 lines = lines or []
-            elif overdraw:
-                # a file present but unreadable is said, never silent: the README promises a line on stderr (the
-                # landing review of overdraw-max); what did read (a live layer over a torn base) still serves
+            elif mode == "narrow":
+                # a file present but unreadable is said, never silent: what did read (a live layer over a torn base)
+                # still serves
                 lines, why = c.config_read(key)
-                # config_read takes a layer that will not read as no layer, and its why is the base's alone, so the
-                # live layer `regatta limit set` writes is probed here, as the finish branch does; caught inside, as
-                # the outer except speaks for finish alone (round 2 of the landing review)
                 layer = c.CONFIG / c.LIVE / key
                 try:
                     layer.lstat()
@@ -2854,20 +3144,18 @@ def live_week_max(label, finish=False, overdraw=False):
                         layer.read_text(encoding="utf-8-sig")
                     except (OSError, UnicodeDecodeError) as e:
                         why = f"its live layer: {e}"
-                if why and "read" not in said:
-                    said.add("read")
-                    tail = "what did read serves, else 100" if lines else fallback
+                if why and READ_SAID not in said:
+                    said.add(READ_SAID)
+                    tail = f"what did read serves, else {alt_fallback}" if lines else fallback
                     print(f"account: {key} could not be read ({why}); {tail}", file=sys.stderr)
                 lines = lines or []
             else:
                 lines = c.config_lines(key) or []
-            # the core's entry reader: an entry the overlay wrote one word per line (`acct:` then `80`) and a note
-            # after it read whole, as every other reader of a `<word>:<value>` key takes them (the round-1 review)
             ents = c.config_entries(lines) if hasattr(c, "config_entries") else None
         except Exception:   # no core here: no live ceiling, the registry's as ever
             lines, ents = [], None
-            if finish and "read" not in said:
-                said.add("read")
+            if mode == "widen" and READ_SAID not in said:
+                said.add(READ_SAID)
                 print(f"account: {key} could not be read; {fallback}", file=sys.stderr)
         if ents is None:
             ents = [(w.strip().lower(), v.strip()) for w, colon, v in (l.partition(":") for l in lines)
@@ -2876,126 +3164,355 @@ def live_week_max(label, finish=False, overdraw=False):
         for w, v in ents:
             if w:
                 table.setdefault(w, v)
-                stray = stray or ceiling_value(v) is None   # config_entries folds a line with no word into the entry before
-            elif finish:
+                stray = stray or ceiling_value(v, allow_zero=allow_zero) is None
+            elif mode == "widen":
                 stray = True
-                if "line" not in said:
-                    said.add("line")
+                if LINE_SAID not in said:
+                    said.add(LINE_SAID)
                     print(f"account: {key} {v!r} is no login ceiling; {fallback}", file=sys.stderr)
-        if finish and stray and ceiling_value(table.get("*", "")) is not None:
+        if mode == "widen" and stray and ceiling_value(table.get("*", ""), allow_zero=allow_zero) is not None:
             del table["*"]
             print(f"account: {key} holds a line that does not read; its `*:` line raises nothing", file=sys.stderr)
-        if finish:
-            _WEEK_MAX_FINISH = table
-        elif overdraw:
-            _OVERDRAW_MAX = table
-        else:
+        if key == WEEK_MAX_KEY:
             _WEEK_MAX = table
+        elif key == OVERDRAW_MAX_KEY:
+            _OVERDRAW_MAX = table
+        elif key == WEEK_MAX_FINISH_KEY:
+            _WEEK_MAX_FINISH = table
+        else:
+            _LIVE_TABLES[key] = table
     bad = None
+    rng = "a number from 0 to 100" if allow_zero else "a number above 0, at most 100"
     for name in (str(label).lower(), "*"):
         if name in table:
             v = table[name]
-            n = ceiling_value(v)
+            n = ceiling_value(v, allow_zero=allow_zero)
             if n is None:
-                if overdraw and name != "*":
-                    # overdraw-max only narrows, so a login's own line that does not read is no line and its `*:`
-                    # serves it (the brief's "a value that does not read is no line"; the landing review's pick A):
-                    # stopping here lifted the login to 100, past the fleet line. The bad line is still returned,
-                    # so `week-max --for overdraw` exits 2 and `regatta limit set` refuses it.
+                if mode == "narrow" and name != "*":
                     if name not in said:
                         said.add(name)
-                        print(f"account: {key} {name}:{v} is no ceiling (a number above 0, at most 100); "
-                              f"its `*:` line, else 100, serves {name}", file=sys.stderr)
+                        # a soft line can raise a ceiling: the lower of `*:` and the row's own rule serves
+                        # (_live_pair_value; the landing review's round 3, 2026-11-07)
+                        serves = (f"the lower of its `*:` line and {alt_fallback}" if key in SOFT_LIVE_KEYS
+                                  else f"its `*:` line, else {alt_fallback},")
+                        print(f"account: {key} {name}:{v} is no ceiling ({rng}); {serves} serves {name}",
+                              file=sys.stderr)
                     bad = f"{name}:{v}"
                     continue
                 if name not in said:
                     said.add(name)
-                    print(f"account: {key} {name}:{v} is no ceiling (a number above 0, at most 100); "
-                          f"{fallback}", file=sys.stderr)
+                    print(f"account: {key} {name}:{v} is no ceiling ({rng}); {fallback}", file=sys.stderr)
                 return None, None, bad or f"{name}:{v}"
             return (int(n) if n == int(n) else n), f"{key} {name}:", bad
     return None, None, bad
 
 
-def week_ceiling(a, lim, t):
-    """The week ceiling now, and why. `reserve.day` (D2: Saturday) is a local weekday;
-    `reserve.last_hours` is the alternative R3 asked about — the hours before the week resets. A reserve
-    judges first (on a row budgets.json tightens, the row's cap — its own live line, else the budget — caps it
-    where lower); then a live ceiling (live_week_max) over the row's
-    `rules.week_max`."""
-    rules = a["rules"]
-    res = rules.get("reserve") or {}
-    budget = rules.get("week_max") if "week_max" in (a.get("budgeted") or ()) else None
-    live = src = None
+def live_week_max(label, finish=False, overdraw=False):
+    """Legacy wrapper for `lighthouse/week-max`, `lighthouse/week-max-finish` (`finish=True`), and
+    `lighthouse/overdraw-max` (`overdraw=True`)."""
+    key = WEEK_MAX_FINISH_KEY if finish else (OVERDRAW_MAX_KEY if overdraw else WEEK_MAX_KEY)
+    return live_limit(key, label)
+
+
+def own_rules_of(a):
+    """Rule keys set specifically on row a (its registry row, an implicit one's ORCA_ROW included, or budgets.json[label]), excluding
+    budgets.json's `*` defaults: a live `*:` line stands over `*` defaults, never over a login's own rule."""
+    if "own_rules" in a:
+        return a["own_rules"]
+    return rules_of(a)
+
+
+def _live_pair_value(a, key, rule_keys):
+    """Effective live limit `(val, src)` for row a on KEY, where `*:` serves only when none of RULE_KEYS is in own_rules."""
+    v, src, bad = live_limit(key, a.get("label"))
+    if v is None:
+        return None, None
+    own = own_rules_of(a)
+    if src.endswith(" *:") and any(rk in own for rk in rule_keys):
+        return None, None
+    if src.endswith(" *:") and bad and key in SOFT_LIVE_KEYS:
+        # the login's own soft line does not read: a soft line can raise a ceiling, so the `*:` line serves only where it
+        # is lower than the row's rule (budgets.json `*` included; 100 where none is set), else the rule judges, failing
+        # closed both ways (the landing review's round 3, 2026-11-07, pick A)
+        rules = rules_of(a)
+        fam = ("week_soft_max", "week_max") if key == WEEK_SOFT_MAX_KEY else ("window_soft_max", "window_max")
+        rk = next((k for k in fam if k in rules), None)
+        # compare with what the row falls to, not the raw key: an old-key window row runs below its free_below whatever
+        # the limit, and a layered free_below rides as window_floor (the landing review, 2026-11-07, round 4)
+        falls_to = rule_num(a, rk, 100) if rk is not None else None
+        if rk == "window_max":
+            falls_to = max(falls_to, rule_num(a, "free_below", FREE_BELOW))
+        elif rk == "window_soft_max" and "window_floor" in rules:
+            falls_to = max(falls_to, rule_num(a, "window_floor", 0))
+        if falls_to is not None and v >= falls_to:
+            return None, None
+    return v, src
+
+
+def week_hard(a):
+    """(hard_max, why) for row a's new week_hard_max (`lighthouse/week-hard-max` over `rules.week_hard_max`), or
+    (None, None) when neither is set. Resolves live conflicts against old hard aliases (`lighthouse/week-max` own line
+    and `lighthouse/overdraw-max`), warning once on stderr."""
+    label = a.get("label")
+    wh_live, wh_src = _live_pair_value(a, WEEK_HARD_MAX_KEY, ("week_hard_max",))
+    # where a login's own legacy week-max line set the ceiling, _ceiling_state never asks this and lift() skips the row;
+    # inside a reserve a fleet `*:` line caps as any hard max does ("nothing passes week_hard_max")
+    if wh_live is not None:
+        old_wm, old_wm_src, _ = live_week_max(label)
+        own_wh = not wh_src.endswith(" *:")
+        if old_wm is not None and not old_wm_src.endswith(" *:") and own_wh:
+            warn_alias_once(
+                ("live", str(label).lower(), WEEK_HARD_MAX_KEY, WEEK_MAX_KEY),
+                f"account: {label}: {WEEK_HARD_MAX_KEY} and alias {WEEK_MAX_KEY} {str(label).lower()}: both set; {WEEK_HARD_MAX_KEY} wins",
+            )
+        od_cap, od_src, _ = live_week_max(label, overdraw=True)
+        if od_cap is not None and (own_wh or od_src.endswith(" *:")):
+            warn_alias_once(
+                ("live", str(label).lower(), WEEK_HARD_MAX_KEY, OVERDRAW_MAX_KEY),
+                f"account: {label}: {WEEK_HARD_MAX_KEY} and alias {OVERDRAW_MAX_KEY} both set; {WEEK_HARD_MAX_KEY} wins",
+            )
+        return wh_live, "week hard ceiling, live"
+    rules = rules_of(a)
+    if "week_hard_max" in rules:
+        by = ", budgets.json" if "week_hard_max" in (a.get("budgeted") or ()) else ""
+        return rule_num(a, "week_hard_max", 100), f"week hard ceiling{by}"
+    return None, None
+
+
+def lift_ceiling(a, hard):
+    """The ceiling week pace and the overdraw may lift row a to, given its HARD from week_hard (None: no hard max). A
+    fleet `week-hard-max *:` line never stands over a login's own `overdraw-max` line, as a fleet line never stands
+    over a login's own (_week_soft): the lower of the two caps (the landing review, 2026-11-07, pick A). With no hard
+    max, the live `overdraw-max` caps, as on main; else 100."""
+    od, od_src, _ = live_week_max(a.get("label"), overdraw=True)
+    if hard is None:
+        return od if od is not None else 100
+    if od is not None and not od_src.endswith(" *:"):
+        wh, wh_src = _live_pair_value(a, WEEK_HARD_MAX_KEY, ("week_hard_max",))
+        if wh is not None and wh_src.endswith(" *:"):
+            return min(hard, od)
+    return hard
+
+
+def _week_soft(a, lim, t):
+    """(soft_max, why, own_old_live, legacy_judged) for row a's week soft ceiling (`reserve`, `lighthouse/week-soft-max` or alias
+    `lighthouse/week-max`, `rules.week_soft_max` or alias `rules.week_max`). `own_old_live` is True when a login's own
+    legacy `lighthouse/week-max` line stands (hard by legacy rule: neither week pace nor lift() passes the row, a reserve's
+    ceiling included); `legacy_judged` is True where that line's value set the ceiling, so it takes week_hard_max's place."""
+    rules = rules_of(a)
+    res = rules.get("reserve") if isinstance(rules.get("reserve"), dict) else {}
+    budgeted_own = a.get("budgeted_own", a.get("budgeted") or ())
+    budgeted_all = a.get("budgeted") or ()
+    b_own_key = "week_soft_max" if "week_soft_max" in budgeted_own else ("week_max" if "week_max" in budgeted_own else None)
+    budget = rules.get(b_own_key) if b_own_key else None
+    b_any = "week_soft_max" in budgeted_all or "week_max" in budgeted_all
+    wh_live, wh_src = _live_pair_value(a, WEEK_HARD_MAX_KEY, ("week_hard_max",))
+    # only a login's own week-hard-max line supersedes its own legacy week-max line: a fleet `*:` line never stands
+    # over a login's own word (the landing review's round 2, 2026-11-07)
+    wh_own = wh_live is not None and not wh_src.endswith(" *:")
+    soft_live = soft_src = old_live = old_src = None
+    live_checked = False
 
     def read_live():   # read only where it judges: a bad line's warning names the registry's rule (budgets-edges' /finish review)
-        nonlocal live, src
-        live, src, _ = live_week_max(a.get("label"))
+        nonlocal soft_live, soft_src, old_live, old_src, live_checked
+        if live_checked:
+            return
+        live_checked = True
+        label = a.get("label")
+        soft_live, soft_src = _live_pair_value(a, WEEK_SOFT_MAX_KEY, ("week_soft_max", "week_max"))
+        old_live, old_src, _ = live_week_max(label)
+        if soft_live is not None and old_live is not None and old_src.endswith(" *:"):
+            warn_alias_once(
+                ("live", str(label).lower(), WEEK_SOFT_MAX_KEY, WEEK_MAX_KEY),
+                f"account: {label}: {WEEK_SOFT_MAX_KEY} and alias {WEEK_MAX_KEY} *: both set; {WEEK_SOFT_MAX_KEY} wins",
+            )
+        if wh_own and old_live is not None and not old_src.endswith(" *:"):
+            warn_alias_once(
+                ("live", str(label).lower(), WEEK_HARD_MAX_KEY, WEEK_MAX_KEY),
+                f"account: {label}: {WEEK_HARD_MAX_KEY} and alias {WEEK_MAX_KEY} {str(label).lower()}: both set; {WEEK_HARD_MAX_KEY} wins",
+            )
+            # superseded by week-hard-max: the legacy table's `*:` line still serves as a soft line, as it would on a
+            # row with no own line (the landing review's round 3)
+            old_live, old_src, _ = live_limit(WEEK_MAX_KEY, "*")
+            if old_live is None or not old_src.endswith(" *:"):
+                old_live, old_src = None, None
 
     def reserve(why):
-        # an owner's cap is a cap (budgets-edges, 2026-11-02): on a row budgets.json tightens (its week_max below the
-        # registry's own), the row's cap — the login's own live line where one stands (it stands over budgets.json on
-        # any day), else the budget — caps the reserve's ceiling where it still tightens the row and is lower. Any
-        # other row judges as on main, a live line with no budget included (lighthouse/limits: the reserve first)
-        cap = res.get("week_max", 100)
-        own = a.get("registry_week_max", 100)   # a registry ceiling that is no number reads as none (rule_num's rule)
+        # an owner's cap is a cap (budgets-edges, 2026-11-02): on a row budgets.json tightens (its per-row week soft
+        # ceiling below the registry's own), the row's cap — the login's own live line where one stands, else the
+        # budget — caps the reserve's ceiling where it still tightens the row and is lower.
+        cap = res.get("week_soft_max", res.get("week_max", 100))
+        own = a.get("registry_week_max", 100)
         own = own if isinstance(own, (int, float)) and not isinstance(own, bool) and math.isfinite(own) else 100
-        if budget is None or not budget < own:   # no tightening budget: the reserve's own, as on main
-            return cap, why
         read_live()
-        own_live = live is not None and not src.endswith(" *:")
-        owner, by = (live, WEEK_MAX_KEY) if own_live else (budget, "budgets.json")
+        own_old_line = old_live is not None and not old_src.endswith(" *:")
+        if budget is None or not budget < own:
+            # a login's own legacy week-max line keeps even a reserve's ceiling unliftable, as on main, where no pace
+            # passed a reserve (the landing review's round 2)
+            return cap, why, own_old_line, False
+        own_new = soft_live is not None and not soft_src.endswith(" *:")
+        own_old = old_live is not None and not old_src.endswith(" *:")
+        if own_new and own_old:
+            # a week-soft-max line may only lower the own legacy line, in a reserve too (the landing review's round 3)
+            owner, by, hard_old = ((old_live, WEEK_MAX_KEY, True) if old_live <= soft_live
+                                   else (soft_live, WEEK_SOFT_MAX_KEY, True))
+        elif own_new:
+            owner, by, hard_old = soft_live, WEEK_SOFT_MAX_KEY, False
+        elif own_old:
+            owner, by, hard_old = old_live, WEEK_MAX_KEY, True
+        else:
+            owner, by, hard_old = budget, "budgets.json", False
         tightens = owner < own
         if tightens and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap)
                          or owner < cap):
-            return owner, f"{why}, capped by {by}"
-        return cap, why
+            return owner, f"{why}, capped by {by}", hard_old, by == WEEK_MAX_KEY
+        return cap, why, own_old, False
 
-    if res.get("day") and dt.datetime.fromtimestamp(t).strftime("%A").lower() == res["day"].lower():
+    if res.get("day") and dt.datetime.fromtimestamp(t).strftime("%A").lower() == str(res["day"]).lower():
         return reserve(f"{res['day']} reserve")
     end = lim.get("seven_day_resets") if lim else None
     if res.get("last_hours") and end and 0 <= end - t <= res["last_hours"] * 3600:
         return reserve(f"last {res['last_hours']} h of the week")
-    # a login's own live line stands over its registry ceiling and budgets.json's, both (the owner's word on that
-    # host, newest by being set there); `*:` only over a row that sets none in either, so a ceiling set low on
-    # purpose (a seat kept for its owner) is never raised by a fleet-wide line (the reviews); `regatta limit set`
-    # says so at each login's set (lighthouse/limits)
     read_live()
-    if live is not None and (not src.endswith(" *:") or "week_max" not in rules):
-        return live, "week ceiling, live"
-    return rules.get("week_max", 100), ("week ceiling, budgets.json" if budget is not None else "week ceiling")
+    if old_live is not None and not old_src.endswith(" *:"):
+        # a login's own legacy week-max line is hard (the mapping: own line hard), unless a live week-hard-max
+        # superseded it (read_live): a week-soft-max line, own or `*:`, may lower it but never replace it, and the
+        # row stays unliftable (the landing review, 2026-11-07)
+        if soft_live is not None:
+            label = a.get("label")
+            warn_alias_once(
+                ("live", str(label).lower(), WEEK_SOFT_MAX_KEY, WEEK_MAX_KEY, "own"),
+                f"account: {label}: {WEEK_SOFT_MAX_KEY} and alias {WEEK_MAX_KEY} {str(label).lower()}: both set; "
+                f"the lower stands, and {WEEK_MAX_KEY}'s own line keeps the row unlifted",
+            )
+            return min(soft_live, old_live), "week ceiling, live", True, True
+        return old_live, "week ceiling, live", True, True
+    if soft_live is not None:
+        return soft_live, "week ceiling, live", False, False
+    own_rules = own_rules_of(a)
+    if old_live is not None and (not old_src.endswith(" *:") or ("week_soft_max" not in own_rules and "week_max" not in own_rules)):
+        return old_live, "week ceiling, live", False, False   # only `*:` reaches here: own lines returned above
+    soft_key = "week_soft_max" if "week_soft_max" in rules else "week_max"
+    val = rule_num(a, soft_key, 100) if soft_key in rules else 100
+    return val, ("week ceiling, budgets.json" if b_any else "week ceiling"), False, False
 
 
-def fleet_finish_serves(a, why):
-    """Whether a `*:` finish line may raise this row, whose week ceiling WHY names: as week-max's `*:`, only a row
-    that sets none of its own, so a ceiling set low on purpose is never raised by a fleet-wide line (week_ceiling's
-    comment; finish-ceiling's landing review, 2026-11-06). A reserve judged, the row's week_max (the registry's or
-    budgets.json's), the login's own live line, or a row kept out of the overdraw (may_overdraw): no."""
-    live, src, _ = live_week_max(a.get("label"))
-    own_live = live is not None and not src.endswith(" *:")
-    return (why.startswith("week ceiling") and "week_max" not in a["rules"] and not own_live
-            and may_overdraw(a))
-
-
-def ceiling(a, lim, t, finish=False):
-    """The week ceiling that judges this row, and why. For a finish (header, "Finish ceiling") a line of
-    `lighthouse/week-max-finish` stands in its place where it is higher."""
-    cap, why = week_ceiling(a, lim, t)
-    if finish:
-        higher, src, _ = live_week_max(a.get("label"), finish=True)
-        if higher is not None and higher > cap and (not src.endswith(" *:") or fleet_finish_serves(a, why)):
-            return higher, "finish ceiling"
+def week_ceiling(a, lim, t):
+    """The week soft ceiling now, and why (`reserve`, live `week-soft-max` or legacy `week-max`, `rules.week_soft_max`
+    or `rules.week_max`)."""
+    cap, why, _, _ = _week_soft(a, lim, t)
     return cap, why
 
 
+def fleet_finish_serves(a, why):
+    """Whether a `*:` live finish line may raise this row, whose week ceiling WHY names: as week-max's `*:`, only a row
+    that sets none of its own, so a ceiling set low on purpose is never raised by a fleet-wide line (week_ceiling's
+    comment; finish-ceiling's landing review, 2026-11-06). A reserve judged, the row's own week limit, the login's own
+    live line, or a row kept out of the overdraw (may_overdraw): no."""
+    own_rules = own_rules_of(a)
+    if any(k in own_rules for k in ("week_soft_max", "week_max", "week_hard_max", "week_finish_hard_max")):
+        return False
+    for k in (WEEK_SOFT_MAX_KEY, WEEK_HARD_MAX_KEY, WEEK_MAX_KEY):
+        live, src, _ = live_limit(k, a.get("label"))
+        if live is not None and not src.endswith(" *:"):
+            return False
+    return why.startswith("week ceiling") and may_overdraw(a)
+
+
+def finish_hard(a, soft_why):
+    """Effective finish hard ceiling for row a (`lighthouse/week-finish-hard-max` over alias
+    `lighthouse/week-max-finish` over `rules.week_finish_hard_max`), or None."""
+    label = a.get("label")
+    f_new, f_new_src, f_new_bad = live_limit(WEEK_FINISH_HARD_MAX_KEY, label)
+    f_old, f_old_src, f_old_bad = live_week_max(label, finish=True)
+    if (f_new_bad or f_old_bad
+            or READ_SAID in _LIVE_SAID.get(WEEK_FINISH_HARD_MAX_KEY, ())
+            or READ_SAID in _WEEK_MAX_FINISH_SAID):
+        return None
+    if f_new is not None and f_new_src.endswith(" *:") and not fleet_finish_serves(a, soft_why):
+        f_new, f_new_src = None, None
+    if f_old is not None and f_old_src.endswith(" *:") and not fleet_finish_serves(a, soft_why):
+        f_old, f_old_src = None, None
+    if f_new is not None and f_new_src.endswith(" *:") and f_old is not None and not f_old_src.endswith(" *:"):
+        # a fleet line of the new key never stands over the login's own line of the alias: a fleet `*:` line never
+        # stands over a login's own word (the landing review, 2026-11-07, round 4)
+        f_new, f_new_src = None, None
+    if f_new is not None and f_old is not None:
+        warn_alias_once(
+            ("live", str(label).lower(), WEEK_FINISH_HARD_MAX_KEY, WEEK_MAX_FINISH_KEY),
+            f"account: {label}: {WEEK_FINISH_HARD_MAX_KEY} and alias {WEEK_MAX_FINISH_KEY} both set; {WEEK_FINISH_HARD_MAX_KEY} wins",
+        )
+    if f_new is not None:
+        return f_new
+    if f_old is not None:
+        return f_old
+    rules = rules_of(a)
+    if "week_finish_hard_max" in rules:
+        v = rules["week_finish_hard_max"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 < v <= 100:
+            tok = (label, repr(v))
+            if tok not in _FINISH_RULE_SAID:
+                _FINISH_RULE_SAID.add(tok)
+                print(f"account: {label}'s rules.week_finish_hard_max {v!r} is not a number above 0, at most 100; "
+                      "the week ceiling judges", file=sys.stderr)
+            return None
+        return v
+    return None
+
+
+def _ceiling_state(a, lim, t, finish=False):
+    """(soft, soft_why, hard, hard_why, unliftable): the full week pair state for row a."""
+    soft, soft_why, own_old_live, legacy_judged = _week_soft(a, lim, t)
+    # a login's own legacy week-max line stands in place of a JSON week_hard_max, as a live week-hard-max does (live
+    # over budgets.json and accounts.json), where that line set the ceiling; inside a reserve the reserve judges, and
+    # week_hard_max still caps it ("nothing passes week_hard_max"), while the row stays unliftable (the landing
+    # review's round 3, pick A)
+    hard, hard_why = (None, None) if legacy_judged else week_hard(a)
+    eff = min(soft, hard) if hard is not None else soft
+    if finish:
+        f_val = finish_hard(a, soft_why)
+        if f_val is not None and f_val > eff:
+            return f_val, "finish ceiling", f_val, "finish ceiling", True
+    return soft, soft_why, hard, hard_why, own_old_live
+
+
+def ceiling(a, lim, t, finish=False):
+    """The week ceiling that judges this row without a lift, and why (`min(week_soft_max, week_hard_max)`, or
+    `week_finish_hard_max` / `lighthouse/week-finish-hard-max` / `lighthouse/week-max-finish` where higher on a finish)."""
+    soft, soft_why, hard, hard_why, _ = _ceiling_state(a, lim, t, finish)
+    if hard is not None and hard < soft:
+        return hard, hard_why
+    return soft, soft_why
+
+
 def rule_num(a, key, default):
-    """A row's optional numeric rule; anything but a number reads as the default, said once on stderr
+    """A row's optional numeric rule; anything but a finite number reads as the default, said once on stderr
     (AGENTS.md's optional-key trap: a TypeError in judge would fail every pick)."""
-    v = a["rules"].get(key, default)
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        print(f"account: {a['label']}'s rules.{key} {v!r} is not a number; using {default}", file=sys.stderr)
+    rules = rules_of(a)
+    v = rules.get(key, default)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        tok = (a.get("label"), key, repr(v))
+        if tok not in _RULE_NUM_SAID:
+            _RULE_NUM_SAID.add(tok)
+            print(f"account: {a['label']}'s rules.{key} {v!r} is not a number; using {default}", file=sys.stderr)
         return default
     return v
+
+
+NARROWING_RULES = ("week_soft_max", "week_max", "week_hard_max", "window_soft_max", "window_max", "window_hard_max")
+
+
+def bad_narrowing_rule(a):
+    """(key, value) of the first ceiling rule on row a that is present but no finite number, or None. budgets.json values
+    are checked on load and fall back to the layer below, so only a registry row (an implicit one's included) reaches
+    here."""
+    rules = rules_of(a)
+    for k in NARROWING_RULES:
+        if k in rules:
+            v = rules[k]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                return k, v
+    return None
 
 
 def pace(lim, t):
@@ -3010,11 +3527,49 @@ def pace(lim, t):
     return 100 * (1 - (end - t) / span)
 
 
+def week_pace(lim, t):
+    """The week window's elapsed share at sample time t, in percent (account-limit-pairs D1: pace lifts
+    week_soft_max up to week_hard_max), or None with no reset time inside the week's future. t is when lim was
+    sampled (judge's at), never wall-clock now (AGENTS.md's pace-window trap)."""
+    end, span = lim.get("seven_day_resets"), lim.get("seven_day_window_s") or SEVEN_DAY_S
+    if not end or not 0 < end - t <= span:
+        return None
+    return 100 * (1 - (end - t) / span)
+
+
+def _judge_week_value(a, val, resets_t, lim, t, sample_t, finish=False, bar=None, bar_why=None, prefix="week"):
+    """(ok, phrase) judging week percentage VAL (either `seven_day` or Fable's `fable_week`) against row a's week
+    soft/hard pair and week pace at SAMPLE_T."""
+    if bar is not None:
+        week_max, why = min(bar, 100), bar_why or "overdraw: no login was under its bar"
+        if val >= week_max:
+            return False, f"{prefix} {val}% ≥ {week_max}% ({why}); resets {when(resets_t)}"
+        return True, f"{prefix} {val}% < {week_max}% ({why})"
+    if finish:
+        # a finish never gets less than a build of the same row: the build road (week pace included) first, then the
+        # finish line, which neither pace nor the overdraw lifts (the landing review's round 2, pick A, 2026-11-07)
+        ok, why = _judge_week_value(a, val, resets_t, lim, t, sample_t, finish=False, prefix=prefix)
+        if ok:
+            return ok, why
+    soft, soft_why, hard, hard_why, unliftable = _ceiling_state(a, lim, t, finish)
+    if hard is not None and val >= hard:
+        return False, f"{prefix} {val}% ≥ {hard}% ({hard_why}); resets {when(resets_t)}"
+    if val < soft:
+        return True, f"{prefix} {val}% < {soft}% ({soft_why})"
+    if not unliftable:
+        lift_cap = lift_ceiling(a, hard)
+        wp = week_pace({"seven_day_resets": resets_t, "seven_day_window_s": lim.get("seven_day_window_s")}, sample_t)
+        if wp is not None and val < wp and val < lift_cap:
+            cap_note = f", hard {lift_cap}%" if lift_cap < 100 else ""
+            return True, f"{prefix} {val}% under pace {min(wp, 99):.0f}% (soft {soft}% {soft_why}{cap_note})"
+    return False, f"{prefix} {val}% ≥ {soft}% ({soft_why}); resets {when(resets_t)}"
+
+
 def no_five_hour(a, lim):
     """True when the reading has a week and its plan has no 5-hour window at all, as opposed to a
     lost figure. Codex says so by the window's absence (parse_codex). Claude by its `limits[]`: a
     list that names windows but no `session` one (the primary's, 2026-11-01: get_usage's five_hour
-    null, and the inference headers' unifiedWindows the week alone). A reading with no `kinds`
+    null, and the inference headers' unifiedWindows the week alone). A reading with no `limits[]`
     (an old cache, a shape without `limits[]`) stays unknown."""
     if not lim or lim.get("five_hour") is not None or lim.get("seven_day") is None:
         return False
@@ -3032,8 +3587,11 @@ def no_five_hour(a, lim):
 def judge(a, lim, t, allow_overage=False, at=None, bar=None, bar_why=None, finish=False):
     """→ (eligible, reason) for one row with known limits. allow_overage: a person's yes to a row
     whose paid extra usage is on (header, "Paid overage"). at: when lim was sampled; pace reads
-    the window as it stood then (header, "Pace"). bar: a week ceiling that replaces the row's, the
-    overdraw pass's ceiling or 100 (header, "Overdraw")."""
+    both windows as they stood then (header, "The 5-hour window", "The week and week pace"). bar: a
+    week ceiling that replaces the row's soft bar on the overdraw pass (header, "Overdraw")."""
+    off = login_refusal(a)
+    if off:   # before every other reason: no reading, reset or overdraw makes another account's seat this row's
+        return False, off
     if a.get("same_as"):
         other, email = a["same_as"]
         return False, f"same login as {other} ({email}), so its limits are {other}'s — sign it in as its own account: {relogin_line(a)}"
@@ -3044,9 +3602,14 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None, bar_why=None, finis
         return False, _UNKNOWN_WHY.get(a.get("label")) or "limits unknown (no probe answered, none cached)"
     if overage_on(lim) and not allow_overage:
         return False, "extra usage on: work here may bill past the plan (account pick --allow-overage, attended only)"
-    week_max, why = (min(bar, 100), bar_why or "overdraw: no login was under its bar") if bar is not None else ceiling(a, lim, t, finish)
+    sample_t = at or t
     m = margin(a, t)
-    win_max = a["rules"].get("window_max", 100) - m
+    rules = rules_of(a)
+    bad = bad_narrowing_rule(a)
+    if bad:
+        # a ceiling key only narrows, so one present that does not read refuses the row rather than read as its
+        # default (AGENTS.md's narrowing trap; the landing review, 2026-11-07, round 4, pick A); no lift passes it
+        return False, f"rules.{bad[0]} {bad[1]!r} is not a number (a ceiling that does not read refuses the row)"
     wk, fh = lim.get("seven_day"), lim.get("five_hour")
     if a["provider"] in ("codex", "antigravity") and lim.get("locked"):
         # the server said the limit is reached; with no reset time or exhaustion log no cooldown was written to stop it.
@@ -3055,39 +3618,87 @@ def judge(a, lim, t, allow_overage=False, at=None, bar=None, bar_why=None, finis
         return False, f"locked by {who} ({', '.join(lim['locked'])}); resets {when(max((lim.get(w + '_resets') or 0 for w in lim['locked']), default=0) or lim.get('seven_day_resets') or lim.get('five_hour_resets'))}"
     # a window the plan does not have is no limit (Codex prolite, a Claude plan without a session window)
     if no_five_hour(a, lim):
-        return (wk < week_max, f"week {wk}% {'<' if wk < week_max else '≥'} {week_max}% ({why}); no 5-hour window")
+        wk_ok, wk_phrase = _judge_week_value(
+            a, wk, lim.get("seven_day_resets"), lim, t, sample_t, finish=finish, bar=bar, bar_why=bar_why
+        )
+        if not wk_ok:
+            return False, wk_phrase
+        return True, f"{wk_phrase}; no 5-hour window"
     if a["provider"] == "codex" and wk is None and fh is not None:
         wk = 0
     if wk is None or fh is None:
         return False, "limits unknown (no window figures)"
-    if wk >= week_max:
-        return False, f"week {wk}% ≥ {week_max}% ({why}); resets {when(lim.get('seven_day_resets'))}"
+    wk_ok, wk_phrase = _judge_week_value(
+        a, wk, lim.get("seven_day_resets"), lim, t, sample_t, finish=finish, bar=bar, bar_why=bar_why
+    )
+    if not wk_ok:
+        return False, wk_phrase
+    ws_live, _ = _live_pair_value(a, WINDOW_SOFT_MAX_KEY, ("window_soft_max", "window_max", "free_below"))
+    wh_live, _ = _live_pair_value(a, WINDOW_HARD_MAX_KEY, ("window_hard_max", "pace_headroom"))
+    if ws_live is not None or wh_live is not None or "window_soft_max" in rules or "window_hard_max" in rules:
+        if ws_live is not None:
+            win_soft = max(0, ws_live - m)
+        elif "window_soft_max" in rules:
+            win_soft = max(0, rule_num(a, "window_soft_max", 100) - m)
+            if "window_floor" in rules:   # a higher layer's free_below (merge_rule_layer): runs below it whatever the pace
+                win_soft = max(win_soft, rule_num(a, "window_floor", 0))
+        else:
+            win_soft = max(rule_num(a, "window_max", 100) - m, rule_num(a, "free_below", FREE_BELOW))
+        if wh_live is not None:
+            win_hard = wh_live
+        elif "window_hard_max" in rules:
+            win_hard = rule_num(a, "window_hard_max", 100 - PACE_HEADROOM)
+        else:
+            win_hard = 100 - rule_num(a, "pace_headroom", PACE_HEADROOM)
+        p = pace(lim, sample_t)
+        if fh >= win_hard:
+            p_note = f"; under pace {min(p, 99):.0f}%" if p is not None and fh < p else ""
+            return False, f"5h {fh}% ≥ {win_hard}% (window hard ceiling{p_note}); resets {when(lim.get('five_hour_resets'))}"
+        if fh < win_soft:
+            return True, f"{wk_phrase}, 5h {fh}% < {win_soft}%"
+        if p is not None and fh < p:
+            return True, f"{wk_phrase}, 5h {fh}% under pace {min(p, 99):.0f}% (soft {win_soft}%, hard {win_hard}%)"
+        extra = f", {m} points of margin after an exhaustion" if m else ""
+        if p is not None:
+            extra += f", over pace {min(p, 99):.0f}%"
+        return False, f"5h {fh}% ≥ {win_soft}%{extra}; resets {when(lim.get('five_hour_resets'))}"
+    win_max = rule_num(a, "window_max", 100) - m
     if fh > win_max:
         free = rule_num(a, "free_below", FREE_BELOW)
         if fh < free:
-            return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% under {free}% (runs whatever the pace)"
+            return True, f"{wk_phrase}, 5h {fh}% under {free}% (runs whatever the pace)"
         extra = f", {m} points of margin after an exhaustion" if m else ""
-        p, room = pace(lim, at or t), rule_num(a, "pace_headroom", PACE_HEADROOM)
+        p, room = pace(lim, sample_t), rule_num(a, "pace_headroom", PACE_HEADROOM)
         if p is not None and fh < p and 100 - fh >= room:
-            return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% under pace {min(p, 99):.0f}% ({room} points headroom)"
+            return True, f"{wk_phrase}, 5h {fh}% under pace {min(p, 99):.0f}% ({room} points headroom)"
         if p is not None:
             extra += (f"; under pace {min(p, 99):.0f}%, but {100 - fh:g} points left < {room} of headroom" if fh < p
                       else f", over pace {min(p, 99):.0f}%")
         return False, f"5h {fh}% > {win_max}%{extra}; resets {when(lim.get('five_hour_resets'))}"
-    return True, f"week {wk}% < {week_max}% ({why}), 5h {fh}% ≤ {win_max}%"
+    return True, f"{wk_phrase}, 5h {fh}% ≤ {win_max}%"
 
+
+def _lend_key(a):
+    rules = rules_of(a)
+    if "week_lend_hard_max" in rules:
+        return "week_lend_hard_max"
+    if "lend_max" in rules:
+        return "lend_max"
+    return None
 
 
 def lend_value(a):
-    """The row's lend bar as a number, or None with no key. `rules.lend_max` only narrows, so a value that is
-    present but does not read (no number, NaN, outside 0 to 100), in the registry or budgets.json, lends nothing: 0,
-    said on stderr outside --json at each read (AGENTS.md's narrowing trap: only a truly absent key widens)."""
-    if "lend_max" not in a["rules"]:
+    """The row's hard lend bar as a number, or None with no key. `rules.week_lend_hard_max` (alias `lend_max`) only
+    narrows, so a value that is present but does not read (no number, NaN, outside 0 to 100), in the registry or
+    budgets.json, lends nothing: 0, said on stderr outside --json at each read (AGENTS.md's narrowing trap: only a
+    truly absent key widens)."""
+    k = _lend_key(a)
+    if k is None:
         return None
-    v = a["rules"]["lend_max"]
+    v = rules_of(a)[k]
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 100:
         if "--json" not in sys.argv:   # quiet under --json, as budget_warn: a caller may merge stderr into what it parses
-            print(f"account: {a['label']}'s rules.lend_max {v!r} is not a number from 0 to 100; it lends nothing",
+            print(f"account: {a['label']}'s rules.{k} {v!r} is not a number from 0 to 100; it lends nothing",
                   file=sys.stderr)
         return 0
     return v
@@ -3097,7 +3708,7 @@ def lends_for(reg, a, repo, own=False):
     """True when row a has a lend bar and the repo at path is not its own (its scope's login, or its tenant's
     repos): the bar judges that repo's work there. own: the caller's scope_login_of(repo), read once
     (AGENTS.md: a registry re-read mid-walk can find it torn); False reads it here. No repo: not its own."""
-    if "lend_max" not in a["rules"]:
+    if _lend_key(a) is None:
         return False
     if not repo:
         return True
@@ -3106,11 +3717,12 @@ def lends_for(reg, a, repo, own=False):
 
 
 def lend_bar(reg, a, lim, repo, own=False):
-    """Why row a, under its week ceiling, still may not run repo: its week is at or past its lend bar (lend_value)
+    """Why row a, under its week ceiling, still may not run repo: its week is at or past its hard lend bar (lend_value)
     and the repo is not its own (lends_for), else None (header, "The lend bar"). No key, no bar; a week with no
-    figure is judge's to refuse, never this one's. pick, pick_for_ship's pinned row and limits_json all ask it."""
+    figure is judge's to refuse, never this one's. pick, pick_for_ship's pinned row, lift and limits_json all ask it."""
     wk = (lim or {}).get("seven_day")
-    if "lend_max" not in a["rules"] or isinstance(wk, bool) or not isinstance(wk, (int, float)):
+    k = _lend_key(a)
+    if k is None or isinstance(wk, bool) or not isinstance(wk, (int, float)):
         return None
     if not lends_for(reg, a, repo, own):
         return None
@@ -3119,7 +3731,7 @@ def lend_bar(reg, a, lim, repo, own=False):
         return None
     t = a.get("tenant")
     whose = f"{t}'s" if isinstance(t, str) else "its own scope's"
-    by = ", budgets.json" if "lend_max" in (a.get("budgeted") or ()) else ""
+    by = ", budgets.json" if k in (a.get("budgeted") or ()) else ""
     return (f"week {wk}% ≥ {bar}% (lend bar{by}: past it, {whose} work only); "
             f"resets {when(lim.get('seven_day_resets'))}")
 
@@ -3127,10 +3739,10 @@ def lend_bar(reg, a, lim, repo, own=False):
 ROOMS = ("fable",)
 
 
-def room_short(a, lim, t, room, finish=False):
+def room_short(a, lim, t, room, finish=False, at=None):
     """→ None when the row has the room asked for, else (why, lasting): lasting when the plan itself
     lacks it (a ship pinned there moves), not when its week is full (it waits). Fable's room is its own
-    week under the row's week ceiling (header, "Room")."""
+    week under the row's week pair (header, "Room")."""
     if not room:
         return None
     if lim is None or lim.get("fable") is None:
@@ -3140,9 +3752,11 @@ def room_short(a, lim, t, room, finish=False):
     fw = lim.get("fable_week")
     if fw is None:
         return "Fable room unknown (its week has no figure)", False
-    week_max, why = ceiling(a, lim, t, finish)
-    if fw >= week_max:
-        return f"Fable's week {fw}% ≥ {week_max}% ({why}); resets {when(lim.get('fable_week_resets'))}", False
+    fw_ok, fw_why = _judge_week_value(
+        a, fw, lim.get("fable_week_resets"), lim, t, at or t, finish=finish, prefix="Fable's week"
+    )
+    if not fw_ok:
+        return fw_why, False
     return None
 
 
@@ -3175,8 +3789,9 @@ def may_overdraw(a):
     only narrows, so it fails closed: `false` never; `true` always; absent, any row but the primary, which a
     host's registry without the key must not lift (its routines break when its week runs out; the landing
     review, 2026-11-04). Any other value lifts nothing, said once on stderr (AGENTS.md's narrowing trap)."""
-    v = a["rules"].get("overdraw", None)
-    if v is None and "overdraw" not in a["rules"]:
+    rules = rules_of(a)
+    v = rules.get("overdraw", None)
+    if v is None and "overdraw" not in rules:
         return not a.get("primary")
     if isinstance(v, bool):
         return v
@@ -3260,9 +3875,10 @@ def _overdraw_record(info):
             f"{job or 'a job'} in {repo or '(no repo given)'} started on {label} at week {info['week']}%, "
             f"past its bar ({info['bar']}). The other logins: {others}.")
     body = (f"No login with room was under its week bar for a job, so `account pick --overdraw` started it on "
-            f"{label}, whose week is under 100%.\n\nFirst: {note}\n\nEach later job started past {label}'s bar "
-            f"this week is a comment here. The bars are each row's `rules.week_max` and `lighthouse/budgets.json`; "
-            f"a row with `rules.overdraw: false` is never lifted. Filed by lighthouse's `account overdraw-log` on {host}.")
+            f"{label}, whose week is under its hard ceiling.\n\nFirst: {note}\n\nEach later job started past {label}'s bar "
+            f"this week is a comment here. The bars are each row's `week_soft_max` / `week_hard_max` (alias `week_max`) "
+            f"and `lighthouse/budgets.json`; a row with `rules.overdraw: false` is never lifted. "
+            f"Filed by lighthouse's `account overdraw-log` on {host}.")
     ask, why_not = helm_ask()
     if ask and not hasattr(ask, "issue_note"):   # a helm older than this lighthouse (AGENTS.md: guard a peer's function)
         ask, why_not = None, "helm's ask has no issue_note: update helm"
@@ -3279,8 +3895,9 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
     """→ (row, reason, skipped[(label, why)]). Raises Short(skipped) when none may run.
     repo: the path the step runs in; a row the repo is routed off (tenants) is skipped unprobed.
     room: `fable` takes only a row with Fable room (header, "Room").
-    overdraw: with no row eligible, the first one refused by its week ceiling alone runs it past that
-    ceiling while its week is under 100%; the row returned is a copy carrying `overdraw` (header, "Overdraw")."""
+    overdraw: with no row eligible, the first one refused by its soft week ceiling alone runs it past that
+    ceiling while its week is under `week_hard_max` (100 when none is set); the row returned is a copy carrying
+    `overdraw` (header, "Overdraw")."""
     t = now()
     bad = room_refusal(reg, kind, provider, room)
     if bad:
@@ -3320,9 +3937,9 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         ok, why = judge(a, lim, t, allow_overage, at, finish=finish)
         if ok:
             lent = lend_bar(reg, a, lim, repo, own)
-            if lent:   # worded as judge's week refusal, so whatever reads a week bar reads this one too
+            if lent:   # worded as judge's week refusal; hard (week_lend_hard_max), never lifted
                 ok, why = False, lent
-        rs = room_short(a, lim, t, room, finish)
+        rs = room_short(a, lim, t, room, finish, at=at)
         if rs:   # before the fallbacks below: an unknown Fable is no room, the primary's included
             # a plan without Fable alone: no reset lifts it, so judge's reason never leads (resets())
             # judge's "limits unknown" is the same unread probe the room reads, so the room's reason stands alone
@@ -3350,14 +3967,9 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             if overdraw:
                 # a row before it known to have credits left goes first: the primary's guess may be its own last
                 # point of the week, which the overdraw exists to spare (code review of overdraw, 2026-11-04)
-                lifted = lift(ordered_over(), t, allow_overage, rest + [(a["label"], why)])
+                lifted = lift(ordered_over(), t, allow_overage, rest + [(a["label"], why)], reg=reg, repo=repo, own=own)
                 if lifted:
                     return lifted
-            # an unreadable primary (no reading, or one with no window figures; code review 2026-10-17)
-            # runs the step rather than nothing once every row before it was tried: the response shape is marked experimental,
-            # and a blocked start costs more than a guess (review 2026-10-03). A row after the
-            # primary (the owner's last-resort row since 2026-10-16) is for a primary with no room,
-            # never one whose room is unknown.
             return a, "limits unknown — the primary runs it rather than nothing", rest
         if own_tenant(reg, a, repo) and unknown:
             # every other row is refused a tenant's repo, so waiting on an unreadable tenant login waits forever;
@@ -3372,7 +3984,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
             else:
                 skipped[skip_idx] = (a["label"], why)
             return None
-        if OVER_BAR_RE.match(why):
+        if OVER_BAR_RE.match(why) and "(lend bar" not in why and "(week hard ceiling" not in why and "(finish ceiling)" not in why:
             over_ranked.append((walk_idx, (a, lim, at, why)))
         if skip_idx is None:
             skipped.append((a["label"], why))
@@ -3403,10 +4015,12 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
         if ar:
             skipped.append((a["label"], ar))
             continue
-        if a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
+        if login_refusal(a) or a.get("same_as") or cooldown(a, t):  # no probe for a row that cannot run anyway
             # under --room, a plan its cached reading says lacks Fable is said first: no reset lifts it
-            # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts)
-            rs = room_short(a, limits(a, cached=True, reg=reg)[0], t, room, finish) if room and not a.get("same_as") else None
+            # (dispatch's resets() reads a leading cooldown as a refusal a reset lifts); a login refusal leads
+            # (the login guard): never the primary's at-once road, the tenant's unread one or the overdraw pass
+            c_lim, c_at = limits(a, cached=True, reg=reg) if room and not a.get("same_as") and not login_refusal(a) else (None, None)
+            rs = room_short(a, c_lim, t, room, finish, at=c_at) if room and not a.get("same_as") and not login_refusal(a) else None
             skipped.append((a["label"], rs[0] if rs and rs[1] else judge(a, None, t)[1]))   # same_as: its own fix leads
             continue
         if logged_out(a["home"]):
@@ -3420,7 +4034,7 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
     if res:
         return res
     # a row known to have credits left, overdrawn, goes before an unread tenant login that may be its own last point
-    lifted = lift(ordered_over(), t, allow_overage, skipped) if overdraw else None
+    lifted = lift(ordered_over(), t, allow_overage, skipped, reg=reg, repo=repo, own=own) if overdraw else None
     if lifted:
         return lifted
     if unread_own:
@@ -3429,31 +4043,39 @@ def pick(reg, kind=None, provider=None, bound=False, cached=False, repo=None, al
     raise Short(skipped)
 
 
-def lift(over, t, allow_overage, skipped):
+def lift(over, t, allow_overage, skipped, reg=None, repo=None, own=False):
     """The overdraw pass (header, "Overdraw"): (row, reason, skipped) for the first of OVER, in walk order, that
-    may be lifted and is eligible with its week ceiling at `lighthouse/overdraw-max` (else 100, never above 100),
-    else None. OVER holds only rows that got past
-    every scope, tenant, confine, room and cooldown refusal and were refused by their week ceiling first.
-    A row refused by its lend bar goes last, after every other (header, "The lend bar"): lifting it spends the
-    tenant's own room on another repo's work, so it lends only when no other row can be lifted (sorted is stable:
-    the walk's order holds inside each group). The row returned is a copy carrying `overdraw`, what the caller
-    hands `account overdraw-log` at its start."""
-    for a, lim, at, bar_why in sorted(over, key=lambda o: "(lend bar" in o[3]):
+    may be lifted and is eligible with its week ceiling lifted up to `week_hard_max` (`lighthouse/week-hard-max`,
+    alias `lighthouse/overdraw-max`, `rules.week_hard_max`, else 100), else None. Hard ceilings (`week_hard_max`,
+    `week_finish_hard_max`, `week_lend_hard_max` / `lend_max`, and an own live `lighthouse/week-max` line) are never
+    lifted. The row returned is a copy carrying `overdraw`, what the caller hands `account overdraw-log` at its start."""
+    for a, lim, at, bar_why in over:
         if not may_overdraw(a):
             continue
-        if "(finish ceiling)" in bar_why:
-            # the owner's "up to 97%": every launcher's pick passes --overdraw, so a lift here would make the line
-            # no ceiling on any real road (finish-ceiling's landing review, 2026-11-06)
+        if "(finish ceiling)" in bar_why or "(week hard ceiling" in bar_why or "(lend bar" in bar_why:
+            continue
+        if reg is not None and lend_bar(reg, a, lim, repo, own):
+            # week_lend_hard_max is hard (Addendum): even if soft < lend_bar was what judge refused first, never lift
+            # past the lend bar
+            skipped[:] = [(l, lend_bar(reg, a, lim, repo, own) if l == a["label"] else w) for l, w in skipped]
             continue
         live, src, _ = live_week_max(a.get("label"))
         if live is not None and not src.endswith(" *:"):
-            # a login's own live line is the owner's newest word on that seat (ceiling()'s "set low on purpose"),
-            # so it holds; a fleet-wide `*:` line does not (both reviews of overdraw, 2026-11-04)
-            continue
-        cap, _, _ = live_week_max(a.get("label"), overdraw=True)
-        bar = min(cap, 100) if cap is not None else 100
-        od_why = ("overdraw: no login was under its bar" if cap is None
-                  else f"overdraw: no login was under its bar, to the overdraw ceiling {bar}%")
+            wh, wh_src = _live_pair_value(a, WEEK_HARD_MAX_KEY, ("week_hard_max",))
+            if wh is None or wh_src.endswith(" *:"):
+                # a login's own live week-max line is hard (legacy alias of week_hard_max), whatever JSON week_hard_max
+                # or a fleet `*:` week-hard-max says; only the login's own week-hard-max line supersedes it
+                continue
+        hard, hard_why = week_hard(a)
+        if hard is not None:
+            bar = min(lift_ceiling(a, hard), 100)
+            od_why = ("overdraw: no login was under its bar" if bar == 100 and hard_why == "week hard ceiling"
+                      else f"overdraw: no login was under its bar, to the overdraw ceiling {bar}%")
+        else:
+            cap, _, _ = live_week_max(a.get("label"), overdraw=True)
+            bar = min(cap, 100) if cap is not None else 100
+            od_why = ("overdraw: no login was under its bar" if cap is None
+                      else f"overdraw: no login was under its bar, to the overdraw ceiling {bar}%")
         ok, why = judge(a, lim, t, allow_overage, at, bar=bar, bar_why=od_why)
         if ok:
             rest = [s for s in skipped if s[0] != a["label"]]
@@ -3732,9 +4354,9 @@ def cmd_check(reg):
         g = guard_state(a)
         if g:
             notes.append(f"guard: {g}")
-        if a.get("same_as"):
+        if login_refusal(a) or a.get("same_as"):   # judge says the login guard's refusal first
             bad += 1
-            notes.append(judge(a, None, t)[1])
+            notes.append("never picked: " + judge(a, None, t)[1])
         lim, at = limits(a, cached=True)
         ps = probe_state(a)
         notes.append(f"probe {int((t - at) / 60)} min old" if at else "no reading of its own cached" if ps else "never probed")
@@ -3747,7 +4369,7 @@ def cmd_check(reg):
             bad += ex[0] == "fix"
         if ps:
             notes.append(ps[1])
-        mark = "ok" if not lp and not fs and not a.get("same_as") and (st or {}).get("loggedIn") and not (ex and ex[0] == "fix") else "⚠ "
+        mark = "ok" if not lp and not fs and not a.get("same_as") and not login_refusal(a) and (st or {}).get("loggedIn") and not (ex and ex[0] == "fix") else "⚠ "
         print(f"  {mark}  {a['label']}{' (primary)' if a.get('primary') else ''}: " + "; ".join(notes))
     return 1 if bad else 0
 
@@ -4043,8 +4665,8 @@ def parse_orca(x):
         if k in ORCA_WINDOWS:
             w = ORCA_WINDOWS[k]
             out[w], out[w + "_resets"] = v["usedPercent"], ms(v.get("resetsAt"))
-            if w == "five_hour" and isinstance(v.get("windowMinutes"), (int, float)):
-                out["five_hour_window_s"] = v["windowMinutes"] * 60   # pace()'s span, as parse_codex's
+            if isinstance(v.get("windowMinutes"), (int, float)):
+                out[w + "_window_s"] = v["windowMinutes"] * 60   # pace()'s and week_pace()'s span, as parse_codex's
             out["kinds"].append(w)
             if v["usedPercent"] >= 100 and not (groups and w == "seven_day"):
                 out["locked"].append(w)
@@ -4452,6 +5074,8 @@ def cmd_orca_sync(reg, off=False):
         write_json(ORCA_FILE, synced)
         a["enabled"] = a.get("enabled", True) and entry.get("enabled") is not False
         a.pop("same_as", None)
+        a.pop("_login_off", None)   # the login guard's read of the old home, if any road made one
+        a.pop("_login_match", None)
         mark_same_logins(reg)  # a new login that is another row's is no second account, nor a profile
         print(f"  {'ok ' if same else 'new'} {label}: {home} — Orca account {x.get('id')}, signed in as "
               f"{st.get('email') or st.get('emailAddress') or x.get('email')} ({st.get('subscriptionType') or '?'}); "
@@ -4551,6 +5175,7 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
             gone = (not a["enabled"] and "disabled") or (a["provider"] != prov and f"not a {prov} account") \
                 or (not a["home"].is_dir() and "not here") or antigravity_refusal(reg, a) \
                 or (a.get("same_as") and "on another row's login") \
+                or (login_refusal(a) and f"refused its login ({login_refusal(a).split(' — ')[0]})") \
                 or (d and f"denied for {d}") or (own and own[1] != a["label"] and f"not scope {own[0]}'s login {own[1]}") \
                 or confined_out(reg, a, repo) or (re.sub(r"\s+", "_", a["label"]).lower() in skip_norm and "skipped (--skip)") \
                 or (logged_out(a["home"]) and "logged out")
@@ -4563,7 +5188,10 @@ def pick_for_ship(reg, key, kind=None, provider=None, cached=False, repo=None, p
                     # a plan without Fable, rather than wait for the week's reset (the lend bar's review, 2026-11-05)
                     gone = "past its lend bar for this repo"
                 # cooling down: its cached reading still says whether its plan carries Fable
-                rs = room_short(a, limits(a, cached=True, reg=reg)[0] if cooldown(a, t) else lim, t, room, finish) if room else None
+                rs = None
+                if room:
+                    rs_lim, rs_at = limits(a, cached=True, reg=reg) if cooldown(a, t) else (lim, at)
+                    rs = room_short(a, rs_lim, t, room, finish, at=rs_at)
                 unknown = rs and rs[0].startswith("Fable room unknown")
                 if rs and cooldown(a, t) and not rs[1]:
                     rs = None   # a cooldown waits as before; a plan without Fable, or a Fable room unknown, moves the ship
@@ -4829,7 +5457,7 @@ def stale_copies(peer=None):
     """→ [(label, level, text, fix)] for doctor: each Drive-backed file whose local copy — what the hooks read
     outside claude-host (header, Drive-backed reads) — is missing, or differs from the file and was not
     refreshed for STALE_AFTER. Either says the usage tick's `account refresh` is not running through
-    claude-host on this Mac: a missing copy has the hooks open the link, a stale one has them judge by an
+    claude-host on this Mac: a missing copy has the hooks open the link (the login guard instead refuses the primary), a stale one has them judge by an
     old tenancy. Only a file that reads now is compared; one that does not is tenancy_state's to report. The budgets
     file adds two info lines (budgets-edges): a copy with no key to come from, and, outside claude-host, a copy that
     differs from its file and is younger than STALE_AFTER (an edit the tick has not copied yet)."""
@@ -5178,13 +5806,24 @@ def doctor_local(reg, logins, peer=None, record=True):
         e = logins.get(a["label"])
         lab = a["label"]
         if e is None:
-            f(lab, "fix" if a["enabled"] else "info", f"not in the logins file — add a row for {lab} to it")
+            hooks = guard_logins()   # what the pick reads: the local copy where a hook may not open the link
+            f(lab, "fix" if a["enabled"] else "info", f"not in the logins file — add a row for {lab} to it; " + (
+                "the hooks' local copy still lists it, so the pick compares by that copy until the usage tick refreshes it"
+                if hooks and lab in hooks else
+                "until then the pick never compares its home's sign-in with the row's (the login guard)"))
+            off = login_refusal(a)
+            if off and a["enabled"]:
+                f(lab, "fix", f"never picked: {off}", login_line(a, peer))
             continue
         listed = mac in (e.get("macs") or [])
         if not listed:
             if a["home"].is_dir() and not is_default(a):
                 f(lab, "info", f"{a['home']} exists but the logins file lists {lab} for {', '.join(e.get('macs') or []) or 'no Mac'}"
                   + (f" ({e['note']})" if e.get("note") else ""))
+            # the walk still reaches the row here (a node the file lists for no Mac), the primary's default dir included
+            off = login_refusal(a) if a["home"].is_dir() else None
+            if off and a["enabled"]:
+                f(lab, "fix", f"never picked: {off}", login_line(a, peer))
             continue
         if not a["home"].is_dir():
             f(lab, "fix", f"{a['home']} missing", wrap_peer(f"{BIN / 'account'} setup", peer))
@@ -5223,6 +5862,12 @@ def doctor_local(reg, logins, peer=None, record=True):
         if a.get("same_as"):
             problems += 1
             f(lab, "fix", f"same login as {a['same_as'][0]} ({a['same_as'][1]})", login_line(a, peer))
+        off = login_refusal(a)   # the hooks' read (guard_source: the copy where they take it), so this says what a pick does
+        if off and a["enabled"]:
+            problems += 1
+            f(lab, "fix", f"never picked: {off}", login_line(a, peer))
+        elif not want and not e.get("account_uuid"):
+            f(lab, "info", "the logins file names no e-mail for it: the pick never compares its home's sign-in with the row's")
         lp = link_problems(a)
         if lp:
             problems += 1
@@ -5253,7 +5898,7 @@ def doctor_local(reg, logins, peer=None, record=True):
             f(lab, "info", sl + f" — {BIN / 'claude-settings'} check lists each")
         # a blind row is not probed: over ssh get_usage answers its null "success", which limits()
         # would cache for every hook that reads --cached
-        if a["enabled"] and email and not a.get("same_as") and not blind:
+        if a["enabled"] and email and not a.get("same_as") and not blind and not off:   # a refused row is never probed
             lim, at = limits(a)
             # `auth status` reads the stored credential, never the server: on the always-on Mac it said
             # the primary ok over a dead token and a landing died on it (TODO, 2026-10-18). limits()
@@ -5375,6 +6020,25 @@ def cmd_doctor(reg, local=False, as_json=False, peer=None):
             and not bool((peer or os.environ.get("SSH_CONNECTION")) and login_of(a)[1]
                          and not ((DEFAULT_DIR if is_default(a) else a["home"]) / ".credentials.json").is_file())])
         print(f"account: no logins file at {path or 'the config dir (lighthouse/logins.json; Drive not mounted?)'} — nothing to check against")
+        # the login guard reads the local copy too (a node may hold only `.logins.json.last`): say what the pick does
+        prim = next((a for a in reg["accounts"] if a.get("primary") and a["enabled"]), None)
+        got, src = guard_source()
+        if got is None and guard_unread():
+            print(f"  ⚠   the login guard: {guard_unread()} is there but does not read, so every row is refused until it is"
+                  " fixed or removed")
+        elif got is None:
+            print("  ⚠   the login guard: no logins file and no local copy it may read, so no home's sign-in is compared with"
+                  " its row's" + (f", and the primary {prim['label']} is never picked (its login cannot be checked)" if prim else "")
+                  + f" — seed one: copy a host's {local_copy(CONFIG / 'lighthouse' / 'logins.json').name} into this config dir's"
+                  " lighthouse/, or link lighthouse/logins.json where the vault is reachable")
+        elif not got:
+            print(f"  --  the login guard reads {src}, which describes no row: no home's sign-in is compared, the primary's included")
+        else:
+            print(f"  --  the login guard judges each row by {src}")
+        for a in reg["accounts"]:
+            off = login_refusal(a) if a["enabled"] else None
+            if off:
+                print(f"  ⚠   {a['label']}: never picked: {off}")
         # the tenants link points into the same drive, so this is when its state matters most (review 2026-10-23)
         # and the roster: a stale deny row is named on a host with no logins file too (the yard node; landing review)
         for label, level, text, fix in tenancy_state(reg, peer) + [r for r in tenancy_roster(reg) if r[1] == "fix"]:
@@ -5475,6 +6139,8 @@ def limits_json(a, lim, at, t, repo=None, reg=None, own=False):
             # dispatch's --force is a person's yes past overage: refused when unattended (pickup open refuses any)
             "overage": overage_on(lim),
             "same_as": a["same_as"][0] if a.get("same_as") else None,
+            # the login guard's refusal (header): not signed in, or signed in as another account than the row's
+            "login_off": login_refusal(a),
             # the row has a lend bar this repo is not its own: dispatch's --next then walks rather than inherit the
             # login, so past the bar the step moves on (the lend bar's review, 2026-11-05); with a repo only
             "lends": bool(repo and reg is not None and lends_for(reg, a, repo, own))}
@@ -5499,7 +6165,7 @@ def main(argv):
                    help="a row whose paid extra usage is on may run it: a person's yes, refused under CLAUDE_UNATTENDED")
     p.add_argument("--overdraw", action="store_true",
                    help="with no row under its week bar, the first refused by that bar alone runs it while its week "
-                        "is under 100%% (header, \"Overdraw\"); the pick only decides: its caller logs it at the job's "
+                        "is under its week_hard_max (100 when none; header, \"Overdraw\"); the pick only decides: its caller logs it at the job's "
                         "start with overdraw-log")
     p.add_argument("--job", help="what the pick starts (a branch), for the overdraw's logbook line")
     p.add_argument("--json", action="store_true")
@@ -5563,6 +6229,9 @@ def main(argv):
     p.add_argument("label")
     p.add_argument("--for", dest="purpose", choices=("build", "finish", "overdraw"), default="build",
                    help="finish reads week-max-finish and overdraw reads overdraw-max for regatta limit's trial")
+    p = sub.add_parser("limit-read", help="a login's live limit value for one of lighthouse's pair keys; exit 2 on a bad line")
+    p.add_argument("key")
+    p.add_argument("label")
     p = sub.add_parser("doctor")
     p.add_argument("--local", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -5577,6 +6246,14 @@ def main(argv):
         return cmd_overdraw_log()
     if args.cmd == "week-max":   # `regatta limit`'s trial read: needs no registry
         v, src, bad = live_week_max(args.label, finish=args.purpose == "finish", overdraw=args.purpose == "overdraw")
+        print("none" if v is None else f"{v} ({src})")
+        return 2 if bad else 0
+    if args.cmd == "limit-read":   # `regatta limit`'s trial read for the pair keys: needs no registry
+        full_key = LIVE_LIMIT_KEYS.get(args.key) or (args.key if args.key in LIVE_LIMIT_KEYS.values() else None)
+        if not full_key:
+            print(f"account limit-read: unknown live limit key {args.key!r}", file=sys.stderr)
+            return 2
+        v, src, bad = live_limit(full_key, args.label)
         print("none" if v is None else f"{v} ({src})")
         return 2 if bad else 0
     if args.cmd == "exhausted":  # the statusline's call: needs no registry, only this dir
@@ -5824,7 +6501,10 @@ def main(argv):
         out = []
         own = scope_login_of(args.repo)   # once for every row (AGENTS.md: a registry re-read mid-walk can find it torn)
         for a in rows:
-            lim, at = limits(a, cached=args.cached or (a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])), reg=reg)
+            # a row the login guard refuses is not probed: its home's seat is not its own (header, "The login guard")
+            # and its cached figures, if any, are its home's other seat's: none are shown as the row's
+            lim, at = (None, None) if login_refusal(a) else limits(
+                a, cached=args.cached or (a["provider"] == "claude" and a["home"].is_dir() and logged_out(a["home"])), reg=reg)
             out.append(limits_json(a, lim, at, t, args.repo, reg, own))
         if args.orca and (args.all or not args.label):
             # an Orca agent hides by its card's label or by Orca's name for it (`antigravity`, `cursor`)
@@ -5841,6 +6521,9 @@ def main(argv):
                         + [f"{b['name']} {b['percent']}%" + (f" (resets {when(b['resets'])})" if b.get("resets") else "")
                            for b in (lim.get("buckets") or []) + (lim.get("windows") or [])]) if lim else []
                 print(f"{o['label']} (Orca): {'; '.join(figs) if figs else 'no reading'}; {o['why']}")
+                continue
+            if o.get("login_off"):   # the login guard leads: no figure of another seat's is this row's
+                print(f"{o['label']}: not eligible: {o['login_off']}")
                 continue
             if not lim and o["provider"] in UNPROBED:
                 print(f"{o['label']}: no Orca reading — {o['why']}; `limits --all --orca` shows Orca's card")

@@ -32,7 +32,9 @@ self-hosted runner on a Mac of one's own (the runner Mac), or CircleCI, switched
                                               the repo on one Mac
     ci-provider REPO --runner check --host ALIAS --name NAME --labels self-hosted,Linux [--dry-run]
                                               a Linux runner's isolation cases, in a container of its
-                                              image with its unit's options (reads only: below)
+                                              image with its unit's options (reads only: below); with a
+                                              Mac's labels, the tools its login's python3 must have
+                                              (PyYAML), named, refused when one is missing
     ci-provider --runner limits               the cap a Linux runner gets, wharf/ci-runner-limits read
                                               (the live limit's trial reader)
     ci-provider REPO --runner caps [--name NAME] [--dry-run]
@@ -227,6 +229,11 @@ self-hosted, and what it does not cover:
     and `a/b-c` share one directory. The runners installed before that stay where they are:
     every verb uses the flat directory while its .runner names this repo's URL (config.sh writes
     it as gitHubUrl), the nested one otherwise.
+  - a runner Mac's login (mac-share-lane, 2026-11-06): its python3 must import yaml, as wharf-runs' pickup suite writes
+    YAML blueprints (13 cases failed on a runner Mac's login until `pip3 install --user pyyaml`). The probe reads it
+    as the effect, the import, and install names a missing one with a warning (a runner without it serves every
+    suite that writes no YAML); `--runner check` with a Mac's labels reads the same probe and refuses while it is
+    missing, as linux-tools.sh names the tools a Linux runner lacks.
   - a Linux host (linux-runner, 2026-11-04; the owner: "can the node help with linux checks as well?"): a
     runner whose labels name Linux (--labels self-hosted,Linux, with --name, as a Linux host has no label of
     its own to route on) is installed the same way, over ssh, with the release's linux-x64 or linux-arm64
@@ -300,7 +307,11 @@ The pick (lighthouse-ops S1, docs/lighthouse-ops-broker-2026-10-26.md; the owner
 15 minutes on every eligible repo): which lane a repo's check takes, the required check staying `check`.
 A lane is a row of the config dir's `lighthouse/ci-lanes.json` (`name`, `provider` actions|circleci, `projects` on a CircleCI one,
 `runs_on` a hosted image or a label list, `runs` some of macos/linux/public, `account` for a hosted
-lane); a repo is eligible for one that runs all its ci.json `needs` (absent: macos), and `public`
+lane, and for a self-hosted one that runs check.yml `share_runs_on`, the label list CI_RUNS_ON holds while
+the Linux share is on, where check.yml is the split form and CI_RUNS_ON_FULL holds a label list: the PR check then runs the macOS share only, which a runner Mac with no desktop
+session can take, so the share's flip moves CI_RUNS_ON between the two lists in the same pick, logged as
+every flip is, the runner check judging the list in force; off, or with no field, it is `runs_on`;
+CI_RUNS_ON_FULL, which a push and the nightly run take, is never the pick's: mac-share-lane, 2026-11-06); a repo is eligible for one that runs all its ci.json `needs` (absent: macos), and `public`
 too when GitHub says the repo is; a capability in `needs` is met only by a self-hosted lane whose
 label list names it. In order: a self-hosted lane whose queued p50 (the sampler's
 ops.jsonl row) is under `lighthouse/ci-queue-max` or unmeasured; a hosted lane for a public repo;
@@ -2560,6 +2571,24 @@ linux_registered() {
   mp=$(podman volume inspect --format '{{.Mountpoint}}' "$ctr-state" 2>/dev/null) || return 1
   podman unshare test -f "$mp/.runner"
 }
+# what a runner Mac's login lacks of the tools a suite reads: the login's own python3 must import yaml (wharf-runs'
+# pickup writes YAML blueprints: 13 cases failed on a runner Mac's login until `pip install --user pyyaml`,
+# 2026-11-06). Read as the effect, the import, by the python3 a job runs: the PATH config.sh froze into .path,
+# or before an install the one install gives it (Homebrew's prefix first), never ssh's bare one (the landing
+# review). Never refused in the script: the python side names it (a Mac's runner works without it for every
+# suite that writes no YAML)
+mac_lacks() {
+  [ "$system" = Darwin ] || return 0
+  jp=
+  if [ -f "$dir/.runner" ]; then jp=$(cat "$dir/.path" 2>/dev/null || true); fi
+  if [ -z "$jp" ]; then
+    jp=$PATH
+    for d in ${CI_RUNNER_BREW-/usr/local /opt/homebrew}; do
+      if [ -x "$d/bin/brew" ]; then jp=$d/bin:$d/sbin:$jp; fi
+    done
+  fi
+  PATH=$jp python3 -c 'import yaml' >/dev/null 2>&1 || echo "lacks pyyaml"
+}
 refuse_lacks() {
   l=$(lacks)
   if [ -n "$l" ]; then printf '%s\n' "$l" >&2; echo "a rootless runner container needs them: nothing done" >&2; exit 6; fi
@@ -2701,6 +2730,7 @@ probe)
   if has_room; then echo room; fi
   if [ -n "${noimage:-}" ]; then echo noimage; fi
   lacks
+  mac_lacks
   ;;
 install)
   if [ "$system" = Linux ]; then linux_install; exit 0; fi
@@ -2716,7 +2746,7 @@ install)
     # config.sh sources env.sh, which freezes this PATH into .path for every job: ssh's bare one
     # lacks Homebrew, which hosted macOS images have (gtar for upload-pages-artifact, say)
     # (Apple silicon's prefix, or an Intel Mac's, which ssh's PATH lacks as well)
-    for d in /usr/local /opt/homebrew; do
+    for d in ${CI_RUNNER_BREW-/usr/local /opt/homebrew}; do
       if [ -x "$d/bin/brew" ]; then PATH=$d/bin:$d/sbin:$PATH; fi
     done
     # the runner reads ACTIONS_RUNNER_INPUT_TOKEN and unsets it: the token stays out of ps' argv
@@ -2988,6 +3018,8 @@ LACKS = {
     "network": "slirp4netns, podman 4.9's rootless network (apt-get install slirp4netns)",
     "linger": "linger for the login (loginctl enable-linger <login>), so its unit runs with no session",
     "user-systemd": "the login's systemd user instance (systemctl --user)",
+    "pyyaml": "PyYAML for the login's python3 (pip3 install --user pyyaml): a suite that writes a YAML blueprint "
+              "fails without it (wharf-runs' pickup shard: 13 cases)",
 }
 
 
@@ -3007,6 +3039,15 @@ def configured(s, t):
                  noimage="noimage" in lines[1:], room="room" in lines[1:], held="held" in lines[1:],
                  pending="pending" in lines[1:],
                  own=next((l[4:] for l in lines[1:] if l.startswith("own ")), None), cpus=cpus)
+
+
+def mac_lacks(probe, host):
+    """What a runner Mac's login lacks, one line each, from a Mac's probe: a warning at install and the verdict of
+    --runner check, never a refusal at install (a runner without it serves every suite that writes no YAML).
+    A Linux host's lacks are refuse_lacks's, before a token."""
+    if probe.system == "Linux":
+        return []
+    return ["%s lacks %s" % (host, LACKS.get(w, w)) for w in probe.lacks]
 
 
 # What wharf's bin/runner-user gives a Linux node's runner login, as root, in one run; the rest of LACKS stays a
@@ -3217,8 +3258,24 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
     if verb == "check":
         # free CI S6's cases, against the installed unit: a Linux runner's only, as a Mac's runner has no container
         if not linux:
-            raise Refusal("--runner check reads a Linux runner's container: name it with --host, --name and "
-                          "--labels self-hosted,Linux")
+            # a runner Mac has no container: its check is the tools a suite reads from the login's own PATH
+            # (the probe's lacks), so a runner that cannot run what the lanes route to it is named, not found by a red PR
+            if dry:
+                print("would: over ssh in %s, ask whether the login's python3 imports yaml (the probe's `lacks`, as "
+                      "install reads it); nothing written, nothing minted" % where)
+                return
+            probe = configured(s, t)
+            if probe.system == "Linux":
+                raise Refusal("%s is Linux, and the runner's labels do not name it: name it with --host, --name and "
+                              "--labels self-hosted,Linux" % host)
+            print("%s's runner %s: the login's tools on %s" % (s, name, host))
+            found = mac_lacks(probe, host)
+            for line in found:
+                print("  ✗ " + line)
+            if found:
+                raise Refusal("%s lacks what a suite reads: the owner's step above, then --runner check again" % host)
+            print("  python3 imports yaml")
+            return
         if dry:
             print("would: over ssh in %s, run python3 in a container of localhost/%s with the unit %s.service's own "
                   "options (its --cpus and --memory, the state volume read-only, no capability, no new privileges): "
@@ -3315,6 +3372,8 @@ def runner(repo, verb, dry, host=None, labels=None, name=None, instance=1):
             raise Refusal("%s holds a runner already (%s): %s, so a suite never starves its sessions; "
                           "nothing minted" % (host, other, cap))
         refuse_lacks(probe, host)
+        for line in mac_lacks(probe, host):
+            print("  ⚠ " + line)
         # the build only for a fresh install: a configured runner fetches nothing. A Linux one rebuilds its
         # image on every install (the build cached, the tarball kept), so a reinstall takes a changed image
         asset = runner_asset(arch, system) if linux or not done else None
@@ -3799,7 +3858,8 @@ def lighthouse_json(name):
 
 
 def load_lanes():
-    """The lanes, in the file's order: [{name, provider, runs, runs_on, self_hosted, account, projects}]."""
+    """The lanes, in the file's order: [{name, provider, runs, runs_on, share_runs_on, self_hosted, account,
+    projects}]. share_runs_on: a self-hosted lane's label list while the Linux share is on, else None."""
     path = common.CONFIG / "lighthouse" / "ci-lanes.json"
     d = lighthouse_json("ci-lanes.json")
     if d is None:
@@ -3818,8 +3878,11 @@ def load_lanes():
             raise Refusal("%s: lane %s's `runs` must list some of %s" % (path, name, ", ".join(LANE_RUNS)))
         provider = r.get("provider", "actions")
         lane = {"name": name, "provider": provider, "runs": set(runs), "account": r.get("account"),
-                "runs_on": None, "self_hosted": False, "projects": {}}
+                "runs_on": None, "share_runs_on": None, "self_hosted": False, "projects": {}}
         if provider == "circleci":
+            if r.get("share_runs_on") is not None:
+                raise Refusal("%s: lane %s is a CircleCI lane: `share_runs_on` is a self-hosted Actions lane's "
+                              "(no variable moves a check there)" % (path, name))
             # a value the trigger would refuse fails here, at the pick, never as a held pull request
             projects = r.get("projects", {})
             if not isinstance(projects, dict) or not all(isinstance(k, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", k)
@@ -3865,8 +3928,66 @@ def load_lanes():
             raise Refusal("%s: lane %s is self-hosted: the Linux share runs on GitHub's hosted runners, or on a "
                           "self-hosted Linux lane (its `runs` and `runs_on` naming linux, never macOS)" % (path, name))
         lane["projects"] = projects
+        sro = r.get("share_runs_on")
+        if sro is not None:
+            # the labels CI_RUNS_ON holds while the Linux share is on (mac-share-lane, 2026-11-06): the PR check
+            # then runs the macOS share only, which a runner without a desktop session can take. A label list,
+            # as a self-hosted lane's own; a hosted lane has one image and a share lane's variable is another's
+            if not lane["self_hosted"] or projects:
+                raise Refusal("%s: lane %s's `share_runs_on` is for a self-hosted lane that runs check.yml (a label "
+                              "list `runs_on`, no `projects`): a hosted lane has one image, and a Linux share "
+                              "lane's suites route by CI_LINUX_RUNS_ON" % (path, name))
+            if not (isinstance(sro, list) and sro and all(isinstance(l, str) and l.strip() for l in sro)):
+                raise Refusal("%s: lane %s's `share_runs_on` must be a label list" % (path, name))
+            lane["share_runs_on"] = tuple(l.strip() for l in sro)
+            if lowered(lane["share_runs_on"]) == lowered(lane["runs_on"]):
+                raise Refusal("%s: lane %s's `share_runs_on` is the same labels as `runs_on`: omit it when they "
+                              "do not differ" % (path, name))
         lanes.append(lane)
     return lanes
+
+
+# where the share stands when its variable did not read (ShareCtx.after): neither on nor off, so a lane with
+# `share_runs_on` keeps the list CI_RUNS_ON holds, and nothing moves on one read error (the landing review)
+SHARE_UNREAD = "unread"
+
+
+def share_gate(s, text, var, lanes, need=frozenset(), read_full=None):
+    """Whether the share labels may go to the runs-on variable: only where a push, the nightly run and a hand start
+    take other labels, a split-form check.yml whose VAR_FULL holds a label list (else they would run the whole
+    line, browser cases included, on the share's runner: the landing review). True, False, or SHARE_UNREAD when
+    VAR_FULL did not read; False with no eligible lane carrying `share_runs_on` that meets NEED, which reads nothing."""
+    caps = set(need) - set(LANE_RUNS)
+    if not var or not any(l.get("share_runs_on") and not lane_lacks(l, need) and caps <= lowered(l["share_runs_on"])
+                          for l in lanes):
+        return False
+    if not full_form(text):
+        print("  share labels: none, check.yml's runs-on is not the split form (a push would take them too)")
+        return False
+    full, err = read_full() if read_full else variable(s, var + "_FULL")
+    if err:
+        print("  share labels: %s_FULL unread (%s); the list in force stays" % (var, err))
+        return SHARE_UNREAD
+    want = asked_labels(full)
+    ok = bool(want and all(l.strip() for l in want))
+    if not ok:
+        print("  share labels: none, %s_FULL holds no label list (a push would take them too)" % var)
+    return ok
+
+
+def lane_labels(lane, share_on, need=frozenset(), var=True, current=None):
+    """The labels a lane's check runs on: its `share_runs_on` while the Linux share is on and it has one (the
+    PR check runs the macOS share only), else its `runs_on`. Never the share's for a literal runs-on (VAR
+    None: no variable routes it), nor where they lack a capability the repo's `needs` names, which only a
+    list naming it meets. With the share unread (SHARE_UNREAD), the list CURRENT holds when it is one of the
+    two. CI_RUNS_ON_FULL, which a push and the nightly run take, is never the pick's."""
+    sro = lane.get("share_runs_on")
+    if not sro or not var or not (set(need) - set(LANE_RUNS)) <= lowered(sro):
+        return lane["runs_on"]
+    if share_on == SHARE_UNREAD:
+        held = isinstance(current, (list, tuple)) and lowered(current) == lowered(sro)
+        return sro if held else lane["runs_on"]
+    return sro if share_on else lane["runs_on"]
 
 
 def load_budgets():
@@ -4040,15 +4161,19 @@ def lane_of(value, lanes, literal=False, need=frozenset()):
     if value is None:
         value = "ubuntu-latest"   # the variable form's own default
     asked = value
+    one = asked[0] if isinstance(asked, (list, tuple)) and len(asked) == 1 else asked   # a literal `runs-on: ubuntu-latest` reads as one label
     for lane in lanes:
         ro = lane["runs_on"]
         if ro is None:
             continue
-        if isinstance(value, (list, tuple)) and len(value) == 1:
-            value = value[0]   # a literal `runs-on: ubuntu-latest` reads as one label
-        if isinstance(ro, str) and value == ro:
+        if isinstance(ro, str) and one == ro:
             return lane["name"]
-        if not isinstance(ro, str) and isinstance(value, (list, tuple)) and lowered(value) == lowered(ro):
+        if not isinstance(ro, str) and isinstance(asked, (list, tuple)) and lowered(asked) == lowered(ro):
+            return lane["name"]
+    for lane in lanes:
+        # the labels a lane takes while the share is on name it as its own do: a check.yml on them is on that lane
+        so = lane.get("share_runs_on")
+        if so and isinstance(asked, (list, tuple)) and lowered(asked) == lowered(so):
             return lane["name"]
     if literal and isinstance(asked, (list, tuple)):
         holding = [l for l in lanes if l["self_hosted"] and lowered(asked) <= lowered(l["runs_on"])]
@@ -4059,8 +4184,10 @@ def lane_of(value, lanes, literal=False, need=frozenset()):
 
 def last_flip(s, variable=None):
     """When the pick last flipped this repo's runs-on (ci-pick.jsonl), 0 when never; with VARIABLE, when
-    it last flipped that variable. A share flip is no runs-on flip: counted as one, a share flapping
-    near its reserve would hide every queued run from stale_lane (the landing review); so is a project move."""
+    it last flipped that variable. A share flip alone is no runs-on flip: counted as one, a share flapping
+    near its reserve would hide every queued run from stale_lane (the landing review); so is a project move.
+    One that moves the runs-on variable too (a lane's `share_runs_on`, a row with `share`) is one, written as
+    its own row: a run queued before it waits on the other list (mac-share-lane's landing review)."""
     at = 0
     try:
         with open(common.LOG_DIR / "ci-pick.jsonl", encoding="utf-8") as fh:
@@ -4080,15 +4207,19 @@ def last_flip(s, variable=None):
     return at
 
 
-def stale_lane(s, now):
+def stale_lane(s, now, since=None, pr_only=False):
     """Minutes a check.yml run has sat queued past PICK_STALE on the repo's current lane, or None:
     that lane reported nothing, so the pick skips it (D2-A). A run created before the pick's last
     flip of this repo waits on the lane before it, so it never counts (the landing review: it made
-    the new lane look stuck and flipped the repo back). Unread: None, it never blocks a lane."""
-    since = last_flip(s)
+    the new lane look stuck and flipped the repo back). pr_only: check.yml's split form sends every
+    non-pull_request run to VAR_FULL, so only pull_request runs sit on VAR. Unread: None, it never
+    blocks a lane."""
+    since = max(last_flip(s), since or 0)   # SINCE: a move this pick made or would make, logged or not
     ok, out = gh("repos/%s/actions/workflows/check.yml/runs?status=queued&per_page=20" % s)
     runs = out.get("workflow_runs") if ok and isinstance(out, dict) else None
     for r in runs or []:
+        if not isinstance(r, dict) or (pr_only and r.get("event") not in (None, "pull_request")):
+            continue
         try:
             t = calendar.timegm(time.strptime(r.get("created_at", ""), "%Y-%m-%dT%H:%M:%SZ"))
         except (TypeError, ValueError):
@@ -4121,7 +4252,8 @@ def apply_guard(dry):
 # suites on CircleCI's check-linux when the variable is `true`, and the whole line on its own runner otherwise
 # (on a pull request scoped by the same verdicts, Linux-list suites included: free-ci-scope-whole).
 # The variable is the share's lane switch, judged by the CircleCI lanes' budgets as a hosted lane's is. Off is
-# always safe: check-linux.yml then posts check-linux green itself, saying the runner's scoped whole line runs
+# always safe once CI_RUNS_ON has left a lane's `share_runs_on` (a runner with no browser), so a flip to off moves
+# it first and stays on when that write is refused (runs_on_off; mac-share-lane's landing review): check-linux.yml then posts check-linux green itself, saying the runner's scoped whole line runs
 # the Linux suites reached (regatta#316), so main's requirement stays met. On only while main requires check-linux, or a red Linux
 # run would block nothing (docs/circleci-oauth-2026-10-30.md's rollout order: the requirement first).
 #
@@ -4259,6 +4391,12 @@ class ShareCtx:
         self.on = False
         self.at = lambda lane: False
         self.changed = False
+        # where the share stands once this pick has said or written its flip: True/False, None when the pick does
+        # not judge it (no share in check.yml), SHARE_UNREAD when its variable did not read: which labels a lane's
+        # check takes (lane_labels) follows it
+        self.after = None
+        # the runs-on variable and what it holds (pick's read), which a flip to off moves first (runs_on_off)
+        self.var = self.current = self.lanes = None
         try:
             d = json.loads(share_runners_file().read_text(encoding="utf-8"))
             self.offline = {k: v for k, v in (d.get(s) or {}).items() if isinstance(v, (int, float))}
@@ -4414,11 +4552,65 @@ def share_move(s, lane, project, why, apply, dry, now, runs=None, reads_runs=Fal
     return False
 
 
-def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now):
-    """pick_share_on, then the share lanes' runner sightings kept for the next pick (ShareCtx.save)."""
-    ctx = ShareCtx(repo, s, budgets, usage, usage_why, now)
+def host_refusal(repo, text, labels):
+    """Why check.yml or its command cannot run on a runner Mac with LABELS, or ""."""
     try:
-        return pick_share_on(repo, s, text, lanes, ctx, apply, dry, now)
+        hits = ["%s:%d %s" % (h[0], h[1], h[3]) for h in
+                host_writes(repo, check_command(repo, None), labels)]
+    except Refusal as e:
+        hits = [str(e)]
+    return ("check.yml lacks the GIT_CONFIG_GLOBAL step (`ci-provider %s --to %s` adds it)" % (repo, SELF)
+            if not GIT_GUARD.search(text) else
+            "the check writes the runner login's own: %s" % "; ".join(hits[:3]) if hits else "")
+
+
+def back_refusal(repo, s, text, lane):
+    """Why runs_on_off may not write LANE's self-hosted `runs_on`, or "": the trust and host-write guards."""
+    try:
+        refuse_forks(s, "a flip to a self-hosted lane")
+    except Refusal as e:
+        return str(e)
+    return host_refusal(repo, text, lane["runs_on"])
+
+
+def on_share_labels(value, lanes):
+    """The lane whose `share_runs_on` VALUE names, when no lane's `runs_on` does; else None."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    cur = lowered(value)
+    if any(l["self_hosted"] and cur == lowered(l["runs_on"]) for l in lanes or ()):
+        return None
+    return next((l for l in lanes or () if l.get("share_runs_on")
+                 and cur == lowered(l["share_runs_on"])), None)
+
+
+def runs_on_off(ctx):
+    """The lane whose `share_runs_on` the runs-on variable holds, which a flip of the share to off moves to its
+    `runs_on` first; None when it holds none (a literal runs-on, a lane's `runs_on`, other labels)."""
+    return on_share_labels(ctx.current, ctx.lanes) if ctx.var else None
+
+
+def pr_only_runs(s, text, var, have, held_before, lanes, read_full=None):
+    """Whether stale_lane counts pull_request runs only: check.yml's split form sends every other
+    event to VAR_FULL when it is set, so a push, schedule or hand run queued on another list (or while
+    VAR_FULL is unread, or VAR holds share_runs_on) never sits on VAR."""
+    if not (var and full_form(text)):
+        return False
+    if on_share_labels(held_before, lanes):
+        return True
+    full, err = read_full() if read_full else variable(s, var + "_FULL")
+    return bool(err) or (bool(full) and not same_runs(runs_value(full), runs_value(have)))
+
+
+def pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now, var=None, current=None):
+    """(bad, after, current): pick_share_on's verdict, where the share stands after it (ShareCtx.after) and what
+    the runs-on variable VAR holds after it (a flip to off moves it first), then the share lanes' runner sightings
+    kept for the next pick (ShareCtx.save)."""
+    ctx = ShareCtx(repo, s, budgets, usage, usage_why, now)
+    ctx.var, ctx.current, ctx.lanes = var, current, lanes
+    try:
+        bad = pick_share_on(repo, s, text, lanes, ctx, apply, dry, now)
+        return bad, ctx.after, ctx.current
     finally:
         ctx.save(apply, dry)
 
@@ -4433,14 +4625,17 @@ def pick_share_on(repo, s, text, lanes, ctx, apply, dry, now):
     Never a raise: the runs-on half still runs."""
     if SHARE_VAR not in text:
         return False
+    have, err = variable(s, SHARE_VAR)
+    if err:
+        print("  share %s: unread (%s); left as it is" % (SHARE_VAR, err))
+        ctx.after = SHARE_UNREAD
+        return False
+    on = (have or "").strip().lower() == "true"
+    ctx.after = on   # until a flip below is said or written
     rows = [l for l in lanes if "linux" in l["runs"]
             and (l["provider"] == "circleci" or (l["provider"] == "actions" and l["projects"]))]
     if not rows:
         print("  share %s: no lane runs the Linux share; left as it is" % SHARE_VAR)
-        return False
-    have, err = variable(s, SHARE_VAR)
-    if err:
-        print("  share %s: unread (%s); left as it is" % (SHARE_VAR, err))
         return False
     # once an Actions lane names this repo, it alone runs the share: the CircleCI lanes are read and said,
     # never chosen (the brief: "never chosen once the Actions lane exists"; the owner moved off CircleCI for
@@ -4464,7 +4659,6 @@ def pick_share_on(repo, s, text, lanes, ctx, apply, dry, now):
     reads = trigger_reads_project(repo)
     perr = perr if reads else None   # a trigger that ignores the variable goes to the file's project, known
     project = (held if reads else None) or file_project(repo)   # where the trigger goes, as it reads it
-    on = (have or "").strip().lower() == "true"
     # where an Actions lane's suites run: read only where check-linux.yml routes them by it, and unread is as an
     # unread project, nothing moves
     runs = None
@@ -4534,14 +4728,45 @@ def pick_share_on(repo, s, text, lanes, ctx, apply, dry, now):
             why = "the move to lane %s was refused; on where it stands" % lane["name"]
             lane = held_at
             print("  share %s: on at lane %s (%s)" % (SHARE_VAR, lane["name"], why))
+    ctx.after = want == "true"   # said, or (below) written
+    if apply:
+        apply_guard(dry)   # a session or the wrong host: a refusal, as before
+    back = runs_on_off(ctx) if want == "false" else None
+    if back:
+        why_not = back_refusal(repo, s, text, back)
+        if why_not:
+            print("  ⚠ share %s left on: %s not moved off lane %s's share labels first: %s" % (
+                SHARE_VAR, ctx.var, back["name"], why_not))
+            ctx.after = on
+            return True
     if not apply:
+        if back:
+            print("  --apply first sets %s to lane %s's runs_on %s" % (ctx.var, back["name"],
+                                                                    variable_value(back["runs_on"])))
+            ctx.current = list(back["runs_on"])   # the lanes judged as --apply would, after the move
         print("  --apply sets %s to it" % SHARE_VAR)
         return refused
-    apply_guard(dry)   # a session or the wrong host: a refusal, as before
+    if back:
+        # off: CI_RUNS_ON leaves the share's labels before the share does, or a pull request would run the whole
+        # line on a runner that holds no browser; a refused write leaves the share on (the landing review)
+        try:
+            rundo = set_variable(s, ctx.var, back["runs_on"], dry)
+        except Refusal as e:
+            print("  ⚠ share %s left on: %s not moved off lane %s's share labels first: %s" % (
+                SHARE_VAR, ctx.var, back["name"], e))
+            ctx.after = on
+            return True
+        if rundo:
+            pick_log({"at": int(now), "repo": s, "variable": ctx.var, "from": back["name"], "to": back["name"],
+                      "old": ctx.current, "new": back["runs_on"], "undo": rundo, "share": False})
+        ctx.current = list(back["runs_on"])   # a dry run judges the lanes as the real one would, after the move
     try:
         undo = set_variable(s, SHARE_VAR, want, dry, raw=True)
     except Refusal as e:
         print("  ⚠ share %s not written: %s" % (SHARE_VAR, e))
+        # where it stands is where it was, unless it was going off: a refused read-back may follow a write GitHub
+        # took, so the share is then unknown, and runs_on, safe either way, stays (or is never moved off)
+        ctx.after = SHARE_UNREAD if want == "false" else on
         return True
     if undo:
         pick_log({"at": int(now), "repo": s, "variable": SHARE_VAR, "from": have, "to": want,
@@ -4577,6 +4802,7 @@ def pick(repo, apply, dry, usage_path=None):
     s = slug(repo)
     private = is_private(s)
     need = needs | ({"public"} if not private else set())
+    have = None
     if var:
         have, err = variable(s, var)
         if err:
@@ -4593,7 +4819,28 @@ def pick(repo, apply, dry, usage_path=None):
     cur_lane = lane_of(current, lanes, literal=not var, need=need)
     print("%s (%s, %s; needs %s): lane %s" % (repo, s, "private" if private else "public",
                                               ", ".join(sorted(needs)) or "nothing", cur_lane or "(none of the lanes: %s)" % (current,)))
-    stale = stale_lane(s, now) if cur_lane else None
+    # the share first: where it stands after this pick says which labels a lane's check runs on (a lane's
+    # `share_runs_on`, mac-share-lane), so the lanes below are judged by the labels they would take
+    held_before = current
+    share_bad, share_on, moved_to = pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now,
+                                               var, current)
+    moved_off = moved_to is not current   # a report or a dry run moves it too, unlogged: stale_lane is told
+    if moved_off:
+        current = moved_to   # the flip to off moved it off the share's labels, written and logged
+        cur_lane = lane_of(current, lanes, literal=not var, need=need)
+    full_var = None
+    def read_full():
+        nonlocal full_var
+        if full_var is None:
+            full_var = variable(s, var + "_FULL")
+        return full_var
+    gate = share_gate(s, text, var, lanes, need, read_full) if share_on else False
+    if share_on and gate == SHARE_UNREAD:
+        share_on = SHARE_UNREAD   # where a push goes is unknown: the list in force stays
+    # read after the share's flip: a move off the share labels is a flip, and a run queued on them before it
+    # never makes the lane stale (the landing review)
+    pr_only = pr_only_runs(s, text, var, have, held_before, lanes, read_full) if cur_lane else False
+    stale = stale_lane(s, now, now if moved_off else None, pr_only=pr_only) if cur_lane else None
     trust = runners = None
     host = {}
     failed = {}
@@ -4620,7 +4867,11 @@ def pick(repo, apply, dry, usage_path=None):
                 failed[n] = "the repo needs %s, the lane runs %s" % (", ".join(sorted(lacks)),
                                                                     ", ".join(sorted(lane["runs"])))
             continue
-        if n == cur_lane and stale:
+        labels = lane_labels(lane, share_on, need, gate, current) if lane["self_hosted"] else lane["runs_on"]
+        # a run queued before this pick sits on held_before, never on the lane's other label list
+        same_labels = not (var and isinstance(labels, (list, tuple))) or (
+            isinstance(held_before, (list, tuple)) and lowered(held_before) == lowered(labels))
+        if n == cur_lane and stale and same_labels:
             failed[n] = "a check sat queued %d min on it" % stale
             print("  lane %s: skipped, %s" % (n, failed[n]))
             continue
@@ -4635,19 +4886,10 @@ def pick(repo, apply, dry, usage_path=None):
                 failed[n] = trust
                 print("  lane %s: refused, %s" % (n, trust))
                 continue
-            if lane["runs_on"] not in host:
-                # --to self-hosted's other refusals (a narrower probe keeps the old one's): the guard
-                # step, and a check that writes the runner login's own (npm -g, sudo, apt-get)
-                try:
-                    hits = ["%s:%d %s" % (h[0], h[1], h[3]) for h in
-                            host_writes(repo, check_command(repo, None), lane["runs_on"])]
-                except Refusal as e:
-                    hits = [str(e)]
-                host[lane["runs_on"]] = ("check.yml lacks the GIT_CONFIG_GLOBAL step (`ci-provider %s --to %s` adds it)" % (repo, SELF)
-                        if not GIT_GUARD.search(text) else
-                        "the check writes the runner login's own: %s" % "; ".join(hits[:3]) if hits else "")
-            if host[lane["runs_on"]]:
-                failed[n] = host[lane["runs_on"]]
+            if labels not in host:
+                host[labels] = host_refusal(repo, text, labels)
+            if host[labels]:
+                failed[n] = host[labels]
                 print("  lane %s: refused, %s" % (n, failed[n]))
                 continue
             if runners is None:
@@ -4657,8 +4899,8 @@ def pick(repo, apply, dry, usage_path=None):
                 failed[n] = "the repo's runners are unread (%s)" % runners[1]
                 print("  lane %s: refused, %s" % (n, failed[n]))
                 continue
-            if not any(runs_check(r, lane["runs_on"]) for r in runners):
-                why = "no online runner labelled %s" % ", ".join(lane["runs_on"])
+            if not any(runs_check(r, labels) for r in runners):
+                why = "no online runner labelled %s" % ", ".join(labels)
                 print("  lane %s: refused, %s" % (n, why))
                 # a literal sits on a lane by holding part of its list, so the job is served by a
                 # runner of what the literal asks for, whatever the lane's other labels: no card
@@ -4678,7 +4920,6 @@ def pick(repo, apply, dry, usage_path=None):
                 failed[n] = why
             if left is not None:
                 hosted.append((lane, left))
-    share_bad = pick_share(repo, s, text, lanes, budgets, usage, usage_why, apply, dry, now)
     choice = (next((l for l, q in selfh if q is None or q < qmax), None)
               or (max(hosted, key=lambda x: x[1])[0] if hosted else None)
               or (min(selfh, key=lambda x: x[1])[0] if selfh else None))
@@ -4689,8 +4930,12 @@ def pick(repo, apply, dry, usage_path=None):
             print("  ⚠ current lane %s fails: %s" % (cur_lane, failed[cur_lane]))
             return 3
         return 3 if share_bad else 0
-    want = choice["runs_on"]
-    if choice["name"] == cur_lane:
+    want = lane_labels(choice, share_on, need, gate, current)
+    # a lane with share labels is on the right ones only when CI_RUNS_ON holds those the share asks for: the
+    # share's flip moves it with the flip (the same pick); a lane without them keeps the name alone as before
+    moved = bool(var and choice.get("share_runs_on") and not (
+        isinstance(current, (list, tuple)) and lowered(current) == lowered(want)))
+    if choice["name"] == cur_lane and not moved:
         print("  pick: %s, unchanged" % choice["name"])
         return 3 if share_bad else 0
     print("  pick: %s (%s)" % (choice["name"], variable_value(want)))
@@ -4712,8 +4957,11 @@ def pick(repo, apply, dry, usage_path=None):
     apply_guard(dry)
     undo = set_variable(s, var, want, dry)
     if undo:
-        pick_log({"at": int(now), "repo": s, "variable": var, "from": cur_lane, "to": choice["name"],
-                  "old": current, "new": want, "undo": undo})
+        row = {"at": int(now), "repo": s, "variable": var, "from": cur_lane, "to": choice["name"],
+               "old": current, "new": want, "undo": undo}
+        if choice.get("share_runs_on"):
+            row["share"] = lowered(want) == lowered(choice["share_runs_on"])   # which of the lane's two label lists the flip chose
+        pick_log(row)
     return 3 if share_bad else 0
 
 

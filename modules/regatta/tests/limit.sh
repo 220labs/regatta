@@ -478,6 +478,42 @@ rm_own "$C/live/lighthouse" "$H"
 echo "limit: regatta check names the live layer"
 check "$("$L" check 2>/dev/null | grep -c 'live/wharf-runs/check-slots: host-a:4 (regatta limit')" 1 "a note per live key"
 
+echo "limit: lighthouse account limit pairs and alias listing"
+lst=$("$L" limit list --on host-a 2>/dev/null)
+for k in week-soft-max week-hard-max week-finish-hard-max window-soft-max window-hard-max; do
+  check "$(printf '%s\n' "$lst" | grep -c "^lighthouse/$k ")" 1 "list includes lighthouse/$k"
+  check "$(printf '%s\n' "$lst" | grep "^lighthouse/$k " | grep -c 'alias of')" 0 "  lighthouse/$k is not an alias"
+done
+check "$(printf '%s\n' "$lst" | grep '^lighthouse/week-max ' | grep -c 'alias of lighthouse/week-soft-max (\*:) and lighthouse/week-hard-max (LOGIN:)')" 1 \
+  "list marks lighthouse/week-max as an alias of week-soft-max and week-hard-max"
+check "$(printf '%s\n' "$lst" | grep '^lighthouse/week-max-finish ' | grep -c 'alias of lighthouse/week-finish-hard-max')" 1 \
+  "list marks lighthouse/week-max-finish as an alias of week-finish-hard-max"
+check "$(printf '%s\n' "$lst" | grep '^lighthouse/overdraw-max ' | grep -c 'alias of lighthouse/week-hard-max')" 1 \
+  "list marks lighthouse/overdraw-max as an alias of week-hard-max"
+for k in week-soft-max week-hard-max window-soft-max window-hard-max; do
+  "$L" limit set --why t "$k" 'acct-x:0' '*:80' --on host-a > /dev/null 2>&1
+  check "$?" 0 "set $k accepts 0 and 80"
+  check "$("$ROOT/modules/lighthouse/bin/account" limit-read "$k" acct-x 2>/dev/null)" "0 (lighthouse/$k acct-x:)" "  limit-read $k own line"
+  check "$("$ROOT/modules/lighthouse/bin/account" limit-read "$k" acct-z 2>/dev/null)" "80 (lighthouse/$k *:)" "  limit-read $k wildcard"
+  "$L" limit set --why t "$k" 'acct-x:101' --on host-a > /dev/null 2>&1; check "$?" 2 "  refused: $k > 100"
+  "$L" limit set --why t "$k" 'acct-x:nan' --on host-a > /dev/null 2>&1; check "$?" 2 "  refused: $k nan"
+  "$L" limit unset --why t "$k" acct-x '*' --on host-a > /dev/null 2>&1
+done
+"$L" limit set --why t week-finish-hard-max 'acct-x:80' '*:75' --on host-a > "$T/wfhm.out" 2>&1
+check "$?" 0 "set week-finish-hard-max"
+check "$("$ROOT/modules/lighthouse/bin/account" limit-read week-finish-hard-max acct-x 2>/dev/null)" "80 (lighthouse/week-finish-hard-max acct-x:)" "  limit-read week-finish-hard-max own line"
+check "$(grep -c 'the finish ceiling raises the week ceiling only for a launcher' "$T/wfhm.out")" 1 "  week-finish-hard-max prints the finish ceiling note"
+"$L" limit set --why t week-finish-hard-max 'acct-x:0' --on host-a > /dev/null 2>&1; check "$?" 2 "  refused: week-finish-hard-max 0"
+"$L" limit set --why t week-finish-hard-max 'acct-x:101' --on host-a > /dev/null 2>&1; check "$?" 2 "  refused: week-finish-hard-max 101"
+"$L" limit unset --why t week-finish-hard-max acct-x '*' --on host-a > /dev/null 2>&1
+# A peer checkout whose limits file exists but predates a newly added key reports NOKEY, not a reader refusal
+mkdir -p "$T/old-pair/modules/wharf-runs/bin"; printf '#!/bin/sh\nexit 2\n' > "$T/old-pair/modules/wharf-runs/bin/dispatch"; chmod +x "$T/old-pair/modules/wharf-runs/bin/dispatch"
+grep -v '^wharf-runs/run-cap' "$W/limits" > "$T/old-pair/modules/wharf-runs/limits"
+printf '%s\n' "$T/old-pair" > "$T/peer-b/home"
+out=$("$L" limit set --why t run-cap peer-b:4 2>&1); rc=$?
+check "$rc:$(printf '%s\n' "$out" | grep -c 'predates this key and reads no value for it')" "3:1" "a peer whose limits file predates a newly added key says it reads no value for it, not refused (nor that it reads the config)"
+rm -f "$T/peer-b/home"; rm_own "$T/peer-b/live" "$T/old-pair" "$C/live/lighthouse" "$H"
+
 echo
 [ "$fails" = 0 ] && echo "limit: all passed" || echo "limit: $fails failed"
 [ "$fails" = 0 ]

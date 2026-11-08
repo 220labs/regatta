@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- vendor_hook decides two things of its own for an unattended Antigravity run (vendor-road-fixes):
+  a tool allowlist (AG_TOOLS, plus agy's `command_status`, `wait` and `wait_5_seconds`, which touch no
+  path; `read_url_content`, `run_command` with `BypassSandbox` and every other tool denied), and a deny
+  of a file-tool write into a `.git` folder for Codex and agy alike. builder-host's sweep now re-applies
+  the entry for agy too, so the note below on "no re-apply in its sweep" holds only for a host made before.
+
+- The login guard (2026-11-06): `account` never picks a Claude row whose home is not signed in (`.claude.json` holds no
+  `oauthAccount`, or neither `.credentials.json` nor, on a Mac, the keychain holds a login) or is signed in as another
+  account than the logins file's entry for the row (its `email`, or an `account_uuid`). The refusal leads judge's
+  reasons on every road: pick and `--cached`, a pinned ship (it moves), the overdraw pass, the primary's at-once road;
+  `limits` (a `login_off` field), `check` and `doctor` say it. With neither the logins file nor its local copy, the
+  primary is refused (its login cannot be checked) and the other rows are judged as before.
+  A logins file or copy that is there but does not read refuses every row; where an entry writes `account_uuid`, it
+  alone decides. dispatch reads the guard's refusals as host-local on an unpinned walk of a fleet entry, which is
+  queued again; a pinned entry, a host-local store's or a named login fails plainly (wharf-runs' CHANGELOG).
+  Where a row takes a shared login from a row the guard refuses, the duplicates marked before it name the row that
+  took it (`same_as`), never the refused one.
 - vendor_hook answers Antigravity with nothing on an allow, and its trailer
   rewrite as `overwrite` beside `"decision": "allow"`: agy 1.5.2 denies a call
   on `{}` and on an `overwrite` with no decision (probed on a Linux node), so
@@ -27,6 +44,21 @@
   ceiling or window rules, while a stale or missing card still passes through the tenant fallback, and the council's
   Gemini arm has no live pick after it. A lock's skip line names the latest reset among the locked windows, a Codex row's too.
 
+- `ci-lanes.json`: a self-hosted lane's `share_runs_on` (README, Private values), read by wharf's ci-provider pick (mac-share-lane, 2026-11-06).
+- Account limit pairs (account-limit-pairs, 2026-11-07): every account limit now has one shape — a `soft_max` (a lift
+  may pass it: pace on either window, and `--overdraw` on the week) and a `hard_max` (nothing passes it) — across both
+  windows: `week_soft_max` and `week_hard_max`, `week_finish_hard_max`, `week_lend_hard_max` (hard: neither pace nor
+  `--overdraw` lifts a lent row past it), and `window_soft_max` (lowered by exhaustion margin) and `window_hard_max`
+  (default 90, on a row the pair reaches: one with a new window key, budgets.json's `*` included; old keys keep their reading). Week pace lifts a row past `week_soft_max` while its week spend is under the week's elapsed share at the
+  reading's own sample time and under `week_hard_max`; `--overdraw` lifts `week_soft_max` up to `week_hard_max` (100 when
+  none is set), and `reserve` raises `week_soft_max` on `day` or `last_hours`. `budgets.json` takes `"*"` for global
+  defaults (`budgets.json` row > `budgets.json` `*` > registry row > default). `modules/lighthouse/limits` declares
+  `lighthouse/week-soft-max`, `lighthouse/week-hard-max`, `lighthouse/week-finish-hard-max`, `lighthouse/window-soft-max`
+  and `lighthouse/window-hard-max` (`account limit-read`); old JSON keys (`week_max`, `window_max`, `free_below`,
+  `pace_headroom`, `lend_max`, `reserve.week_max`) and old live keys (`week-max` own hard / `*:` soft, `week-max-finish`,
+  `overdraw-max`) keep reading as aliases, with a single stderr warning when both old and new are set on the same row.
+  A registry ceiling rule present but no number (`week_soft_max`, `week_max`, `week_hard_max`, `window_soft_max`,
+  `window_max`, `window_hard_max`) refuses the row, naming the key, rather than read as its default.
 - `lighthouse/overdraw-max` (`<login>:<pct>`, `*:<pct>`, set live via `regatta limit`) caps the week bar `account`'s `lift()` judges a lifted row at in place of 100, naming `to the overdraw ceiling N%` (absent or invalid, 100, a login's bad own line leaving `*:` to serve it, an unreadable file said on stderr; finishes keep `lighthouse/week-max-finish` and own `week-max` or finish-ceiling rows stay unlifted).
 - The lend bar (2026-11-05): `rules.lend_max`, in the registry or budgets.json, is a week ceiling for every repo
   that is not the login's own (its scope's or its tenant's); its own work keeps `week_max`. Past it, `pick` and

@@ -2630,8 +2630,8 @@ def handed_over(b):
 
 
 def dispatch_takes(top):
-    """True when dispatch would start a branch of the repo at TOP: on the worktree workflow and its
-    contract saying `physical: none` — dispatch's physical_ok and paste-paths' seedable()."""
+    """The primary checkout when TOP opts into the worktree workflow, else None — the same opt-in
+    as paste-paths' seedable()."""
     common_dir = out(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
     primary = Path(common_dir).parent if common_dir.endswith(".git") else None
     if primary is None:
@@ -2641,15 +2641,7 @@ def dispatch_takes(top):
             return None
     except (OSError, ValueError):
         return None
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        try:
-            lines = (primary / name).read_text().splitlines()
-        except OSError:
-            continue
-        phys = next((l for l in lines if l.startswith("- physical:")), None)
-        if phys is not None:
-            return primary if phys.startswith("- physical: none") else None
-    return None
+    return primary
 
 
 def dispatchable(root, b):
@@ -4414,7 +4406,7 @@ def from_scope_judge(root, scope, repo_given, cwd, reg):
     if not dispatch_takes(root):
         # its run starts by dispatch or not at all (never a tab), so a repo dispatch refuses would hold a
         # pushed seed nothing may start (S5's landing re-review)
-        return f"dispatch does not take {key} (not on the worktree workflow, or no `physical: none`): its seed could never start"
+        return f"dispatch does not take {key} (not on the worktree workflow): its seed could never start"
     return None
 
 

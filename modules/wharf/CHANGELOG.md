@@ -2,10 +2,30 @@
 
 ## Unreleased
 
+- `pr stuck [--json] [--dry-run]` reads ready agent PRs on the repo's one yard (else the laptop), reports
+  required reds by source and requests local DIRTY re-finishes for the tick. List conflicts stay with
+  `pr restack`. Unarmed heads rerun only a non-skipped automerge workflow, through the lander's rerun cap;
+  held PRs and live runs get no action. Protection contexts come from the repo's file, now excluded from
+  autofinish. Offline cases cover the real cap parser/store, check history, trigger grace and dry restack.
+
+- A finish's closing line follows who owns its next move: the lander only after `lander armed`
+  succeeds, a successful skipper relay, or the owner with the external-finish command. Session
+  status names the lander separately from work running in the session (stuck-ships S7).
 - `.github/ci/share.sh`'s `macos`, `rest` and `whole` run their commands at once, at most `CI_SHARE_JOBS` at a time
   (a repository variable check.yml passes; unset: 2, `1`: one after another, streamed, as before), each command's
   output printed whole and in the line's order once it ends, the verdict and summary as before; a cancelled share
   stops every running command's tree (mac-share-speed, 2026-11-06). Cases in `test_ci_provider.sh`.
+- ci-provider's pick: a self-hosted lane may carry `share_runs_on` in `ci-lanes.json` (mac-share-lane, 2026-11-06), the label
+  list it writes to `CI_RUNS_ON` while `CI_LINUX_ELSEWHERE` is on, so the PR check's macOS share can run on a runner Mac with
+  no desktop session (no `browser`); off, or with no field, it is `runs_on` as before, and `CI_RUNS_ON_FULL` is never the
+  pick's. The share's flip moves `CI_RUNS_ON` in the same pass (logged with `share`, and the restoring call); the runner
+  check judges the list in force, and a lane whose share labels no online runner carries has no runner while the share is on.
+  A flip to off moves `CI_RUNS_ON` back to `runs_on` before the share's own write, and leaves the share on when that
+  write is refused; an unread share keeps the list in force; the share labels go only to a split-form check.yml whose
+  `CI_RUNS_ON_FULL` holds a label list (a push takes those) and whose `needs` they meet; the PyYAML probe reads the
+  python3 a job runs (the runner's `.path`) (the landing review).
+  A runner Mac's probe reads whether the login's python3 imports yaml: install names a missing PyYAML with a warning, and
+  `--runner check` with a Mac's labels refuses while it is missing (wharf-runs' pickup suite writes YAML blueprints).
 - ci-provider's status reads a repo's own `${{ fromJSON(vars.X || '["self-hosted",…]') }}` runs-on (a JSON label list as
   the default; an overlay repo's `suites` job since coding-ci-linux): the variable's labels when set, the default's when unset,
   so `no online runner labelled` warns again there, once per label set, beside a literal job's (ci-provider-fromjson-list,

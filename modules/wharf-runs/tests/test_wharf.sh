@@ -132,7 +132,6 @@ blocks:
     tier: worker
     model: sonnet
     effort: high
-    physical: none
     done_when: {marker: "docs/d.md#B6a"}
     timeout_seconds: 7200
     retries: 2
@@ -249,6 +248,23 @@ sed -i.bak 's/^Not this: live   $/Not this: live, ever/' "$CF"
 hasnt "$(SW check "$CF" --json | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")" "$d1" "  and changes with a section's text"
 mv "$CF.bak" "$CF"; sed -i.bak 's/^Not this: live   $/Not this: live/' "$CF"; rm -f "$CF.bak"
 check "$(SW check "$CF" --json | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")" "$d1" "  restored: the same digest"
+# Digests captured from the loader before the contract field was retired, including the block's digest.
+check "$(python3 - "$B/wharf" "$CF" "$T/legacy-blueprint.md" <<'PY'
+import sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader as L
+w = L("legacy_blueprint", sys.argv[1]).load_module()
+p = Path(sys.argv[3])
+p.write_text(Path(sys.argv[2]).read_text().replace("    effort: high\n", "    effort: high\n    physical: none\n", 1))
+expected = "e85bb6d028c4ba7fd4ac0da22c9a077df813598e83b0ce2855275e34c862b59b"
+block = "5e42043d5cd85d25110af6e663a7ca1d80802d5b8de8d4cd733ac825f6e3e47a"
+plain = w.blueprintlib.load(p)
+w.helmlib.load_plan = lambda pid: {"blueprints": {"demo": {"file": str(p), "digest": expected, "pin": {"repo": "shop"}}}}
+pinned = w.load_recorded("legacy", p)
+print(w.blueprintlib.digest(plain) == expected, w.blueprintlib.digest(pinned) == expected,
+      w.blueprintlib.block_digests(pinned)["probe"] == block)
+PY
+)" "True True True" "a legacy blueprint and its recorded pin keep the accepted ship and block digests"
 [ -f "$OVL/docs/orchestration-orca-2026-10-15.md" ] && check "$(sed -n 1,200p "$OVL/docs/orchestration-orca-2026-10-15.md" | python3 -c "
 import sys; sys.path.insert(0, '$B'); import blueprintlib
 t = sys.stdin.read(); i = t.index('\`\`\`\n---\nship:') + 4; j = t.index('\`\`\`', i)
@@ -596,9 +612,6 @@ cp "$T/d.md.orig" "$CR/docs/d.md"
 # skipper-modes S3: in mode dnd a gate resolves as taken where nothing is held; the doc is not written here
 smode() { python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d.pop("mode", None) if sys.argv[2] == "-" else d.update(mode=sys.argv[2]); json.dump(d, open(p, "w"))' "$T/ship_plans/cp/plan.json" "$1"; }
 smode dnd
-check "$(cd "$CR" && O apply docs/blueprints/2026-10-16-demo.md --plan cp --dry-run | grep -c '^  resolve')" "0" \
-  "mode dnd in a repo whose contract has no physical: line: held, the gate waits (keel reads none as physical)"
-printf -- '- physical: none\n' > "$CR/AGENTS.md"   # the contract the dnd cases below need, never committed
 check "$(cd "$CR" && O apply docs/blueprints/2026-10-16-demo.md --plan cp --dry-run | grep '^  resolve')" \
   "  resolve  pick    gate gate_1: answered (taken unattended (dnd): D2 A) — gate-resolve, then task-update completed" "mode dnd: D2's bare pick, nothing held — the gate resolves as taken"
 check "$(grep -c 'Taken unattended' "$CR/docs/d.md")" "0" "  …and nothing is written to the doc: the next block's dnd run writes it"
@@ -615,9 +628,9 @@ check "$(cd "$CR" && O apply docs/blueprints/2026-10-16-demo.md --plan cp --dry-
   "  ok       pick    gate gate_1 waits on docs/d.md#D1, D2" "mode ask: the gate waits on the owner's answer"
 smode -
 # a pinned ship's doc taken under dnd (follow-ups): memo_answered reads it from the pin's branch on origin,
-# and the contract's physical: from the ship's main checkout, which has neither the doc nor its folder
+# whose main checkout has neither the doc nor its folder
 PO="$T/pin-origin.git"; PM="$T/pin-main"; git init -q --bare "$PO"; git init -q -b main "$PM"
-printf -- '- physical: none\n' > "$PM/AGENTS.md"; git -C "$PM" add -A; git -C "$PM" commit -qm contract; git -C "$PM" remote add origin "$PO"
+printf -- '# Test repository\n' > "$PM/AGENTS.md"; git -C "$PM" add -A; git -C "$PM" commit -qm contract; git -C "$PM" remote add origin "$PO"
 git -C "$PM" push -q origin main; git -C "$PM" checkout -q -b claude/pin/doc; mkdir -p "$PM/docs"; cp "$T/d.md.orig" "$PM/docs/d.md"
 git -C "$PM" add -A; git -C "$PM" commit -qm doc; git -C "$PM" push -q origin claude/pin/doc; git -C "$PM" checkout -q main; rm -rf "$PM/docs"
 pinned() { python3 - "$B/wharf" "$PM" "$1" <<'PY'
@@ -629,10 +642,27 @@ bp = {"path": "/nowhere/x.md", "meta": {"repo": sys.argv[2]}}
 print(w.memo_answered(bp, rec, sys.argv[3] or None)("docs/d.md", ["D1", "D2"]))
 PY
 }
-check "$(pinned dnd)" "(True, 'taken unattended (dnd): D2 A')" "a pinned ship's doc in mode dnd: read from its branch on origin, D2 taken (physical: none in the ship's main)"
+check "$(pinned dnd)" "(True, 'taken unattended (dnd): D2 A')" "a pinned ship's doc in mode dnd: read from its branch on origin, D2 taken without consulting a contract"
 check "$(pinned '')" "(False, None)" "  with no mode, the same doc waits on the owner"
-printf -- '- physical: the box\n' > "$PM/AGENTS.md"
-check "$(pinned dnd)" "(False, None)" "  the ship's main says physical: dnd holds the item, the gate waits"
+check "$(python3 - "$B/wharf" "$T/d.md.orig" <<'PY'
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from importlib.machinery import SourceFileLoader as L
+w = L("keel_compat", sys.argv[1]).load_module()
+m = w._mod("memo", w.common.tool("keel"))
+def legacy_dnd(it, lines, physical=None):
+    if not (physical or "").startswith("- physical: none"):
+        return "the older reader requires the retired third argument"
+    return m.dnd_held(it, lines)
+old = SimpleNamespace(parse=m.parse, yolo_settled=m.yolo_settled, dnd_held=legacy_dnd)
+w.doc_path = lambda *a: Path(sys.argv[2])
+for reader in (m, old):
+    w._mod = lambda *a: reader
+    print(w.memo_answered({}, mode="dnd")("d.md", ["D2"]))
+PY
+)" "(True, 'taken unattended (dnd): D2 A')
+(True, 'taken unattended (dnd): D2 A')" "the current Wharf caller takes the same dnd pick with current and older Keel interfaces"
 rm -f "$CR/AGENTS.md"
 # skipper-modes S3b: a blueprint's mode is a file any run can write, and a raise is a yes to merge
 wm() { python3 - "$B/wharf" "$1" <<'PY'
@@ -688,7 +718,7 @@ check "$(CLAUDE_UNATTENDED=dispatch bash -c "$(declare -f wmj); B='$B' wmj")" "T
   "  bp_mode_judge reads the ship's mode once: torn then healed, the refusal is still judged torn"
 # vendor-fence (F1 of docs/codex-agy-gaps-2026-10-29.md): an Orca block of another agent meets the vendor fence —
 # a confidential repo's text only on a login its tenant owns, account pick naming it; a Claude block's rule unchanged
-VR="$T/vfrepo"; git init -q -b main "$VR"; printf -- '- physical: none\n' > "$VR/AGENTS.md"; VR=$(cd "$VR" && pwd -P)
+VR="$T/vfrepo"; git init -q -b main "$VR"; printf -- '# Test repository\n' > "$VR/AGENTS.md"; VR=$(cd "$VR" && pwd -P)
 printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}}}\n' "$VR" > "$T/vf-repos.json"
 cat > "$T/vf-account" <<'PY'
 #!/usr/bin/env python3
@@ -722,7 +752,7 @@ check "$r" "held" "  a cap that does not read holds it: the tick carries no mark
 # gate as `harness run --runner orca` does — a node session's apply never starts an open repo's block
 WN="$T/s6wnode"; git init -q -b main "$WN"; WN=$(cd "$WN" && pwd -P)
 printf '{"repos": {}, "scopes": {"node": {"confidential": true, "repos": ["%s"]}}}\n' "$WN" > "$T/s6w-repos.json"
-WO="$T/s6wopen"; git init -q -b main "$WO"; printf -- '- physical: none\n' > "$WO/AGENTS.md"; WO=$(cd "$WO" && pwd -P)
+WO="$T/s6wopen"; git init -q -b main "$WO"; printf -- '# Test repository\n' > "$WO/AGENTS.md"; WO=$(cd "$WO" && pwd -P)
 s6w() { (cd "$1" && env -u CLAUDE_UNATTENDED -u REGATTA_UNATTENDED -u CLAUDE_CODE_SESSION_ID WHARF_NO_WEEK=1 CLAUDE_REPOS_JSON="$T/s6w-repos.json" \
          python3 - "$B/wharf" "$2" "$WO" <<'PY'
 import sys
@@ -918,7 +948,7 @@ if a[0] == "pick":
 sys.exit(0 if a[0] == "ships" else 4)
 PY
 chmod +x "$WS/orca" "$WS/account"
-printf '# wrepo\n\n- physical: none\n' > "$WR/AGENTS.md"
+printf '# wrepo\n\n' > "$WR/AGENTS.md"
 cat > "$WR/docs/d.md" <<'EOF'
 # A doc
 
@@ -1646,7 +1676,7 @@ yp() { python3 -c "import json; p=json.load(open('$YD/plans/$1/plan.json')); pri
 gt() { git -C "$1" -c user.name=t -c user.email=t@t "${@:2}"; }
 git init -q --bare -b main "$YD/origin.git"
 YR="$HOME/projects/yardrepo"; git clone -q "$YD/origin.git" "$YR" 2>/dev/null
-printf '# yardrepo\n\n- physical: none\n' > "$YR/AGENTS.md"; gt "$YR" add -A; gt "$YR" commit -qm init; gt "$YR" push -q origin main 2>/dev/null
+printf '# yardrepo\n\n' > "$YR/AGENTS.md"; gt "$YR" add -A; gt "$YR" commit -qm init; gt "$YR" push -q origin main 2>/dev/null
 YBR=claude/testhost/2026-10-22-yb; YW="$YR/.claude/worktrees/yb"
 gt "$YR" worktree add -q "$YW" -b "$YBR"; mkdir -p "$YW/docs/blueprints"
 # ybp <ship> <repo> <front matter lines> <blocks>: the last two as printf formats, \n for a newline (mkbp's way)
@@ -1715,7 +1745,7 @@ out=$(Y "$WH" check "$Y1" --plan yp1 --accept 2>&1); check "$?" "2" "wharf check
 has "$out" "wharf check --accept: yone refused — it is pinned" "  says so, as apply does"
 check "$([ "$(cat "$YD/plans/yp1/plan.json")" = "$before" ] && echo same)" "same" "  plan.json unchanged: the ship stays on its copy"
 
-YNR="$HOME/projects/nullrepo"; git init -q -b main "$YNR"; printf '# n\n\n- physical: none\n' > "$YNR/AGENTS.md"
+YNR="$HOME/projects/nullrepo"; git init -q -b main "$YNR"; printf '# n\n\n' > "$YNR/AGENTS.md"
 YNB="$YNR/2026-10-22-ynull.md"; sed 's/^\(    command: "echo \)yn/\1yn-plain/' "$YN" > "$YNB"
 Y "$HM" $SHIP wharf --id ypn > /dev/null
 out=$(Y "$WH" apply "$YNB" --plan ypn 2>&1); check "$?" "0" "a scope with yard null: the plain apply goes ahead (no yard named yet, nothing refused: until S3)"
@@ -2134,7 +2164,7 @@ git init -q --bare -b main "$OMO"
 git clone -q "$OMO" "$OMR" 2>/dev/null; git clone -q "$OMO" "$OMS" 2>/dev/null
 git -C "$OMR" symbolic-ref HEAD refs/heads/main; git -C "$OMS" symbolic-ref HEAD refs/heads/main
 mkdir -p "$OMR/docs/blueprints" "$OMR/old"
-printf '# om\n\n- physical: none\n' > "$OMR/AGENTS.md"; echo base > "$OMR/base.txt"; echo old > "$OMR/old/o.txt"
+printf '# om\n\n' > "$OMR/AGENTS.md"; echo base > "$OMR/base.txt"; echo old > "$OMR/old/o.txt"
 mkdir -p "$OMR/docs"; printf -- '- **M1** — not built yet\n- **M2** — not built yet\n' > "$OMR/docs/om.md"   # the design doc, on main before the plan
 git -C "$OMR" add AGENTS.md base.txt old docs/om.md; git -C "$OMR" "${GC[@]}" commit -qm "Init"; git -C "$OMR" push -q origin main 2>/dev/null
 git -C "$OMS" pull -q origin main 2>/dev/null

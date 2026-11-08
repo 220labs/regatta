@@ -27,3 +27,4 @@ wharf-runs/load-margin
 # Nor wharf-runs/host (absent: machine name), wharf-runs/only (absent: no extra claim filter),
 # wharf-runs/launchd-domain (absent: gui), or wharf-runs/slot-share (absent: no cross-user count).
 # wharf-runs/builder-source is make's optional receipt: a builder needs it, other users do not (README).
+# Nor wharf-runs/trust-vendor-review: optional, off unless its sole line is on.

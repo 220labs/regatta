@@ -40,7 +40,7 @@ Seen in four model runs on 1.4.2 (2026-10-17, a scratch repo, the owner's own lo
 - exit codes (agy's changelog): 0 done, 1 error or interrupted, 2 usage error, 3 a model or agent API failure.
 
 What bounds an unattended agy run, each checked before agy starts (exit 2, nothing started):
-- bin/harness's guard(): the contract's `physical: none`, the public-repo rule Codex meets (a plan login stays
+- bin/harness's guard(): the public-repo rule Codex meets (a plan login stays
   out of scripts in a public repo), the core's vendor_refusal (a confidential or guarded repo only on a login its
   tenant owns, `account pick --provider antigravity`), the spawn gate, the depth cap and the run cap.
 - this file: a `.claude/worktrees/` worktree on a claude/* branch, never a primary checkout, never main
@@ -53,7 +53,8 @@ What bounds an unattended agy run, each checked before agy starts (exit 2, nothi
   `<config>/wharf-runs/agy-mode` says `auto` (agy's edits-and-safe-commands mode; "not available for this
   account" on the owner's login in 1.4.2). Never `--dangerously-skip-permissions`: whether an unattended agy build
   may run commands is the owner's call (TODO.md [agy-mode]). `--sandbox` keeps a command off files outside the workspace while the model does not ask to leave it,
-  and git does not run inside it in a linked worktree (its git dir lies outside): the branch's probes.
+  and on this harness road git does not run inside it in a linked worktree (its git dir lies outside, and no
+  `--add-dir` is passed here; agybuild.py passes `git_dirs`): the branch's probes.
 
 The run record's `dispatched` is HARNESS_DISPATCHED (dispatch's run record, which counts the run's slot);
 harness_live() leaves such a run out, so dispatch-rc's count holds each run once.
@@ -379,6 +380,21 @@ def _worktree(ctx, cwd):
     if "/.claude/worktrees/" not in real(top) + "/":
         ctx.fail("%s is a worktree outside .claude/worktrees/: an agy run writes only in one of those" % top, 2)
     return branch, real(top)
+
+
+def git_dirs(cwd):
+    """The worktree's git folders (`--git-dir` and `--git-common-dir`, real paths) outside `cwd`, each once and none
+    already inside another: `agybuild.py` hands them via `--add-dir` paired with `git_trust` so builder turns can commit
+    in a linked worktree without leaving the sandbox."""
+    top = os.path.realpath(cwd)
+    raw = []
+    for flag in ("--git-dir", "--git-common-dir"):
+        p = _git(cwd, "rev-parse", "--path-format=absolute", flag)
+        if p:
+            rp = os.path.realpath(p)
+            if os.path.commonpath([rp, top]) != top and rp not in raw:
+                raw.append(rp)
+    return [p for p in raw if not any(p != q and os.path.commonpath([p, q]) == q for q in raw)]
 
 
 def _pick(ctx, req, cwd):

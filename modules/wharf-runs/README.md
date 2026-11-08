@@ -88,9 +88,10 @@ the tools here will find.
   | `wharf-runs/load-max` | `<load per core> [log]` — a host whose 5-minute load per core is at or over it is passed over for the next one its scope allows; `log` records the pick without acting on it | 1.5; log only while `load-margin` is unset or `log` too |
   | `wharf-runs/finisher-rotation` | `until YYYY-MM-DD`: the finisher rotation's switch and its last day. `autofinish-run` draws each finisher by coin, Opus 5.5 or Sonnet 5.5 at `medium`, and records the run in the log dir's `finisher-rotation.jsonl`; with the rotation off every finish run still writes its row, `arm` null (task-shape S1). A repo any of whose scopes says `"rotation": false` (or a `rotation` that is no bool), or one in no scope, keeps today's finisher; a confidential scope rotates unless it opts out so, its row carrying `scope` and `confidential: true` (the core's `scope_rotates`, since scope-rotation 2026-11-04; `autofinish-run`'s header; `autofinish-run rotation` reads the rows back) | today's finisher, dispatch's default model |
   | `wharf-runs/builder-rotation` | `until YYYY-MM-DD`: the builder rotation's switch and its last day (S6 of the Trim design). A run whose brief is specced — its `Tier:` line names `worker` or Sonnet — or plain Opus — Opus alone, no tier word, no effort but `high` (since 2026-11-03) — and that no `--model` or `--effort` was given for draws its builder once where `dispatch` enqueues or schedules it, by `wharf-runs/builder-odds` (below; Opus 5.5, Sonnet 5.5 and Gemini 4 Argon, each `high`; 3 in 5 Sonnet and no Argon until S3 of the Argon design, 1 in 5 before 2026-11-03); an Argon draw runs only on a builder host (its `wharf-runs/features` line names `agy`, its row on the hosts ref fresh) and adds `--needs agy`, else it falls back to Opus, the row saying `fallback`; the row's `brief_class` says which class (trim does not split by it yet: TODO.md [trim-brief-class]); every road carries the draw (`DISPATCH_ARM`), and the run's record and one row in the log dir's `builder-rotation.jsonl` keep it, which trim reads as `arm_source: coin`. A repo any of whose scopes says `"rotation": false` (or a `rotation` that is no bool), one in no scope or a registry that does not read draws nothing; a confidential scope draws unless it opts out so (the owner, 2026-11-04: one scope does, the others draw), and its row carries `scope` and `confidential: true`, which trim counts in its arm tallies only (the core's `scope_rotates`, since scope-rotation 2026-11-04); such a scope draws the claude arms only, never Argon (Google), and a vendor word fires there as its Opus fallback. The fire path asks the key again on the host the run fires on, so every host that claims runs needs it (the overlay's config line on each, the Linux node included): a host without it drops the arm, said in the run's log (`bin/buildercoin.py`'s header) | today's builder: opus/high, or a principal tier's |
-  | `wharf-runs/builder-odds` | optional; a fleet limit, changed live with `regatta limit set builder-odds 'opus-high=1,sonnet-high=2,argon-high=0' --all --why '…'` (this module's `limits` file). The builder coin's whole weight per arm, by the arm's name, in any order, an arm left out weighing 0; or, as a live value only, positional in the coin's order `opus:sonnet:argon:gpt-big:gpt-mid` (three or five weights, e.g. `0:0:0:1:1`), read ahead of the named base line (a named base, never `1:2:2:1:1`: the config's grammar reads `1:` there as a host's word). A weight of 0 is never drawn; with both Claude weights 0 a worker brief draws `gpt-mid` and an sr-worker brief `gpt-big`, a principal tier stays Claude. Read where a run is drawn and again where it fires: a weight of 0 for the drawn arm there runs today's builder, unrecorded, and a value that does not read draws nothing. The row's `odds` writes the weights as `o:s:a`, which `buildercoin.py`'s `odds_of` reads beside #459's `n/d` (S3 of docs/argon-builder-arm-2026-11-03.md) | `opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1` (1:2:2:1:1; the owner's D2, S8) |
+  | `wharf-runs/builder-odds` | optional; a fleet limit, changed live with `regatta limit set builder-odds 'opus-high=1,sonnet-high=2,argon-high=0' --all --why '…'` (this module's `limits` file). The builder coin's whole weight per arm, by the arm's name, in any order, an arm left out weighing 0; or, as a live value only, positional in the coin's order `opus:sonnet:argon:gpt-big:gpt-mid` (three or five weights, e.g. `0:0:0:1:1`), read ahead of the named base line (a named base, never `1:2:2:1:1`: the config's grammar reads `1:` there as a host's word). A weight of 0 is never drawn; with both Claude weights 0 a worker brief draws `gpt-mid` and an sr-worker brief `gpt-big`, or, with that GPT arm at 0 too, the other vendor arms by weight (Argon), a principal tier stays Claude. Read where a run is drawn and again where it fires: a weight of 0 for the drawn arm there runs today's builder, unrecorded, and a value that does not read draws nothing. The row's `odds` writes the weights as `o:s:a`, which `buildercoin.py`'s `odds_of` reads beside #459's `n/d` (S3 of docs/argon-builder-arm-2026-11-03.md) | `opus-high=1,sonnet-high=2,argon-high=2,gpt-big=1,gpt-mid=1` (1:2:2:1:1; the owner's D2, S8) |
   | `wharf-runs/load-margin` | `<load per core> [log]` — how much lighter a later host must be than the ones passed over | 0.5; log only while `load-max` is unset or `log` too |
   | `wharf-runs/build-review-rounds` | optional. The build loop's round cap, a whole number from 1 to 20 (`build-review cap`), read at each round, so a change holds from the next one; a value split one word per line reads as one, a note after `#` or `(` as nothing. A value that does not read is the default, said on stderr | 3 |
+  | `wharf-runs/trust-vendor-review` | optional. Exactly `on` lets `build-review covers` credit a Codex or Antigravity build after its usual clean-loop and unchanged-code proofs. The claiming owner's setting is read; a missing, unreadable or other value grants no credit | off: every vendor landing runs the full Claude review and fix rounds |
   | `wharf-runs/queue-repo` | the home of `dispatch`'s fleet queue (`dispatch-queue`'s header): `owner/name` on GitHub, or a path or URL; `off` turns the queue off. Every host that claims needs write on it; set the URL that host's git reaches | none: no queue, and `dispatch` runs as before it (`helm/logbook-repo` stands in once S2 lands) |
   | `wharf-runs/queue-repos` | the repos this host claims from the fleet queue, one repo key per line; `<key> pinned` takes that repo's entries only when pinned here (`--pin`, a named login; a preference is no pin: dispatch-queue's `fleet_fence`) | every repo cloned here |
   | `wharf-runs/queue-mode` | optional (dispatch-queue S10(g)). `writes`, or `<host>:writes` for one host: that host's queue home is for its own writes alone — `dispatch --requeue`'s ops, replayed from the outbox by its sweep at wake. It enqueues none of its own runs and claims nothing; `claim`, the default, as before. No host claims in a DarkWake (`pmset -g systemstate` without Graphics) | `claim` |
@@ -257,7 +258,7 @@ loop. Each turn repeats the scope fence and scans its message before sending.
 Antigravity uses the landed `harness_adapters/agy.py` argv helper with
 `--dangerously-skip-permissions`, `--sandbox`, and stdin stream-json, without
 a plan mode. Its per-run keychain comes from the builder keychain alone;
-the scratch home carries only Regatta's guards, a local AGENTS.md pointer
+the scratch home carries Regatta's guards and any verified sheep-gated reporting, a local AGENTS.md pointer
 and the conversation state kept between build and fix turns. Reviewers and
 verifier each start a fresh conversation. The common git directory is added
 to the sandbox for commits in linked worktrees. No live vendor probe is part
@@ -268,9 +269,24 @@ GPT big (`gpt-6.1-sol`, xhigh), GPT mid (the same model, high). Named weights
 such as `gpt-big=1,gpt-mid=1` also read. Omitted and zero weights never draw.
 With both Claude weights zero, worker/Sonnet briefs take GPT mid and
 sr-worker/Opus briefs take GPT big; principal tiers stay Claude. At the next draw, any positive
-Claude weight restores the earlier specced/plain brief rule. If every arm
-eligible for a class weighs zero, the current Claude builder remains the
-fallback. Codex entries need the `codex` feature on a fresh builder host.
+Claude weight restores the earlier specced/plain brief rule. With a size's
+GPT arm at zero too (Codex off), its briefs draw the other vendor arms by
+weight (Argon); if every arm eligible for a class weighs zero, the current
+Claude builder remains the fallback. Codex entries need the `codex` feature on a fresh builder host.
+
+`yard-node up` tests Codex's sandbox under the vendor adapter's own `fence_profile`,
+including its filesystem table and scratch environment, before offering the `codex` feature.
+It also requires spacesheep's CLI and a signed-in handle on shared nodes. Install a missing
+CLI with npm into a prefix the node user owns (its `.local`); node-up installs no CLIs. When unsigned,
+up starts `spacesheep login` detached on the node and prints its device approval link.
+Approve it on any device within 5 minutes (a flow older than that is ended and started anew), then run up again for a clean verdict.
+`--dry-run` describes the login without starting it. A node rendered for a confidential
+scope gets no spacesheep check or login; a node whose scope cannot be told (no registry,
+a dangling marker, a node rendered before the scope key) FAILs `not judged`, saying why,
+and gets no check or login either. Vendor-only nodes (a nonempty login fence naming
+exclusively known vendor accounts) report no sessions: their spacesheep verdict is `--`
+and they start no login, even when the CLI is missing. `wharf-runs/only` filters claims;
+a node whose fence includes Claude still requires spacesheep.
 
 `sudo builder-user codex --gh-as LOGIN` creates the vendor user and the same
 home ACL wall as the other builder user. It uses the readable Homebrew CLI
@@ -278,9 +294,14 @@ and shares the sudo user's ChatGPT plan login (`--cli-from USER` selects a
 trusted source), as gh access is shared. Login contents are never printed.
 The runtime needs `wharf-runs/only` naming `codex`, the scope registry and a
 signed-in CLI with the requested model/effort in its local model catalog.
-The builder Codex home must hold only the generated Regatta PreToolUse
-handler (`vendor-hooks apply`); the launcher checks it before trusting it
-headlessly. Reviews grant the worktree read access, keeping the run fence.
+The builder's hooks must hold the generated Regatta PreToolUse handler
+(`vendor-hooks apply`), optionally with the exact reporting entries `sheep gate`
+writes. The launcher derives these from keel's writer, its installed gate path
+and Claude Code's installed sessionpipe seed before trusting them headlessly.
+Other hooks, wrappers, arguments and event entries are refused, and so is an
+ungated sessionpipe `notify` in Codex's config.toml, judged by keel's own reader:
+`sheep gate` refuses over one but leaves it in place.
+Reviews grant the worktree read access, keeping the run fence.
 Host installation and real-user probes remain the owner's steps; the
 builder-host installer includes S9's hardening.
 `sudo builder-host make codex` (`check codex`, `probe codex`) wires `<host>-codex` (`codex` feature and `only`), the builder's `.codex` hooks and `AGENTS.md` (written again after any sweep pass that moves its clone; another `CODEX_HOME` is refused), its own sweep LaunchDaemon, and the Mac's shared slot folder, checking `codex login status` as the builder with no model call.

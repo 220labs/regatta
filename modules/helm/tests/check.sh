@@ -19,6 +19,7 @@ python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import find_core; sys.p
 echo "== peers"; bash "$D/peers.sh" || rc=1
 echo "== hooks"; bash "$D/hooks.sh" || rc=1
 echo "== landing cards"; bash "$D/landing.sh" || rc=1
+echo "== vendor records"; bash "$D/test_vendor_records.sh" || rc=1
 echo "== main check"; bash "$D/test_main_check.sh" || rc=1
 # test_ask, test_helm, test_board, test_engine and the extension share nothing (each its own mktemp dir; the suites their own config dir
 # and HOME, the extension npm's cache in the caller's HOME): side by side,

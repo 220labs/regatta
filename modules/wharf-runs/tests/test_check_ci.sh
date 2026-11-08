@@ -264,7 +264,7 @@ class CheckCI(unittest.TestCase):
         from unittest.mock import patch
         spec = importlib.util.spec_from_file_location('blueprintlib', B / 'blueprintlib.py')
         b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
-        st = dict(id='probe', raw=dict(provider='orca', physical='none'),
+        st = dict(id='probe', raw=dict(provider='orca'),
                   section='Task: check', kind='build', deps=[])
         bp = dict(name='checks', meta=dict(repo='shop', created='2026-11-05'),
                   waves=[['probe']], blocks=[st], by_id=dict(probe=st))

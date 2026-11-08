@@ -38,7 +38,7 @@ chmod +x "$T/launchctl"
 export DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_DEFAULT_ON= DISPATCH_HOST=laptop AUTOFINISH_HOST=laptop
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/repo" 2>/dev/null
-(cd "$T/repo" && printf -- '- check: `true`\n- physical: none\n' > AGENTS.md && echo x > f && git add . && git commit -qm init && git push -q origin main)
+(cd "$T/repo" && printf -- '- check: `true`\n' > AGENTS.md && echo x > f && git add . && git commit -qm init && git push -q origin main)
 git init -q --bare "$T/queue.git"
 echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 BR=claude/laptop/2026-11-02
@@ -298,9 +298,13 @@ json.dump({"accounts": [{"label": "acct-queue", "home": sys.argv[2], "primary": 
                          "rules": {"week_max": 90}}]}, open(sys.argv[1], "w"))
 json.dump({"at": time.time(), "limits": {"five_hour": 10, "seven_day": 92}},
           open(sys.argv[2] + "/usage-probe.json", "w"))
+# signed in (lighthouse's login guard: account never picks a home with no login); the logins file describes no row
+json.dump({"oauthAccount": {"accountUuid": "u-acct-queue"}}, open(sys.argv[2] + "/.claude.json", "w"))
+json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(sys.argv[2] + "/.credentials.json", "w"))
 PY
+echo '{"logins": {}}' > "$T/finish-logins.json"
 printf 'acct-queue:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
-export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false
+export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false ACCOUNT_LOGINS="$T/finish-logins.json"
 fin e "$TE" '{"by": "typed", "rule": "C", "merge": true, "from": "laptop"}' "${QL2[@]}" > /dev/null
 python3 "$QB" claim "${QB2[@]}" > /dev/null
 JE=$(qget repo--e job)
@@ -682,7 +686,7 @@ check "$(qget repo--lm finish)" '{"by": "lander", "from": "", "hold": false, "la
 echo "finish ceiling: direct picks, cached retries and dispatch auto/bound starts"
 qreset
 echo off > "$REGATTA_CONFIG/wharf-runs/queue-repo"
-export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false
+export ACCOUNTS_FILE="$T/finish-accounts.json" ACCOUNT_CLAUDE=false ACCOUNT_LOGINS="$T/finish-logins.json"
 printf 'acct-queue:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
 cat > "$T/finish-picks.py" <<'PY'
 import subprocess, sys, types
@@ -996,6 +1000,110 @@ PY
 python3 "$T/departures.py" "$QB" "$T/queue.git" "$T/repo" "$T/launchctl" > "$T/out" 2>&1
 check "$?" "0" "departure audit and stale cleanup regressions"
 cat "$T/out"
+
+echo "Argon's finish travels to an owner's row with its evidence"
+qreset
+TV=$(mkbranch vendor)
+git -C "$T/repo" worktree add -q "$T/wt-vendor" "$BR-vendor" 2>/dev/null
+python3 - "$T/vendor.json" "$BR-vendor" "$TV" "$T/repo" <<'PY'
+import json,sys
+path,branch,tip,repo=sys.argv[1:]
+run={"mode":"vendor","agent":"antigravity","session":"argon-build","started":1,"ended":2,
+     "outcome":"clean","branch":branch,"tip":tip,"repo":repo}
+review={"agent":"antigravity","session":"argon-build","ended":2,"outcome":"clean","branch":branch,"tip":tip,
+        "project":"repo","rounds":[{"found":0,"check":"green","reviewers":["antigravity"],"findings":"a.py:1 — [S2] build finding"}]}
+json.dump({"run":run,"review":review,"gates":[{"branch":branch,"project":"repo","phase":"build","head":tip,"ts":"2026-11-05T00:00:00+00:00"}]},open(path,"w"))
+PY
+fin vendor "$TV" '{"by":"handed","rule":"C","from":"buildbox"}' "${QB2[@]}" --build-record "$T/vendor.json" > "$T/out"
+check "$?" "0" "an Argon hand-over puts its finish with evidence"
+check "$(qget repo--vendor host prefer)" " " "the entry has no ladder pin or builder preference"
+printf 'agy\n' > "$REGATTA_CONFIG/wharf-runs/only"
+python3 "$QB" claim "${QB2[@]}" > "$T/out" 2>&1
+check "$(qget repo--vendor state)" "queued" "a builder host cannot claim the finish on Darwin either"
+rm -f "$REGATTA_CONFIG/wharf-runs/only"
+export AUTOFINISH_STATE_DIR="$T/af-state"
+mkdir -p "$T/af-state"
+rm -f "$T/af-state/landings"
+python3 "$QB" claim "${QL2[@]}" > "$T/out" 2>&1
+check "$(qget repo--vendor state)" "queued" "an owner Mac with landings disarmed does not claim a handed finish"
+"${QGIT[@]}" show "refs/regatta/queue:queue/repo--vendor.json" > "$T/vendor-entry.json"
+elig() { DISPATCH_HOST=laptop python3 - "$QB" "$T/vendor-entry.json" "$1" "${2:-laptop}" <<'PY'
+import importlib.machinery, json, sys
+q = importlib.machinery.SourceFileLoader("fq_elig", sys.argv[1]).load_module()
+e = json.load(open(sys.argv[2]))
+if sys.argv[3]:
+    e["finish"] = dict(e.get("finish") or {}, by=sys.argv[3])
+print(q.eligibility(e, sys.argv[4]) or "eligible")
+PY
+}
+elig '' > "$T/elig-handed"; elig yolo > "$T/elig-yolo"; elig '' buildbox > "$T/elig-other"
+has "$T/elig-handed" "landing switch is off here" "  eligibility() names the switch, so the sweep's unclaimed card can (S5's landing review)"
+has "$T/elig-yolo" "autofinish disarmed here" "  a yolo finish on a disarmed host: eligibility() names it too"
+printf '{"by":"test","ts":"2026-11-05T00:00:00Z"}\n' > "$T/af-state/landings"
+elig '' buildbox > "$T/elig-other-armed"
+check "$( [ -s "$T/elig-other" ] && cmp -s "$T/elig-other" "$T/elig-other-armed" && echo same)" "same" \
+  "  another host's verdict never reads this host's switch: the same, non-empty, with it off and on (round 3)"
+python3 "$QB" claim "${QL2[@]}" > "$T/out" 2>&1
+check "$(claimed_by vendor)" "claimed laptop" "the owner's row claims the Argon finish once landings are armed"
+JV=$(qget repo--vendor job)
+export BUILD_REVIEW_LOG="$T/owner-log/build-review.jsonl" REVIEW_GATE_LOG="$T/owner-log/review-gate.jsonl"
+DISPATCH_LABEL="$JV" AUTOFINISH_DISPATCH="$T/dispatch-start" AUTOFINISH_END_WARM=true \
+  AUTOFINISH_API_STUB="$T/api_stub.py" PICKUP_PRS="$T/none.json" AUTOFINISH_VERDICT_S=10 \
+  "$B/dispatch" "$BR-vendor" --repo "$T/repo" --finish --from-queue fleet:repo--vendor > "$T/out" 2>&1
+check "$?" "0" "the owner's claim starts its Claude finish"
+has "$T/start.args" "/finish $BR-vendor --unattended --from=buildbox" "the finish keeps the builder's source and judges the owner's ladder"
+check "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["agent"])' "$BUILD_REVIEW_LOG")" "antigravity" "the owner has the vendor review record"
+has "$REVIEW_GATE_LOG" '"phase": "build"' "and the build's gate rows"
+out=$("$B/build-review" covers "$T/wt-vendor" --base origin/main 2>&1)
+check "$?" "1" "vendor evidence gets no review credit by default"
+case "$out" in *"full Claude review"*) echo "  ok   the owner's finish owes its full Claude review";; *) echo "  FAIL missing vendor review policy: $out"; fails=$((fails+1));; esac
+python3 "$QB" started fleet:repo--vendor --label "$JV" --session owner-finish "${QL2[@]}" > /dev/null
+python3 "$QB" finished fleet:repo--vendor --session owner-finish --outcome launched "${QL2[@]}" > /dev/null
+check "$(qget repo--vendor state outcome ran_on)" "ended launched laptop" "the simulated landing ends on the owner's row"
+unset BUILD_REVIEW_LOG REVIEW_GATE_LOG AUTOFINISH_STATE_DIR
+python3 - "$B" "$T/wt-vendor" "$BR-vendor" "$TV" "$T/repo" <<'PY' > "$T/out"
+import importlib.machinery, json, os, sys
+from unittest.mock import patch
+b, wt, branch, tip, repo = sys.argv[1:]
+sys.path.insert(0, b)
+af = importlib.machinery.SourceFileLoader("af_vendor_q", os.path.join(b, "autofinish-run")).load_module()
+calls = []
+argv = ["fleet:repo--v2", "--branch", branch, "--repo", repo]
+def fake_mine(by_val):
+    row = {"branch": branch, "tip": tip, "repo": repo, "put_at": 0,
+           "finish": {"by": by_val, "rule": "M" if by_val == "yolo" else "C", "from": "buildbox"},
+           "build_record": {"run": {}}}
+    def qw(*args):
+        calls.append(args)
+        return (0, json.dumps(row), "") if args[0] == "mine" else (0, "", "")
+    return qw
+with patch.object(af, "queue_word", side_effect=fake_mine("handed")), \
+        patch.object(af.common, "autofinish_landings", return_value=None), \
+        patch.dict(os.environ, DISPATCH_LABEL="job-v2"):
+    af.queued_main(argv)
+assert calls[-1][0] == "refused", calls
+calls.clear()
+with patch.object(af, "queue_word", side_effect=fake_mine("yolo")):
+    with patch.object(af.common, "autofinish_armed", return_value=None), patch.dict(os.environ, DISPATCH_LABEL="job-v2"):
+        af.queued_main(argv)
+    assert calls[-1][0] == "refused", calls
+    calls.clear()
+    with patch.object(af.common, "autofinish_armed", return_value={"by": "test", "ts": "now"}), \
+            patch.object(af, "queued_worktree", return_value=(wt, 0, "")), \
+            patch.dict(os.environ, DISPATCH_LABEL="job-v2"):
+        af.queued_main(argv)
+    assert calls[-1][0] == "failed", calls
+    calls.clear()
+    import vendorhandover
+    with patch.object(af.common, "autofinish_armed", return_value={"by": "test", "ts": "now"}), \
+            patch.object(af, "queued_worktree", return_value=(wt, 0, "")), \
+            patch.object(vendorhandover, "receive", side_effect=OSError("disk full")), \
+            patch.dict(os.environ, DISPATCH_LABEL="job-v2"):
+        af.queued_main(argv)
+    assert calls[-1][0] == "refused", calls
+print("ok")
+PY
+check "$(cat "$T/out" | tail -1)" "ok" "queued_main refuses disarmed handed/yolo, fails malformed vendor evidence, and hands back OSError"
 
 echo
 [ "$fails" = 0 ] && echo "test_finish_queue: all passed" || { echo "test_finish_queue: $fails failed"; exit 1; }

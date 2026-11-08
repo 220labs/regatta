@@ -110,6 +110,60 @@ check "$(ag read_url_content "{\"Url\":\"file://$HOME/.codex/auth.json\"}")" den
 check "$(ag read_url_content '{"Url":"https://example.com/_secrets/app.env"}')" allow "  a web URL: no file read here"
 check "$(ag view_file "{\"AbsolutePath\":\"$HOME/.gemini/antigravity-cli/mcp_oauth_tokens.json\"}")" deny "agy's MCP token file a folder down: denied"
 check "$(ag write_to_file "{\"TargetFile\":\"$WT/n.txt\",\"CodeContent\":\"$SGV/_secrets/app.env\"}")" allow "  a path written as a file's content is text, not a target"
+check "$(ag manage_task "{\"Action\":\"send_input\",\"TaskId\":\"t1\",\"Input\":\"cat $SGV/_secrets/app.env\"}")" deny "manage_task send_input (Input) reading _secrets: denied"
+check "$(ag manage_task "{\"Action\":\"send_input\",\"TaskId\":\"t1\",\"Stdin\":\"cat $SGV/_secrets/app.env\"}")" deny "  manage_task send_input (Stdin fallback): denied"
+if [ -n "$CP" ]; then
+  agu() { printf '%s' "$1" | env "${@:2}" python3 "$VH" antigravity guards | python3 -c 'import json,sys; t=sys.stdin.read().strip(); print(json.loads(t).get("decision","allow") if t else "allow")'; }
+  check "$(agu "{\"toolCall\":{\"name\":\"manage_task\",\"args\":{\"Action\":\"send_input\",\"TaskId\":\"t1\",\"Input\":\"git push --force origin main\\n\"}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    deny "manage_task send_input force-pushing main under guards: denied"
+  check "$(agu "{\"toolCall\":{\"name\":\"manage_task\",\"args\":{\"Action\":\"status\",\"TaskId\":\"t1\"}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    allow "  manage_task status under REGATTA_UNATTENDED: allowed"
+  for u_tool in ask_question search_web schedule; do
+    check "$(agu "{\"toolCall\":{\"name\":\"$u_tool\",\"args\":{}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+      deny "unattended Antigravity: unmapped tool $u_tool denied"
+  done
+  for p_tool in command_status wait wait_5_seconds; do
+    check "$(agu "{\"toolCall\":{\"name\":\"$p_tool\",\"args\":{\"CommandId\":\"c1\"}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+      allow "unattended Antigravity: $p_tool (no path, runs nothing) allowed"
+  done
+  check "$(agu "{\"toolCall\":{\"name\":\"sed_file\",\"args\":{}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    deny "  unattended Antigravity: sed_file (an edit with no path mapping) denied"
+  check "$(agu "{\"toolCall\":{\"name\":\"read_url_content\",\"args\":{\"Url\":\"https://example.com/?leak=1\"}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    deny "unattended Antigravity: read_url_content of an https URL denied"
+  check "$(agu "{\"toolCall\":{\"name\":\"read_url_content\",\"args\":{\"Url\":\"file://$WT/README.md\"}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    deny "  unattended Antigravity: read_url_content of a file URL denied too"
+  check "$(agu "{\"toolCall\":{\"name\":\"ask_question\",\"args\":{}},\"workspacePaths\":[\"$WT\"]}")" \
+    allow "  attended Antigravity: unmapped tool ask_question still allowed"
+  check "$(ag write_file "{\"Path\":\"$R/.git/hooks/post-commit\",\"Content\":\"#!/bin/sh\\n\"}")" \
+    deny "Antigravity write_file into <primary>/.git/hooks: denied by vendor_hook itself"
+  check "$(ag edit_file "{\"Path\":\"$WT/.git\",\"Target\":\"gitdir\",\"Replacement\":\"x\"}")" \
+    deny "  Antigravity edit_file on a worktree's .git file: denied"
+  check "$(ag write_file "{\"Path\":\"$WT/a\\u0000b\",\"Content\":\"x\"}")" \
+    deny "  Antigravity write_file with a NUL in its path: denied (fails closed, never skips the guards)"
+  check "$(ag write_file "{\"Path\":\"$WT/a\\ud800b\",\"Content\":\"x\"}")" \
+    deny "  Antigravity write_file with a lone surrogate in its path: denied"
+  ln -s "$R/.git" "$T/git-link"
+  check "$(ag write_file "{\"Path\":\"$T/git-link/config\",\"Content\":\"x\"}")" \
+    deny "  Antigravity write_file through a symlink into .git: denied"
+  check "$(agu "{\"toolCall\":{\"name\":\"write_file\",\"args\":{\"Path\":\"$WT/a.ts\",\"Content\":\"// see repo/.git/HEAD\\nexport const x = 1;\\n\"}},\"workspacePaths\":[\"$WT\"]}")" \
+    allow "  Antigravity write_file whose Content starts with / and mentions .git: allowed"
+  check "$(agu "{\"toolCall\":{\"name\":\"edit_file\",\"args\":{\"Path\":\"$WT/a.ts\",\"Target\":\"// see repo/.git/hooks\\nold\",\"Replacement\":\"~/me/.git/config\\nnew\"}},\"workspacePaths\":[\"$WT\"]}")" \
+    allow "  Antigravity edit_file whose Target and Replacement start with / or ~ and mention .git: allowed"
+  check "$(agu "{\"toolCall\":{\"name\":\"write_file\",\"args\":{\"Path\":\"$WT/a.ts\",\"Content\":\"file://$R/.git/config\\n\"}},\"workspacePaths\":[\"$WT\"]}")" \
+    allow "  Antigravity write_file whose Content starts with file: and mentions .git: allowed"
+  check "$(agu "{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"echo hi\",\"BypassSandbox\":true}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    deny "unattended Antigravity: run_command with BypassSandbox true denied"
+  check "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"git commit -m x","BypassSandbox":true}},"workspacePaths":["%s"]}' "$WT" | REGATTA_UNATTENDED=vendor-build python3 "$VH" antigravity trailer)" \
+    "" "  and trailer never rewrites a BypassSandbox call under REGATTA_UNATTENDED"
+  check "$(agu "{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"git status --short\",\"BypassSandbox\":false}},\"workspacePaths\":[\"$WT\"]}" REGATTA_UNATTENDED=vendor-build)" \
+    allow "  run_command with BypassSandbox false allowed"
+  check "$(agu "{\"toolCall\":{\"name\":\"run_command\",\"args\":{\"CommandLine\":\"echo hi\",\"BypassSandbox\":true}},\"workspacePaths\":[\"$WT\"]}")" \
+    allow "  attended run_command with BypassSandbox true allowed"
+  check "$(cd "$R" && agu '{"toolCall":{"name":"write_file","args":{"Path":"new.txt","Content":"x"}}}' REGATTA_UNATTENDED=vendor-build)" \
+    deny "empty workspacePaths without REGATTA_WORKTREE falls back to cwd (primary checkout denied)"
+  check "$(cd "$R" && agu '{"toolCall":{"name":"write_file","args":{"Path":"new.txt","Content":"x"}}}' REGATTA_UNATTENDED=vendor-build REGATTA_WORKTREE="$WT")" \
+    allow "  under REGATTA_UNATTENDED, REGATTA_WORKTREE resolves cwd before os.getcwd() when workspacePaths is empty"
+fi
 
 echo "== one budget for every guard run of a call"
 printf 'import time, json\ntime.sleep(2)\nprint(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"slow"}}))\n' > "$T/slow_guard.py"

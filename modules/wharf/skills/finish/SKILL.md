@@ -179,7 +179,7 @@ no Phase 1–3 to run. Do this instead, then stop:
   celebrates a launch; vary the pick, never the same three twice in a row.
 - End with the closing line (see "The closing line", below). Then stop.
 
-**The closing line.** Every `/finish` — this no-op path and Phase 3's report alike — ends
+**The closing line.** Every completed `/finish` — this no-op path and Phase 3's report alike — ends
 with exactly one of these two lines, on its own, in upper case, as the very last thing
 said. The owner runs many sessions in parallel and loses track of which ones have really been
 finished; a clear, always-identical marker is what tells a truly closed session from one
@@ -192,10 +192,40 @@ that still carries a thought worth reading:
   `✅ <OWNER>, THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.`
 
 Never use the first line when the second applies — a manual step the owner still owes counts as
-a note, so it takes the second line. A Phase 1 ⚠ stop (open items, another session's lock)
-is not a finished session and gets neither: when the owner owes the next move it ends with
-`🛑 <OWNER>, THIS SESSION IS WAITING FOR YOU — <what, in one line>` (the rules on working with the owner). A
-turn that ends while its own work runs on — the reviewers, the check — asks the owner nothing and
+a note, so it takes the second line. A ⚠ stop is not a finished session and gets neither.
+Choose its line by who owns the next move (stuck-ships S7):
+
+- **The lander:** a machine-class stop (G1r's fix round, a login or API/limit relaunch, a conflicting
+  ready PR's re-finish, or a G4 wait whose open items are all standable). Read
+  `autofinish-run lander armed` on this host before ending. Only exit 0 permits
+  `⏳ <OWNER>, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: <road and round, in one line>`.
+  This is the `lander` kind: this session ends and releases its lock; the tick owns the next move.
+  A missing tool, a failed read, a gate without a tick, a tick without the lander's roads (until S3), an
+  empty road, or any other non-zero exit takes the owner's
+  🛑 line and **Do this now** block below. Never arm anything to select a closing line.
+- **A skipper:** an item actually relayed to a standing skipper ends on the line `ask relay` prints,
+  `⏳ RELAYED TO <skipper> — <what was relayed>`. The relay must have succeeded; naming a skipper
+  alone does not hand it over.
+- **The owner:** a check red from main, G11, a held launch, an unstandable item, a spent cap or a
+  refused road ends `🛑 <OWNER>, THIS SESSION IS WAITING FOR YOU — <the owner's next move>` with
+  the **Do this now** block. An unknown class stays the owner's too.
+
+For a machine-class stop, use this read and formatter. Set `AUTOFINISH_RUN` to the resolved tool's
+absolute path, `FINISH_ADDRESS` to the upper-case owner followed by `, ` (empty with no owner),
+`FINISH_ROAD` to the next machine move and its count (for example `fix round 1 of 3`), and
+`FINISH_OWNER_MOVE` to the concrete owner action if the machine road is unavailable. Keep the
+⚠ block and its evidence above the line; the fallback also needs the **Do this now** block.
+
+```bash
+# finish-machine-closing (read only)
+if [ -n "$FINISH_ROAD" ] && "$AUTOFINISH_RUN" lander armed >&2; then
+  printf "⏳ %sTHIS SESSION IS WAITING FOR SOMETHING — the lander's road: %s\n" "$FINISH_ADDRESS" "$FINISH_ROAD"
+else
+  printf '🛑 %sTHIS SESSION IS WAITING FOR YOU — %s\n' "$FINISH_ADDRESS" "$FINISH_OWNER_MOVE"
+fi
+```
+
+A turn that ends while its own work runs on — the reviewers, the check — asks the owner nothing and
 ends `⏳ <OWNER>, THIS SESSION IS WAITING FOR SOMETHING — <what it waits on, in one line>`.
 Each line opens with its mark and a space — ✅ closeable, ⏳ work goes on without the owner, 🛑 the
 owner owes the next move (`hooks/common.py`'s `MARKS`) — so a panel of sessions reads at a glance.
@@ -206,7 +236,7 @@ is not one of these, or when anything but links follows a closing line; the tabl
 
 **A ⚠ stop hands over its external finish** (the owner, 2026-10-11: "when blocking a finish, don't
 forget to give me a line to run in a fresh window to do external finish"). Every ⚠ stop that
-ends on the WAITING line opens with a **Do this now** block holding one line (a review stop with
+ends on the owner's `WAITING FOR YOU` line opens with a **Do this now** block holding one line (a review stop with
 real findings left puts its fix round's dispatch above it: step 1): the launcher on this
 worktree, for the owner to run in a fresh Terminal window once the WAITING item is settled —
 `<autofinish-run's absolute path> <this worktree's absolute path>`; on the other Mac
@@ -218,7 +248,8 @@ writer). It refuses the tip a run already stopped on, so after an `--unattended`
 works once the answers arrive as a commit (`memo pull`); say so beside it. Each such line is an
 interruption — `bin/interruptions` counts it as a hand-off of kind `window` — so give it only where
 the stop really needs the owner. `bin/paste-paths --stop-hook` blocks a `/finish` reply once when a
-`⚠ step` ends on the WAITING line without it.
+`⚠ step` ends on the owner's line without it. A lander or successful skipper relay owes no manual
+external-finish command; its ⚠ evidence remains in the report.
 
 **A Remote Control host's session keeps its slot until it ends** (D8, 2026-09-25): a host has a
 fixed capacity, nothing in Claude Code ends an idle session, and the other Mac's home-repo host sat at

@@ -200,7 +200,7 @@ DEDUPE_WINDOW = 5  # seconds — see already_handled()
 TRAILER = "Co-Authored-By:"
 DEFAULT_TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>"
 BUSY_MARKERS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")
-WRITE_TOOLS = {"Edit", "Write", "NotebookEdit"}
+WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 # Bash that changes a checkout's git state is recognised by verb (MUTATING_VERBS below, per
 # simple command). Best-effort: arbitrary shell writes can't be recognised, but these are the
 # ones sessions actually run. A project adds its own live-system writers (deploy scripts)
@@ -1831,14 +1831,39 @@ def gated_dirt(workflow):
     return [p for p in paths if not in_place_rel(workflow, p.rstrip("/"))]
 
 
+def in_git_dir(path, cwd="."):
+    """True when `path` is `.git` or lies inside a `.git` directory, before or after symlink resolution."""
+    if not isinstance(path, str) or not path:
+        return False
+    raw = os.path.expanduser(path)
+    norm = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(cwd or ".", raw))
+    if ".git" in os.path.normpath(norm).split(os.sep):
+        return True
+    try:
+        real = os.path.realpath(norm)
+    except (OSError, ValueError):   # a NUL or a lone surrogate: fail closed, as an unreadable path does
+        return True
+    return ".git" in os.path.normpath(real).split(os.sep)
+
+
+def git_dir_reason(path):
+    return (f"⛔ `{path}` is inside a `.git` directory — git's own config, hooks and refs are never "
+            "edited directly by a file tool.")
+
+
 def handle_file_write(tool_input, cwd, session):
     """None (allow), a deny, or SAME_CHECKOUT when the file is in the session's own checkout."""
     path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+    if in_git_dir(path, str(cwd)):
+        return deny(git_dir_reason(path))
     d = nearest_dir(path)
     if d is None:
         return SAME_CHECKOUT
     target = Target(d)
     if not target.run("rev-parse", "--show-toplevel"):
+        if (target.run("rev-parse", "--is-inside-git-dir") == "true"
+                and target.run("rev-parse", "--is-bare-repository") != "true"):
+            return deny(git_dir_reason(path))
         return None  # not in a repo: the scratchpad, a download, nothing to gate
     session_target = Target(cwd)
     if session_target.run("rev-parse", "--show-toplevel") and target.toplevel == session_target.toplevel:
@@ -3508,11 +3533,15 @@ def main():
             except Exception:
                 pass
             ti = data.get("tool_input") or {}
-            if in_force(ti.get("file_path") or ti.get("notebook_path")):
-                print(json.dumps(deny(force_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
+            wp = ti.get("file_path") or ti.get("notebook_path")
+            if in_git_dir(wp, str(ROOT)):
+                print(json.dumps(deny(git_dir_reason(wp)), ensure_ascii=False))
                 return
-            if unattended_mark() and in_records(ti.get("file_path") or ti.get("notebook_path")):
-                print(json.dumps(deny(record_reason(ti.get("file_path") or ti.get("notebook_path"))), ensure_ascii=False))
+            if in_force(wp):
+                print(json.dumps(deny(force_reason(wp)), ensure_ascii=False))
+                return
+            if unattended_mark() and in_records(wp):
+                print(json.dumps(deny(record_reason(wp)), ensure_ascii=False))
                 return
             try:
                 out = handle_file_write(data.get("tool_input") or {}, ROOT, session)
@@ -3863,7 +3892,19 @@ def in_git_tree(path, cwd):
     The file need not exist yet. Stdlib only, no git call — core_missing() trusts nothing else."""
     # resolve(): ~/.claude/rules and the like are links into a checkout (non-strict on 3.9)
     p = Path(cwd or ".", os.path.expanduser(path or "")).resolve()
-    return any((d / ".git").exists() for d in (p, *p.parents))
+    for d in (p, *p.parents):
+        marker = d / ".git"
+        try:
+            if marker.is_dir():
+                # Codex's sandbox places empty .git directories at writable roots, including /tmp. They hold no
+                # checkout; any populated directory still counts, even broken metadata with no valid HEAD.
+                if next(marker.iterdir(), None) is not None:
+                    return True
+            elif marker.exists() or marker.is_symlink():
+                return True   # worktree files, a broken link included: unknown still refuses a write
+        except OSError:
+            return True   # metadata we cannot inspect could be a checkout
+    return False
 
 
 def core_missing(exc):
@@ -3896,7 +3937,8 @@ def core_missing(exc):
                or PUSH_ANY_RE.search(cmd) or inline
                or (unattended_mark() and CONSENT_FLAG_RE.search(cmd)))
     elif tool in WRITE_TOOLS:
-        hit = in_git_tree(ti.get("file_path") or ti.get("notebook_path"), cwd)
+        wp = ti.get("file_path") or ti.get("notebook_path")
+        hit = in_git_dir(wp, cwd) or in_git_tree(wp, cwd)
     else:
         hit = False
     if hit:

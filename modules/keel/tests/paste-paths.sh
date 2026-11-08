@@ -638,6 +638,17 @@ tf_ "$T/kd3.jsonl" "go" 'ls' $'**Do this now**\n```\n/rename layer: x\n```\n\nBu
 check "$(blocks "$T/kd3.jsonl" '`/finish`')" 1 "  a block holding another command does not count"
 tf_ "$T/ke1.jsonl" "$FIN" 'git status' $'⚠ step 4 — one open item.\n\n'"$WAIT"
 check "$(blocks "$T/ke1.jsonl" 'finishes it from outside')" 1 "external finish: a /finish stopped on a ⚠ gate without the launcher's line blocks (2026-10-11)"
+LANDER="⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
+tf_ "$T/kel1.jsonl" "$FIN" 'touch .git/claude/finishing' $'⚠ step 1 — review findings remain.\n\n'"$LANDER"
+check "$(quiet "$T/kel1.jsonl")" 0 "lander: a machine stop owes its line, no external-finish command (stuck-ships S7)"
+tf_ "$T/kel2.jsonl" "$FIN" 'touch .git/claude/finishing' $'⚠ step 4 — an open item.\n\n⏳ RELAYED TO skipper-1 — the open item'
+check "$(quiet "$T/kel2.jsonl")" 0 "skipper: a relayed stop owes no external-finish command"
+tf_ "$T/kel3.jsonl" "$FIN" 'git status' $'⚠ step 1 — review findings remain.\n\n'"$LANDER, once you approve the merge"
+check "$(blocks "$T/kel3.jsonl" 'end on `[^`]*SAM, THIS SESSION IS WAITING FOR YOU')" 1 "lander: a machine line cannot hide an owner ask"
+tf_ "$T/kel4.jsonl" "$FIN" 'git status' $'⚠ step 1 — review findings remain.\n\n'"${LANDER/⏳/🛑}"
+check "$(blocks "$T/kel4.jsonl" 'the closing line opens with')" 1 "lander: the mark is an hourglass"
+tf_ "$T/kel5.jsonl" "$FIN" 'git status' "$LANDER"$'\nMore prose.'
+check "$(blocks "$T/kel5.jsonl" 'only links may follow it')" 1 "lander: still the last line"
 tf_ "$T/ke2.jsonl" "$FIN" 'git status' $'**Do this now**\n```\n/Users/x/projects/layer/bin/autofinish-run /Users/x/projects/r/.claude/worktrees/t\n```\n\n⚠ step 4 — one open item.\n\n'"$WAIT"
 check "$(quiet "$T/ke2.jsonl")" 0 "  with the line in the block at the top: passes"
 tf_ "$T/ke3.jsonl" "go" 'ls' $'⚠ step 4 — the deploy needs a hand.\n\n'"$WAIT"
@@ -739,7 +750,7 @@ check "$(HOME="$H" sx_ "$T/h11.jsonl" "$R" | grep -c 'hands Sam a session to sta
 
 # an opt-in kept in repos.json lives untracked in the primary only (hooks/sync.py overlay_workflow)
 OVP="$T/ovp"; git init -q -b main "$OVP" && printf -- '- physical: none\n' > "$OVP/AGENTS.md"
-git -C "$OVP" add AGENTS.md && git -C "$OVP" commit -qm one && git -C "$OVP" worktree add -q "$T/ovp-wt" -b claude/t
+git -C "$OVP" add AGENTS.md && git -C "$OVP" -c user.email=t@t -c user.name=t commit -qm one && git -C "$OVP" worktree add -q "$T/ovp-wt" -b claude/t
 mkdir -p "$OVP/.claude" && printf '{"_from": "repos.json", "checkpoint": true}\n' > "$OVP/.claude/workflow.json"
 sd_() { python3 - "$B/paste-paths" "$1" <<'EOF'
 import sys

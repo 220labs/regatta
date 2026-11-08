@@ -26,7 +26,7 @@ export GIT_CONFIG_GLOBAL="$T/gitconfig"
 
 git init -q --bare "$T/origin.git"
 R="$HOME/projects/repo"; git init -q -b main "$R"
-printf -- '- check: `true`\n- physical: none\n' > "$R/AGENTS.md"
+printf -- '- check: `true`\n' > "$R/AGENTS.md"
 git -C "$R" add AGENTS.md; git -C "$R" commit -qm init
 git -C "$R" remote add origin https://github.com/test/repo.git
 git -C "$R" config url."$T/origin.git".insteadOf https://github.com/test/repo.git
@@ -52,12 +52,39 @@ has "$T/out" "--merge needs a person's yes" "  saying why"
 
 echo "== the lander verbs"
 L() { "$AFR" lander "$@"; }
+# Execute the finish skill's own formatter against the real read-only gate, not a second
+# implementation of the skill's choice. The skill must contain exactly one such block.
+python3 - "$B/../../wharf/skills/finish/SKILL.md" "$T/machine-closing" <<'PY'
+import pathlib, re, sys
+blocks = re.findall(r"```bash\n(# finish-machine-closing [\s\S]*?)\n```", pathlib.Path(sys.argv[1]).read_text())
+assert len(blocks) == 1, "finish skill must have one machine closing formatter"
+pathlib.Path(sys.argv[2]).write_text(blocks[0] + "\n")
+PY
+check "$?" "0" "the finish skill supplies the machine closing formatter"
+machine_closing() {
+  machine_closing_all 2>/dev/null | tail -1
+}
+machine_closing_all() {
+  local road="fix round 1 of 3"; [ -n "${FINISH_ROAD_EMPTY:-}" ] && road=""
+  AUTOFINISH_RUN="${CLOSING_TOOL:-$AFR}" FINISH_ADDRESS="SAM, " FINISH_ROAD="$road" \
+    FINISH_OWNER_MOVE="resolve the review findings, then finish" bash "$T/machine-closing"
+}
+OWNER_CLOSING="🛑 SAM, THIS SESSION IS WAITING FOR YOU — resolve the review findings, then finish"
+LANDER_CLOSING="⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
 L spend rounds --worktree "$W" > "$T/out" 2>&1; check "$?" "0" "spend rounds: the first"
 L spend rounds --worktree "$W" > "$T/out" 2>&1; check "$?" "9" "  the second: STUCK_RC (rounds 1)"
 has "$T/out" "rounds spent on" "  naming the counter"
 L spend reruns --repo "$R" --branch "$BR" > /dev/null 2>&1; check "$?" "0" "spend reruns by --repo and --branch: the first"
 L spend reruns --worktree "$W" > /dev/null 2>&1; check "$?" "0" "  the second, the same key by --worktree"
 L spend reruns --worktree "$W" > /dev/null 2>&1; check "$?" "9" "  the third: STUCK_RC (reruns 2)"
+L stuck --repo "$R" --branch "$BR-stuck" > /dev/null 2>&1
+for counter in reruns rounds; do
+  L spend "$counter" --repo "$R" --branch "$BR-stuck" > "$T/out" 2>&1
+  check "$?" "9" "a stuck key refuses spend $counter under the store lock"
+done
+L show --repo "$R" --branch "$BR-stuck" > "$T/out" 2>&1
+check "$(python3 -c 'import json, sys; e = json.load(open(sys.argv[1])); print(e["reruns"], e["rounds"])' "$T/out")" \
+      "0 0" "  stuck spends leave both counters untouched"
 L spend --worktree "$W" > /dev/null 2>&1; check "$?" "2" "spend with no counter: exit 2"
 L hold --worktree "$W" > /dev/null 2>&1; check "$?" "2" "hold with no head or reason: exit 2"
 L hold --worktree "$W" --head abc1234 --reason refinish > "$T/out" 2>&1; check "$?" "0" "hold: recorded"
@@ -76,20 +103,34 @@ echo "== lander armed: the relaunch gate and a tick on this Mac"
 rm -f "$AUTOFINISH_STATE_DIR/armed"
 SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "3" "the gate off: not armed (exit 3)"
 has "$T/out" "the relaunch gate is off" "  saying why"
+check "$(SURFACES_HOST=laptop machine_closing)" "$OWNER_CLOSING" "G1r, gate off: the skill ends on the owner's stop (stuck-ships S7)"
 printf '{"by": "Sam", "ts": 1}\n' > "$AUTOFINISH_STATE_DIR/armed"
 SURFACES_HOST=elsewhere PLAN_HOST=elsewhere L armed > "$T/out" 2>&1; check "$?" "3" "the gate on and no tick here: not armed"
 has "$T/out" "neither the laptop nor a scope's yard" "  saying why"
+check "$(SURFACES_HOST=elsewhere PLAN_HOST=elsewhere machine_closing)" "$OWNER_CLOSING" "G1r, gate on but no tick here: still the owner's"
 export STALLS_STATE_DIR="$T/stalls"; mkdir -p "$STALLS_STATE_DIR"
 SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "3" "the gate on, on the laptop, helm's tick disarmed: not armed"
 has "$T/out" "helm's tick is disarmed" "  saying why"
+check "$(SURFACES_HOST=laptop machine_closing)" "$OWNER_CLOSING" "G1r, tick disarmed: still the owner's"
 printf '{"by": "Sam", "ts": "x", "t": %s}\n' "$(( $(date +%s) - 600 ))" > "$STALLS_STATE_DIR/armed"
 SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "3" "  helm's tick inside its dry hours: not armed (it calls nothing)"
 has "$T/out" "helm's tick is dry" "  saying why"
+check "$(SURFACES_HOST=laptop machine_closing)" "$OWNER_CLOSING" "G1r, tick inside dry hours: still the owner's"
 printf '{"by": "Sam", "ts": "x", "t": %s}\n' "$(( $(date +%s) - 4 * 3600 ))" > "$STALLS_STATE_DIR/armed"
-SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "0" "the gate on, on the laptop, its tick armed: armed"
+SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "3" "the gate on, its tick armed, no lander roads yet (before S3): not armed"
+has "$T/out" "no lander roads yet" "  saying why"
+check "$(SURFACES_HOST=laptop machine_closing)" "$OWNER_CLOSING" "G1r, gate and tick armed but no roads: still the owner's (S7's landing review)"
+# a tick with the lander's roads, as S3 will set it: a stand-in stalls_tick ahead of helm's on the path
+mkdir -p "$T/roads"; printf 'LANDER_ROADS = True\ndef mode():\n    return "armed", ""\n' > "$T/roads/stalls_tick.py"
+PYTHONPATH="$T/roads" SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "0" "the gate on, on the laptop, its tick armed with roads: armed"
+check "$(PYTHONPATH="$T/roads" SURFACES_HOST=laptop machine_closing)" "$LANDER_CLOSING" "G1r, gate and tick armed: the skill hands the stop to the lander"
+check "$(PYTHONPATH="$T/roads" SURFACES_HOST=laptop FINISH_ROAD_EMPTY=1 machine_closing)" "$OWNER_CLOSING" "an empty road: the owner's, never a line that reads as pending"
+check "$(PYTHONPATH="$T/roads" SURFACES_HOST=laptop machine_closing_all | grep -c 'armed')" "0" "  the gate's own word goes to stderr, the formatter prints the line alone"
+check "$(CLOSING_TOOL="$T/no-tool" machine_closing 2>/dev/null)" "$OWNER_CLOSING" "a missing gate tool: the owner's, never a machine promise"
 cp "$AUTOFINISH_STATE_DIR/lander.json" "$T/lander.keep"; echo '{torn' > "$AUTOFINISH_STATE_DIR/lander.json"
 SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "3" "a store that does not read: not armed (no start but a person's runs)"
 has "$T/out" "does not read" "  saying why"
+check "$(SURFACES_HOST=laptop machine_closing)" "$OWNER_CLOSING" "a store that does not read: the skill falls back to the owner's stop"
 L reset --worktree "$W" > "$T/out" 2>&1; check "$?" "3" "a plain lander reset on a store that does not read: refused, nothing written (round 2)"
 check "$(cat "$AUTOFINISH_STATE_DIR/lander.json")" "{torn" "  the store untouched, every other branch's stuck state still narrowing"
 SKIPPER_SCOPE=s L reset --aside --worktree "$W" > "$T/out" 2>&1; check "$?" "2" "reset --aside from a skipper: refused (exit 2)"
@@ -100,7 +141,7 @@ check "$(ls "$AUTOFINISH_STATE_DIR" | grep -c '^lander.json.unreadable-')" "1" "
 cp "$T/lander.keep" "$AUTOFINISH_STATE_DIR/lander.json"
 rm -f "$AUTOFINISH_STATE_DIR"/lander.json.unreadable-*
 rm -f "$AUTOFINISH_STATE_DIR/armed"; printf '{"by": "Sam", "ts": 1}\n' > "$AUTOFINISH_STATE_DIR/landings"
-SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "0" "the landings switch alone opens the gate (task-shape S3's)"
+PYTHONPATH="$T/roads" SURFACES_HOST=laptop L armed > "$T/out" 2>&1; check "$?" "0" "the landings switch alone opens the gate (task-shape S3's)"
 rm -f "$AUTOFINISH_STATE_DIR/landings"
 
 [ "$fails" -eq 0 ] && echo "all passed" || echo "$fails failed"

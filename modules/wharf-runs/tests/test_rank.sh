@@ -39,7 +39,7 @@ chmod +x "$T/launchctl"
 export DISPATCH_LAUNCHCTL="$T/launchctl" DISPATCH_DEFAULT_ON= DISPATCH_HOST=laptop
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/repo" 2>/dev/null
-(cd "$T/repo" && printf -- '- physical: none\n' > AGENTS.md && echo x > f && git add . && git commit -qm init && git push -q origin main)
+(cd "$T/repo" && printf -- '# Test repository\n' > AGENTS.md && echo x > f && git add . && git commit -qm init && git push -q origin main)
 git init -q --bare "$T/queue.git"
 echo "$T/queue.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
 BR=claude/laptop/2026-10-31

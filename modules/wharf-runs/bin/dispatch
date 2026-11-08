@@ -330,8 +330,8 @@
 #            fallback)"): a 10-second probe first (ssh ConnectTimeout, BatchMode — the host entry sets
 #            no timeout, and an asleep peer would hold the connect for the OS's ~75 s); on its exit
 #            255 (unreachable), or a peer whose dispatch predates `--account bound`, the run is
-#            scheduled on this Mac instead, at least 90 s out, through this Mac's own checks
-#            (`physical:`), and says so. Once the probe passed, the real call is made and its
+#            scheduled on this Mac instead, at least 90 s out, through this Mac's own checks, and says so.
+#            Once the probe passed, the real call is made and its
 #            answer stands: a dropped connection after the peer scheduled can never put the branch
 #            on both hosts. A run the peer accepts and refuses at fire time (its own cap, `dispatch --cap` there) is in
 #            the peer's log. --cancel with --on cancels there only; with no host, here and on the dispatch host.
@@ -424,7 +424,7 @@
 #            the start; --allow adds to the allowlist below and --undeny takes an exact entry off the
 #            denied list (an entry not there is refused: the lists stay this file's). The start lock,
 #            the run cap, the trust step and the watcher are a run's as above; no
-#            `physical:` check, no brief, no chain depth check: those are the caller's. The caller
+#            brief or chain depth check: those are the caller's. The caller
 #            detaches it — run in a Bash call, it dies with the call (header). --dry-run prints the
 #            script screen would run, claude's whole command line included. A finish waits in the queue
 #            before this start, never in it (finish-as-task): autofinish-run's queued half starts a claimed
@@ -448,7 +448,7 @@
 # The run writes in a worktree of its own (the primary stays on main) on the branch as it is on
 # origin. It never launches: the checkpoint hook commits and pushes the branch, /finish merges. The
 # guards are the prompt, hooks/checkpoint.py (command text; it runs under -p) and the repo's
-# pre-push (refs), and a repo whose contract says `physical: none` (refused otherwise);
+# pre-push (refs);
 # --disallowedTools is a habit guard only — a wrapper (`bash -c`, `python3 -c`) passes it, so the
 # allowlist names no interpreter wildcard and leaves wrappers to the classifier. Headless, with
 # no host to answer --permission-prompts, anything that would prompt is denied (probed), so the
@@ -1087,10 +1087,13 @@ principal_flags() {
 # still on the coin, no --model or --effort given, a word that reads, the key's window still open and the fence open here,
 # the arm decides the model and effort and the record keeps it (chain_record); else it is dropped, said, and
 # today's choice runs
-# arm_keep_gpt: a GPT word drawn for a brief of its size stays on the coin here: a builder row fires what it never drew
-# and holds no live odds, so its Claude weights must not send the build back (`arm --repo` still asks the word's weight)
+# arm_keep_gpt: a word drawn for a brief of its GPT size stays on the coin here, its own GPT arm or, Codex off for it,
+# another vendor's (Argon; `buildercoin.py keeps`, the draw's own rule): a builder row fires what it never drew and
+# holds no live odds, so its Claude weights must not send the build back (`arm --repo` still asks the word's weight)
 arm_keep_gpt() {
-  case "$arm_word" in "$gpt_size":*) [ "$on_coin" = 1 ] || { on_coin=1; rotates="$gpt_size"; };; esac
+  [ -n "$arm_word" ] && [ -n "$gpt_size" ] && [ "$gpt_size" != - ] || return 0
+  python3 "$here/bin/buildercoin.py" keeps "$arm_word" "$gpt_size" 2>/dev/null || return 0
+  [ "$on_coin" = 1 ] || { on_coin=1; rotates="$gpt_size"; }
 }
 arm_apply() {
   local out why=""
@@ -1759,15 +1762,6 @@ if [ "$cancel" = 1 ]; then
   exit 0
 fi
 
-# never a repo that acts on the real world: auto mode approves what nobody is there to see. /later
-# says the same; this makes it hold for a direct call too (review of 2026-10-04). The contract's
-# `physical:` line is the marker: none in a repo of code and records; a sweep in one that drives a house.
-physical_ok() {
-  phys=$(grep -h -m1 -E '^- physical:' "$repo/AGENTS.md" "$repo/CLAUDE.md" 2>/dev/null | head -1)
-  case "$phys" in "- physical: none"*) return 0;; esac
-  echo "dispatch: $repo's contract must say \`physical: none\` (it says: ${phys:-nothing})"; return 1
-}
-
 # session-asks R1 (docs/session-asks-2026-10-09.md): who a run relays its asks to. A run started by
 # another run keeps that run's skipper; a run a watched session starts names that session. Read
 # where the job is scheduled — launchd and the runner strip the caller's CLAUDE_* — and carried in
@@ -1864,7 +1858,6 @@ if [ "$next" = 1 ]; then
     1) rm -f "$nerr";;
     *) echo "dispatch: wharf next could not tell whether $branch is a ship's block — $(tail -n 3 "$nerr" | tr '\n' ' ')" >&2; rm -f "$nerr"; exit 2;;
   esac
-  physical_ok >&2 || exit 2
   git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || { echo "dispatch: no local $branch in $repo" >&2; exit 2; }
   [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
   # the run reads the latest brief; one older than the branch's work is the brief THIS step started from
@@ -2431,7 +2424,7 @@ spawn_back() {
 # live on another host, or a refusal (a torn registry), is FAILED here as the --elsewhere check says it. 1
 # when the queue cannot take it (exit 1) or does not read (4): the run goes ahead as before the queue. A crash
 # is FAILED. Called after the fire path's quiet refusals (fire_refusals), so a refusal the run would meet
-# here anyway — the depth, physical, --if-room — files no queue card (S3's second landing review, item 5).
+# here anyway — the depth, --if-room — files no queue card (S3's second landing review, item 5).
 queue_fire() {
   local when out rc q_res="" q_qid="" q_ours=0 q_rank="" q_off="" q_why=""
   # the seconds spelled out: BSD date fills a field the format leaves out from the clock
@@ -2618,7 +2611,6 @@ if [ -n "$at" ]; then
   [ "$probe" = 1 ] || skipper_env
   [ "$probe" = 1 ] || ship_mode >&2 || exit 2
   [ "$probe" = 1 ] || [ "$depth" -le "$maxdepth" ] || { deep >&2; exit 2; }
-  [ -n "$on" ] || physical_ok >&2 || exit 2   # with --on, the peer's dispatch checks its own copy
   # fail now, not at fire time after the job has removed itself
   # refs/heads/ spelt out: a bare name matches a ref's tail, so wharf's side ref refs/wip/<branch> (the mid-turn push) passed for the branch
   git -C "$repo" ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1 || { echo "dispatch: $branch is not on origin" >&2; exit 1; }
@@ -2756,8 +2748,7 @@ print(int(r) + int((sys.argv[1] or "+10").lstrip("+")) * 60)
       [ "$rc" = 0 ] && [ "$dry" = 0 ] && [ "$probe" = 0 ] && [ "${qclosed:-0}" = 0 ] && hand_off "$on"   # once: confirm's queue_close may have
       exit "$rc"
     fi
-    # here, by this Mac's rules: the check the peer would have made, and a fire minute not yet begun
-    physical_ok >&2 || exit 2
+    # here, by this Mac's rules: the cap and account the peer would have judged, and a fire minute not yet begun
     rlog=""; on=""; direct=$at_default   # a defaulted "now" is a direct run: it replaces no /later job here
     if [ "$next" = 1 ]; then   # the cap and the account --next would have taken here (with the queue, the claim's)
       if ! queue_on; then
@@ -3301,7 +3292,7 @@ run_headless() {   # $prompt in $wt — with the start lock held; drops it once 
   # the plist's variables must not reach the session: its own dispatch calls would delete this job.
   # CLAUDE_UNATTENDED reaches its hooks: checkpoint.py keeps the run read-only on live systems.
   local hpf="$state.claude-pid" hw; rm -f "$hpf"; hw=($(hpf_env "$hpf"))
-  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
+  (cd "$wt" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_QUEUE_HERE -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${SKIPPER_UNSET[@]}" -u DISPATCH_REPO "${renv[@]}" "${chain[@]}" ${hw[@]+"${hw[@]}"} "${CL[@]}" -p "$prompt" "${sargs[@]}" --model "$model" --effort "$effort" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text) &
   kpid=$!; cpid=$(pid_of_claude "$kpid" "$hpf"); chain_record
   record mode=headless background="$bgeff" branch="$branch" repo="$repo" topic="$topic" session="$sid" ${lresume:+resumed_from="$lresume"} pid="$cpid" proc_start="$(pstart "$cpid")" started="$(date +%s)" log="$log" wt="$wt" \
     watcher="$$" watcher_start="$(pstart $$)" "${crec[@]}" ${acct_label:+login="$acct_label"}
@@ -3426,6 +3417,7 @@ run_vendor() {
     exit 1
   fi
   queue_ended
+  python3 "$here/bin/run-vendor" "$wt" --cli "$vendor_cli" --record "$state" --handover
   if ! requeued_end && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("retry_claude") else 1)' "$state"; then
     if queue_on; then
       # A separate Claude run outside the coin. No one-shot fallback here: the
@@ -3487,7 +3479,7 @@ runner_text() {   # PROMPT DIR REMOTE-CONTROL-NAME PIDFILE — the name is "<ses
   echo '#!/bin/bash'
   printf 'echo $$ $PPID > %q\n' "$4"   # claude (exec'd below) and its SCREEN master
   echo 'for v in $(env | sed -n "s/^\(CLAUDE[A-Z_]*\)=.*/\1/p"); do case $v in CLAUDE_CONFIG_DIR|CLAUDE_CODE_OAUTH_TOKEN) ;; *) unset "$v";; esac; done'
-  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_LOADED_AT DISPATCH_EVENT_AT DISPATCH_ORIGIN DISPATCH_PIN DISPATCH_HOST_PIN DISPATCH_HOST_PREFER DISPATCH_SPAWN_HELD DISPATCH_NEEDS DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
+  echo 'unset DISPATCH_LABEL DISPATCH_LOG DISPATCH_YEAR DISPATCH_LOADED_AT DISPATCH_EVENT_AT DISPATCH_ORIGIN DISPATCH_PIN DISPATCH_HOST_PIN DISPATCH_HOST_PREFER DISPATCH_SPAWN_HELD DISPATCH_QUEUE_HERE DISPATCH_NEEDS DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK ASK_ACCOUNT DISPATCH_SKIPPER_HOST DISPATCH_MANAGER_HOST DISPATCH_REPO DISPATCH_MODE'
   printf 'cd %q || exit 1\n' "$2"
   printf 'exec env'
   local hw; hw=($(hpf_env "$4.claude"))
@@ -3638,12 +3630,21 @@ text = "; ".join(x for x in (err, out.strip()) if x)   # what a failure quotes: 
 def resets(why):
     # a leading unknown Fable room (S6) is read again on the next try: a failed probe, not a plan without Fable
     return bool(re.match(r"(week \d|5h \d|cooling down until|locked by|Fable.s week \d|Fable room unknown)", why or ""))
+# the login guard of lighthouse refuses for this host alone (a home here not signed in, signed in as another seat, or
+# no logins file here to check it by). No reset lifts it, so it is SHORT only for a walk of a claimed fleet entry not
+# pinned here (the claim says DISPATCH_QUEUE_HERE), which another host may run; a named login (one host), a pinned
+# entry or a host-local store fails plainly, with its card,
+# as before: requeued, it would come back here every hour and never tell anyone (the landing review, round 2)
+def host_local(why):
+    return bool(re.match(r"(not signed in|signed in as another account|its login cannot be checked)", why or ""))
+fleet = len(sys.argv) > 5 and sys.argv[5] == "1"
 if want in ("auto", "bound"):
     if rc == 4:
         print("-\x1f\x1fno account registry here — the login this run was started with"); sys.exit()
     if rc == 3 and isinstance(d, dict):
         # SHORT when a reset could free a row; every row refused for good: FAILED, never queued again
-        tag = "SHORT" if any(resets(w) for _, w in d.get("skipped") or []) else "FAILED"
+        sk = d.get("skipped") or []
+        tag = "SHORT" if any(resets(w) for _, w in sk) or (fleet and any(host_local(w) for _, w in sk)) else "FAILED"
         print(tag + "\x1f\x1fno account may run this now — " + "; ".join("%s: %s" % (l, w) for l, w in d.get("skipped") or [])); sys.exit()
     if rc != 0 or not isinstance(d, dict) or not d.get("account"):
         print("-\x1f\x1faccount pick failed (%s) — the login this run was started with" % text.strip()[:120]); sys.exit()
@@ -3668,7 +3669,7 @@ if not a.get("eligible") and force and a.get("overage") and (os.environ.get("REG
 if not a.get("eligible") and not force:   # SHORT only for its limits, which a reset lifts: a refusal the queue keeps
     print("%s\x1f\x1f--account %s: %s — --force runs it there anyway" % ("SHORT" if resets(a.get("why")) else "FAILED", want, a.get("why"))); sys.exit()
 print("%s\x1f%s\x1f%s" % (want, (a.get("env") or {}).get("CLAUDE_CONFIG_DIR", ""), "as asked" + ("" if a.get("eligible") else ", forced past: " + str(a.get("why")))))
-' "$want" "$rc" "$force" "$err"); rm -f "$err"
+' "$want" "$rc" "$force" "$err" "$([ -n "$fromq" ] && [ "${DISPATCH_QUEUE_HERE:-}" != 1 ] && echo 1)"); rm -f "$err"
   local label dir why od
   IFS=$'\x1f' read -r label dir why od <<<"$line"   # not a tab: a whitespace IFS collapses an empty dir
   # a walk's word replaces an earlier one's (the Fable room pick's replaces the plain pick's), none included;
@@ -3799,12 +3800,7 @@ PY
 # on a hand-over whose launch never started says why, where it once read the line as "nothing woke it"
 # and would retry the build, declined the same way each time.
 AFRUN="${DISPATCH_AUTOFINISH_RUN:-$here/bin/autofinish-run}"   # the tests stand one in
-mode_now() {   # the run's mode at this moment: read_mode, as resolve_mode read it at the start (a torn read is ask)
-  local torn m
-  # torn at the start: there was no hint (resolve_mode), and its `ask` is no hint either
-  read -r torn m < <(read_mode "$([ "$mode_torn" = 1 ] || echo "$mode")")
-  echo "$m"
-}
+AF="${DISPATCH_AUTOFINISH:-$here/bin/autofinish}"              # gate-asks S1: autofinish landing reads config and state
 note_launch() {   # WHAT — into the run record's `launch`; a record that will not read keeps the log line alone
   python3 -c 'import json, sys
 try:
@@ -3842,32 +3838,49 @@ yolo_launch() {   # RC — the build run's exit
   local m="$mode"; [ "$yolo" = 1 ] && m=yolo; [ "$handed" = 1 ] && m=handed
   if requeued_end; then declined "it was requeued (dispatch --requeue): the session that continues it lands it"; return 0; fi
   if [ "$1" != 0 ]; then declined "the build run ended with $1"; return 0; fi
-  local why nxt now_m
-  now_m=$(mode_now)
-  case "$now_m" in
-    dnd|yolo) m="$now_m";;
+  # gate-asks S1: autofinish landing reads the config and state gates (mode re-read, scheduled/queued/.next
+  # step, arm/landings switches, week_tight, origin/<base>, open D-items, rule L's deploy); this function
+  # keeps the reads about the run itself (record, API error, rc end, last reply, handover judge, uncommitted
+  # changes, origin tip, review record).
+  local why lv lv_mode lv_unread lv_verdict lv_wkind lv_why lv_gwkind lv_gwhy lv_landings lv_open lv_live lv_week lv_weekwhy lverr
+  lv=$(AUTOFINISH_MEMO="${p_keel:-${AUTOFINISH_MEMO:-}}" AUTOFINISH_KEEL="${p_keel:-${AUTOFINISH_KEEL:-}}" \
+    DISPATCH_QUEUE_BIN="$Q" DISPATCH_HOST="$self_host" \
+    python3 "$AF" landing "$wt" --json --fetch --session "${sid:-}" --state "$state" \
+      --exclude-label "${DISPATCH_LABEL:-}" --mode-hint "$([ "$mode_torn" = 1 ] || echo "$mode")" 2>"$state.lverr") \
+    || { lverr=$?; declined "its launch gate failed (autofinish landing exit $lverr${state:+: $(tail -1 "$state.lverr" 2>/dev/null)})"; return 0; }
+  {
+    IFS= read -r lv_mode
+    IFS= read -r lv_unread
+    IFS= read -r lv_verdict
+    IFS= read -r lv_wkind
+    IFS= read -r lv_why
+    IFS= read -r lv_gwkind
+    IFS= read -r lv_gwhy
+    IFS= read -r lv_landings
+    IFS= read -r lv_open
+    IFS= read -r lv_live
+    IFS= read -r lv_week
+    IFS= read -r lv_weekwhy
+  } < <(python3 -c 'import json, sys
+d = json.loads(sys.argv[1])
+for k in ("mode", "mode_unreadable", "verdict", "wait_kind", "why", "gate_wait_kind", "gate_why", "landings_on", "open_items", "deployed", "week", "week_why"):
+    v = d.get(k)
+    print("1" if v is True else "" if v in (None, False) else str(v).replace("\n", " "))
+' "$lv" 2>/dev/null) || { declined "its launch gate failed (unreadable landing verdict)"; return 0; }
+  if [ "$lv_unread" = 1 ] && [ "$lv_wkind" = registry ]; then
+    declined "the mode is now ask (plan.json): the sweep judges it under that mode's rules"; return 0
+  fi
+  case "$lv_mode" in
+    dnd|yolo) m="$lv_mode";;
     # a hand-over goes on while its mode is still the one it started in; a yolo or dnd run lowered to it does not
     default) [ "$handed" = 1 ] || { declined "the mode is now default (plan.json): the sweep judges it under that mode's rules"; return 0; };;
-    *) declined "the mode is now ${now_m:-unreadable} (plan.json): the sweep judges it under that mode's rules"; return 0;;
+    *) declined "the mode is now ${lv_mode:-unreadable} (plan.json): the sweep judges it under that mode's rules"; return 0;;
   esac
-  nxt=$(jobs | grep -v "/${DISPATCH_LABEL:-/}\.plist\$" | head -1)
-  if [ -n "$nxt" ]; then declined "a next step is scheduled on this branch ($(basename "$nxt"))"; return 0; fi
-  # …or queued (a --next goes through the queue): an entry of the branch other than this run's, or a
-  # queue that does not read — the readers' rule counts that as an entry
-  if queue_on; then
-    python3 "$Q" has --repo "$repo" --branch "$branch" --state queued --state claimed --state waiting --except-session "${sid:-}" "${qctx[@]}" >/dev/null 2>&1
-    case $? in 0) ;; *) declined "a next step is queued on this branch, or the queue does not read (dispatch --queue)"; return 0;; esac
+  # origin's base was fetched and verified above (--fetch): handed reads the branch's docs against it, and a
+  # stale ref reads main's own D-items as the branch's (the re-landing's review, 2026-11-06)
+  if [ "$lv_wkind" = scheduled ] || [ "$lv_wkind" = queued ] || [ "$lv_wkind" = origin ]; then
+    declined "$lv_why"; return 0
   fi
-  # origin's base, fetched before the judge: handed reads the branch's docs against it, and a stale ref reads
-  # main's own D-items as the branch's (the re-landing's review, 2026-11-06)
-  local base open
-  base=$(python3 -c 'import json, sys
-try:
-    print(json.load(open(sys.argv[1])).get("main") or "main")
-except (OSError, ValueError):
-    print("main")' "$wt/.claude/workflow.json")
-  git -C "$wt" fetch -q origin "$base" 2>/dev/null
-  git -C "$wt" rev-parse -q --verify "origin/$base" >/dev/null || { declined "origin/$base unreadable here"; return 0; }
   rm -f "$state.owed"   # written only by this launch's judge: never a stale one
   why=$(python3 - "$state" "$here" "$branch" "$repo" "$core" "$m" "$wt" "${p_keel:-}" <<'PY'
 import glob, json, os, sys
@@ -3925,7 +3938,7 @@ if by == "handed":
     import handover
     try:
         try:
-            base = json.load(open(os.path.join(sys.argv[7], ".claude/workflow.json"))).get("main") or "main"
+            base = json.load(open(os.path.join(repo, ".claude/workflow.json"))).get("main") or "main"
         except (OSError, ValueError):
             base = "main"
         data = handover.facts(sys.argv[7], branch, "origin/" + base, handover.keel_module(sys.argv[8] or None),
@@ -3941,27 +3954,26 @@ if by == "handed":
         print(hold); sys.exit()
 elif "\u26a0" in text or kind in ("waiting", "relayed"):
     print("its last reply stops for %s: %s" % (common.OWNER_NAME or "the owner", [l for l in text.splitlines() if l.strip()][-1][:120])); sys.exit()
-if by != "handed" and kind == "pending":   # handed judged the actual wait above
+if by != "handed" and kind in ("pending", "lander"):   # handed judged the actual wait above; a lander line leaves it to the lander (S7)
     print("its last reply waits on its own work: %s" % [l for l in text.splitlines() if l.strip()][-1][:120]); sys.exit()
-if by == "handed":
-    # the landing switch, read again at the launch: a disarm since the build's start stops it (task-shape S3)
-    if not common.autofinish_landings():
-        print("the landing switch is off on this Mac (bin/autofinish arm --landings)"); sys.exit()
-elif not common.autofinish_armed():
-    print("autofinish is disarmed on this Mac (bin/autofinish arm)"); sys.exit()
-try:
-    from importlib.machinery import SourceFileLoader
-    # the repo's row in the account pool, as the sweep reads it (cached: autofinish-run picks fresh)
-    kind, detail = SourceFileLoader("autofinish", os.path.join(here, "bin", "autofinish")).load_module().week_tight(repo, finish=True)
-except Exception as e:  # noqa: BLE001
-    print("the week's budget is unreadable (%s)" % e); sys.exit()
-if kind == "none":
-    print("no account may run it (%s)" % detail)
-elif kind == "tight":
-    print("the week is tight (%s)" % detail)
 PY
 ) || why="its launch gate failed (exit $?)${why:+: $why}"   # a crash is a reason, never an empty pass (review D3)
   if [ -n "$why" ]; then declined "$why"; return 0; fi
+  if [ "$lv_wkind" = next ]; then
+    declined "$lv_why"; return 0
+  fi
+  # the landing switch, read again at the launch: a disarm since the build's start stops it (task-shape S3)
+  if [ "$m" = handed ]; then
+    [ "$lv_landings" = 1 ] || { declined "the landing switch is off on this Mac (bin/autofinish arm --landings)"; return 0; }
+    if [ "$lv_gwkind" = no-account ] || [ "$lv_gwkind" = week-tight ]; then
+      declined "$lv_gwhy"; return 0
+    fi
+  elif [ "$lv_gwkind" = disarmed ] || [ "$lv_gwkind" = no-account ] || [ "$lv_gwkind" = week-tight ]; then
+    declined "$lv_gwhy"; return 0
+  fi
+  # the week as the verb read it, whatever the road: main declined a tight week for every mode, a deployed
+  # branch included (R8; the landing review, 2026-11-07)
+  if [ "$lv_week" = tight ]; then declined "the week is tight (${lv_weekwhy:-week_tight})"; return 0; fi
   if [ -n "$(git -C "$wt" status --porcelain)" ]; then declined "$wt has uncommitted changes"; return 0; fi
   if [ "$m" = handed ]; then
     why=$(python3 - "$here/bin" "$wt" "$branch" <<'PY'
@@ -3985,55 +3997,26 @@ PY
     why=$(python3 "$p_review" gate "$wt" --session "$sid" 2>&1)
     case $? in 0) ;; 1) declined "$why"; return 0;; *) declined "its review record does not read (${why:-build-review gate failed})"; return 0;; esac
   fi
-  if [ "$m" != handed ]; then   # handed read the docs above, including legacy landing-only asks
-  open=$(git -C "$wt" -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM "origin/$base...HEAD" -- '*.md' | while IFS= read -r f; do
-    python3 "${p_keel:-$here/bin/keel}" parse "$wt/$f" 2>/dev/null | python3 -c 'import json, sys
-try:
-    d = json.load(sys.stdin)
-except ValueError:
-    print("%s (memo could not parse it)" % sys.argv[1]); sys.exit()
-o = [i["id"] for i in d.get("items", []) if not i.get("settled")]
-if o:
-    print("%s %s" % (sys.argv[1], ",".join(o)))' "$f"
-  done)
-  if [ -n "$open" ]; then declined "open for $who: ${open//$'\n'/; }"; return 0; fi
+  if [ "$m" != handed ] && [ -n "$lv_open" ]; then   # handed read the docs above, including legacy landing-only asks
+    declined "open for $who: $lv_open"; return 0
   fi
-  # The sweep's rule M takes a deployed branch only with a `taken` doc (bin/autofinish verdict(): rule
+  # The sweep's rule M takes a deployed branch only with a `taken` doc (bin/autofinish land_verdict(): rule
   # L's /finish would read its taken answers as open, and its held slice never applied); without one,
-  # rule L launches it at once, `--by sweep`: live ahead of main is drift, and dnd's slice would hold a
-  # physical repo's deploy at a ready PR (the follow-ups' landing review, item 1 — picked over saying dnd
+  # rule L launches it at once, `--by sweep`: live ahead of main is drift, and dnd's slice could hold a
+  # deployed branch at a ready PR (the follow-ups' landing review, item 1 — picked over saying dnd
   # trades L for the slice: the sweep already chose L, and one rule for both starts is one rule to read).
   # A taken doc is the sweep's own reading: autofinish's mode_asks over the asks lines the branch adds
   # (keel memo's `taken` verdict), never a second test of its own (the second landing review). An asks
   # line it cannot settle keeps rule M, the held one.
   # a hand-over is rule C, the typed /finish's: landing() and pr hold rule M by mode (task-shape S2's case)
-  local rule=M by="$m" live
+  local rule=M by="$m"
   [ "$m" = handed ] && rule=C
-  live=$(AUTOFINISH_MEMO="${p_keel:-${AUTOFINISH_MEMO:-}}" python3 - "$here" "$wt" "origin/$base" "$core" <<'PY' 2>/dev/null
-import os, sys
-sys.path.insert(0, sys.argv[4])
-from importlib.machinery import SourceFileLoader
-af = SourceFileLoader("autofinish", os.path.join(sys.argv[1], "bin", "autofinish")).load_module()
-wt = sys.argv[2]
-base = af.git(wt, "merge-base", sys.argv[3], "HEAD")
-live = (af.deployed_on(wt, base, "HEAD")[0] or "") if base else ""
-if live:
-    status, _, _, added, unparsed = af.diff_facts(wt, base, "HEAD")
-    # the run's own seed under docs/handoff/ is no ask here: this launch's /finish takes it (the sweep
-    # never meets one, it skips a branch that still adds a seed)
-    asks = [h for p in sorted(status) if not p.startswith(af.HANDOFF) for h in af.asks_in(p, added.get(p, []), status[p])]
-    skip, taken = af.mode_asks(wt, asks, status, False) if asks else (None, [])
-    if skip or taken or unparsed:
-        live = ""   # rule M: a taken doc, or asks it cannot settle
-print(live)
-PY
-)
-  if [ -n "$live" ] && [ "$m" = handed ]; then
+  if [ -n "$lv_live" ] && [ "$m" = handed ]; then
     rule=L   # still --by handed: judged as typed, which a deployed branch needs no less (task-shape S3)
-    echo "== $m: deployed ($live) — rule L's start: at once, --by handed"
-  elif [ -n "$live" ]; then
+    echo "== $m: deployed ($lv_live) — rule L's start: at once, --by handed"
+  elif [ -n "$lv_live" ]; then
     rule=L by=sweep
-    echo "== $m: deployed ($live) with no taken doc — rule L's start, as the sweep's: at once, --by sweep"
+    echo "== $m: deployed ($lv_live) with no taken doc — rule L's start, as the sweep's: at once, --by sweep"
   fi
   echo "== $m: the build run ended clean — starting the launch: autofinish-run $wt --by $by"
   note_launch "started: autofinish-run --rule $rule --by $by"
@@ -4048,7 +4031,7 @@ PY
   [ "$m" = handed ] && owed=$(cat "$state.owed" 2>/dev/null)
   rm -f "$state.owed"
   while :; do
-    HANDOVER_OWED="$owed" env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_NEEDS -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
+    HANDOVER_OWED="$owed" env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_QUEUE_HERE -u DISPATCH_NEEDS -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN \
       "$AFRUN" "$wt" --rule "$rule" --by "$by" > "$afout" 2>&1
     arc=$?
     aout=$(cat "$afout" 2>/dev/null)
@@ -4090,7 +4073,7 @@ PY
   [ "$arc" = 0 ] && launched=1   # queue_claim leaves this slot to the landing
 }
 
-# The fire path's quiet refusals: past the chain's depth, a physical repo, --if-room with no week room. Each
+# The fire path's quiet refusals: past the chain's depth, --if-room with no week room. Each
 # a FAILED in the log and nothing more; run once, before a one-shot enters the queue (queue_fire): there a
 # refusal it met only after the put filed a queue-failed card — sextant's weekly --if-room slot one every
 # tight week (S3's second landing review, item 5). A dry run's refusal is said where it prints (fd 3) too.
@@ -4099,7 +4082,6 @@ fire_refusals() {
   [ "$fchecked" = 0 ] || return 0
   fchecked=1
   [ "$depth" -le "$maxdepth" ] || { echo "FAILED: $(deep)"; exit 1; }
-  physical_ok || { [ "$dry" = 1 ] && { echo -n "DRY RUN: refused — "; physical_ok; } >&3; echo "FAILED: not running"; exit 1; }
   if [ "$ifroom" = 1 ]; then
     room=$(no_room)
     if [ -n "$room" ]; then
@@ -4144,7 +4126,7 @@ if [ "$start" = 1 ] && [ "$dry" = 1 ]; then
   untrusted && echo "# not trusted: $repo — the run would trust it first (bin/trust-projects)"
   if [ "$headless" = 1 ]; then
     run_env headless >&2
-    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
+    printf 'cd %q && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_QUEUE_HERE -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS' "$ldir"
     printf ' %q' "${renv[@]}" "${chain[@]}" "${CL[@]}" -p "$lprompt" "${sargs[@]}" --model "$model" --effort "$effort" \
       --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text
     echo
@@ -4244,7 +4226,7 @@ fi
     ensure_trusted || exit 1
     if [ "$headless" = 1 ]; then
       run_env headless
-      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
+      (cd "$repo" && exec env -u DISPATCH_LABEL -u DISPATCH_LOG -u DISPATCH_YEAR -u DISPATCH_LOADED_AT -u DISPATCH_EVENT_AT -u DISPATCH_ORIGIN -u DISPATCH_PIN -u DISPATCH_HOST_PIN -u DISPATCH_HOST_PREFER -u DISPATCH_SPAWN_HELD -u DISPATCH_QUEUE_HERE -u DISPATCH_NEEDS -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS "${renv[@]}" "${CL[@]}" -p "$probe_prompt" --model "$model" --permission-mode auto --allowedTools "${tools[@]}" --disallowedTools "${denied[@]}" --output-format text)
       echo "== probe exit $? at $(date)"; exit 0
     fi
     # the visible path, as a run takes it: no worktree, its own screen; no run cap, no after()
@@ -4467,7 +4449,7 @@ The owner's yolo (mode yolo, dispatch --yolo; E12 of docs/autofinish-design-2026
     dnd)
     prompt="$prompt
 
-The owner's do-not-disturb (mode dnd, skipper-modes D1-A): where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo --dnd <the doc>\` instead and commit what it wrote. It takes every bare Recommended pick, Reversible: no included, as a 'Taken unattended ($who's dnd …)' answer, except the held classes (money in an option, a repo that is not physical: none, a deletion or a public publish, a third party's answer, no pick, a conditional, unmarked or reopened item). Exit 0: nothing held — build on the answers. Exit 4: it printed each held item as 'held Dn' — relay each one as above (ask relay <doc> <Dn>), park what rests on them, and build the rest on the answers it took. Any other exit: it wrote nothing — build nothing that rests on that list and relay its items. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. A dnd answer is not $who's word, but the mode is his yes to land (skipper-modes S3b): do not run /finish — once the last step on this branch ends with its worktree clean and nothing open, dispatch starts the launch (autofinish-run --by dnd), which lands it unless the branch is in the held slice (money, a physical repo, a public publish, a deletion of data, a gated path), where it stops at a ready PR for $who's tap. The landing is not asked here, so no WAITING line asks it: when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`$handover\`, nothing after it but links. That line hands the landing to dispatch; any other WAITING line, a RELAYED line or a ⚠ stops it. A step that scheduled the next one waits for no launch: it ends on the line dispatch --next told it to end on, when it printed one (the queue holds the step), else on \`$handnext\`."
+The owner's do-not-disturb (mode dnd, skipper-modes D1-A): where the brief would stop for $who's answers to a doc's D-list, run \`python3 ${p_keel:-$here/bin/keel} yolo --dnd <the doc>\` instead and commit what it wrote. It takes every bare Recommended pick, Reversible: no included, as a 'Taken unattended ($who's dnd …)' answer, except the held classes (money in an option, a deletion or a public publish, a third party's answer, no pick, a conditional, unmarked or reopened item). Exit 0: nothing held — build on the answers. Exit 4: it printed each held item as 'held Dn' — relay each one as above (ask relay <doc> <Dn>), park what rests on them, and build the rest on the answers it took. Any other exit: it wrote nothing — build nothing that rests on that list and relay its items. Never write a 'Taken unattended' answer, or an item's Reversible: mark, by hand. A dnd answer is not $who's word, but the mode is his yes to land (skipper-modes S3b): do not run /finish — once the last step on this branch ends with its worktree clean and nothing open, dispatch starts the launch (autofinish-run --by dnd), which lands it unless the branch is in the held slice (money, a public publish, a deletion of data, a gated path), where it stops at a ready PR for $who's tap. The landing is not asked here, so no WAITING line asks it: when this is the branch's last step (no dispatch --next scheduled), nothing was relayed and the work is committed, end on exactly \`$handover\`, nothing after it but links. That line hands the landing to dispatch; any other WAITING line, a RELAYED line or a ⚠ stops it. A step that scheduled the next one waits for no launch: it ends on the line dispatch --next told it to end on, when it printed one (the queue holds the step), else on \`$handnext\`."
       ;;
     default)
     [ "$handed" = 1 ] && prompt="$prompt

@@ -39,7 +39,7 @@ out=$(br round "$W" --verdicts "$(vf 3)" --fixed 3 --check green --reviewers rev
 has "$out" "round 1 of 5 recorded" "  saying which of the cap"
 check "$([ -f "$R" ] && echo yes)" "yes" "  in <git dir>/claude/build-review.json of the worktree"
 check "$(js "$R" 'd["branch"], d["repo"] == sys.argv[3], d["project"], d["worktree"] == sys.argv[4], len(d["rounds"])' "$(cd "$T/repo" && pwd -P)" "$(cd "$W" && pwd -P)")" "('claude/laptop/2026-10-30-demo', True, 'repo', True, 1)" "  naming the branch, the main checkout, review-gate's project and repo keys"
-check "$(js "$R" 'sorted(d["rounds"][0])')" "['at', 'check', 'fixed', 'found', 'left', 'note', 'open_s1', 'raised', 'reviewed', 'reviewers', 'round', 'tip']" "  a round's shape"
+check "$(js "$R" 'sorted(d["rounds"][0])')" "['at', 'check', 'findings', 'fixed', 'found', 'left', 'note', 'open_s1', 'raised', 'reviewed', 'reviewers', 'round', 'tip']" "  a round's shape, with its verifier's findings"
 check "$(js "$R" 'd["rounds"][0]["tip"] == sys.argv[3], d["rounds"][0]["reviewers"]' "$(git -C "$W" rev-parse HEAD)")" "(True, ['reviewer-high', 'code-reviewer'])" "  the tip read from git at the call; the reviewers a list"
 case "$out" in *"end it"*) echo "  FAIL a round that found 3 was told to end"; fails=$((fails+1));; *) echo "  ok   a round that found something is not told to end (its fixes need a review too)";; esac
 git -C "$W" commit -q --allow-empty -m fix
@@ -589,7 +589,7 @@ fix: A) skip a live lock; B) ask the owner
 ➤ Recommended: A — skip a live lock
 Reversible: yes
 VF
-printf -- '- check: `true`\n- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '- check: `true`\n' > "$T/repo/AGENTS.md"
 out=$(br picks "$T/vf-picks" "$W"); check "$?" "5" "a report with a choice it may not take: exit 5"
 check "$(printf '%s\n' "$out" | cut -d' ' -f1-2 | tr '\n' ' ')" "fix a.py:1 take b.py:2 stop c.py:3 stop d.py:4 stop e.py:5 stop f.py:6 take h.py:8 " \
   "  one line per real finding, an OK-BUT none: fix, take or stop"
@@ -604,11 +604,8 @@ blocks = open(sys.argv[1]).read().split("\n\n")
 open(sys.argv[2], "w").write("\n\n".join(b for b in blocks if not re.match(r"[cdef]\.py", b)))
 PY2
 out=$(br picks "$T/vf-take" "$W"); check "$?" "0" "only mechanical fixes and picks it may take: exit 0, the landing goes on"
-printf -- '- check: `true`\n- physical: the yard, by hand\n' > "$T/repo/AGENTS.md"
-out=$(br picks "$T/vf-take" "$W"); check "$?" "5" "  a physical repo: every pick stops"
-has "$out" "the repo acts on the real world (physical: the yard" "    saying so"
 rm -f "$T/repo/AGENTS.md"
-out=$(br picks "$T/vf-take" "$W"); check "$?" "5" "  no physical: line: read as physical"
+out=$(br picks "$T/vf-take" "$W"); check "$?" "0" "  no contract file: picks still use their own marks and held classes"
 cat > "$T/vf-shapes2" <<'VF'
 a.py:1 — [S2] an option's mark is not the pick's
 verdict: WRONG
@@ -657,7 +654,7 @@ evidence: traced
 fix: A) a reviewer at $2.10 ($0.40 effective); B) none
 ➤ Recommended: A — one more review. Reversible: yes
 VF
-printf -- '- check: `true`\n- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '- check: `true`\n' > "$T/repo/AGENTS.md"
 out=$(br picks "$T/vf-shapes2" "$W")
 check "$(printf '%s\n' "$out" | cut -d' ' -f1-2 | tr '\n' ' ')" "stop a.py:1 stop b.py:2 stop c.py:3 stop d.py:4 stop e.py:5 stop f.py:6 take g.py:7 " \
   "the round-1 verifier's shapes: an option's mark, a hedged yes, an evidence mark, no pick, a mark for a pick, a parted option all stop; a model cost is no money"
@@ -684,7 +681,7 @@ open(sys.argv[1], "w").write("".join([
     blk("l.py:12", "fix: A) foo; B) bar", "➤ **Recommended:** A — foo\n**Reversible:** yes"),
 ]))
 PY2
-printf -- '- check: `true`\n- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '- check: `true`\n' > "$T/repo/AGENTS.md"
 out=$(br picks "$T/vf-shapes3" "$W")
 check "$(printf '%s\n' "$out" | cut -d' ' -f1-2 | tr '\n' ' ')" "stop a.py:1 stop b.py:2 stop c.py:3 stop d.py:4 stop e.py:5 stop f.py:6 stop g.py:7 stop h.py:8 stop i.py:9 fix j.py:10 take k.py:11 take l.py:12 " \
   "round 2's shapes: a bold label with no pick, a bold conditional, none, and options as Option A, A., (a) or keel's - A — stop; numbered steps are a fix; an inline or bold pick is taken"
@@ -809,7 +806,7 @@ fix: Option 1 — a lock; Option 2 — a queue
 ➤ Recommended: Option 2
 Reversible: yes
 VF
-printf -- '- check: `true`\n- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '- check: `true`\n' > "$T/repo/AGENTS.md"
 out=$(br picks "$T/vf-hedge" "$W")
 check "$(printf '%s\n' "$out" | cut -d' ' -f1-2 | tr '\n' ' ')" "stop a.py:1 stop b.py:2 stop c.py:3 stop d.py:4 stop e.py:5 stop f.py:6 stop g.py:7 stop h.py:8 stop i.py:9 stop j.py:10 stop k.py:11 stop l.py:12 stop m.py:13 take n.py:14 take o.py:15 " \
   "a hedge after the letter, no letter, an unlisted letter, contradictory marks, options in the evidence and four more option shapes all stop; even if and Option 2 are taken"
@@ -817,9 +814,6 @@ has "$out" "stop a.py:1 — [S2] x — a conditional pick (A if the queue is sha
 has "$out" "stop f.py:6 — [S2] x — the pick names no listed option (the owner's call)" "  free text names no option"
 has "$out" "stop h.py:8 — [S2] x — contradictory Reversible: marks" "  an inline yes and a no line after it"
 has "$out" "stop i.py:9 — [S2] x — a deletion (delete)" "  options in the evidence are read for the held classes"
-printf -- '- check: `true`\n  - physical: none\n- physical:\n  none\n' > "$T/repo/AGENTS.md"
-out=$(br picks "$T/vf-hedge" "$W")
-check "$(printf '%s\n' "$out" | grep -c '^take')" "0" "keel's physical: rule: an indented line is none, and a bare one's value is empty, read as physical"
 rm -f "$T/repo/AGENTS.md"
 
 export REVIEW_GATE_LOG="$T/log/rg-land.jsonl"
@@ -961,7 +955,7 @@ verdict: WRONG
 evidence: traced
 fix: return None when either git call fails or the file does not parse
 VF
-printf -- '- check: `true`\n- physical: none\n' > "$T/repo/AGENTS.md"
+printf -- '- check: `true`\n' > "$T/repo/AGENTS.md"
 out=$(br picks "$T/vf-shapes4" "$W")
 check "$(printf '%s\n' "$out" | cut -d' ' -f1-2 | tr '\n' ' ')" "take a.py:1 take b.py:2 take c.py:3 take d.py:4 take e.py:5 stop f.py:6 stop g.py:7 fix h.py:8 fix i.py:9 " \
   "a hedge word deep in the reason, a bare a), a bold A and Option 1's digit are taken; only if stops; the Recommended line lists no option; (k, e) and a condition's either are fixes"

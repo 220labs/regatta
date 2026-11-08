@@ -117,8 +117,8 @@ takes itself, `stop <head> — <why>` for one it may not, or a choice with optio
 when it is marked `Reversible: yes` standing alone (on its Recommended line, else the first line-start mark after it,
 keel's rule; two marks that disagree stop), it names one of the block's listed options by its letter (`A`, `(a)`,
 `Option 1`) with no hedge after it (`if`, `unless`, `once`, `but` …), it is no conditional pick, the block bar its head and its evidence holds none of keel's held classes (options the evidence lists are read too; HELD, kept equal to keel's DND_HOLDS by the suite: money, a deletion, a public
-publish, a third party's answer) and the main checkout's contract says `physical: none` (keel's `dnd_held`, the rule
-`yolo --dnd` takes picks by); `Reversible: no`, unmarked, a conditional pick, a held class or a physical repo is a
+publish, a third party's answer), as keel's `dnd_held` judges `yolo --dnd` picks;
+`Reversible: no`, unmarked, a conditional pick or a held class is a
 stop. Exit 0 when nothing stops, 5 when a line says stop, 2 when the file has no verdict block.
 
 `cap` prints the round cap: `wharf-runs/build-review-rounds` in the config dir, a whole number from 1 to 20, else
@@ -481,12 +481,29 @@ def covers(wt, base):
     d, src = load(path), "this worktree's record"
     if d and d.get("branch") != branch:
         d = None
-    if not d:
-        ended = [x for x in jsonl(log_path()) if x.get("project") == project and x.get("branch") == branch
-                 and x.get("ended") and x.get("phase", "build") == "build"]   # a finish loop's line vouches for nothing
-        d, src = (max(ended, key=lambda x: x["ended"]), "the log's newest line") if ended else (None, "")
+    ended = [x for x in jsonl(log_path()) if x.get("project") == project and x.get("branch") == branch
+             and x.get("ended") and x.get("phase", "build") == "build"]   # a finish loop's line vouches for nothing
+    # A carried vendor loop can be newer than this owner's old local build
+    # record. That old Claude loop must not mask the vendor review policy.
+    newest = sorted(enumerate(ended), key=lambda x: (x[1]["ended"], x[0]))[-1][1] if ended else None
+    if newest and (not d or (newest.get("agent") in ("codex", "antigravity")
+                             and newest["ended"] >= (d.get("ended") or d.get("started") or 0))):
+        d, src = newest, "the log's newest line"
     if not d:
         return False, "no build-review record for %s" % branch
+    vendor = d.get("agent") in ("codex", "antigravity") or any(
+        set(r.get("reviewers") or []) & {"codex", "antigravity"} for r in d.get("rounds") or [])
+    if vendor:
+        try:
+            sys.path.insert(0, str(HERE.parent / "lib"))
+            import core_path
+            core_path.add()
+            import common
+            rows, bad = common.config_read("wharf-runs/trust-vendor-review")
+        except Exception:
+            rows, bad = None, True
+        if bad or rows != ["on"]:
+            return False, "vendor review credit is off (wharf-runs/trust-vendor-review): /finish runs its full Claude review"
     if not d.get("ended"):
         return False, "%s never ended (%d round(s))" % (src, len(d.get("rounds") or []))
     if d.get("outcome") != "clean":
@@ -717,8 +734,6 @@ PICK_LETTER_RE = re.compile(r"^\**(?:Option\s+([A-H1-9])|\(([A-Ha-h])\)|([A-H]|[
 # a hedge is a word that opens the clause after the letter (`A if …`, `A, once …`, `A — but …`), never one deep in
 # the reason (`A — nothing else waits`, `a lock, which holds when two runs race`: the fix review's corpus probe)
 HEDGE_RE = re.compile(r"(?i)^[\s,—–-]*(?:\S+\s+){0,1}(?<!even )(?:if|unless|once|until|when|whenever|but|provided|assuming|depends|otherwise|else)\b")
-# keel's contract_physical: a line that starts `- physical:`, its value on that line alone (never the next line's)
-PHYSICAL_LINE_RE = re.compile(r"^- physical:[ \t]*(.*?)[ \t]*$", re.M)
 
 
 def _blocks(text):
@@ -768,22 +783,9 @@ def reversible_mark(m):
     return None if word == "yes" and rest else word
 
 
-def contract_physical(repo):
-    """The `physical:` line of the main checkout's contract (AGENTS.md, else CLAUDE.md), or None."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        try:
-            m = PHYSICAL_LINE_RE.search((Path(repo) / name).read_text(errors="replace"))
-        except OSError:
-            continue
-        if m:
-            return m.group(1)
-    return None
-
-
-def picks(text, repo):
+def picks(text):
     """[(kind, head, detail)] for each real finding in a verifier's report: fix, take or stop (the header's `picks`)."""
     lines, blocks = _blocks(text)
-    physical = contract_physical(repo)
     out = []
     for h, word, sev, start, end in blocks:
         ev = _evidence(lines, start, end)
@@ -831,9 +833,7 @@ def picks(text, repo):
                "not marked Reversible: yes|no (a hedged yes is none)" if rev is None else
                "a conditional pick (%s)" % pick[:60] if CONDITIONAL_PICK_RE.search(pick) or hedged else
                "the pick names no listed option (%s)" % pick[:60] if not letter or letter not in options else
-               held if held else
-               "the repo's contract has no `physical:` line (read as physical)" if physical is None else
-               "the repo acts on the real world (physical: %s)" % physical[:60] if not physical.startswith("none") else None)
+               held)
         out.append(("stop", head, why) if why else ("take", head, pick))
     return out, len(blocks)
 
@@ -941,8 +941,8 @@ def main(argv):
         except OSError as err:
             print("build-review: the verdict file does not read (%s)" % err, file=sys.stderr)
             return 2
-        _, _, repo = where(a.worktree)
-        rows, n = picks(text, repo)
+        where(a.worktree)
+        rows, n = picks(text)
         if not n:
             print("build-review: no `verdict:` line in %s: the verifier's report, verbatim, one block per item" % a.file,
                   file=sys.stderr)
@@ -1054,6 +1054,8 @@ def main(argv):
              "worktree": git(a.worktree, "rev-parse", "--show-toplevel") or "", "started": int(time.time()), "rounds": []}
     if phase == "finish":   # the build's lines carry no key: a reader takes a line without one as the build's
         fresh["phase"] = "finish"
+    elif os.environ.get("REGATTA_BUILD_AGENT") in ("codex", "antigravity"):
+        fresh["agent"] = os.environ["REGATTA_BUILD_AGENT"]
     # this run's record, or a fresh one: an ended record, another branch's, or another session's (a run that
     # died before `end`) never lends its rounds to the cap or a second log line (the build-review review)
     same = bool(d) and d.get("branch") == branch and d.get("session", "") == session
@@ -1128,6 +1130,8 @@ def main(argv):
                             "reviewers": [x.strip() for x in a.reviewers.split(",") if x.strip()], "raised": raised, "found": a.found,
                             "open_s1": open_s1,
                             "fixed": a.fixed, "left": max(a.found - a.fixed, 0) if a.left is None else a.left, "check": a.check, "note": a.note})
+        if a.verdicts:
+            d["rounds"][-1]["findings"] = Path(a.verdicts).read_text(encoding="utf-8", errors="replace")
         save(path, d)
         # clean only when the round found nothing: a round whose findings were all fixed needs one more
         # review of the fixes (the brief: "until a pass finds nothing to fix and the check is green")

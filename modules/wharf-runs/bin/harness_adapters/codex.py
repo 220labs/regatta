@@ -57,7 +57,7 @@ seen in that probe's --json stream.
 
 Research mode (research(), principal tier S3): one Codex turn in a council arm's box, waited for, behind the
 isolation design's seven fences (docs/principal-council-isolation-2026-10-29.md; the core's hooks/fence.py holds them):
-- F1, the source judge, is bin/harness's (research_guard: the public-repo, `physical`, confidential and guarded
+- F1, the source judge, is bin/harness's (research_guard: the public-repo, confidential and guarded
   rules on --repo and the copy).
 - F2, the copy: council's git_copy made it; fence.box_why is harness's one rule over --cwd.
 - F3, the start: the box's scratch CODEX_HOME (auth.json alone, fence.arm_home's), an allowlisted environment, git's
