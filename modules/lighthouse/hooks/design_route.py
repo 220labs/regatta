@@ -14,8 +14,7 @@ with `intent: design`, or a publish from the Design or Design System type (DESIG
 reason says how to hand it off: a seed, then `dispatch <branch> --repo <repo> --on <host>
 --fallback here --account bound` — the host is the config dir's `lighthouse/design-host` (without
 it the run stays here), bound is `account pick --bound`, the primary, at fire time (wharf-runs'
-bin/dispatch), and a repo that is not `physical: none` is seeded in a sibling that is (dispatch
-refuses it). A session already on the primary passes, wherever it runs (the owner's answer the
+bin/dispatch). A session already on the primary passes, wherever it runs (the owner's answer the
 same day: a primary panel on the laptop proceeds in place; a hand-off would lose the conversation
 design taste rests on). Everything else on Artifact passes: list, read, an update by url, the
 other types.
@@ -181,11 +180,11 @@ def pre(kind, who, common):
         "it here: write the design brief (what to make, the design system to use, where the inputs "
         f"are) to a file, then `{tool_path(common, 'pickup')} seed <topic> --file <brief> --repo <repo> "
         "--no-start` (ignore the `dispatch … --next` line it prints: --next keeps this session's account) in the repo "
-        "the work belongs to — or, when its AGENTS.md does not say `physical: none` (dispatch refuses "
-        f"those), in the nearest sibling that does — and `bash {tool_path(common, 'dispatch')} <the "
+        "the work belongs to, and "
+        f"`bash {tool_path(common, 'dispatch')} <the "
         f"branch it printed> --repo <that repo> {on}bound is the "
         f"primary, picked when it starts). Then tell {me} where it runs, as dispatch said. If dispatch "
-        "refuses (the primary has no room this week, or no repo fits), end with the WAITING line "
+        "refuses (the primary has no room this week, or the repo is off the worktree workflow), end with the WAITING line "
         f"naming why: {me} opens it on {primary} in person.")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                              "permissionDecision": "deny",

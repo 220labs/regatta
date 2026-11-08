@@ -19,6 +19,8 @@
   queued again; a pinned entry, a host-local store's or a named login fails plainly (wharf-runs' CHANGELOG).
   Where a row takes a shared login from a row the guard refuses, the duplicates marked before it name the row that
   took it (`same_as`), never the refused one.
+- Design handoffs stay in the repo that owns the work; routing no longer asks for a sibling with a `physical:` contract field.
+
 - vendor_hook answers Antigravity with nothing on an allow, and its trailer
   rewrite as `overwrite` beside `"decision": "allow"`: agy 1.5.2 denies a call
   on `{}` and on an `overwrite` with no decision (probed on a Linux node), so
