@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- ci-provider's host-write scan no longer reads a document the check line names (`.md`, `.txt`, `.json`, `.yml`…)
+  unless it may run: executable or `#!`, after an interpreter at a command's start, or in a check command holding a
+  substitution, an `eval` or a pipe into a shell; every other named file is read as before. A `sudo` in
+  TODO.md's prose no longer makes the pick refuse the self-hosted lane, and `--to self-hosted` no longer prints it
+  (pick-prose-scan, 2026-11-07). Cases in `test_ci_provider.sh`.
 - Keep the no-core checkpoint fixture outside temporary directories' inherited git markers; its Edit is only a hook payload and writes no file.
 
 - `pr stuck [--json] [--dry-run]` reads ready agent PRs on the repo's one yard (else the laptop), reports

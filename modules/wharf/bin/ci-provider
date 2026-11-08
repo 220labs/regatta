@@ -1235,11 +1235,53 @@ def step_span(lines, i):
     return start, end
 
 
+# A file the check line names is read for host writes unless the line names a document: TODO.md, which
+# wharf's todo-md lints, holds prose, and a `sudo` in an item's text refused the self-hosted lane
+# (pick-prose-scan, 2026-11-07: `TODO.md:229 sudo`). Every other file is read as main read it (a Makefile,
+# `node x.js`, `bash ./x`: an allowlist of script names lost those denials, the build review). A document is
+# still read where the check may run it: executable or with a `#!` line; after an interpreter at a command's
+# start (RUN_BY: its assignments, the wrappers listed, its options, a `<`, a quote or `./`); and anywhere in
+# a check command (all its lines) holding a substitution, an `eval` or a pipe into a shell (SHELL_FED), where
+# no word scan says what runs. Other spellings (`perl notes.txt`, `bash -c 'source x.txt'`, a backslash-
+# continued line) leave a document unread, as the brief asks of a named `.md`/`.txt`/`.json`/`.yml`. The
+# name is judged as the line spells it, not a link's target; a workflow is read by its own road below.
+DOC_NAMES = (".md", ".markdown", ".txt", ".rst", ".json", ".yml", ".yaml", ".csv")
+# an interpreter at a command's start, then the file: never `lint . TODO.md` or `grep -q sh TODO.md`, where
+# the word is an argument. Each word reads one way only, or a run of them backtracks for seconds (rounds 2
+# and 3 of the build review: `-a/env`, `1/env`, `a=1/env`): a path prefix holds no `=` and starts with no
+# `-`, a wrapper's numeric argument holds no `=` or `/`
+_PREFIX = r"(?:[^\s=-][^\s=]*/)?"
+RUN_BY = re.compile(r"(?:^|[;&|(`{\n])\s*(?:(?:if|then|do|else|elif|while|until|!)\s+)*(?:\w+=\S*\s+)*"
+                    r"(?:" + _PREFIX + r"(?:env|exec|time|sudo|nice|nohup|timeout|command|xargs)"
+                    r"(?:\s+(?:-\S+|\w+=\S*|\d[^\s=/]*))*\s+)*"
+                    + _PREFIX + r"(?:bash|sh|zsh|dash|ksh|python[\d.]*|source|\.)"
+                    r"(?:\s+(?:-\w*[oOWX]\s+[^\s-]\S*|-[\w-]+))*"
+                    r"\s+(?:<\s*)?[\"']?(?:\./)*$")
+# a substitution of either direction (`$(`, `<(`, `>(`, a backtick), `eval` as a command word (never `--eval`
+# or `tests/eval.py`), and a pipe into a shell, `|&` too (never `||` or `| sh-lint`)
+SHELL_FED = re.compile(r"\$\(|[<>]\(|`|(?<![\w./-])eval\s|(?<!\|)\|(?!\|)&?\s*(?:\S*/)?(?:sudo\s+)?(?:ba|z|da|k)?sh(?![\w.-])")
+
+
+def check_runs(name, path, before, fed):
+    """Whether the check may run the file at PATH, named NAME after BEFORE (the command's text up to it);
+    FED: the command holds a SHELL_FED shape. Anything but a document, and a document only where it may
+    run (the comment above)."""
+    if not os.path.basename(name).lower().endswith(DOC_NAMES):
+        return True
+    if fed or RUN_BY.search(before) or os.access(path, os.X_OK):
+        return True
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(2) == b"#!"
+    except OSError:
+        return False
+
+
 def host_writes(repo, cmd, labels, own=False):
     """[(where, line number, line, what, why)] for each HOST_WRITES line a check on the runner Mac
     would run: in cmd (the check command, written into check.yml's job), in each file cmd names in
-    the repo (one level: a script it runs), and in each other workflow that runs on the runner Mac
-    (own: check.yml too, for status, which then holds the command, so cmd itself is not read again;
+    the repo but a document it never runs (one level, check_runs), and in each
+    other workflow that runs on the runner Mac (own: check.yml too, for status, which then holds the command, so cmd itself is not read again;
     a switch replaces it).
     The guards: `git config --global` only in another workflow, where no GIT_CONFIG_GLOBAL or HOME
     under $RUNNER_TEMP comes before it in its job (the self-hosted check.yml's first step sets it for
@@ -1249,10 +1291,12 @@ def host_writes(repo, cmd, labels, own=False):
     or ubuntu- on its line or the three before (a workflow: anywhere in its step)."""
     sources = [] if own else [("the check command", cmd, False)]
     seen = set()
-    for tok in re.findall(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", cmd):
+    fed = bool(SHELL_FED.search(cmd))
+    for m in re.finditer(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", cmd):
+        tok = m.group(0)
         path = os.path.realpath(p(repo, tok))
         if (tok in seen or not os.path.isfile(path) or not path.startswith(os.path.realpath(repo) + os.sep)
-                or os.path.getsize(path) > 512 * 1024):
+                or os.path.getsize(path) > 512 * 1024 or not check_runs(tok, path, cmd[:m.start()], fed)):
             continue
         seen.add(tok)
         try:

@@ -1327,6 +1327,60 @@ printf '#!/bin/sh\n# npm install -g in a comment is no command\nnpm i -g left-pa
 grep -q '⚠ check.sh:3 runs npm install -g' "$T/out"; check "$?" "0" "…its npm -g said, with file and line"
 grep -q '⚠ check.sh:4 runs sudo' "$T/out"; check "$?" "0" "…its sudo said"
 grep -q 'check.sh:2' "$T/out"; check "$?" "1" "…a comment is not"
+
+echo "a job on the runner Mac: a document the line names is not read, every other file is (pick-prose-scan)"
+R="$T/gcg5b"; newrepo "$R"
+printf '#!/bin/sh\ntrue\n' > "$R/check.sh"
+printf -- '- [x1] `add`'"'"'s printed post-install line runs `sudo bash` on an empty file\n' > "$R/TODO.md"
+printf 'sudo true\n' > "$R/notes.txt"
+printf 'grep -q x TODO.md\nsudo bash /dev/null\n' > "$R/lint.sh"
+printf '#!/bin/sh\nsudo true\n' > "$R/runme"
+printf 'sudo true\n' > "$R/plain"
+printf 'ci:\n\tsudo make install\n' > "$R/Makefile"
+printf 'require("child_process").execSync("npm install -g left-pad");\n' > "$R/setup.js"
+mkdir -p "$R/tools"; printf 'sudo true\n' > "$R/tools/lint"; chmod +x "$R/tools/lint"
+printf '#!/bin/sh\nsudo true\n' > "$R/tools/check.txt"; chmod +x "$R/tools/check.txt"; ln -s check.txt "$R/tools/check"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && grep -q x TODO.md' > "$T/out" 2>&1; check "$?" "0" "a document the line names: the switch runs"
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…its prose is no host write"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/lint . TODO.md && grep -q bash notes.txt' --force > "$T/out" 2>&1
+grep -q -E 'TODO.md:|notes.txt:' "$T/out"; check "$?" "1" "a document after an argument . or bash: not read either"
+grep -q '⚠ tools/lint:1 runs sudo' "$T/out"; check "$?" "0" "…the executable beside it still read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && { [ ! -f TODO.md ] || sh lint.sh; } && echo a || sh check.sh TODO.md' --force > "$T/out" 2>&1
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…nor beside an || (no pipe into a shell) or as a script's argument"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && sh lint.sh TODO.md' --force > "$T/out" 2>&1
+grep -q '⚠ lint.sh:2 runs sudo' "$T/out"; check "$?" "0" "the same line in a script the check runs: still said"
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…and the document beside it still not read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && ./runme' --force > "$T/out" 2>&1
+grep -q '⚠ runme:2 runs sudo' "$T/out"; check "$?" "0" "no document suffix: read as main read it (runme)"
+for c in 'bash plain' 'bash ./plain' 'bash "plain"' 'bash -o pipefail plain' 'sh < plain' 'cat plain | bash' 'grep -q x plain'; do
+  "$CP" "$R" --to self-hosted --check "sh check.sh && $c" --force > "$T/out" 2>&1
+  grep -q '⚠ plain:1 runs sudo' "$T/out"; check "$?" "0" "a plain file, no extension, no x bit, no #!, as main read it: $c"
+done
+"$CP" "$R" --to self-hosted --check 'sh check.sh && make -f Makefile ci && node setup.js' --force > "$T/out" 2>&1
+grep -q '⚠ Makefile:2 runs sudo' "$T/out"; check "$?" "0" "a Makefile after make -f: still read"
+grep -q '⚠ setup.js:1 runs npm install -g' "$T/out"; check "$?" "0" "…and a .js after node"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/check' --force > "$T/out" 2>&1
+grep -q '⚠ tools/check:2 runs sudo' "$T/out"; check "$?" "0" "a link named as a script, to a .txt: judged by the name on the line"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/check.txt' --force > "$T/out" 2>&1
+grep -q '⚠ tools/check.txt:2 runs sudo' "$T/out"; check "$?" "0" "an executable #! script named .txt, run by its own name: still read"
+printf '#!/bin/sh\nsudo true\n' > "$R/hook.txt"; printf 'sudo true\n' > "$R/tools/run.txt"; chmod +x "$R/tools/run.txt"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && perl hook.txt && tools/run.txt' --force > "$T/out" 2>&1
+grep -q '⚠ hook.txt:2 runs sudo' "$T/out"; check "$?" "0" "a .txt with a #! line, not executable, in a spelling no interpreter rule reads: still read"
+grep -q '⚠ tools/run.txt:1 runs sudo' "$T/out"; check "$?" "0" "an executable .txt with no #! line, run by its name: still read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && node --eval 1 && python3 tests/eval.py && grep -q x TODO.md | sh-lint' --force > "$T/out" 2>&1
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "an eval in a flag or a path, a pipe into sh-lint: no shell fed, the document not read"
+words=$(printf '1/env %.0s' $(seq 40)); s0=$SECONDS
+"$CP" "$R" --to self-hosted --check "sh check.sh && env ${words}grep -q x notes.txt" --force > "$T/out" 2>&1
+check "$(( SECONDS - s0 < 30 ))" "1" "a run of 1/env words: no backtracking (it took minutes before round 3)"
+for c in 'bash notes.txt' '/usr/bin/env bash notes.txt' 'if sh notes.txt; then :; fi' '{ true; . notes.txt; }' \
+    'bash ./notes.txt' 'bash "notes.txt"' 'sh < notes.txt' 'bash -e notes.txt' 'bash -euo pipefail notes.txt' \
+    'CI=1 bash notes.txt' 'env FOO=1 bash notes.txt' 'nice -n 5 bash notes.txt' 'timeout 600 sh notes.txt' \
+    'cat notes.txt | sh' 'cat notes.txt |& sh' 'cat notes.txt > >(bash)' 'tee >(sh) < notes.txt' \
+    'bash <(cat notes.txt)' 'eval "$(cat notes.txt)"' 'true
+sh notes.txt'; do
+  "$CP" "$R" --to self-hosted --check "sh check.sh && $c" --force > "$T/out" 2>&1
+  grep -q '⚠ notes.txt:1 runs sudo' "$T/out"; check "$?" "0" "a document an interpreter runs: still read: $c"
+done
 R="$T/gcg6"; newrepo "$R"; W="$R/.github/workflows"
 cat > "$W/release.yml" <<'EOF'
 name: release
@@ -1554,6 +1608,19 @@ pickrepo() { # pickrepo <dir> [needs-json]: a repo in the variable form, its var
   echo true > "$T/gh/private"; echo false > "$T/gh/forkpr"; echo "$MACRUN" > "$T/gh/runners.json"; }
 varval() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_RUNS_ON.json" 2>/dev/null || echo unset; }
 
+# before pk1, in the lanes and usage as first written: later cases leave other lanes and state
+echo "the pick: a document the check line names is no host write (pick-prose-scan)"
+R="$T/pk0"; pickrepo "$R"; usage ok 100
+printf -- '- [x1] `add`'"'"'s printed post-install line runs `sudo bash` on an empty file\n' > "$R/TODO.md"
+printf 'sudo true\n' > "$R/lint.sh"
+sed 's/sh check\.sh/sh check.sh \&\& grep -q x TODO.md/' "$R/.github/workflows/check.yml" > "$T/wf" && cp "$T/wf" "$R/.github/workflows/check.yml"
+grep -q 'grep -q x TODO.md' "$R/.github/workflows/check.yml"; check "$?" "0" "(the check line names TODO.md)"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'refused, the check writes' "$T/out"; check "$?" "1" "TODO.md's sudo prose: the self-hosted lane not refused"
+grep -q '  pick: mac' "$T/out"; check "$?" "0" "…and picked"
+sed 's/grep -q x TODO\.md/sh lint.sh/' "$R/.github/workflows/check.yml" > "$T/wf" && cp "$T/wf" "$R/.github/workflows/check.yml"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "lane mac: refused, the check writes the runner login's own: lint.sh:1 sudo" "$T/out"; check "$?" "0" "…a script the check runs with the same sudo: refused, as on main"
 R="$T/pk1"; pickrepo "$R"; rm -f "$USAGE"
 "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a private repo, needs absent, the runner Mac online: picked"
 grep -q '  pick: mac (\["self-hosted","macOS","laptop"\])' "$T/out"; check "$?" "0" "…the Mac lane: needs absent reads as macOS"
