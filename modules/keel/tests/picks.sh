@@ -1269,12 +1269,14 @@ check "$(held S1)" "3" "a session commit of a builder's B with the reopen: held"
 lacks "$T/held.out" "only because the options changed" "…never said to be the options' doing"
 has "$T/held.out" '"B, confirmed"' "…the owner asked to write it again"
 # round 2: status --json holds what keel held holds where a builder deleted the options
-git -C "$R" checkout -q -b noopts "$NOPICKED"
+git -C "$R" checkout -q -b claude/noopts "$NOPICKED"
+# Model the doc's published answer lines locally, so an empty box reaches the hold verdict.
+git -C "$R" update-ref refs/remotes/origin/claude/noopts HEAD
 sed -i.bak -e '/^  - A — one road$/d' -e '/^  - B — another road$/d' "$R/docs/d.md" && rm -f "$R/docs/d.md.bak"
 git -C "$R" commit -qam "builder: the options dropped" -m "$AGENT"
-check "$(held S1) $(k status docs/d.md --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("held"))')" "3 ['D1']" "options a builder deleted: keel held and status --json agree"
+check "$(held S1) $(k status docs/d.md --json --no-fetch | python3 -c 'import json,sys; print(json.load(sys.stdin).get("held"))')" "3 ['D1']" "options a builder deleted: keel held and status --json agree"
 answer ""; git -C "$R" commit -qam "builder: the box emptied" -m "$AGENT"
-check "$(held S1) $(k status docs/d.md --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("held"))')" "3 ['D1']" "…and with the box emptied too (round 3)"
+check "$(held S1) $(k status docs/d.md --json --no-fetch | python3 -c 'import json,sys; print(json.load(sys.stdin).get("held"))')" "3 ['D1']" "…and with the box emptied too (round 3)"
 # round 3: a moved doc's hint reads the box at the hold's start on the old path
 git -C "$R" checkout -q -b optmoved2 "$NOPICKED"
 mkdir -p "$R/docs/x"; git -C "$R" mv docs/d.md docs/x/d.md; git -C "$R" commit -qm "builder: move the doc" -m "$AGENT"

@@ -681,10 +681,9 @@ tf_ "$T/k10.jsonl" "plain prompt" 'ls' $'The lines are:\n```text\nSAM, THIS SESS
 check "$(quiet "$T/k10.jsonl")" 0 "closing: a line inside a fence is not read"
 
 # a finished step starts the next one itself (Sam, 2026-10-04): no session handed over to paste
-# where dispatch would take the branch — a workflow repo whose contract says `physical: none`
-mkdir -p "$R/.claude"; echo '{"checkpoint": true}' > "$R/.claude/workflow.json"; printf -- '- physical: none\n' > "$R/AGENTS.md"
-P2="$T/phys"; git -C "$T" init -q -b main phys; mkdir -p "$P2/.claude"; echo '{"checkpoint": true}' > "$P2/.claude/workflow.json"
-printf -- '- physical: python3 scripts/test.py --physical\n' > "$P2/AGENTS.md"
+# where dispatch would take the branch — a workflow repo
+mkdir -p "$R/.claude"; echo '{"checkpoint": true}' > "$R/.claude/workflow.json"; printf -- '# Test repository\n' > "$R/AGENTS.md"
+P2="$T/plain"; git -C "$T" init -q -b main plain
 sx_() { printf '{"transcript_path":"%s","stop_hook_active":%s,"cwd":"%s"}' "$1" "${3:-false}" "$2" | python3 "$B/paste-paths" --stop-hook; }
 WP="🛑 SAM, THIS SESSION IS WAITING FOR YOU — start step 3: \`/pickup 'claude/x/2026-10-04-s3' --fresh\`."
 tf_ "$T/h1.jsonl" "go" 'ls' $'Step 2 built.\n\n'"$WP"
@@ -734,22 +733,22 @@ for line in "Paste this into a fresh Claude Code session." "Start step 3 in a ne
   n=$((n+1)); tf_ "$T/hp$n.jsonl" "go" 'ls' "Built. $line"
   check "$(sx_ "$T/hp$n.jsonl" "$R" | grep -c 'hands Sam a session to start')" 1 "handoff: still blocks — $line"
 done
-# the handoff's own repo decides, not the session's: dispatch refuses a repo that is not physical: none
-H="$T/home"; mkdir -p "$H/projects"; ln -s "$P2" "$H/projects/phys"; ln -s "$R" "$H/projects/repo"
-TODO_LINE="Follow-up handed off: s3 — claude/x/2026-10-04-s3 (phys) waits on Sam's answer to D2; start it with /pickup 'claude/x/2026-10-04-s3' --fresh in a phys window"
+# the handoff's own repo decides, not the session's: a repo outside the worktree workflow is not dispatched to (pickup, the Stop lint)
+H="$T/home"; mkdir -p "$H/projects"; ln -s "$P2" "$H/projects/plain"; ln -s "$R" "$H/projects/repo"
+TODO_LINE="Follow-up handed off: s3 — claude/x/2026-10-04-s3 (plain) waits on Sam's answer to D2; start it with /pickup 'claude/x/2026-10-04-s3' --fresh in a plain window"
 tf_ "$T/h8.jsonl" "go" 'ls' "Brief seeded. $TODO_LINE"
-check "$(HOME="$H" sx_ "$T/h8.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "handoff: /todo's exception line for a physical repo passes, from a seedable session"
+check "$(HOME="$H" sx_ "$T/h8.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "handoff: /todo's exception line for a repo without the workflow passes, from a seedable session"
 TODO_SEED="Follow-up handed off: s3 — claude/x/2026-10-04-s3 (repo) waits on Sam's answer to D2; start it with /pickup 'claude/x/2026-10-04-s3' --fresh in a repo window"
 tf_ "$T/h9.jsonl" "go" 'ls' "Brief seeded. $TODO_SEED"
-check "$(HOME="$H" sx_ "$T/h9.jsonl" "$P2" | grep -c 'hands Sam a session to start')" 1 "  and one for a seedable repo blocks, from a physical session"
+check "$(HOME="$H" sx_ "$T/h9.jsonl" "$P2" | grep -c 'hands Sam a session to start')" 1 "  and one for a seedable repo blocks, from a session without the workflow"
 git -C "$P2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; git -C "$P2" branch -q claude/x/2026-10-04-p3
 tf_ "$T/h10.jsonl" "go" 'ls' $'Step 2 built.\n\n🛑 SAM, THIS SESSION IS WAITING FOR YOU — start step 3: `/pickup \'claude/x/2026-10-04-p3\' --fresh`.'
-check "$(HOME="$H" sx_ "$T/h10.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "  a branch found only in a physical repo under ~/projects: that repo judges"
+check "$(HOME="$H" sx_ "$T/h10.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "  a branch found only in a repo without the workflow under ~/projects: that repo judges"
 tf_ "$T/h11.jsonl" "go" 'ls' "Seeded. Not dispatched, waits on D2: start it with /pickup 'claude/x/2026-10-04-s3' --fresh in a repo window"
 check "$(HOME="$H" sx_ "$T/h11.jsonl" "$R" | grep -c 'hands Sam a session to start')" 0 "  /todo's waits-on line names dispatch, so it passes in a seedable repo too"
 
 # an opt-in kept in repos.json lives untracked in the primary only (hooks/sync.py overlay_workflow)
-OVP="$T/ovp"; git init -q -b main "$OVP" && printf -- '- physical: none\n' > "$OVP/AGENTS.md"
+OVP="$T/ovp"; git init -q -b main "$OVP" && printf -- '# Test repository\n' > "$OVP/AGENTS.md"
 git -C "$OVP" add AGENTS.md && git -C "$OVP" -c user.email=t@t -c user.name=t commit -qm one && git -C "$OVP" worktree add -q "$T/ovp-wt" -b claude/t
 mkdir -p "$OVP/.claude" && printf '{"_from": "repos.json", "checkpoint": true}\n' > "$OVP/.claude/workflow.json"
 sd_() { python3 - "$B/paste-paths" "$1" <<'EOF'

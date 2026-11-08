@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+- Keep the retired `doc_physical` helper and `dnd_held` argument inert for older Wharf consumers; no contract is read. The picks status fixture now models a published `claude/*` branch locally.
+
 - The sessionpipe gate allows Antigravity tools with empty stdout, including when a private reporting event is dropped; sessionpipe's `{}` is discarded because agy 1.5.2 reads it as a denial. Builder trust checks can derive the exact reporting entries from sheep's own writer and installed gate path.
+- Remove repo `physical:` checks from recommendation standing, dnd picks, decision tiers, handoff lint and lookout starts. Decisions use their own marks and held classes; pages refresh to show the new tiers.
+
 - The Stop lint accepts the lander's ⏳ closing line for a stopped finish, keeps owner asks out
   of it, and requires the external-finish command only on the owner's stop (stuck-ships S7).
 - The Porthole look (the helm council's round 7, the owner's pick, 2026-11-06): the decision component, the Course page's cards,

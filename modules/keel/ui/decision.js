@@ -24,7 +24,7 @@
   /* plain yolo as keel's yolo() runs it: an unmarked pick taken too, and nothing at all while an open decision is
      reopened, conditional or has no pick (all or nothing: the run stops, writing none) */
   KDC.YOLO_STOPS = ['reopened', 'conditional', 'no pick'];
-  KDC.MODE_SAYS = { ask: 'nothing answers but you', auto: 'takes the safe picks (helm\'s default mode)', dnd: 'takes safe and irreversible picks; holds money, deletion, publish, a third party, physical',
+  KDC.MODE_SAYS = { ask: 'nothing answers but you', auto: 'takes the safe picks (helm\'s default mode)', dnd: 'takes safe and irreversible picks; holds money, deletion, publish, a third party',
                     yolo: 'takes every plain pick, unmarked ones too; while one is reopened, conditional or has no pick, takes nothing' };
   var cfg = { changed: function () {}, save: function () {}, flash: function () {}, slug: '', mode: 'ask' };
   var $ = function (id) { return document.getElementById(id); };

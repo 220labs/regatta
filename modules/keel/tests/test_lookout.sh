@@ -546,7 +546,7 @@ has "$T/out" "answer demo@$BST:docs/d.md D1 — " "…the answer judged here by 
 # The S3 second landing review's items 1–4, each in a state dir of its own: two of them run a pass two hours on
 fresh() { export MEMO_STATE_DIR="$T/$1"; mkdir -p "$T/$1"; "$B/keel" lookout --arm > /dev/null; }
 LATER=$(( $(date +%s) + 7300 ))
-printf '# demo\n\n- physical: none\n' > "$P/AGENTS.md"   # rule 3 past its contract gate; S5's cases commit the contract
+printf '# demo\n\n' > "$P/AGENTS.md"
 # item 1: an ended session's push, unseen from here, holds the branch only while it is recent — a quiet gate,
 # never another host's — and the answer is rule 3's once the push is OWNER_TTL old (it was settled `skipped`)
 fresh state-ended
@@ -633,7 +633,7 @@ export LOOKOUT_HOST=laptop
 
 echo "lookout — no live session: a brief and one run (S5), behind the arm and the gates"
 asks
-printf '# demo\n\n- physical: none\n' > "$P/AGENTS.md"
+printf '# demo\n\n' > "$P/AGENTS.md"
 gitc "$P" add AGENTS.md; gitc "$P" commit -q -m contract; gitc "$P" push -q origin main 2>/dev/null
 BS=claude/laptop/2026-10-21-s
 doc "$BS" "" plan
@@ -760,13 +760,6 @@ check "$(tail -1 "$T/pickup.log")" "seed --beside $BT --repo $P" "…its seed"
 lk
 has "$T/out" "answer demo@$BT:docs/d.md D1 — dispatched" "…and once"
 NP=$(wc -l < "$T/pickup.log" | tr -d ' ')
-gh_answer "$BN" D1 "A"
-asks
-printf '# demo\n\n- physical: the hall lights\n' > "$P/AGENTS.md"
-lk
-has "$T/out" "answer demo@$BN:docs/d.md D1 — card · no live session for demo@$BN:docs/d.md D1 — demo's contract says physical: the hall lights, not \`physical: none\`: the skipper starts it" "not physical: none: a card to the skipper"
-check "$(wc -l < "$T/pickup.log" | tr -d ' ')" "$NP" "…no seed"
-git -C "$P" checkout -q -- AGENTS.md
 BY=claude/laptop/2026-10-21-y
 doc "$BY" "" plan
 asks "$BY=D1"
@@ -1814,7 +1807,7 @@ print(m.held_by("/w", {"session": "abcdefgh12", "age": -0.2}, at=True))
 EOF
 )" "0 0 2 16
 held by session abcdefgh at /w, seen 0m ago" "an age never reads -1 when the clock stepped back (mins_ago, held_by); a missing stamp counts from epoch 0, as the claimed card did"
-# T1 under rule 3: an owner's plain ask on an unshared page of a physical: none repo, no run in sight
+# T1 under rule 3: an owner's plain ask on an unshared page without a repo contract field, no run in sight
 BT=claude/laptop/2026-10-21-ask
 doc "$BT"
 pin "$BT" sp-t
@@ -1940,9 +1933,9 @@ check "$(python3 - "$B/keel" <<'EOF'
 import sys
 from importlib.machinery import SourceFileLoader as L
 m = L("k", sys.argv[1]).load_module()
-print(m.thread_tier("act-plain", "", False, True)[0], m.thread_tier("act-plain", "", True, True)[0],
-      m.thread_tier("act-plain", "", False, False)[0], m.thread_tier("act-held", "x", False, True)[0],
-      m.thread_tier("question", "", False, True)[0], m.thread_tier("go", "", True, False)[0])
+print(m.thread_tier("act-plain", "", False)[0], m.thread_tier("act-plain", "", True)[0],
+      m.thread_tier("act-held", "x", False)[0],
+      m.thread_tier("question", "", False)[0], m.thread_tier("go", "", True)[0])
 m.never_mirrored = lambda repo, rel: "secret is private — it is never mirrored"
 t = {"id": "t1", "text": "write it", "at": "2026-10-21T10:00:00Z", "owner": True, "own": False, "bot": False, "replies": [], "resolved": False, "anchor": None}
 called = []
@@ -1956,11 +1949,11 @@ m.never_mirrored = lambda repo, rel: None
 print(m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", None, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
                       [dict(t, replies=[dict(t, id="t1r", form="text")])], {"t1": 1}, {}, True)[:2], called)
 EOF
-)" "T1 T2 T2 T2 None go
+)" "T1 T2 T2 None go
 ([], {'t1': 1}) []
 ('act-unclear', 'held', 'not judged: secret is private — it is never mirrored')
 [] ['S5']
-([], {'t1': 1}) []" "T1 only on an unshared page of a physical: none repo; a confidential scope's doc is never judged, and its words never reach the call; the text fallback (no address) is never tiered; a Steps: line from the owner's words, never the quoted anchor"
+([], {'t1': 1}) []" "T1 only on an unshared page without a repo contract field; a confidential scope's doc is never judged, and its words never reach the call; the text fallback (no address) is never tiered; a Steps: line from the owner's words, never the quoted anchor"
 echo "lookout — after landing (routed comments S5): a landed doc on a host with no pin, its commits on main, T1 off main, T3 to the standing skipper"
 rm -f "$T/week" "$T/pickup-rc" "$T/pickup-why" "$T/dispatch-rc" "$T/hail-verdict" "$T/queue-on" "$T/queue-queued" "$T/queue-rc"
 asks   # no open items in the poll: the landed doc is read for its Routed: line alone
@@ -2173,7 +2166,7 @@ PY
 check "$(python3 "$T/s5-gone.py" "$B/keel" "$T/unit-gone")" "gated True False
 no checkout of demo on this Mac
 card a Save on a landed doc's page waits there; no run starts from it" "a checkout gone since the pass: its card names the repo, never this Mac's path; a Save on a landed doc: carded"
-# the offer in a repo that is not physical: none says whose it is, and a dry pass spends no call (TODO.md [routed-s4] (c), (d))
+# Held-act offers allow go on any checkout, and a dry pass spends no call.
 cat > "$T/s5-units.py" <<'PY'
 import json, sys
 from importlib.machinery import SourceFileLoader as L
@@ -2182,13 +2175,13 @@ t = {"id": "t1", "text": "merge it once green", "at": "2026-10-21T10:00:00Z", "o
      "replies": [], "resolved": False, "anchor": None}
 m.never_mirrored = lambda repo, rel: None
 m.judged_cached = lambda *a, **k: ({"t1": ("act-held", "a held verb", 1.0)}, 0)
-top = m.Path(sys.argv[3]); top.mkdir(parents=True, exist_ok=True); (top / "AGENTS.md").write_text("- physical: a robot arm\n")
+top = m.Path(sys.argv[3]); top.mkdir(parents=True, exist_ok=True)
 ev = m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", top, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
                      [t], {"t1": 1}, {}, True)[0][0]
 nt = m.lookout_tiers("demo@claude/x/2026-10-21-a:docs/d.md", None, "claude/x/2026-10-21-a", "docs/d.md", {"space": "sp"},
                      [t], {"t1": 1}, {}, True)[0][0]
-print(ev["kind"], ev.get("how") == m.OFFER_HOW_SKIPPER, nt.get("how") is None)
-print(m.mark_body("would-start", act="x", cls="y", how=ev["how"]))
+print(ev["kind"], ev.get("how") is None, nt.get("how") is None)
+print(m.mark_body("would-start", act="x", cls="y", how=ev.get("how") or m.OFFER_HOW))
 print(m.mark_body("would-start", act="x", cls="y"))
 calls = []
 class G:
@@ -2200,11 +2193,11 @@ print(m.judge_threads([dict(t, text="write the intro")], "demo", call=False)["t1
 rows = m.routed_bench(fixture=sys.argv[2], as_json=False)
 print("calls: %d" % len(calls))
 PY
-check "$(python3 "$T/s5-units.py" "$B/keel" "$(cd "$B/.." && pwd)/bench/comments.jsonl" "$T/unit-physical" | grep -v '^ *[0-9]' | grep -v '^bench:')" "offer True True
-memo: would start: x (y) — not started here: the repo is not \`physical: none\`, its skipper starts it — reply no to close
+check "$(python3 "$T/s5-units.py" "$B/keel" "$(cd "$B/.." && pwd)/bench/comments.jsonl" "$T/unit-offer" | grep -v '^ *[0-9]' | grep -v '^bench:')" "offer True True
+memo: would start: x (y) — reply go to start, no to close
 memo: would start: x (y) — reply go to start, no to close
 act-unclear 0
-calls: 1" "a held act in a repo not physical: none: the offer names its skipper, never a go it would refuse — and only where this Mac read the contract; a dry pass spends no call; the bench makes one call for every writer"
+calls: 1" "a held act offers go without consulting a contract; a dry pass spends no call; the bench makes one call for every writer"
 # standing_for: the narrowest scope's skipper first, an umbrella last; a torn registry hails nobody (S5's finish review)
 cat > "$T/s5-standing.py" <<'PY'
 import sys, types
