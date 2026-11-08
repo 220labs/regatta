@@ -608,6 +608,7 @@ local_host() { { [ -n "$hostkey" ] && echo "$hostkey" || scutil --get LocalHostN
 dateat() { date -r "$1" "$2" 2>/dev/null || date -d "@$1" "$2"; }
 epochof() { date -j -f '%Y-%m-%d %H:%M' "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }   # host names compare lower-case (bash 3.2 has no ${x,,})
+physical_ok() { return 0; }   # the retired `physical:` gate, kept for open branches that still call it: always passes
 # --on NAME: a host `wharf-runs/ssh` names, case-blind -> $pname (as the key spells it) and $peer (its
 # ssh alias); 1 when the key names no such host
 peer_of() {

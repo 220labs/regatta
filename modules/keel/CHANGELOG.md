@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `checkout_physical`, `contract_physical` and `page_physical` stay as inert helpers, and `decision_tier`, `page_parts`, `build` and `render_form` accept and ignore `physical=`, so a branch written before the field was retired keeps its tiers and pages.
+
 - Keep the retired `doc_physical` helper and `dnd_held` argument inert for older Wharf consumers; no contract is read. The picks status fixture now models a published `claude/*` branch locally.
 
 - The sessionpipe gate allows Antigravity tools with empty stdout, including when a private reporting event is dropped; sessionpipe's `{}` is discarded because agy 1.5.2 reads it as a denial. Builder trust checks can derive the exact reporting entries from sheep's own writer and installed gate path.

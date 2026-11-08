@@ -4492,7 +4492,7 @@ def decision_js():
     return ui_asset("decision.js").replace("</script", "<\\/script")
 
 
-def decision_tier(it, lines):
+def decision_tier(it, lines, physical=None):
     """(tier, class): `yours` for anything unclear (reopened, no pick, conditional, unmarked, the older pre-filled
     shape), `held` with dnd_held's class (money, deletion, publish, third party), `irreversible` for `Reversible: no`,
     else `safe` — the four the modes take by (auto safe; dnd safe and irreversible; plain yolo all but yours, an
@@ -5506,7 +5506,7 @@ def ss_anchor(ctx, at, row=None):
     return sid
 
 
-def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False):
+def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False, physical=None):
     """(lines, items, feedback_line, the page's HTML parts, ctx) — `build` renders them, `merge`
     reads ctx["anchors"] to place each note exactly where the page showed it. Every item is a card;
     the feedback section (parse's feedback_section: after the last item) and what follows it are not
@@ -5536,11 +5536,12 @@ def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False
     return lines, items, feedback_line, parts, ctx
 
 
-def build(text, source_name, post=None, figs=None, draw=True):
+def build(text, source_name, post=None, figs=None, draw=True, physical=None):
     return render_form(text, source_name, post=post, figs=figs, draw=draw)[0]
 
 
-def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None):
+def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None,
+                physical=None):
     """The form as one HTML page; returns (html, ctx). `post`: memo serve's answer URL. `sheep`:
     the spacesheep page's footer facts ({rel, sha, branch, read, edit}) — the same form, anchored
     for comments, its Save sent through spacesheep's page bridge (`window.ss.emit("memo-save",
@@ -11721,6 +11722,16 @@ def dnd_held(it, lines, physical=None):
 def doc_physical(p):
     """Compatibility for older Wharf consumers: the retired gate always passes; no file is read."""
     return "- physical: none"
+
+
+def _retired_physical(*_a, **_k):
+    """Compatibility for open branches written before the field was retired (helm's tier and Course
+    readers call these behind hasattr, where a missing name fails silently): always passes. The
+    `physical=` keywords on decision_tier, page_parts, build and render_form are ignored likewise."""
+    return "- physical: none"
+
+
+checkout_physical = contract_physical = page_physical = _retired_physical
 
 
 def yolo(memo, dry=False, today=None, dnd=False):

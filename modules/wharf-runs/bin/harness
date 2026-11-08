@@ -953,6 +953,11 @@ def depth_refusal(vendor):
     return None
 
 
+def physical_ok(root):
+    """Compatibility for open branches written before the `physical:` field was retired: always passes."""
+    return None
+
+
 def guard(req, harness):
     """The shared refusals before any start (exit 2), and req["repo"] made the main checkout. Every vendor's
     run meets the same checks a Claude run does (docs/codex-agy-gaps-2026-10-29.md, D2-A):

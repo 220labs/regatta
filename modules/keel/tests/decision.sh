@@ -127,14 +127,19 @@ import sys
 from importlib.machinery import SourceFileLoader as L
 from unittest.mock import patch
 m = L("compat", sys.argv[1]).load_module()
-lines, items, _ = m.parse(m.Path(sys.argv[2]).read_text())
+text = m.Path(sys.argv[2]).read_text()
+lines, items, _ = m.parse(text)
 with patch.object(m.Path, "read_text", side_effect=AssertionError("contract read")), \
      patch.object(m, "git", side_effect=AssertionError("checkout read")):
     old = m.doc_physical(m.Path("/absent/docs/d.md"))
     print(old == "- physical: none", m.dnd_held(items[0], lines, old) is None,
           m.dnd_held(items[0], lines, object()) is None)
+print(all(f("/absent") == "- physical: none" for f in (m.checkout_physical, m.contract_physical, m.page_physical)),
+      m.decision_tier(items[0], lines, False) == m.decision_tier(items[0], lines),
+      m.build(text, "d.md", draw=False, physical=False) == m.build(text, "d.md", draw=False))
 PY2
-)" "True True True" "older Wharf's helper and three-argument call stay inert, without reading a checkout or contract"
+)" "True True True
+True True True" "older Wharf's and helm's helpers and physical arguments stay inert, without reading a checkout or contract"
 lacks "$T/page.html" 'id="take-D4"' "no Take on a decision R refuses (the owner's own: conditional)"
 lacks "$T/page.html" 'id="take-D5"' "…nor on an unmarked one"
 has "$T/page.html" 'id="take-D1"' "…while a plain pick has it"
