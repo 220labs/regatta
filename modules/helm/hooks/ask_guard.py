@@ -69,7 +69,7 @@ MODE_TEXT = {
            "the run ends a minute after its closing line; the owner's answer comes as a commit, which a later run "
            "of its branch builds on (`ask answer --branch` queues one).",
     "dnd": " This run is in mode dnd: first run `keel yolo --dnd <doc>` — it takes every bare pick but the "
-           "held classes (money, physical, a deletion or publish, a third party, no pick, conditional, "
+           "held classes (money, a deletion or publish, a third party, no pick, conditional, "
            "unmarked, reopened) — and relay only what it prints as held.",
     "yolo": " This run is in mode yolo: run `keel yolo <doc>` — it takes every bare pick, Reversible: no "
             "included — and relay only an item it stops at (no pick, a conditional or reopened one).",

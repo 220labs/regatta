@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the retired repo-wide physical class from the dnd ask-guard guidance and fixture contracts.
+
 - A lander closing line belongs to the landing rules; the run rules never retry it as abandoned
   work or classify it as an unknown ending (stuck-ships S7).
 - Vendor stalls read the launcher's end and last reply, including between turns with no vendor child. Builder hosts are read through `regatta/fleet-ssh`; failed, held and capped builds are raised from their recorded outcome, and a queued finish is left to its claiming owner's landing.
