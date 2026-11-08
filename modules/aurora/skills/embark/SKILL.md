@@ -48,8 +48,8 @@ is a D-item in the memo, answered on its course (the 10-24 memo's D2-A, 2026-10-
 - One screen: the memo's hand-over line as `keel line <doc>` prints it, then three lines that matter
   most across its items, and how many items are `Reversible: no` (those are worth the minutes).
 - The list the stand sweep cannot take is counted in the memo; each of those docs is answered on its
-  own course (`keel line <doc>`), never here. A doc in a physical repo stands on the owner's one word:
-  `keel stand <doc>` writes its `Stands:` line, and the sweep takes its `Reversible: yes` picks 24 h later.
+  own course (`keel line <doc>`), never here. The owner can move a doc's deadline with
+  `keel stand <doc>`; the sweep still takes only its `Reversible: yes` picks.
 - Then wait for the answers: `<regatta> keel sheep wait <doc>` as the session's background shell. It
   exits on a Save, taken in, or on new comments, printed and not taken in: answer a question with
   `keel sheep reply`, take answers in with `keel sheep pull <doc> --write`, as the keel skill says
