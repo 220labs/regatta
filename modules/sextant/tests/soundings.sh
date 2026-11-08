@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # soundings: Sextant's sounding queue (the Sounding design's S7). Scratch dirs only: a pool of
-# proposals, two repos (one `physical: none`, one not), a fake origin; no network, no model.
+# proposals, a repo without a contract file, a fake origin; no network, no model.
 #   bash modules/sextant/tests/soundings.sh
 set -u
 D="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,14 +17,14 @@ prop() {  # prop <slug> <status> <repo or -> [no-launch]
     [ "${4:-}" = no-launch ] || { printf '## Launch test\n- gain: one page a week saved\n'; [ "$3" = - ] || printf -- '- repo: %s\n' "$3"; printf -- '- first step: a worker writes the page\n\n'; }
     printf '## Log\n- 2026-10-20 created\n'; } > "$T/pool/proposals/$1.md"
 }
-mkrepo() {  # mkrepo <dir> <physical>
-  git init -q -b main "$1"; printf -- '- physical: %s\n' "$2" > "$1/AGENTS.md"
+mkrepo() {  # mkrepo <dir>
+  git init -q -b main "$1"; echo base > "$1/base.txt"
   git -C "$1" add . && git -C "$1" -c user.name=t -c user.email=t@t commit -qm init
   git init -q --bare "$1.git"; git -C "$1" remote add origin "$1.git"; git -C "$1" push -q origin main
 }
-mkrepo "$T/calm" none; mkrepo "$T/live" desk
+mkrepo "$T/calm"
 for s in a b c d e f; do prop "$s" ready "$T/calm"; done
-prop nolaunch ready "$T/calm" no-launch; prop norepo ready -; prop seed seed "$T/calm"; prop phys ready "$T/live"
+prop nolaunch ready "$T/calm" no-launch; prop norepo ready -; prop seed seed "$T/calm"; prop missing ready "$T/missing"
 
 echo "add — the owner's pick"
 out=$(CLAUDE_UNATTENDED=dispatch S add a 2>&1); check $? 1 "an unattended caller cannot queue (nothing queued unasked)"
@@ -36,14 +36,14 @@ S add a >/dev/null 2>&1; check $? 1 "a second add of a queued entry is refused"
 S add nosuch >/dev/null 2>&1; check $? 1 "a proposal that does not exist is refused"
 S add ../x >/dev/null 2>&1; check $? 1 "a slug that is not one is refused (no path out of proposals/)"
 out=$(S add seed); has "$out" "held until it clears: the proposal is \`status: seed\`, not ready" "a seed can be queued, held, and says why"
-for s in nolaunch norepo phys b c d e f; do S add "$s" >/dev/null; done
+for s in nolaunch norepo missing b c d e f; do S add "$s" >/dev/null; done
 S add --branch x a >/dev/null 2>&1; check $? 2 "--branch without --now is a usage error"
 
 echo "next — the gates, the caps, the stagger"
 j=$(S next --json)
 py() { printf '%s' "$j" | python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 check "$(py "d['room']")" 3 "nothing dispatched or open: room for three this week"
-check "$(py "' '.join(o['slug'] for o in d['dispatch'])")" "a b c" "the three oldest that clear the gates, in the order queued"
+check "$(py "' '.join(o['slug'] for o in d['dispatch'])")" "a b c" "the three oldest that clear the gates, with no contract file, in the order queued"
 check "$(py "' '.join(o['at'] for o in d['dispatch'])")" "reset reset+30 reset+60" "staggered at the reset, never further ahead"
 check "$(py "d['dispatch'][0]['topic']")" "sounding-a" "the topic is sounding-<slug>"
 has "$(py "d['dispatch'][0]['commands'][2]")" "--at reset --if-room" "dispatch carries --if-room: the week is read at fire time"
@@ -51,7 +51,7 @@ held=$(py "'|'.join(h['slug'] + ': ' + h['why'] for h in d['held'])")
 has "$held" "nolaunch: the proposal has no \`## Launch test\` section" "held: no Launch test"
 has "$held" "norepo: its Launch test names no \`repo:\`" "held: no repo"
 has "$held" "seed: the proposal is \`status: seed\`, not ready" "held: not ready"
-has "$held" "phys: $T/live's contract must say \`physical: none\` (it says: - physical: desk)" "held: a repo that is not physical: none"
+has "$held" "missing: its repo $T/missing is not a git checkout here" "held: a repo missing from this host"
 has "$held" "d: the caps: 3 of 3 dispatched" "held: past the week's three"
 
 echo "brief — the seeded run's brief"

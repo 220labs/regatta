@@ -34,10 +34,10 @@ an ancestor of main, or `git cherry` finds every commit's patch there, or every 
 has the same blob on main. A proposal whose sounding came back `disproved` is parked by the
 sounding's own run; `refresh` reads a proposal's `status: parked` and parks its entry too.
 
-Three gates hold a queued entry back, each named in `next`: the proposal is `status: ready` with a
-`## Launch test` section; that section's `repo:` line names a repo (a path, or a folder under the
-projects dir); the repo's contract says `physical: none` (dispatch's own test, read the same way).
-The third gate of the design — the owner put it there — is `add` itself.
+The gates holding a queued entry back are named in `next`: the proposal is `status: ready` with a
+`## Launch test` section; that section's `repo:` line names a local git checkout (a path, or a folder
+under the projects dir).
+The design's last gate — the owner put it there — is `add` itself.
 
 Where things are: the queue is `soundings.json` in the ideas pool's folder (Sparks' pool_dirs(): the
 first topic-split notes folder its configs name), SOUNDINGS_QUEUE over it; the proposals are that
@@ -165,18 +165,6 @@ def repo_of(launch):
     return r if r.is_absolute() else projects() / r
 
 
-def physical_none(repo):
-    """dispatch's physical_ok(), read the same way: the first `- physical:` line of AGENTS.md, then CLAUDE.md."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        try:
-            for line in (repo / name).read_text().splitlines():
-                if line.startswith("- physical:"):
-                    return line.startswith("- physical: none"), line.strip()
-        except OSError:
-            continue
-    return False, "nothing"
-
-
 def gates(slug):
     """(repo, None) when every gate holds, else (repo or None, why)."""
     got = proposal(slug)
@@ -192,9 +180,6 @@ def gates(slug):
         return None, "its Launch test names no `repo:`"
     if not (repo / ".git").exists():
         return repo, f"its repo {repo} is not a git checkout here"
-    ok, said = physical_none(repo)
-    if not ok:
-        return repo, f"{repo}'s contract must say `physical: none` (it says: {said})"
     return repo, None
 
 
