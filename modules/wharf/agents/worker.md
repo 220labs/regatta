@@ -19,7 +19,7 @@ does not make, stop and return the question; that slice belongs to `sr-worker`. 
 
 **Before the first edit.**
 - Read the project's `AGENTS.md` (else `CLAUDE.md`): the session contract names its `check`,
-  its `live` systems, its `physical` limits and its traps. They bind you as they bind the parent.
+  its `live` systems, its limits and its traps. They bind you as they bind the parent.
   A project that keeps Sonnet out of its builds (its AGENTS.md says so, until a builder bench passes) is
   not yours to work in: stop and say so.
 - You work in a worktree the parent made for you. First action, unless the branch is already

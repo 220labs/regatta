@@ -2,11 +2,15 @@
 
 ## Unreleased
 
+- Keep the no-core checkpoint fixture outside temporary directories' inherited git markers; its Edit is only a hook payload and writes no file.
+
 - `pr stuck [--json] [--dry-run]` reads ready agent PRs on the repo's one yard (else the laptop), reports
   required reds by source and requests local DIRTY re-finishes for the tick. List conflicts stay with
   `pr restack`. Unarmed heads rerun only a non-skipped automerge workflow, through the lander's rerun cap;
   held PRs and live runs get no action. Protection contexts come from the repo's file, now excluded from
   autofinish. Offline cases cover the real cap parser/store, check history, trigger grace and dry restack.
+
+- Drop `physical:` from project templates, finish guidance and agent instructions; dnd landing checks no longer require the field.
 
 - A finish's closing line follows who owns its next move: the lander only after `lander armed`
   succeeds, a successful skipper relay, or the owner with the external-finish command. Session

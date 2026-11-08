@@ -206,7 +206,7 @@ else
   lacks "$T/sw-mlow.out" "READIED" "    and it stays a draft"
   mplan dnd; state dnd 5e55-run
   PLANS_DIR="$T/mplans" sw run "$T/sw-mdnd.out" ready --title t --body-file /dev/null
-  has "$T/sw-mdnd.out" "touches a gate (held: a physical repo" "  a dnd launch: its held slice is read (here the contract has no physical: none)"
+  has "$T/sw-mdnd.out" "READIED" "  a dnd launch with no held changes is readied without a contract field"
   # follow-ups item 4: with no mode now, the re-check reads the mode landing() judged the start by, never a bare by: yolo
   mkdir -p "$T/noplans"
   state yolo 5e55-run

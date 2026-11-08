@@ -106,8 +106,8 @@ step 4 counts them as answered, and the report lists them first. Whether this ru
 yours to judge: `autofinish-run` read the ship's mode from `plan.json` (only the owner raises it) and the
 held slice before it started you, and said so in the prompt. **Without `--hold`** — the mode is the
 yes: step 11 takes the laptop's path on any host, `bin/pr merge` included, and the report ends with
-the rollback line `pr merge` prints. **With `--hold`** — mode `ask`, the dnd slice (money, a physical
-repo, a public publish, a deletion of data, a gated path), a mode lowered since, or the keel's no (a ship's `--hold`, S6): step 11.3 as `bin/pr
+the rollback line `pr merge` prints. **With `--hold`** — mode `ask`, the dnd slice (money, a public
+publish, a deletion of data, a gated path), a mode lowered since, or the keel's no (a ship's `--hold`, S6): step 11.3 as `bin/pr
 ready --hold --body-file <report>`, always `--hold` (automerge would otherwise launch what the owner never
 saw; harmless where none runs), no step 11.4 — `bin/pr merge` is denied to this run. The reason is
 `hold` in `<git dir>/claude/autofinish.json`; put it in the report's first line. Then `rm` the
@@ -136,7 +136,6 @@ the name, so this hand-off is how a project keeps a specialised version.)
   which is itself worth an open item.
 - `live:` what live system runs *deployed* state and the command that shows drift — or
   `none` (git is the only state).
-- `physical:` a heavier sweep that acts on the real world — the owner's to run, never this one's.
 - `learnings:` where each kind of finding goes in this project.
 - `open-items:` where open items are recorded (default: `TODO.md` plus any heading matching
   `open|still manual`).
@@ -286,9 +285,8 @@ session's work sharing the branch — note them; they're reported separately.
    step 11.3 cannot launch until the check passes and the review is clean. The local road
    runs both here, with the review alongside its check.
 
-   A confidential repo, `/finish --local`, or a contract whose checks need deployed `live:` or
-   `physical:` state uses `check <this worktree> --local` here and after a changed rebase.
-   Never run the `physical:` sweep here; its owner-run verification remains separate. A `live:`
+   A confidential repo, `/finish --local`, or a contract whose checks need deployed `live:`
+   state uses `check <this worktree> --local` here and after a changed rebase. A `live:`
    deployment/drift command below stays local even when the code check uses CI. Unavailable CI
    explains its local fallback in one line. Local suites use the scoped line and pass memory
    under `CHECK_SLOTS`; `--only <script>…` reruns named failures locally, and `--full --fresh`
@@ -408,9 +406,9 @@ session's work sharing the branch — note them; they're reported separately.
         verifier's file> <this worktree>` reads them, one line each: `fix` — no choice, fix it; `take` — a
         choice whose `➤ Recommended:` pick this run takes: marked `Reversible: yes`, no conditional pick,
         none of keel's held classes in its fix (`DND_HOLDS`: money, a deletion, a public publish, a third
-        party's answer) and the contract's `physical:` is `none` (keel's `yolo --dnd` rule, `dnd_held`);
-        `stop` (exit 5) — `Reversible: no` or unmarked, no pick, a conditional pick, a held class, a
-        physical repo: the stop below, once the rest is fixed. Write each pick taken as `Taken unattended
+        party's answer), by keel's `yolo --dnd` rule, `dnd_held`;
+        `stop` (exit 5) — `Reversible: no` or unmarked, no pick, a conditional pick or a held class:
+        the stop below, once the rest is fixed. Write each pick taken as `Taken unattended
         (the landing by <the launch's by>, <date>): <pick> — <file:line>: <the claim>` (the `by` in
         `autofinish.json`; e.g. `the landing by handed`) under a **Taken unattended** heading at the top of
         the step 10 report, which step 11.3 makes the PR body, and fix by it.
@@ -455,9 +453,8 @@ session's work sharing the branch — note them; they're reported separately.
    There, also match `git diff --name-only main...HEAD` against `in_place` now, and take any
    hit off the branch before step 5: `--in` refuses it at the end.
 
-2. **Did this branch change behaviour the `physical:` sweep covers?** If so, say so in the
-   Phase 3 report and recommend the owner run it when it suits — it is theirs to trigger. Every
-   new behaviour gets a test case; a new one with no case is an open item for step 4.
+2. **Does every new behaviour have a test case?** A new behaviour with no case is an open
+   item for step 4.
 
 3. **Learnings go into the repo** (not just memory — the repo is what survives). Review
    the branch's prompts, diffs and this conversation for anything a future session would
@@ -614,7 +611,6 @@ session's work sharing the branch — note them; they're reported separately.
      state toggled, nothing in the log). `inferred` items go in their own **Unverified**
      list. A notification, a sound or a physical movement nobody observed is always
      `inferred`, whatever the system's state says.
-   - whether the `physical:` sweep is worth the owner's time (step 2)
    - a principal build (step 1's `principal:` line): the `principal-worker`'s pre-mortem and Receipt,
      verbatim from its hand-back, and the commit the review gate reviewed; a Receipt whose commit is
      older than the branch's tip says so. A dispatched principal run has no hand-back: quote them from

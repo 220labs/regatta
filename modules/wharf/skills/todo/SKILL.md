@@ -110,8 +110,7 @@ not answer — confirmed from its log over ssh (dispatch's header, Where; the ow
 pre-filled VS Code tab: dispatch is the default. dispatch refuses a chain past five runs, a full run
 cap, and an unattended run's `--next` on the brief it started from: then end naming what it waits
 on. The only other exceptions: the brief names a precondition — an answer from the owner, the owner's
-identity, something to wait for — or dispatch refuses the repo (its contract is not `physical:
-none`). A precondition: nothing starts, and the reply says what it waits on. A refused repo: `pickup
+identity, something to wait for — or the repo is outside the worktree workflow (pickup and the Stop lint do not dispatch there, and a run's work there is never pushed). A precondition: nothing starts, and the reply says what it waits on. A refused repo: `pickup
 open '<branch>' --fresh` opens the pre-filled tab, the one place one is left. End the turn with one line:
 `Follow-up handed off: <topic> — <branch> (<repo>); dispatch started it on <host>, log <path>` or
 `… not dispatched, waits on <what>; start it with dispatch '<branch>' --next
