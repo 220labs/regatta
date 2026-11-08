@@ -107,6 +107,8 @@ def peer_exe(name):
 RETRIES = 2                      # D4 = C: two per step
 BACKOFF = (10 * 60, 40 * 60)     # before retry 1, before retry 2 (header)
 DRY_AFTER_ARM = 3 * 3600         # the owner's precedent for autofinish (2026-10-05), D4-B's gate kept
+LANDER_ROADS = False             # stuck-ships S3 sets it True with the tick's lander roads; until then
+                                 # `autofinish-run lander armed` reads no road here and a stop ends 🛑 (S7)
 REFUSALS = 6                     # tool refusals of one stall before it is raised (a loop is never the answer)
 # autofinish-run's refuse() line when this Mac's own pick finds no login with room (start_here): the wait a
 # usage-limit S4 owes, never the tool's verdict on the stall, so it is neither counted nor moves the backoff.
@@ -787,15 +789,26 @@ def follow_up(mem, res, t, write, mode_now):
     return out
 
 
+def _owned_hosts(host):
+    if not host:
+        return set()
+    h = host.lower()
+    return {h, h + "-antigravity", h + "-codex"}
+
+
 def acted_elsewhere(res):
     """The hosts whose stalls this tick must not act on (stalls.self_judging, carried in the judge's
     result): each yard but this one; every host but this one while the registry does not read, and
-    on a yard (its own store only: a yard whose ssh row names the laptop must not act on its runs)."""
+    on a yard (its own store and local builder rows only: a yard whose ssh row names the laptop must not act on its runs)."""
     me = helmlib.host()
-    others = {s.get("host") for s in res.get("stalls", []) + res.get("unsure", []) if s.get("host") != me}
-    if res.get("registry_torn") or me in helmlib.yard_hosts()[0]:
+    mine = _owned_hosts(me)
+    others = {s.get("host") for s in res.get("stalls", []) + res.get("unsure", [])
+              if s.get("host") and str(s.get("host")).lower() not in mine}
+    if res.get("registry_torn") or (me and me.lower() in {y.lower() for y in helmlib.yard_hosts()[0]}):
         return others
-    return set(res.get("self_judging") or []) - {me}
+    sj = set(res.get("self_judging") or [])
+    sj_owned = {b for y in sj for b in _owned_hosts(y)}
+    return {y for y in sj if y.lower() not in mine} | {h for h in others if str(h).lower() in sj_owned}
 
 
 def tick(dry_run=False, peer=True):
@@ -1078,11 +1091,12 @@ def wanted(res, decisions, mem, t):
     guarded, ladder, floor, frozen}; what of the yard's ships could not be read this pass (no lease reader:
     ships False; a ship unread: its id); and the ekeys read as answered, or no longer the owner's, this pass."""
     me = helmlib.host()
+    mine = _owned_hosts(me)
     out = {}
     for s, line, _ in decisions:
         verdict = line.get("would") if line.get("action") == "dry" else line.get("action")
         cls = s.get("class") or "unsure"
-        if verdict != "raise" or s.get("host") != me or cls in NEVER or s.get("raise_to") in stalls.RAISE_TO_SKIPPER:
+        if verdict != "raise" or str(s.get("host") or "").lower() not in mine or cls in NEVER or s.get("raise_to") in stalls.RAISE_TO_SKIPPER:
             continue
         since = mem.first_t(ident(s)) or t
         g = bool(s.get("guarded"))

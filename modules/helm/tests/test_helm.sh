@@ -906,7 +906,7 @@ PY
   HR="$T/held-projects"; mkdir -p "$HR"; git init -q -b main "$HR/regatta"; git -C "$HR/regatta" commit -q --allow-empty -m i
   git -C "$HR/regatta" branch claude/h1; git -C "$HR/regatta" branch claude/h2
   mkdir -p "$HR/regatta/.git/claude"; NOWISO=$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))')
-  printf '%s stopped claude/h1 held held (money in the diff (docs/x.md: $40)): ⚠ step 11 — held: PR #12 waits for Sam'"'"'s tap\n%s stopped claude/h2 held held (mode ask — nothing lands by itself): ⚠ step 11 — held\n%s launched claude/h2 #13\n%s stopped claude/gone held held (a physical repo): x\n' \
+  printf '%s stopped claude/h1 held held (money in the diff (docs/x.md: $40)): ⚠ step 11 — held: PR #12 waits for Sam'"'"'s tap\n%s stopped claude/h2 held held (mode ask — nothing lands by itself): ⚠ step 11 — held\n%s launched claude/h2 #13\n%s stopped claude/gone held held (a gated path): x\n' \
     "$NOWISO" "$NOWISO" "$NOWISO" "$NOWISO" > "$HR/regatta/.git/claude/autofinished"
   hc=$(CLAUDE_REPOS_JSON="$T/s5-repos.json" python3 - "$B" "$HR" <<'PY'
 import sys
@@ -1269,6 +1269,19 @@ SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's launch (autofinish-run
   check "$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json | python3 -c "import json,sys; print([s['class'] for s in json.load(sys.stdin)['stalls'] if s['topic']=='handed-step'])")" \
     "[]" "  its launch started: no card here (a launch that stops is S4 or S5)"
   rm -f "$R/14-handed.json" "$HOME/.claude/projects/-t/sid-handed-step.jsonl"
+  # stuck-ships S7: the landing record owns a lander stop. Never retry it as a pending build,
+  # or classify its ending as unsure, after the minute that releases the finish's lock.
+  git -C "$D" branch claude/t/2026-10-14-lander-step
+  rec 14-lander.json lander-step started=$((now-7200)) ended=$((now-3600)) "end_reason=idle 1 min"
+  say sid-lander-step "⚠ step 1 — review findings remain.
+
+⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
+  check "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import stalls; print(stalls.reply_kind(sys.argv[2]))' "$B" \
+    "⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3")" "waiting on the lander" "reply_kind maps the lander by name"
+  lj=$(STALLS_PEERS=buildbox=fake STALLS_SSH="$T/ssh-ok" python3 "$B/stalls.py" --json)
+  check "$(echo "$lj" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['class'] for x in d['stalls'] + d['unsure'] if x['topic']=='lander-step'])")" \
+    "[]" "an ended lander stop leaves its next move to the landing rules, never a build retry"
+  rm -f "$R/14-lander.json" "$HOME/.claude/projects/-t/sid-lander-step.jsonl"
   printf '{"pid": %s, "sessionId": "mgr-1", "status": "busy", "statusUpdatedAt": %s000}' "$$" "$now" > "$T/sess/mgr.json"
   check "$(python3 "$B/stalls.py" --json | python3 -c "import json,sys; s=[x for x in json.load(sys.stdin)['stalls'] if x['class']=='S7'][0]; print(s['raise_to'], s['column'])")" \
     "skipper Blocked" "  S7 goes to its skipper (raise_to, rename S5) while that session is live"
@@ -1670,7 +1683,7 @@ PY
   # Claude Code registry files in the worktrees; the real bin/harness and orca adapter read them.
   # Run run_h holds harness-run steps (each Task titled with its branch: ours); run_p a plan's Run.
   X8="$T/b8"; O="$X8/repos/orcademo"; mkdir -p "$O" "$X8/ws"
-  git -C "$O" init -q -b main; printf -- '- physical: none\n' > "$O/AGENTS.md"; git -C "$O" add AGENTS.md; git -C "$O" commit -q -m x
+  git -C "$O" init -q -b main; printf -- '# Test repository\n' > "$O/AGENTS.md"; git -C "$O" add AGENTS.md; git -C "$O" commit -q -m x
   for w in gone fx cb ext unv busy late rep stop old retried ask scratch; do
     git -C "$O" worktree add -q "$X8/ws/$w" -b "claude/laptop/2026-10-16-$w-step"; done
   mkdir -p "$X8/ws/ask/docs"; printf '# q\n\n- **D1 — which port**\n\n  ➤ Answer:\n' > "$X8/ws/ask/docs/q.md"
@@ -2981,7 +2994,7 @@ EOF
 chmod +x "$S7/bin/ssh" "$S7/yhome/modules/wharf-runs/bin/wharf" "$S7/yhome/modules/helm/libexec/helm"
 gt() { git -C "$1" "${@:2}"; }
 mkdir -p "$S7/seed/.claude"; git init -q -b main "$S7/seed"
-echo '{"checkpoint": true}' > "$S7/seed/.claude/workflow.json"; printf '# sendrepo\n\n- physical: none\n' > "$S7/seed/AGENTS.md"
+echo '{"checkpoint": true}' > "$S7/seed/.claude/workflow.json"; printf '# sendrepo\n\n' > "$S7/seed/AGENTS.md"
 gt "$S7/seed" add -A; gt "$S7/seed" commit -qm init
 git clone -q --bare "$S7/seed" "$S7/origin.git"
 SR="$HOME/projects/sendrepo"; mkdir -p "$HOME/projects"; git clone -q "$S7/origin.git" "$SR" 2>/dev/null

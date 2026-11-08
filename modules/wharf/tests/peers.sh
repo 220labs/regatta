@@ -4,6 +4,8 @@
 # caller takes the fallback its comment names — never a stack trace. Scratch paths only.
 #   bash modules/wharf/tests/peers.sh
 set -u
+unset CLAUDE_CODE_SESSION_ID CLAUDE_UNATTENDED REGATTA_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+for v in $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 M="$(cd "$(dirname "$0")/.." && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
@@ -46,5 +48,36 @@ check "$(rpy "$T/reg/overlay/repos.json" "sys.path.insert(0, \"$T/tree/modules/w
       "('secret',) True False" "G32: session_status's guard is the registry's list, with no helmlib (or planlib)"
 check "$(rpy "$T/reg/bare.json" "sys.path.insert(0, \"$T/tree/modules/wharf/bin\"); import session_status as s; print(s.GUARDED)" 2>&1 | tail -1)" "()" \
       "  a registry without the list, and no helmlib (or planlib): nothing named guarded (a stranger's default)"
+
+echo "closing classes: the core table and wharf agree (stuck-ships S7)"
+for owner in "" Sam; do
+  mkdir -p "$T/cfg/regatta"; printf '%s\n' "$owner" > "$T/cfg/regatta/owner"
+  check "$(py 'sys.path.insert(0, sys.argv[1] + "/../bin"); import session_status as s, common
+cases = ((common.LANDER_PREFIX + "fix round 1 of 3", "lander", s.LANDER, "⏳"),
+         (common.PENDING_PREFIX + "the lander’s suite (test_lander.sh), then the two reviewers", "pending", s.PENDING, "⏳"),
+         (common.HANDOVER_LINE, "handed", s.HANDED, "⏳"),
+         (common.PENDING_PREFIX + "the reviewers", "pending", s.PENDING, "⏳"),
+         (common.WAITING_PREFIX + "settle the check red on main", "waiting", s.WAITING, "🛑"),
+         ("RELAYED TO skipper-1 — the open item", "relayed", s.RELAYED, "⏳"),
+         (common.FINISH_LINES[0], "done", s.DONE, "✅"),
+         (common.IDLE_PREFIX + "answered", "idle", s.DONE, "✅"))
+for line, kind, status, mark in cases:
+    text = common.marked(kind, line)
+    print(common.ending(text)[0] == kind, common.ending_mark(text) == (mark, mark), s.closing(text) == status)
+line = common.marked("lander", cases[0][0])
+print(common.ending(line + "\n[doc](/tmp/course.md)")[0] == "lander",
+      common.ending("```\n" + line + "\n```")[0] is None,
+      common.ending(line + "\nMore prose.")[2][0] == "after",
+      common.closing_kind(common.PENDING_PREFIX + "the reviewers, then " + cases[0][0]) == "pending")')" \
+"True True True
+True True True
+True True True
+True True True
+True True True
+True True True
+True True True
+True True True
+True True True True" "classes, marks and ending boundaries, owner=[$owner]"
+done
 
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }

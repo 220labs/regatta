@@ -31,8 +31,15 @@ export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1
 # a recursive delete under HOME goes through rm_own: only under this suite's own $T, so a block of the
 # suite run outside it (its HOME the real one; F2, 2026-10-25) deletes nothing (the core's check, home_rm)
 rm_own() { local p; for p; do case "$p" in */..|*/../*|*//*) ;; "${T:?}"/?*) rm -rf -- "$p"; continue ;; esac; echo "rm_own: refused $p, outside $T" >&2; return 1; done; }
-# the suite runs inside Claude sessions and dispatch runs: their markers gate `arm` and `override`
-unset CLAUDECODE CLAUDE_UNATTENDED REGATTA_UNATTENDED
+# the suite runs inside Claude sessions and dispatch runs: their markers and chain env gate `arm`, `override` and `landing`
+unset CLAUDECODE CLAUDE_UNATTENDED REGATTA_UNATTENDED AUTOFINISH_CALLER_UNATTENDED \
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS CLAUDE_CODE_SESSION_ID ASK_ACCOUNT \
+      DISPATCH_MODE DISPATCH_SHIP DISPATCH_PLAN DISPATCH_PLAN_SPACE DISPATCH_TASK DISPATCH_LABEL \
+      DISPATCH_HOST DISPATCH_REPO DISPATCH_SKIPPER DISPATCH_MANAGER DISPATCH_SKIPPER_HOST \
+      DISPATCH_MANAGER_HOST DISPATCH_SKIPPER_ACCOUNT DISPATCH_MANAGER_ACCOUNT DISPATCH_ORIGIN \
+      DISPATCH_PIN DISPATCH_HOST_PIN DISPATCH_HOST_PREFER DISPATCH_QUEUE_BIN
+unset $(compgen -v | grep '^DISPATCH_')
+for v in $(env | sed -n 's/^\(DISPATCH_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 # Since E1 is wired, start_runner starts a real claude session: no test may reach it. Every
 # case runs against this recording stub unless it names its own.
 printf '#!/bin/sh\necho "$1 $2" >> "%s"\n' "$T/default-runner.calls" > "$T/default-runner"; chmod +x "$T/default-runner"
@@ -66,6 +73,15 @@ if [ "\$1" = landing ]; then  # \`keel landing\` (entry S7), unlogged: the calls
   f=\$(grep -l '^Steps: ' docs/handoff/*.md 2>/dev/null | head -1)
   [ -n "\$f" ] && { echo "open step: \$f names docs/course.md S2 — not started"; exit 1; }
   echo "landing: no brief on this branch names an open step"; exit 0
+fi
+if [ "\$1" = parse ]; then  # \`keel parse\` (gate-asks S1), unlogged: the calls log is status and stand
+  case "\$2" in
+    *partstood*|*halfdue*) echo '{"items": [{"id": "D1", "settled": true}, {"id": "D2", "settled": false}]}'; exit 0;;
+    *due*|*stands*|*my\ doc*) echo '{"items": [{"id": "D1", "settled": false}]}'; exit 0;;
+    *answered*|*taken*|*stood*) echo '{"items": [{"id": "D1", "settled": true}]}'; exit 0;;
+  esac
+  [ -f "$B/../../keel/bin/keel" ] && exec python3 "$B/../../keel/bin/keel" "\$@"
+  echo '{"items": []}'; exit 0
 fi
 for a; do doc=\$a; done
 echo "\$*" >> "$T/memo.calls"
@@ -255,6 +271,16 @@ session pending idle "$(wtp $D pending)"
 mk $D pending-gone docs/pgone.md "x"; reply pending-gone "Reviewers started.
 
 SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers; it continues by itself"
+mk $D lander docs/lander.md "x"; reply lander "Machine stop.
+
+⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
+session lander idle "$(wtp $D lander)"
+mk $D lander-gone docs/lgone.md "x"; reply lander-gone "Machine stop.
+
+⏳ SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3"
+mk $D relayed docs/relayed.md "x"; reply relayed "Skipper stop.
+
+⏳ RELAYED TO skipper-1 — the open item"
 # dispatch-queue S3: the queue's closing line, no session on the branch, its step an entry in the queue
 mk $D pending-queued docs/pqueued.md "x"; reply pending-queued "Queued.
 
@@ -497,6 +523,9 @@ check "$(line $O asks)" "skip: last reply asks (ends in ?)" "the last reply asks
 check "$(line $O waiting)" "skip: waiting for Sam (last reply ends in the WAITING line)" "the WAITING line"
 check "$(line $O pending)" "skip: waiting on its own work (last reply ends in the WAITING FOR SOMETHING line)" "  and WAITING FOR SOMETHING: never launched under its live session"
 check "$(line $O pending-gone)" "start (A)" "  …but with its session gone nothing picks it up: no veto"
+check "$(line $O lander)" "skip: waiting on the lander (last reply ends in the lander line)" "  the lander owns the next move under a live session (stuck-ships S7)"
+check "$(line $O lander-gone)" "skip: waiting on the lander (last reply ends in the lander line)" "  …and after it ends: no sweep launch beside the tick"
+check "$(line $O relayed)" "skip: waiting on its skipper (last reply ends in the RELAYED line)" "  the skipper owns a relayed stop, even after its run ends"
 check "$(line $O pending-queued)" "skip: its next step waits in dispatch's queue (fleet:x--queued queued)" \
   "  …unless its step waits in dispatch's queue, session or none (dispatch-queue S3: the queue-first rule)"
 check "$(line $O plain-queued)" "skip: its next step waits in dispatch's queue (fleet:x--queued queued)" \
@@ -804,6 +833,18 @@ json.dump({"accounts": [
     {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50, "week_max": 70}},
     {"label": "acct-a", "home": home + "/.claude", "primary": True, "rules": {"window_max": 50}, "tenant": "own"}],
     "tenants": {"own": {"repos": ["smallrepo"]}}}, open(f, "w"))
+# each home signed in (lighthouse's login guard: account never picks a home with no login), by uuid alone: the
+# logins file describes no row, so no e-mail is compared and the primary is judged as before
+for d in (home + "/.acct-c", home + "/.claude"):
+    cj = home + "/.claude.json" if d == home + "/.claude" else d + "/.claude.json"
+    try:   # merged in: the file keeps what trust-projects wrote there
+        cur = json.load(open(cj))
+    except (OSError, ValueError):
+        cur = {}
+    cur = cur if isinstance(cur, dict) else {}
+    cur["oauthAccount"] = {"accountUuid": "u-" + d.rsplit("/", 1)[1].strip(".")}
+    json.dump(cur, open(cj, "w"))
+    json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(d + "/.credentials.json", "w"))
 for d, wk, fh in ((home + "/.acct-c", iw, i5), (home + "/.claude", dw, d5)):
     json.dump({"at": at, "limits": {"five_hour": fh, "seven_day": wk, "five_hour_resets": now + 3600,
                                     "seven_day_resets": now + 3 * 86400, "locked": []}}, open(d + "/usage-probe.json", "w"))
@@ -811,7 +852,8 @@ EOF
 }
 # a probe would run this stand-in claude: a judging that is no start must never reach it
 printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$T/probed" > "$T/probe-claude"; chmod +x "$T/probe-claude"
-export ACCOUNT_NOW=$NOW ACCOUNT_CLAUDE="$T/probe-claude"
+echo '{"logins": {}}' > "$T/logins.json"
+export ACCOUNT_NOW=$NOW ACCOUNT_CLAUDE="$T/probe-claude" ACCOUNT_LOGINS="$T/logins.json"
 AP() { ACCOUNTS_FILE="$T/accounts.json" CLAUDE_TIER_CLAUDE_JSON="$T/tier-tight.json" python3 "$B/autofinish" --dry-run "$@"; }
 pool 6 85 10 10; AP demo > "$T/out-w" 2>&1; AP smallrepo >> "$T/out-w" 2>&1
 check "$(line "$T/out-w" a-ok)" "start (A)" "acct-c at 6 % runs A, though this login's own week reads 85 %"
@@ -1441,7 +1483,7 @@ fi
 
 echo "the landing ladder (skipper-modes S3b): rule M for a dnd or yolo branch, held_slice for what it holds"
 newrepo modes '{"checkpoint": true, "main": "main", "records": ["docs/"], "autofinish_exclude": ["hooks/"]}'
-mkdir -p .helloworld && printf -- '- check: true\n- physical: none\n' > AGENTS.md && printf '# published\npub.md\n' > .helloworld/allowlist.txt
+mkdir -p .helloworld && printf -- '- check: true\n' > AGENTS.md && printf '# published\npub.md\n' > .helloworld/allowlist.txt
 echo '{"a": 1}' > docs/old.json && git add -A && git commit -qm "contract, twin, data" && git push -q origin main
 cd "$T" || exit 1
 M=modes; RUNS="$HOME/Library/Logs/claude-weekly/run-seed-runs"; mkdir -p "$RUNS"
@@ -1511,7 +1553,7 @@ check "$(sed -n 8,9p "$T/held" | tr '\n' '|')" "a gated path (hooks/h.py: autofi
 check "$(sed -n 10p "$T/held")" "a public publish (pub.md goes to the public twin)" "dnd holds a path the public twin's allowlist publishes"
 check "$(sed -n 11p "$T/held")" "a deletion of data (docs/old.json)" "dnd holds a deleted data file"
 check "$(sed -n 12,13p "$T/held" | tr '\n' '|')" "an answer taken under yolo, the ship now dnd (docs/y.md)|None|" "dnd holds a yolo-taken answer (no holds were applied to it); yolo lands it"
-check "$(sed -n 14p "$T/held")" "a physical repo (physical: no line in the contract)" "dnd in a repo whose contract has no physical: none holds"
+check "$(sed -n 14p "$T/held")" "None" "dnd in a repo with no contract field lands plain work"
 check "$(sed -n 15p "$T/held")" "the launcher's own gate (hooks/h.py)" "yolo still holds the launcher's own gates: no branch lands the gate it is judged by"
 check "$(sed -n 16p "$T/held")" "dnd sweep" "runner_by for rule M: the branch's mode, or sweep where it has none (the runner then holds)"
 # a sibling repo's newer record of the same branch name, in mode ask, is not this branch's (re-review of the landing fixes)
@@ -1642,6 +1684,382 @@ has "$T/ck.out" "word list:   REFUSED (" "an empty list is what the gate refuses
 mkdir -p "$T/lh-c/.claude/plugins"; echo '{"plugins": {"wharf@regatta": [{"scope": "user"}]}}' > "$T/lh-c/.claude/plugins/installed_plugins.json"
 CK "$T/lh-c" "$T/words.txt" > "$T/ck.out"
 has "$T/ck.out" "finish:      in $T/lh-c/.claude" "a login with wharf installed as a plugin has /finish"
+
+echo "autofinish landing <wt> [--json] (gate-asks S1): lands by <road>, held, waits, nobody, with the deciding keys"
+H=$HOME
+export PLANS_DIR="$T/plans-landing"; mkdir -p "$PLANS_DIR/ship-s1" "$H/Library/LaunchAgents"
+LV() { python3 "$B/autofinish" landing "$@"; }
+LVJ() {
+  python3 "$B/autofinish" landing "$1" --json | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+print("%s|%s|%s|%s" % (d.get("verdict"), d.get("road"), ",".join(d.get("keys") or []), d.get("why")))'
+}
+# non-claude/* checkout is refused
+LV "$T/projects/$M" > "$T/lv.err" 2>&1; check "$?" "1" "autofinish landing on main checkout: refused (exit 1)"
+has "$T/lv.err" "not a claude/* worktree" "  saying not a claude/* worktree"
+
+# disarmed Mac vs armed Mac in mode yolo and mode dnd (from plan.json)
+$AF disarm > /dev/null
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M m-code)")" "waits: autofinish is disarmed on this Mac (bin/autofinish arm) [keys: plan.json:mode, autofinish:armed]" \
+  "disarmed Mac in mode yolo → waits, naming plan.json:mode and autofinish:armed"
+$AF arm --by tester > /dev/null
+check "$(LV "$(wtp $M m-code)")" "lands by yolo [keys: plan.json:mode, autofinish:armed]" \
+  "mode yolo, armed → lands by yolo"
+check "$(LVJ "$(wtp $M m-code)")" "lands|yolo|plan.json:mode,autofinish:armed|None" \
+  "  --json carries verdict, road, keys and why"
+
+printf '{"id": "ship-s1", "mode": "dnd", "tasks": {"c": {"branch": "%s"}, "p": {"branch": "%s"}, "g": {"branch": "%s"}, "l": {"branch": "%s"}}}\n' \
+  "$(br m-code)" "$(br hs-pub)" "$(br hs-gate)" "$(br m-live-code)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M m-code)")" "lands by dnd [keys: plan.json:mode, autofinish:armed]" \
+  "mode dnd on plain code → lands by dnd"
+check "$(LV "$(wtp $M hs-pub)")" "held: a public publish (pub.md goes to the public twin) [keys: plan.json:mode, .helloworld/allowlist.txt]" \
+  "mode dnd on a public file → held, naming .helloworld/allowlist.txt"
+check "$(LV "$(wtp $M hs-gate)")" "held: a gated path (hooks/h.py: autofinish_exclude or in_place) [keys: plan.json:mode, .claude/workflow.json:autofinish_exclude]" \
+  "a gated path (autofinish_exclude) in dnd → held, naming .claude/workflow.json:autofinish_exclude"
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"g": {"branch": "%s"}}}\n' "$(br hs-gate)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M hs-gate)")" "held: a gated path (hooks/h.py: autofinish_exclude or in_place) [keys: plan.json:mode, .claude/workflow.json:autofinish_exclude]" \
+  "  …and in yolo too → held"
+printf '{"id": "ship-s1", "mode": "dnd", "tasks": {"l": {"branch": "%s"}}}\n' "$(br m-live-code)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M m-live-code)")" "lands by L [keys: plan.json:mode, git:Deployed]" \
+  "deployed dnd branch with no taken doc → lands by L"
+
+# mode ask → nobody
+printf '{"id": "ship-s1", "mode": "ask", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M m-code)")" "nobody: mode ask — nothing lands by itself (ship ship-s1) [keys: plan.json:mode]" \
+  "mode ask → nobody, naming plan.json:mode"
+printf '{torn\n' > "$T/torn-repos.json"
+check "$(AUTOFINISH_REPOS="$T/torn-repos.json" LV "$(wtp $M m-code)")" \
+  "nobody: mode ask — nothing lands by itself (ship ship-s1) [keys: plan.json:mode]" \
+  "  explicit mode ask with torn repos.json still returns nobody, not waits"
+rm -f "$T/torn-repos.json" "$PLANS_DIR/ship-s1/plan.json"
+
+# mode default without and with the landings switch (task-shape D1-C, R5: absent reads off)
+check "$(LV "$(wtp $M m-none)")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/z.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "mode default without landings switch on code in a records repo → nobody"
+check "$(DISPATCH_REPO="$T/projects/demo" DISPATCH_SHIP=ship-s1 DISPATCH_TASK=other DISPATCH_MODE=yolo LV "$(wtp $M m-none)")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/z.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "  caller DISPATCH_* for another repo/task never leaks onto <wt>"
+check "$(LV "$(wtp $M m-ask)")" \
+  "lands by A [keys: autofinish:armed, .claude/workflow.json:records, mode:default]" \
+  "mode default without landings switch on pure records, armed → lands by A"
+$AF disarm > /dev/null
+$AF arm --landings --by tester > /dev/null
+check "$(LV "$(wtp $M m-none)")" "lands by handed [keys: autofinish:landings, mode:default]" \
+  "mode default with landings switch on → lands by handed (even with sweep disarmed)"
+mkdir -p "$(gd $M m-none)/claude"
+echo '{"by": "sam", "ts": 1}' > "$(gd $M m-none)/claude/autofinish"
+check "$(LV "$(wtp $M m-none)")" "lands by handed [keys: autofinish:landings, mode:default]" \
+  "  override marker on default branch with landings on → lands by handed, not disarmed"
+rm -f "$(gd $M m-none)/claude/autofinish"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "default", "started": 100}\n' "$(br m-none)" "$T/projects/$M" > "$RUNS/s1-unhanded.json"
+check "$(LV "$(wtp $M m-none)")" \
+  "nobody: mode default with this build started with the landings switch off, and autofinish is records (bin/z.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, dispatch:mode]" \
+  "  active handed=0 build keeps handed off even if --landings was armed mid-run"
+rm -f "$RUNS/s1-unhanded.json"
+check "$(LV "$(wtp $M hs-gate)")" "lands by handed [keys: autofinish:landings, mode:default]" \
+  "  D1-C: handed lands autofinish_exclude too"
+check "$(LV "$(wtp $M m-bin)")" "held: a binary (docs/blob.bin): no landing carries one unread [keys: autofinish:landings, mode:default, autofinish:handed_held]" \
+  "  …never a binary: held under handed"
+$AF disarm --landings > /dev/null
+$AF arm --by tester > /dev/null
+
+# deployed gated dnd branch → held, never lands by L
+GPRE=$(git -C "$(wtp $M hs-gate)" rev-parse HEAD)
+git -C "$(wtp $M hs-gate)" commit -q --allow-empty -m "Deployed: shop"
+printf '{"id": "ship-s1", "mode": "dnd", "tasks": {"g": {"branch": "%s"}}}\n' "$(br hs-gate)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M hs-gate)")" \
+  "held: a gated path (hooks/h.py: autofinish_exclude or in_place) [keys: plan.json:mode, .claude/workflow.json:autofinish_exclude]" \
+  "deployed dnd branch touching autofinish_exclude → held, never lands by L"
+git -C "$(wtp $M hs-gate)" reset -q --hard "$GPRE"
+
+# tight week and exhausted account pool → waits
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+out=$(CLAUDE_TIER_CLAUDE_JSON="$T/tier-tight.json" LV "$(wtp $M m-code)")
+case "$out" in
+  "waits: the week is tight (85% used"*"[keys: plan.json:mode, account:week]") echo "  ok   tight week → waits, naming account:week";;
+  *) echo "  FAIL tight week landing: $out"; fails=$((fails+1));;
+esac
+mkdir -p "$T/acct-s1"
+python3 - "$T/noacct-s1.json" "$T/acct-s1" "$NOW" <<'PY'
+import json, sys
+f, home, now = sys.argv[1], sys.argv[2], float(sys.argv[3])
+json.dump({"accounts": [{"label": "acct-s1", "home": home, "primary": True, "rules": {"window_max": 50}}]}, open(f, "w"))
+json.dump({"at": now, "limits": {"five_hour": 90, "seven_day": 10, "five_hour_resets": now + 3600,
+                                 "seven_day_resets": now + 3 * 86400, "locked": []}}, open(home + "/usage-probe.json", "w"))
+# signed in (lighthouse's login guard: account never picks a home with no login)
+json.dump({"oauthAccount": {"accountUuid": "u-acct-s1"}}, open(home + "/.claude.json", "w"))
+json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(home + "/.credentials.json", "w"))
+PY
+out=$(ACCOUNTS_FILE="$T/noacct-s1.json" ACCOUNT_NOW="$NOW" ACCOUNT_CLAUDE=false LV "$(wtp $M m-code)")
+case "$out" in
+  "waits: no account may run it (acct-s1: 5h 90%"*"[keys: plan.json:mode, account:pool]") echo "  ok   exhausted pool → waits, naming account:pool";;
+  *) echo "  FAIL exhausted pool landing: $out"; fails=$((fails+1));;
+esac
+
+# torn registry → waits only when mode or workflow config needs repos.json
+printf '{torn\n' > "$T/torn-repos.json"
+check "$(AUTOFINISH_REPOS="$T/torn-repos.json" LV "$(wtp $M m-code)")" \
+  "lands by yolo [keys: plan.json:mode, autofinish:armed]" \
+  "explicit plan.json mode + workflow.json ignores torn repos.json → lands by yolo"
+check "$(AUTOFINISH_REPOS="$T/torn-repos.json" LV "$(wtp $M m-none)")" \
+  "waits: the registry is unreadable (repos.json) [keys: wharf/repos.json]" \
+  "torn registry when mode falls back to repos.json → waits, naming wharf/repos.json"
+rm -f "$T/torn-repos.json"
+
+# open D-item on the branch → waits (F5: even when disarmed or in mode ask), unified AUTOFINISH_MEMO/AUTOFINISH_KEEL
+$AF disarm > /dev/null
+printf '{"id": "ship-s1", "mode": "ask", "tasks": {"o": {"branch": "%s"}}}\n' "$(br m-open)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(LV "$(wtp $M m-open)")" "waits: open D-items (docs/stands-m.md D1) [keys: keel:D-items]" \
+  "open D-item on branch → waits: open D-items (F5: before mode ask or disarmed)"
+printf '#!/bin/sh\nprintf '\''{"items": []}\\n'\''\n' > "$T/keel-empty"; chmod +x "$T/keel-empty"
+check "$( (unset AUTOFINISH_KEEL; AUTOFINISH_MEMO="$T/keel-empty" LV "$(wtp $M m-open)") )" \
+  "nobody: mode ask — nothing lands by itself (ship ship-s1) [keys: plan.json:mode]" \
+  "  AUTOFINISH_MEMO alone overrides _open_d_items keel lookup"
+$AF arm --by tester > /dev/null
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+
+# queued next step (fleet, peer running, and node-local), scheduled plist, and .next marker → waits
+cat > "$T/dq-s1" <<EOF
+#!/bin/sh
+printf '{"entries": [{"qid": "fleet:m--c", "repo": "%s", "branch": "%s", "state": "queued"}]}\n' "$T/projects/$M" "$(br m-code)"
+EOF
+chmod +x "$T/dq-s1"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-s1" LV "$(wtp $M m-code)")" \
+  "waits: a next step is queued on this branch, or the queue does not read (dispatch --queue) [keys: wharf-runs/queue-repo]" \
+  "queued next step → waits, naming wharf-runs/queue-repo"
+cat > "$T/dq-run" <<EOF
+#!/bin/sh
+printf '{"entries": [{"qid": "fleet:m--c", "repo": "%s", "branch": "%s", "state": "running", "running_on": "peerbox", "session": "peer-s1"}]}\n' "$T/projects/$M" "$(br m-code)"
+EOF
+chmod +x "$T/dq-run"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-run" LV "$(wtp $M m-code)")" \
+  "waits: a next step is queued on this branch, or the queue does not read (dispatch --queue) [keys: wharf-runs/queue-repo]" \
+  "  entry running on peer host → waits"
+mkdir -p "$H/Library/Caches/run-seed/queue-local/vault"
+printf '{"id": "q1", "repo": "%s", "branch": "%s", "state": "queued"}\n' "$T/projects/$M" "$(br m-code)" \
+  > "$H/Library/Caches/run-seed/queue-local/vault/$M--m-code.json"
+check "$( (unset AUTOFINISH_DISPATCH_QUEUE; LV "$(wtp $M m-code)") )" \
+  "waits: a next step is queued on this branch, or the queue does not read (dispatch --queue) [keys: wharf-runs/queue-repo]" \
+  "  node-local queue entry without wharf-runs/queue-repo → waits"
+rm_own "$H/Library/Caches/run-seed/queue-local"
+
+SPL="$H/Library/LaunchAgents/org.example.claude.dispatch.$M.m-code.209901010101.plist"
+: > "$SPL"
+check "$(LV "$(wtp $M m-code)")" \
+  "waits: a next step is scheduled on this branch ($(basename "$SPL")) [keys: wharf-runs/label-prefix]" \
+  "scheduled launchd plist → waits, naming wharf-runs/label-prefix"
+rm -f "$SPL"
+
+printf '{"branch": "%s", "session": "sess-s1", "repo": "%s", "started": 1}\n' "$(br m-code)" "$T/projects/$M" > "$RUNS/s1-next.json"
+: > "$RUNS/s1-next.json.next"
+check "$(LV "$(wtp $M m-code)" --session sess-s1)" \
+  "waits: a next step is scheduled on this branch (dispatch --next) [keys: dispatch:--next]" \
+  ".next marker file → waits, naming dispatch:--next"
+check "$(CLAUDE_CODE_SESSION_ID=other-caller LV "$(wtp $M m-code)")" \
+  "waits: a next step is scheduled on this branch (dispatch --next) [keys: dispatch:--next]" \
+  "  .next marker still holds when invoked from another Claude session without --session"
+rm -f "$RUNS/s1-next.json" "$RUNS/s1-next.json.next"
+
+# origin/<base> read from primary checkout repo, never <wt>/.claude/workflow.json
+MPRE=$(git -C "$(wtp $M m-code)" rev-parse HEAD)
+echo '{"checkpoint": true, "main": "missing-base"}' > "$(wtp $M m-code)/.claude/workflow.json"
+git -C "$(wtp $M m-code)" commit -qam "wf"
+check "$(LV "$(wtp $M m-code)")" "lands by yolo [keys: plan.json:mode, autofinish:armed]" \
+  "<wt>/.claude/workflow.json main override is ignored (R8)"
+git -C "$(wtp $M m-code)" reset -q --hard "$MPRE"
+cp "$T/projects/$M/.claude/workflow.json" "$T/wf-m.bak"
+echo '{"checkpoint": true, "main": "missing-base"}' > "$T/projects/$M/.claude/workflow.json"
+check "$(LV "$(wtp $M m-code)")" "waits: origin/missing-base unreadable here [keys: .claude/workflow.json:main]" \
+  "origin/<base> unreadable from primary checkout → waits, naming .claude/workflow.json:main"
+mv "$T/wf-m.bak" "$T/projects/$M/.claude/workflow.json"
+
+# review round 3 regressions: distinct repos sharing basename, fail-closed env, queue-mode=writes,
+# running launchd plist, autofinish_running + finish queue holds + here_host, deployed+taken tight week, real keel Rule D
+for grp in shop acme; do
+  git init -q --bare "$T/origin-$grp-app.git"
+  mkdir -p "$T/projects/$grp/app/.claude"
+  git -C "$T/projects/$grp/app" init -q -b main
+  printf '{"checkpoint": true, "autofinish": "records", "records": ["docs/"]}\n' > "$T/projects/$grp/app/.claude/workflow.json"
+  printf '# app\n\n## Session contract\n\n- check: true\n' > "$T/projects/$grp/app/AGENTS.md"
+  printf '.claude/worktrees/\n' > "$T/projects/$grp/app/.gitignore"
+  git -C "$T/projects/$grp/app" add -A
+  GIT_AUTHOR_DATE="2026-09-30T09:00:00Z" GIT_COMMITTER_DATE="2026-09-30T09:00:00Z" git -C "$T/projects/$grp/app" commit -qm init
+  git -C "$T/projects/$grp/app" remote add origin "https://github.com/owner/$grp-app.git"
+  git -c "url.$T/origin-.insteadOf=https://github.com/owner/" -C "$T/projects/$grp/app" push -q origin main
+  gwt=$(wtp "$grp/app" feat)
+  git -C "$T/projects/$grp/app" worktree add -q "$gwt" -b "$(br feat)" main
+  mkdir -p "$gwt/bin"
+  echo "x = 1" > "$gwt/bin/x.py"
+  git -C "$gwt" add -A
+  git -C "$gwt" commit -qm "code"
+  git -c "url.$T/origin-.insteadOf=https://github.com/owner/" -C "$gwt" push -q -u origin "$(br feat)"
+done
+SHOP_WT=$(wtp shop/app feat)
+rm -f "$PLANS_DIR/ship-s1/plan.json"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "default", "handed": false, "started": 200}\n' "$(br feat)" "$T/projects/acme/app" > "$RUNS/acme-feat.json"
+: > "$RUNS/acme-feat.json.next"
+printf '{"branch": "%s", "repo": "", "started": 201}\n' "$(br feat)" > "$RUNS/empty-repo.json"
+: > "$RUNS/empty-repo.json.next"
+check "$(LV "$SHOP_WT")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/x.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "distinct repos sharing basename (shop/app vs acme/app) and empty repo do not collide on .next"
+rm -f "$RUNS/acme-feat.json.next" "$RUNS/empty-repo.json" "$RUNS/empty-repo.json.next"
+$AF arm --landings --by tester > /dev/null
+check "$(LV "$SHOP_WT")" "lands by handed [keys: autofinish:landings, mode:default]" \
+  "  unhanded live build on acme/app does not block handed on shop/app"
+$AF disarm --landings > /dev/null
+rm -f "$RUNS/acme-feat.json"
+
+mkdir -p "$PLANS_DIR/ship-leak"
+printf '{"id": "ship-leak", "repo": "other", "mode": "yolo", "tasks": {}}\n' > "$PLANS_DIR/ship-leak/plan.json"
+check "$(DISPATCH_SHIP=ship-leak CLAUDE_CODE_SESSION_ID=skipper-no-rec LV "$SHOP_WT")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/x.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "unowned DISPATCH_SHIP + session without run record does not leak onto <wt>"
+check "$(DISPATCH_MODE=yolo LV "$SHOP_WT")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/x.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "  unowned DISPATCH_MODE without DISPATCH_REPO+DISPATCH_TASK does not leak onto <wt>"
+check "$(DISPATCH_REPO="$T/projects/shop/app" DISPATCH_TASK=feat DISPATCH_MODE=yolo LV "$SHOP_WT")" \
+  "lands by yolo [keys: dispatch:mode, autofinish:armed]" \
+  "  explicitly matching DISPATCH_REPO + DISPATCH_TASK owns DISPATCH_MODE"
+rm -rf "$PLANS_DIR/ship-leak"
+
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+mkdir -p "$REGATTA_CONFIG/wharf-runs"
+echo "$T/missing-offline.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+echo "writes" > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "yolo", "started": 1}\n' "$(br m-code)" "$T/projects/$M" > "$T/st-qmode.json"
+check "$( (unset AUTOFINISH_DISPATCH_QUEUE; LV "$(wtp $M m-code)") )" \
+  "lands by yolo [keys: plan.json:mode, autofinish:armed]" \
+  "wharf-runs/queue-mode=writes ignores offline queue-repo"
+echo "laptop:writes" > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+check "$( (unset AUTOFINISH_DISPATCH_QUEUE; python3 "$B/autofinish" landing "$(wtp $M m-code)" --json --state "$T/st-qmode.json" --mode-hint yolo | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["verdict"], d["wait_kind"])') )" \
+  "lands None" "  <host>:writes with --state also skips offline queue-repo (yolo_launch R8 parity)"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo" "$REGATTA_CONFIG/wharf-runs/queue-mode" "$T/st-qmode.json"
+
+cat > "$T/lc-running" <<'EOF'
+#!/bin/sh
+printf '\tstate = running\n'
+EOF
+chmod +x "$T/lc-running"
+RPL="$H/Library/LaunchAgents/org.example.claude.dispatch.$M.m-code.209901010102.plist"
+: > "$RPL"
+check "$(DISPATCH_LAUNCHCTL="$T/lc-running" LV "$(wtp $M m-code)")" \
+  "lands by yolo [keys: plan.json:mode, autofinish:armed]" \
+  "running one-shot launchd plist (state = running) is skipped when DISPATCH_LABEL was stripped"
+check "$(DISPATCH_LAUNCHCTL="$T/lc-running" LV "$(wtp $M m-code)" --json --exclude-label "org.example.claude.dispatch.$M.m-code.209901010101" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["verdict"], d["wait_kind"])')" \
+  "waits scheduled" "  …but dispatch's call (a label given) counts a running sibling job of the branch, as main's yolo_launch did"
+rm -f "$RPL"
+
+# dispatch's run record and hint: a ship task naming the branch with no mode reads the run's hint (main's mode_now)
+printf '{"id": "ship-s1", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+printf '{"branch": "%s", "repo": "%s", "plan": "ship-s1", "topic": "c", "task_mode": "dnd", "started": 1}\n' "$(br m-code)" "$T/projects/$M" > "$T/st-hint.json"
+check "$(LV "$(wtp $M m-code)" --json --state "$T/st-hint.json" --mode-hint dnd --exclude-label "" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["verdict"], d["road"], d["mode"])')" \
+  "lands dnd dnd" "a hinted dnd run whose ship task sets no mode reads dnd, not default (fire_mode with the hint)"
+rm -f "$T/st-hint.json"
+printf '{"id": "ship-s1", "mode": "yolo", "tasks": {"c": {"branch": "%s"}}}\n' "$(br m-code)" > "$PLANS_DIR/ship-s1/plan.json"
+
+cat > "$T/dq-ownrun" <<EOF
+#!/bin/sh
+printf '{"entries": [{"qid": "fleet:s--f", "kind": "build", "repo": "%s", "branch": "%s", "state": "running", "running_on": "laptop", "session": "bld-sid"}]}\n' "$T/projects/shop/app" "$(br feat)"
+EOF
+chmod +x "$T/dq-ownrun"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-ownrun" LV "$SHOP_WT")" \
+  "nobody: mode default with the landings switch off, and autofinish is records (bin/x.py) [keys: autofinish:landings, .claude/workflow.json:autofinish, mode:default]" \
+  "running build entry on this host is ignored even without CLAUDE_CODE_SESSION_ID"
+
+cat > "$T/dq-fin" <<EOF
+#!/bin/sh
+printf '{"entries": [{"qid": "fleet:s--f", "kind": "finish", "repo": "%s", "branch": "%s", "state": "queued", "session": "fin-sid"}]}\n' "$T/projects/shop/app" "$(br feat)"
+EOF
+chmod +x "$T/dq-fin"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-fin" LV "$SHOP_WT")" \
+  "lands by lander [keys: wharf-runs/queue-repo]" \
+  "queued finish entry in dispatch-queue reports lands by lander (not waits)"
+printf '{"branch": "%s", "repo": "%s", "task_mode": "yolo", "started": 1}\n' "$(br feat)" "$T/projects/shop/app" > "$T/st-fin.json"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-fin" python3 "$B/autofinish" landing "$SHOP_WT" --json --state "$T/st-fin.json" --mode-hint yolo | python3 -c 'import json,sys; print(json.load(sys.stdin)["wait_kind"])')" \
+  "queued" "  …while --state keeps queued finish entry as wait_kind=queued"
+rm -f "$T/st-fin.json"
+SGD=$(git -C "$SHOP_WT" rev-parse --absolute-git-dir); mkdir -p "$SGD/claude"
+printf '{"started": "2026-10-05T00:00:00Z", "session": "fin-sid", "ended": null}\n' > "$SGD/claude/autofinish.json"
+printf '{"session": "fin-sid", "branch": "%s", "seen": %s}\n' "$(br feat)" "$NOW" > "$SGD/claude/owner.json"
+check "$(AUTOFINISH_DISPATCH_QUEUE="$T/dq-fin" LV "$SHOP_WT")" \
+  "lands by lander [keys: autofinish.json:running]" \
+  "active autofinish.json wins before _scheduled_step even with finish entry in queue"
+rm -f "$SGD/claude/autofinish.json" "$SGD/claude/owner.json"
+
+printf '{"id": "ship-s1", "mode": "dnd", "tasks": {"lt": {"branch": "%s"}}}\n' "$(br m-live)" > "$PLANS_DIR/ship-s1/plan.json"
+check "$(CLAUDE_TIER_CLAUDE_JSON="$T/tier-tight.json" python3 "$B/autofinish" landing "$(wtp $M m-live)" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%s|%s|%s|%s" % (d["verdict"], d["wait_kind"], d["week"], d["deployed"]))')" \
+  "waits|week-tight|tight|" \
+  "deployed dnd branch carrying a taken doc pauses on a tight week, as attempt() pauses rule M, and keeps deployed empty"
+rm -f "$PLANS_DIR/ship-s1/plan.json"
+
+if [ -f "$B/../../keel/bin/keel" ]; then
+  REAL_KEEL="$B/../../keel/bin/keel"
+  RLV() { GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$T/origin-.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/owner/" \
+          AUTOFINISH_MEMO="$REAL_KEEL" AUTOFINISH_KEEL="$REAL_KEEL" LV "$@"; }
+  for sub in stands due stood reply; do
+    dwt=$(wtp shop/app "d-$sub")
+    git -C "$T/projects/shop/app" worktree add -q "$dwt" -b "$(br "d-$sub")" main
+    mkdir -p "$dwt/docs"
+    cat > "$dwt/docs/d.md" <<'DOC'
+# Design
+
+Context.
+
+## Decisions
+
+- **D1 — Pick an option?** Body.
+  - A — yes
+  - B — no
+
+  Reversible: yes
+
+  ➤ Recommended: A
+
+  ➤ Answer:
+
+## Open feedback
+DOC
+    if [ "$sub" = reply ]; then
+      python3 -c 'import pathlib; p=pathlib.Path("'"$dwt/docs/d.md"'"); p.write_text(p.read_text().replace("  ➤ Answer:\n", "  ➤ Answer:\n\n  > **Done.** Applied A.\n"))'
+    fi
+    git -C "$dwt" add docs/d.md
+    GIT_AUTHOR_DATE="2026-10-01T09:00:00Z" GIT_COMMITTER_DATE="2026-10-01T09:00:00Z" \
+      git -C "$dwt" commit -qm "Design: d" -m $'Prompt:\n> design' -m "Claude-Session: abc12345"
+    git -c "url.$T/origin-.insteadOf=https://github.com/owner/" -C "$dwt" push -q -u origin "$(br "d-$sub")"
+    if [ "$sub" = stood ]; then
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$T/origin-.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/owner/" \
+        MEMO_NOW="2026-10-02T10:00:00Z" python3 "$REAL_KEEL" stand --apply "$dwt/docs/d.md" > /dev/null
+      git -c "url.$T/origin-.insteadOf=https://github.com/owner/" -C "$dwt" push -q origin "$(br "d-$sub")"
+    fi
+  done
+  check "$(MEMO_NOW=2026-10-02T08:00:00Z RLV "$(wtp shop/app d-stands)")" \
+    "waits: docs/d.md stands-at 2026-10-02T09:00:00+00:00 [keys: .claude/workflow.json:records, keel:stand]" \
+    "real keel: stands-at doc in mode default reports keel:stand wait, not open D-items"
+  check "$(MEMO_NOW=2026-10-02T10:00:00Z RLV "$(wtp shop/app d-due)")" \
+    "lands by D [keys: autofinish:armed, .claude/workflow.json:records, mode:default]" \
+    "real keel: standable due doc in mode default → lands by D"
+  check "$(MEMO_NOW=2026-10-02T10:00:00Z RLV "$(wtp shop/app d-stood)")" \
+    "lands by D [keys: autofinish:armed, .claude/workflow.json:records, mode:default]" \
+    "real keel: stood doc (settled=false, answered=true) → lands by D"
+  check "$(MEMO_NOW=2026-10-02T10:00:00Z RLV "$(wtp shop/app d-reply)")" \
+    "lands by D [keys: autofinish:armed, .claude/workflow.json:records, mode:default]" \
+    "real keel: reply-answered doc (settled=false, answered=true) → lands by D"
+  $AF arm --landings --by tester > /dev/null
+  check "$(MEMO_NOW=2026-10-02T10:00:00Z RLV "$(wtp shop/app d-due)")" \
+    "waits: open D-items (docs/d.md D1) [keys: keel:D-items]" \
+    "  …under handed, unanswered due doc still holds on open D-items"
+  check "$(MEMO_NOW=2026-10-02T10:00:00Z RLV "$(wtp shop/app d-stood)")" \
+    "lands by handed [keys: autofinish:landings, mode:default]" \
+    "  …under handed, stood doc lands by handed"
+  $AF disarm --landings > /dev/null
+fi
+
+rm -rf "$PLANS_DIR"
+unset PLANS_DIR
+$AF disarm > /dev/null
 
 echo
 [ "$fails" -eq 0 ] && echo "all autofinish tests passed" || { echo "$fails autofinish test(s) failed"; exit 1; }

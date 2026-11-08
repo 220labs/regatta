@@ -31,7 +31,7 @@ it is not).
 
 **Before the first edit.**
 - Read the project's `AGENTS.md` (else `CLAUDE.md`): the session contract names its `check`,
-  its `live` systems, its `physical` limits and its traps. They bind you as they bind the parent.
+  its `live` systems, its limits and its traps. They bind you as they bind the parent.
 - You work in a worktree the parent made for you. First action, unless the branch is already
   `claude/*`: `git branch -m claude/<host>/<yyyy-mm-dd>-<topic>` (host: `scutil --get
   LocalHostName`, lower-cased; topic from the brief). If the brief names a base branch,

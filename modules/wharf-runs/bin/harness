@@ -42,7 +42,7 @@ file per harness).
         turn in COPY, in the foreground: it returns when codex ends or at its deadline (killed then), the record
         holding the reply, the usage summed over every turn.completed and each command codex ran. Refused (exit 2)
         before codex starts:
-        - F1, the source judge (research_guard): HOME's contract (`physical: none`); a public repo (contract E4);
+        - F1, the source judge (research_guard): a public repo (contract E4);
           a confidential scope's repo, as HOME or as COPY, or any while the registry cannot be read (bin/jev's
           rule, fail closed); a guarded HOME or prompt file without --approved, the owner's quote for OpenAI
           (bin/gate's vet), never from an unattended caller.
@@ -79,8 +79,7 @@ file per harness).
         time checked). The owner's own sessions are not this verb's to end (exit 2).
     V1, V2 and V5 act on this Mac only (--host is refused): a peer's runs start through dispatch --pin.
 
-Every run is refused (exit 2) unless the repo's contract says `physical: none` — bin/dispatch's rule,
-which `dispatch --start` leaves to its caller — and a Codex run (--harness codex or --agent codex)
+A Codex run (--harness codex or --agent codex) is refused (exit 2)
 in a public repo (oss/, the overlay's own, those wharf-runs/public-repos names): OpenAI's docs say not to use a plan login in scripts on
 public or open-source repositories (contract E4; the orchestration doc's Q2, 2026-10-14). An agy run
 (--harness agy) meets the same rule: Google's word on a scripted agy run under a consumer login is unsettled
@@ -573,22 +572,6 @@ def repo_root(path):
     return os.path.realpath(os.path.dirname(common)) if common else None
 
 
-def physical_ok(root):
-    """None when the repo's contract says `physical: none`, else why not — bin/dispatch's
-    physical_ok(), word for word in effect: the first `- physical:` line of AGENTS.md or CLAUDE.md."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        try:
-            with open(os.path.join(root, name)) as f:
-                for line in f:
-                    if line.startswith("- physical:"):
-                        if line.startswith("- physical: none"):
-                            return None
-                        return "%s's contract must say `physical: none` (it says: %s)" % (root, line.strip())
-        except OSError:
-            continue
-    return "%s's contract must say `physical: none` (it says: nothing)" % root
-
-
 _PUBLIC_WARNED = []
 
 
@@ -863,9 +846,6 @@ def research_guard(req, harness):
     root = repo_root(repo)
     if not root:
         fail("%s is in no git repository" % repo, 2)
-    why = physical_ok(root)
-    if why:
-        fail(why, 2)
     if public_repo(root):
         fail("Codex does not run on %s: a public repo (oss/, the overlay's, wharf-runs/public-repos) — OpenAI's docs say not "
              "to use a plan login in scripts there (contract E4)" % root, 2)
@@ -973,10 +953,15 @@ def depth_refusal(vendor):
     return None
 
 
+def physical_ok(root):
+    """Compatibility for open branches written before the `physical:` field was retired: always passes."""
+    return None
+
+
 def guard(req, harness):
     """The shared refusals before any start (exit 2), and req["repo"] made the main checkout. Every vendor's
-    run meets the same checks a Claude run does (docs/codex-agy-gaps-2026-10-29.md, D2-A): the contract's
-    `physical: none`; for a non-Claude CLI, the vendor fence (a confidential or guarded repo only on a login
+    run meets the same checks a Claude run does (docs/codex-agy-gaps-2026-10-29.md, D2-A):
+    for a non-Claude CLI, the vendor fence (a confidential or guarded repo only on a login
     its tenant owns) and the run cap; Codex's public-repo rule (contract E4). Research mode has its own road
     (research_guard), which asks the same vendor fence, spawn gate and depth cap first."""
     if req.get("mode") == "research":
@@ -999,9 +984,6 @@ def guard(req, harness):
     root = repo_root(where)
     if not root:
         fail("%s is in no git repository" % where, 2)
-    why = physical_ok(root)
-    if why:
-        fail(why, 2)
     vendor = vendor_of(req, harness)
     mark = unattended_mark()
     if mark and vendor == "claude" and (harness == "orca" or req.get("runner") == "orca"):

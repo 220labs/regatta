@@ -946,7 +946,7 @@ def owed_nothing(line: str) -> bool:
 def two_waits_findings(kind: str, line: str) -> list[str]:
     common = _common()
     idle = f"`{common.marked('idle', common.IDLE_PREFIX)}<what was settled, in one line>`"
-    if kind in ("pending", "handed") and pending_asks(line):
+    if kind in ("pending", "handed", "lander") and pending_asks(line):
         return [f"the WAITING FOR SOMETHING line says the owner has nothing to do, and this one asks the owner "
                 f"for something — end on `{common.marked('waiting', common.WAITING_PREFIX)}<what, in one line>` instead"]
     if kind == "idle" and idle_asks(line):
@@ -1005,7 +1005,7 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
                 f"word for word: the skill's own, {waiting}, {pending} when the owner has "
                 f"nothing to do and the session carries on, or `{common.marked('idle', common.IDLE_PREFIX)}<what was settled>` "
                 f"when nothing goes on"]
-    if kind in ("pending", "handed", "idle"):
+    if kind in ("pending", "handed", "lander", "idle"):
         out = two_waits_findings(kind, line)
         text = reply if last is None else last
         if kind == "idle" and not out and (common.do_this_now_block(text) or STOP_STEP.search(text)):
@@ -1035,7 +1035,7 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
     tail = (last if last is not None else reply).strip().splitlines()[-1:] or [""]
     if background and kind is None and WAITS.search(tail[0]):
         owes = False
-    if owes and kind not in ("waiting", "handed", "pending", "relayed") and line not in common.FINISH_LINES:
+    if owes and kind not in ("waiting", "handed", "lander", "pending", "relayed") and line not in common.FINISH_LINES:
         fixed = " / ".join(f"`{common.marked('done', l)}`" for l in common.FINISH_LINES)
         return [f"/{command or 'finish'} ends with one of its closing lines, on its own, as the "
                 f"very last thing said: {fixed} — or {waiting} when the next move is the owner's, "
@@ -1047,11 +1047,11 @@ def _closing_findings(reply: str, command=None, bash=(), last=None, background=F
 # A finished step starts the next one itself. the overlay's rules, "How to talk", as of
 # D1 (2026-10-05, docs/record/run-seed-launch-2026-10-05.md, answer C): a build step "starts the next
 # itself (`dispatch --next`), each fresh, never a prompt to paste; `pickup next` only where
-# dispatch refuses (not `physical: none`), or it names what it waits on". The owner, 2026-10-04, after
+# dispatch refuses, or it names what it waits on". The owner, 2026-10-04, after
 # a step ended "paste into a fresh session": "I actually don't have time to copy-paste prompts for
 # you." A reply that hands the owner a session to start — a prompt, a `/pickup … --fresh`, or a
-# `pickup next` tab — is blocked once where dispatch would take the branch (workflow repo,
-# `physical: none`); naming dispatch — done, or why not: an answer or the owner's identity needed, or
+# `pickup next` tab — is blocked once where dispatch would take the branch (workflow repo);
+# naming dispatch — done, or why not: an answer or the owner's identity needed, or
 # what it waits on — is the way through.
 FRESH_PICKUP = re.compile(r"/pickup\b[^\n`]*?\s--fresh\b")
 # A session to start, not prose that happens to say "new tab" (review of 2026-10-05: "Open the PR
@@ -1087,8 +1087,7 @@ REPO_WINDOW = re.compile(r"\bin an? `?([\w.-]+)`? window\b")
 
 def handoff_repo(reply: str, hit: str, cwd: str, root: str) -> tuple:
     """(cwd, root) for seedable(): the repo the handoff names, else the one holding the branch it
-    names, else this session's. A /todo handoff to household from a the overlay session is a project's to
-    judge — dispatch refuses it there (not `physical: none`), so the /pickup line is the only way."""
+    names, else this session's. The named project's workflow decides whether dispatch takes it."""
     import os
     projects = os.path.join(os.path.expanduser("~"), "projects")
     m = REPO_FLAG.search(hit) or REPO_FLAG.search(reply)
@@ -1115,8 +1114,7 @@ def handoff_repo(reply: str, hit: str, cwd: str, root: str) -> tuple:
 
 
 def seedable(cwd: str, root: str = "") -> bool:
-    """The checkout dispatch would start a branch in: on the worktree workflow and its contract
-    saying `physical: none` — the same two gates as pickup seed and dispatch's physical_ok."""
+    """The checkout dispatch would start a branch in: opted into the worktree workflow, as pickup seed requires."""
     import os
     for d in (cwd, root):
         top = _git(d, "rev-parse", "--show-toplevel").strip() if d and os.path.isdir(d) else ""
@@ -1136,15 +1134,7 @@ def seedable(cwd: str, root: str = "") -> bool:
                 continue
         if not opted:
             return False
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            try:
-                with open(os.path.join(top, name), encoding="utf-8") as fh:
-                    phys = next((l for l in fh if l.startswith("- physical:")), None)
-            except OSError:
-                continue
-            if phys is not None:
-                return phys.startswith("- physical: none")
-        return False
+        return True
     return False
 
 

@@ -13,7 +13,7 @@ check() { if [ "$1" = "$2" ]; then echo "  ok   $3"; else echo "  FAIL $3: expec
 
 unset CLAUDE_REPOS_JSON CLAUDE_PROJECT_DIR REGATTA_HOME ACCOUNTS_FILE CODEX_HOME GEMINI_CLI_HOME
 unset PLAN_HARNESS REGATTA_COUNCIL_ARM REGATTA_UNATTENDED CLAUDE_UNATTENDED CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
-unset SESSIONPIPE_STATE SESSIONPIPE_CONFIG SESSIONPIPE_SOCKET
+unset SESSIONPIPE_STATE SESSIONPIPE_CONFIG SESSIONPIPE_SOCKET SHEEP_POLICY_HOME
 unset BASH_ENV   # a CI job's PATH, re-read by every bash stub (keel.sh says why)
 export HOME="$T/home" REGATTA_CONFIG="$T/config"
 export XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/xdg-config"
@@ -110,8 +110,8 @@ print(s.is_gated(s.gated("node x.js claude-code Stop")), s.is_gated("python3 \"/
   "sheep: is_gated takes this gate's path, never the overlay's old shim"
 
 # Codex and Antigravity behind the same gate (2026-10-26). Codex's event carries `cwd`; Antigravity's
-# carries `workspacePaths` (file:// URIs) and reads the hook's stdout as its answer — anything but
-# JSON is a deny, so the gate prints `{}` on every path that sends nothing.
+# carries `workspacePaths` (file:// URIs). On agy 1.5.2 silence allows the tool,
+# while sessionpipe's own `{}` denies it: discard the sender's stdout on every path.
 reg true
 sgh() {   # sgh <harness> <event> <event json> → "sent|dropped <stdout>"
   rm -f "$T/ran"; o=$(printf '%s' "$3" | (cd "$P/open" && python3 "$H/sheep_gate.py" "$T/hook" "$1" "$2") 2>/dev/null)
@@ -120,23 +120,32 @@ sgh() {   # sgh <harness> <event> <event json> → "sent|dropped <stdout>"
 check "$(sgh codex Stop "{\"cwd\":\"$P/know\"}")" "dropped " "codex: a confidential cwd dropped, nothing printed"
 e6=$(printf '{"cwd":"%s","transcript_path":"%s"}' "$P/open" "$HOME/.codex/sessions/2026/10/26/rollout-x.jsonl")
 check "$(sgh codex Stop "$e6")" "sent " "codex: an open cwd sent (its rollout path is not read as a slug)"
-check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"file://$P/know\"]}")" "dropped {}" \
-  "antigravity: a confidential workspace dropped, and {} printed (silence would deny the tool)"
+check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"file://$P/know\"]}")" "dropped " \
+  "antigravity: a confidential reporting event dropped without denying the tool"
 e7=$(printf '{"workspacePaths":["file://%s","file://%s"]}' "$P/open" "$P/kn%6Fw")
-check "$(sgh antigravity Stop "$e7")" "dropped {}" \
+check "$(sgh antigravity Stop "$e7")" "dropped " \
   "antigravity: any confidential workspace drops it, a URI's escapes decoded"
-check "$(sgh antigravity Stop "{\"workspacePaths\":[\"file://$P/open\"]}")" "sent {}" \
-  "antigravity: an open workspace sent; a hook that prints nothing still answers {}"
-check "$(sgh antigravity Stop '{}')" "sent {}" "antigravity: no workspaces judges the process's cwd (open here)"
-check "$(sgh antigravity Stop 'not json')" "dropped {}" "antigravity: stdin that is not JSON answers {}"
+check "$(sgh antigravity Stop "{\"workspacePaths\":[\"file://$P/open\"]}")" "sent " \
+  "antigravity: an open workspace sent with empty stdout"
+check "$(sgh antigravity Stop '{}')" "sent " "antigravity: no workspaces judges the process's cwd (open here)"
+check "$(sgh antigravity Stop 'not json')" "dropped " "antigravity: malformed stdin prints nothing"
 printf '#!/bin/sh\ncat > /dev/null; echo ran > "%s"; echo '"'"'{"decision":"allow"}'"'"'\n' "$T/ran" > "$T/hook"
-check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"$P/open\"]}")" 'sent {}' \
-  "antigravity: the gate's own {} is the one answer, sessionpipe's stdout dropped (a plain path in workspacePaths too)"
+check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"$P/open\"]}")" 'sent ' \
+  "antigravity: sessionpipe's stdout dropped (a plain path in workspacePaths too)"
+check "$(python3 - "$H/sheep_gate.py" "$T/hook" "$P/open" <<'PY'
+import json, subprocess, sys
+gate, hook, folder = sys.argv[1:]
+p = subprocess.run([sys.executable, gate, hook, "antigravity", "PreToolUse"],
+                   input=json.dumps({"workspacePaths": [folder]}).encode(),
+                   capture_output=True, cwd=folder)
+print(p.returncode == 0 and p.stdout == b"")
+PY
+)" True "antigravity: allow stdout has zero bytes, including no newline"
 printf '#!/bin/sh\ncat > /dev/null; echo ran > "%s"; echo oops\n' "$T/ran" > "$T/hook"
-check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"$P/open\"]}")" "sent {}" "antigravity: a non-JSON answer never reaches it"
+check "$(sgh antigravity PreToolUse "{\"workspacePaths\":[\"$P/open\"]}")" "sent " "antigravity: a non-JSON answer never reaches it"
 check "$(sgh codex PreToolUse "{\"cwd\":\"$P/open\"}")" "sent oops" "codex: sessionpipe's stdout still passes through"
 rm -f "$T/hook"
-check "$(sgh antigravity Stop "{\"workspacePaths\":[\"$P/open\"]}")" "dropped {}" "antigravity: a hook that cannot run still answers {}"
+check "$(sgh antigravity Stop "{\"workspacePaths\":[\"$P/open\"]}")" "dropped " "antigravity: a hook that cannot run still prints nothing"
 printf '#!/bin/sh\ncat > /dev/null; echo ran > "%s"\n' "$T/ran" > "$T/hook"; chmod +x "$T/hook"
 
 # sheep writes the gated entries into Codex's and Antigravity's hooks.json beside Orca's, keeps
@@ -155,10 +164,16 @@ check "$(shp 'print(" ".join(str(p.name) for p in s.hook_totals()[4]))')" "hooks
   "  check: both hooks files dark before the gate"
 check "$(shp 'seed = s.seed_command(); print(*(len(s.gate_harness(n, p, False, seed)[0]) for n, p in s.harness_files()))')" "12 5" \
   "  gate adds Codex's 12 events and Antigravity's 5"
-check "$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1]))["hooks"]; ss=h["SessionStart"]; print(len(h), ss[0]["hooks"][0]["command"], ss[1]["hooks"][0]["command"].endswith("codex SessionStart"), ss[1]["hooks"][0]["command"].startswith("python3 \""), "matcher" in ss[1], h["PreToolUse"][0]["matcher"] == "")' "$X/.codex/hooks.json")" \
-  "12 orca codex True True False True" "  codex: Orca's group kept first, ours gated after it, matcher \"\" on tool events only"
-check "$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); e=c["sessionpipe"]; print(c["orca-status"]["Stop"][0]["command"], e["enabled"], e["PreToolUse"][0]["matcher"], e["Stop"][0]["command"].endswith("antigravity Stop"), e["Stop"][0]["timeout"])' "$X/.gemini/config/hooks.json")" \
-  "orca ag True * True 5" "  antigravity: Orca's key untouched, ours sessionpipe's own shape, gated"
+check "$(shp 'print(all(all(g in json.load(open(p))["hooks"][ev] for ev, gs in s.builder_hooks(n)["hooks"].items() for g in gs) if n == "codex" else json.load(open(p))[s.AG_KEY] == s.builder_hooks(n)[s.AG_KEY] for n, p in s.harness_files()))')" True \
+  "  builder trust entries are exactly the groups gate writes for both harnesses"
+check "$(python3 -c 'import json,sys; h=json.load(open(sys.argv[1]))["hooks"]; ss=h["SessionStart"]; print(len(h), ss[0]["hooks"][0]["command"], ss[1]["hooks"][0]["command"].endswith("codex SessionStart"), ss[1]["hooks"][0]["command"].startswith("python3 \""), "matcher" in ss[1], h["PreToolUse"][0]["matcher"] == "", ss[1]["hooks"][0]["timeout"])' "$X/.codex/hooks.json")" \
+  "12 orca codex True True False True 5" "  codex: Orca's group kept first, ours gated after it, matcher \"\" on tool events only, timeout 5"
+check "$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); e=c["sessionpipe"]; print(c["orca-status"]["Stop"][0]["command"], e["enabled"], e["PreToolUse"][0]["matcher"], e["PreToolUse"][0]["hooks"][0]["timeout"], e["Stop"][0]["command"].endswith("antigravity Stop"), e["Stop"][0]["timeout"])' "$X/.gemini/config/hooks.json")" \
+  "orca ag True * 15 True 15" "  antigravity: Orca's key untouched, ours sessionpipe's own shape, gated, timeout 15"
+mkdir -p "$X/cc/projects"
+check "$(shp 'import pathlib; p = pathlib.Path("'"$X"'/cc/settings.json"); s.gate_file(p, False, s.seed_command()); h = json.load(open(p))["hooks"]; print(h["PreToolUse"][0]["hooks"][0]["timeout"], h["PermissionRequest"][0]["hooks"][0]["timeout"])')" \
+  "5 130" "  claude-code: PreToolUse stays timeout 5, PermissionRequest 130"
+rm -rf "$X/cc"
 check "$(shp 'seed = s.seed_command(); print(*(len(s.gate_harness(n, p, False, seed)[0]) for n, p in s.harness_files()), s.counts(s.harness_survey("codex", json.load(open(s.harness_files()[0][1])))))')" \
   "0 0 {'gated': 12, 'ungated': 0, 'absent': 0}" "  a second gate changes nothing; every Codex event gated"
 check "$(shp 't = s.hook_totals(); print(t[0], len(t[4]))')" "{'gated': 18, 'ungated': 0, 'absent': 13} 0" \
@@ -253,7 +268,7 @@ def send(sid, cwd="open", event="Stop", text=None, name="claude-code", field="se
     p = subprocess.run([sys.executable, str(hooks / "sheep_gate.py"), node,
                         str(t / "pipe.js"), name, event], input=json.dumps(payload).encode(),
                        env=env, cwd=projects / cwd, capture_output=True)
-    check(p.returncode == 0 and not p.stderr and p.stdout == (b"{}\n" if name == "antigravity" else b""),
+    check(p.returncode == 0 and not p.stderr and p.stdout == b"",
           str(sid) + ": hook succeeds with expected stdout and no stub errors")
 def sent():
     return "".join(p.read_text() for p in sorted(t.glob("instance-*/sent")))

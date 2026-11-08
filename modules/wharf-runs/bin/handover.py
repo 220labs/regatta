@@ -251,7 +251,7 @@ def judge(text, data, ending):
                 rest = re.sub(re.escape(doc) + r"(?:#|:\s*|\s+)" + ref + r"\b", " ", rest)
         if re.sub(r"\b(?:and|the)\b|[\s,;.&()]+", "", rest, flags=re.I):
             return "its relayed or waiting question says more than its landing question: " + (line or "")
-    elif kind == "pending" and not stamp_only(line, data["stamps"], top=data.get("top", "")) and not (not data["stamps"] and stamp_line(line)):
+    elif kind in ("pending", "lander") and not stamp_only(line, data["stamps"], top=data.get("top", "")) and not (not data["stamps"] and stamp_line(line)):
         return "its last reply waits on its own work: " + (line or "")
     return ""
 

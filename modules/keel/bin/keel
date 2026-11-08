@@ -4471,8 +4471,7 @@ def foundation_head(layer=None):
 # decision_js() (ui/decision.css, ui/decision.js) its look and its controller, which the page loads after its own CSS
 # and before its own JS. The ids, the anchors and the Save stay the page's: `card-D<n>` with `data-ss-id`, a hidden
 # `ans-D<n>` box that Save, Copy and the draft read, `chip-`, `take-`, `reset-`. The tier is the words dnd_held reads,
-# fail-closed; the repo's `physical:` line is read where the caller knows the doc's checkout (`build`, `serve`, the
-# spacesheep page: ctx["physical"]), and a doc out of any checkout is tiered on its own lines alone.
+# fail-closed, by the decision's own lines.
 DECISION_HELD_WORDS = {"money in an option": "money", "a deletion": "deletion", "a public publish": "publish",
                        "a third party's answer": "third party"}
 DECISION_TIER_SAYS = {"safe": "Reversible: yes — auto, dnd and yolo would take it",
@@ -4493,7 +4492,7 @@ def decision_js():
     return ui_asset("decision.js").replace("</script", "<\\/script")
 
 
-def decision_tier(it, lines, physical=False):
+def decision_tier(it, lines, physical=None):
     """(tier, class): `yours` for anything unclear (reopened, no pick, conditional, unmarked, the older pre-filled
     shape), `held` with dnd_held's class (money, deletion, publish, third party), `irreversible` for `Reversible: no`,
     else `safe` — the four the modes take by (auto safe; dnd safe and irreversible; plain yolo all but yours, an
@@ -4509,22 +4508,12 @@ def decision_tier(it, lines, physical=False):
         return "yours", "conditional"
     if it["reversible"] is None:
         return "yours", "unmarked"
-    # `physical` False: not read (a caller that knows no doc path); None (no checkout, no line) or anything but none
-    # holds, as dnd_held does
-    if physical is not False and not (physical or "").startswith("- physical: none"):
-        return "held", "physical"
     own = it["answer_line"] if it["answer_line"] is not None and it["answer_line"] > it["start"] else it["end"]
     body = MODEL_COST_RE.sub(" ", "\n".join(lines[it["start"]:own]))
     for why, rx in DND_HOLDS:
         if rx.search(body):
             return "held", DECISION_HELD_WORDS.get(why, why)
     return ("irreversible" if it["reversible"] == "no" else "safe"), ""
-
-
-def page_physical(p):
-    """The `physical:` line a page tiers by (decision_tier): doc_physical's, as `yolo --dnd` reads it — the line, or
-    None for a doc in no checkout or a contract without one, which holds every item as dnd_held does (fail-closed)."""
-    return doc_physical(p)
 
 
 def pick_letter(it):
@@ -4539,7 +4528,7 @@ def decision_html(it, ctx):
     where it is more than a letter; the confirm a one-way pick fills; the chip and Take; the folded line a mode
     shows. `ctx` is page_parts' (its lines, anchors, and `ss` on the spacesheep page)."""
     lines = ctx["lines"]
-    tier, cls = decision_tier(it, lines, ctx.get("physical", False))
+    tier, cls = decision_tier(it, lines)
     rl, i, new = pick_letter(it), it["id"], it["shape"] == "new"
     ans = it["answer"] if it["answer"] is not None else ""
     a = ans.strip()
@@ -5517,7 +5506,7 @@ def ss_anchor(ctx, at, row=None):
     return sid
 
 
-def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False, physical=False):
+def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False, physical=None):
     """(lines, items, feedback_line, the page's HTML parts, ctx) — `build` renders them, `merge`
     reads ctx["anchors"] to place each note exactly where the page showed it. Every item is a card;
     the feedback section (parse's feedback_section: after the last item) and what follows it are not
@@ -5534,8 +5523,6 @@ def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False
     lines, items, feedback_line = parse(text)
     drawn, missed = mermaid_svgs((t for _, t in mermaid_fences(lines)), deadline) if draw else ({}, 0)
     ctx = {"lines": lines, "anchors": {}, "figs": figs, "mermaid": drawn, "mmd_missed": missed, "bare": bare}
-    if physical is not False:
-        ctx["physical"] = physical
     if page:
         ctx["ss"] = {}
     # segments: markdown between items, cards for items; the feedback section is never above an item
@@ -5549,11 +5536,12 @@ def page_parts(text, page=False, figs=None, draw=True, deadline=None, bare=False
     return lines, items, feedback_line, parts, ctx
 
 
-def build(text, source_name, post=None, figs=None, draw=True, physical=False):
-    return render_form(text, source_name, post=post, figs=figs, draw=draw, physical=physical)[0]
+def build(text, source_name, post=None, figs=None, draw=True, physical=None):
+    return render_form(text, source_name, post=post, figs=figs, draw=draw)[0]
 
 
-def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None, physical=False):
+def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, deadline=None,
+                physical=None):
     """The form as one HTML page; returns (html, ctx). `post`: memo serve's answer URL. `sheep`:
     the spacesheep page's footer facts ({rel, sha, branch, read, edit}) — the same form, anchored
     for comments, its Save sent through spacesheep's page bridge (`window.ss.emit("memo-save",
@@ -5564,10 +5552,8 @@ def render_form(text, source_name, post=None, sheep=None, figs=None, draw=True, 
     except Stop as e:
         print("keel: the page goes without the decision component's look and keys — %s" % e, file=sys.stderr)
         dcss = djs = ""
-    if sheep and "physical" in sheep:
-        physical = sheep["physical"]
     lines, items, feedback_line, parts, ctx = page_parts(text, page=bool(sheep), figs=figs, draw=draw, deadline=deadline,
-                                                         bare=not djs, physical=physical)
+                                                         bare=not djs)
     title = title_of(text, Path(source_name).stem)
     existing_feedback = ""
     if feedback_line is not None:
@@ -5976,8 +5962,7 @@ def serve(memo, port=0, once=True, idle=110 * 60):
                 return self.send(404, "not found", "text/plain")
             # read the memo on every load: a reload shows what the session changed meanwhile
             try:
-                page = build(path.read_text(), path.name, post=base + "answers", figs=figs_on_disk(path),
-                             physical=page_physical(path.resolve()))
+                page = build(path.read_text(), path.name, post=base + "answers", figs=figs_on_disk(path))
             except (Stop, OSError, ValueError) as e:
                 return self.send(500, "memo serve cannot show %s: %s" % (path.name, e), "text/plain; charset=utf-8")
             record_open(path)  # one row per page that built — the page never polls (E14: `opened`)
@@ -7342,7 +7327,8 @@ DEPLOY_MIN = 6
 # the tally; 9 (2026-10-26) Mermaid drawn at build time, the library no longer inlined; 10 (2026-10-26)
 # Copy browser link, with the page's own address (`site`, `link_shown`); 11 (2026-11-03) the decision component
 # and Accept all's guard (helm-ui S8): a live page keeps the old Accept all, which fills one-way picks, until redeployed.
-PAGE_FMT = 11
+# 12 (2026-11-07): decision tiers depend only on the item's marks and held classes.
+PAGE_FMT = 12
 # The receipt (2026-10-20, the owner: "I don't think I've ever seen a receipt"). ss.emit returns nothing,
 # so all a Save could say was "handed over"; nothing ever came back. Now a pull that takes the page's
 # Saves answers on two paths: a live_push `replace` of the page's hidden RECEIPT_ID block, which every
@@ -7974,9 +7960,7 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     # deploy, so a page rendered before it has no Copy browser link (never a guessed one: the address is
     # `/@<user>/<slug>`, which the frame's `<uuid>.localhost` host does not name), and the next deploy
     # call redeploys it once with the pin's `url` (2026-10-26)
-    # the tiers read the contract's physical line: a changed line redeploys a page whose doc did not change
-    phys = page_physical(Path(p).resolve()) if p else checkout_physical(top)
-    if (pin.get("sha") == sha and pin.get("url") and pin.get("fmt") == PAGE_FMT and pin.get("phys") == phys
+    if (pin.get("sha") == sha and pin.get("url") and pin.get("fmt") == PAGE_FMT
             and pin.get("receipt_shown") == pin.get("receipt") and pin.get("link_shown") == pin["url"]
             and not (pin.get("mmd_missed") and mermaid_may_draw())):
         return pin["url"], sha, False
@@ -7986,8 +7970,7 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     view, edit = urls(slug, branch, rel) if slug else ("", "")
     shown, site = pin.get("receipt"), pin.get("url")
     page, ctx = sheep_page(text, name, {"rel": rel, "sha": sha, "branch": branch, "read": view, "edit": edit,
-                                          "receipt": shown, "site": site,
-                                          "physical": phys},
+                                          "receipt": shown, "site": site},
                          figs=figs_on_disk(p) if p else src.get("figs"),
                          deadline=deadline)
     import time
@@ -8081,7 +8064,7 @@ def sheep(memo, timeout=DEPLOY_TIMEOUT, plain=False, deadline=None, src=None, no
     def change(pin):
         # every id this page ever had: a comment made on an older version still finds its block
         # by the text it was made on (merge places it by quote, or files it under feedback)
-        pin.update({"space": space, "fmt": PAGE_FMT, "phys": phys, "url": res["url"], "sha": sha, "branch": branch, "receipt_shown": shown,
+        pin.update({"space": space, "fmt": PAGE_FMT, "url": res["url"], "sha": sha, "branch": branch, "receipt_shown": shown,
                     "mmd_missed": ctx.get("mmd_missed", 0),
                     "link_shown": site,
                     "repo_path": str(top) if src else (doc_key(p) or [pin.get("repo_path")])[0],  # where `prune` asks whether the branch lives
@@ -9527,10 +9510,8 @@ ROUTED_ASK = ("Label each comment left on a design document's page. writer: owne
 # entry D1-B's held verbs, beside DND_HOLDS: a thread naming one is never a plain act
 HELD_VERBS_RE = re.compile(r"\b(?:merg(?:e|es|ed|ing)|land(?:s|ed|ing)?|revert\w*|force-push\w*|rename (?:the |a |this |that )?repo\w*"
                            r"|revok\w*|publish\w*|buy\w*|bought|send\w*|sent to|delet\w*|deploy\w*)\b", re.I)
-# what the `would start` mark tells the owner to do: go starts it here; in a repo whose contract is not
-# `physical: none` a go would be refused at the start (lookout_gone), so it is the skipper's (TODO.md's routed-s4 item as of 2026-11-02, its (c), S5)
+# what the `would start` mark tells the owner to do
 OFFER_HOW = "reply go to start, no to close"
-OFFER_HOW_SKIPPER = "not started here: the repo is not `physical: none`, its skipper starts it — reply no to close"
 LANDED = "main"   # a landed doc's branch (routed comments S5): the key a landed routing is read under, as adopt_page's
 ANSWER_WORDS_RE = re.compile(r"^\s*(?:[A-H]|yes|no|y|n|ok(?:ay)?|go|stop|agreed|fine|done|thanks?|thank you|👍|✅)\s*[.!]*\s*$", re.I)
 GO_WORDS_RE = re.compile(r"^\s*(?:go|yes|no|stop)\b", re.I)
@@ -11040,9 +11021,8 @@ def sheep_main(args):
 # ----------------------------------------------------------------------------- stand (D11)
 
 # D11-A (docs/autofinish-design-2026-10-02.md, sections 2c and 12; built as E10): a doc's
-# recommendations stand at link + 24 h when nobody touched it, in a repo whose contract says
-# `physical: none`, never in a doc with more than ten D-items; an explicit `Stands:` line is the
-# only way in elsewhere and the way to move the time. `status` decides; `stand --apply` acts on
+# recommendations stand at link + 24 h when nobody touched it, never in a doc with more than
+# ten D-items; an explicit `Stands:` line moves the time. `status` decides; `stand --apply` acts on
 # `due` alone. Every rule errs towards waiting: a signal that might be the owner's is a touch.
 STAND_HOURS = 24
 STAND_MAX_ITEMS = 10  # the owner, 2026-10-04: "those stay and rot if they have to"
@@ -11148,20 +11128,6 @@ def logged_touches(path, key, since):
     except (OSError, ValueError, AttributeError):
         pass
     return out
-
-
-def contract_physical(primary):
-    """The contract's `physical:` line, read the way bin/dispatch's physical_ok reads it: the
-    first `- physical:` line of AGENTS.md, else CLAUDE.md, in the primary checkout (main's
-    contract, not one a branch rewrote). None when there is none."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        try:
-            for l in (Path(primary) / name).read_text().splitlines():
-                if l.startswith("- physical:"):
-                    return l
-        except (OSError, UnicodeDecodeError):
-            continue
-    return None
 
 
 def answer_count(top, ref, rel):
@@ -11291,7 +11257,6 @@ def stand_status(memo, fetch_first=True):
     part-stood   the same commit, and items are still open: `no`, unmarked, conditional or reopened
                  ones a stand never takes (entry D4-A) — autofinish's rule D refuses it, so no
                  branch launches with them open; the owner's answers make it `stood`
-    no-contract  the repo's contract has no `physical:` line: never stands, by either path
     taken        every D-item answered, one or more by `memo yolo` (E12): the owner never saw those, so
                  the sweep's rule D, which launches only `stood` and `answered`, skips it — the veto
                  of docs/yolo-veto-2026-10-07.md D1 (not lifted), held by code
@@ -11299,7 +11264,6 @@ def stand_status(memo, fetch_first=True):
     ask-mode     the branch's sent task is in mode `ask`: nothing answers it but the owner, so it never
                  stands, by the sweep or by autofinish's rule D (landing review 8)
     too-big      more than ten D-items: never stands, not even by the explicit line
-    physical     `physical:` is not none and there is no `Stands:` line (household, household…)
     voided       a touch that proves the owner read it, since the link (or the `Stands:` line): a form
                  Save, a GitHub web edit, a commit of his on the doc, `stand --void`
     due          the deadline passed, untouched, items unanswered: `stand --apply` may run
@@ -11312,7 +11276,7 @@ def stand_status(memo, fetch_first=True):
 
     A doc with no link — its branch or its answer lines not on GitHub — or on a branch other than
     `claude/*` (only a doc on its own branch launches through the runner) gets no verdict past
-    `physical`: Stop, exit 1, so a launcher skips it. So does a failed fetch: a GitHub edit is a
+    `too-big`: Stop, exit 1, so a launcher skips it. So does a failed fetch: a GitHub edit is a
     touch, and a stale origin could not show it."""
     p, top, branch, rel, _ = locate(memo)
     if fetch_first:
@@ -11351,9 +11315,6 @@ def stand_status(memo, fetch_first=True):
             ", ".join(it["id"] for it in open_items)))
     if sha:
         return done("stood", "stood by autofinish (%s)" % sha)
-    phys = contract_physical(primary)
-    if phys is None:
-        return done("no-contract", "the repo's contract has no `physical:` line: never stands")
     taken = [it["id"] for it in items if taken_answer(it["answer"])]
     if not open_items and taken:
         # S3b: the mode says whether the branch lands, not the record line (`taken_by`, `mode`, `lands`
@@ -11372,8 +11333,6 @@ def stand_status(memo, fetch_first=True):
         return done("ask-mode", "mode ask (%s): nobody answers it but %s — never stands" % (ask, WHO))
     if len(items) > STAND_MAX_ITEMS:
         return done("too-big", "%d D-items, over %d: never stands" % (len(items), STAND_MAX_ITEMS))
-    if not phys.startswith("- physical: none") and not explicit:
-        return done("physical", "%s — stands only on `memo stand`" % phys[2:].strip())
     if not branch.startswith("claude/"):
         raise Stop("%s is on %s, not a claude/* branch: a doc stands only on its own branch" % (rel, branch))
     if not link:
@@ -11409,12 +11368,12 @@ def status_line(st):
 
 
 def stand(memo, by=None):
-    """Write the explicit `Stands:` line under the title: now + `by` hours (default 24). The only
-    way in where `physical:` is not none, the way to move the time anywhere, and `--by 0` stands
-    now. It resets the touch clock. Not committed here: the session's checkpoint commits it with
+    """Write the explicit `Stands:` line under the title: now + `by` hours (default 24).
+    It moves the deadline, and `--by 0` stands now. It resets the touch clock. Not committed here:
+    the session's checkpoint commits it with
     the prompt that asked for it, and that one commit is not a touch (`skip` in `touches`)."""
     st = stand_status(memo)
-    if st["verdict"] in ("stood", "part-stood", "no-contract", "taken", "answered", "ask-mode", "too-big"):
+    if st["verdict"] in ("stood", "part-stood", "taken", "answered", "ask-mode", "too-big"):
         raise Stop("%s never stands: %s" % (st["doc"], st["reason"]))
     p = Path(memo).expanduser().resolve()
     lines = p.read_text().split("\n")
@@ -11542,7 +11501,7 @@ def record_stood(top, st, stood, still, sha):
 # the rest of D11 skips: a branch not `claude/*` (a doc on main), a worktree a session holds (its
 # owner file seen within 2 h: it may hold chat answers not yet written; only checkpoint.py and
 # bin/pickup write that file, so a session with hooks off is covered by the 24 h quiet alone), a git
-# operation in progress; physical repos, docs over ten items and docs with no link get no `due`.
+# operation in progress; docs over ten items and docs with no link get no `due`.
 # It is armed by hand: ask poll runs it only while `sweep-armed` exists in the state dir, so the
 # first live run is the owner's call (`stand --sweep --arm`), never a merge's side effect.
 SWEEP_EVERY = 3600
@@ -11729,8 +11688,7 @@ def stand_sweep(root, force=False, dry=False):
 # over the item's own lines (title, options, marks), matched case-blind; a hit holds the item for a
 # relay, and a false hit costs one card, never a wrong answer. Money is real money only: a model
 # cost is written `$<list> ($<eff> effective)` (rules: every model cost), so those pairs are cut
-# before the test, and a `list-only` mark is money by the same rule. A repo whose contract is not
-# `physical: none` holds every item (DND_PHYSICAL), read as dispatch's physical_ok reads it.
+# before the test, and a `list-only` mark is money by the same rule.
 MODEL_COST_RE = re.compile(r"\$[\d.,]+[kKmM]?\s*\(\s*\$[\d.,]+[kKmM]?\s+effective\s*\)")
 DND_HOLDS = (
     ("money in an option", re.compile(r"[$€£]\s?\d|\blist-only\b|\b(?:usd|eur|gbp)\b|\bsubscription\b|\binvoice\b", re.I)),
@@ -11742,7 +11700,8 @@ DND_HOLDS = (
 
 def dnd_held(it, lines, physical=None):
     """The held class of one open item under `yolo --dnd`, or None when its pick may be taken: no
-    pick, a conditional or reopened one, unmarked, a physical repo, or one of DND_HOLDS in its lines."""
+    pick, a conditional or reopened one, unmarked, or one of DND_HOLDS in its lines.
+    `physical` is ignored; older Wharf versions still supply this retired argument."""
     rec = " ".join((it["recommended"] or "").split())
     if reopened(it, lines):
         return "reopened (> **Reopened.** under it) — %s answers it again" % WHO
@@ -11752,12 +11711,6 @@ def dnd_held(it, lines, physical=None):
         return "its pick is conditional (%s) — a probe nobody ran" % rec[:60]
     if it["reversible"] is None:
         return "not marked Reversible: yes|no"
-    # no `physical:` line reads as physical, as autofinish's held_slice and dispatch's physical_ok
-    # fail closed (landing review 17)
-    if physical is None:
-        return "the repo's contract has no `physical:` line (read as physical)"
-    if not physical.startswith("- physical: none"):
-        return "the repo acts on the real world (%s)" % physical.strip()[:60]
     body = MODEL_COST_RE.sub(" ", "\n".join(lines[it["start"]:it["end"]]))
     for why, rx in DND_HOLDS:
         m = rx.search(body)
@@ -11767,17 +11720,18 @@ def dnd_held(it, lines, physical=None):
 
 
 def doc_physical(p):
-    """The `physical:` line of the contract in the doc's checkout (its primary, as contract_physical
-    reads), or None when the doc is in no repo or the contract has no such line."""
-    top = git(p.parent, "rev-parse", "--show-toplevel", check=False).stdout.strip()
-    return checkout_physical(top) if top else None
+    """Compatibility for older Wharf consumers: the retired gate always passes; no file is read."""
+    return "- physical: none"
 
 
-def checkout_physical(top):
-    """The `physical:` line for a checkout: its primary's contract (main's, not one a branch rewrote), else its own."""
-    gd = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False).stdout.strip()
-    primary = str(Path(gd).parent) if gd.endswith("/.git") else top
-    return contract_physical(primary) or contract_physical(top)
+def _retired_physical(*_a, **_k):
+    """Compatibility for open branches written before the field was retired (helm's tier and Course
+    readers call these behind hasattr, where a missing name fails silently): always passes. The
+    `physical=` keywords on decision_tier, page_parts, build and render_form are ignored likewise."""
+    return "- physical: none"
+
+
+checkout_physical = contract_physical = page_physical = _retired_physical
 
 
 def yolo(memo, dry=False, today=None, dnd=False):
@@ -11803,14 +11757,13 @@ def yolo(memo, dry=False, today=None, dnd=False):
     text = p.read_text()
     lines, items, _ = parse(text)
     today = today or dt.date.today().isoformat()
-    physical = doc_physical(p) if dnd else None
     take, held = {}, []
     for it in sorted(items, key=lambda x: x["start"]):
         if yolo_settled(it, lines):
             continue
         rec = " ".join((it["recommended"] or "").split())
         if dnd:
-            why = dnd_held(it, lines, physical)
+            why = dnd_held(it, lines)
             if why:
                 held.append((it, why))
                 continue
@@ -12558,9 +12511,9 @@ def stamp(memo, stood=None):
 # The reasons an open item stays the owner's whatever the sweep does, in the order /embark lists them (review
 # D4-A): the four an item carries, then the four a doc does. Anything else is named too — nothing is dropped.
 EMBARK_REASONS = ("Reversible: no", "unmarked", "conditional", "reopened", "no pick",
-                  "physical repo", "on main", "over ten items", "no link", "voided", "no contract", "unparseable")
+                  "on main", "over ten items", "no link", "voided", "unparseable")
 EMBARK_HOURS = 72
-EMBARK_VERDICT_WHY = {"physical": "physical repo", "too-big": "over ten items", "voided": "voided", "no-contract": "no contract",
+EMBARK_VERDICT_WHY = {"too-big": "over ten items", "voided": "voided",
                       "ask-mode": "mode ask"}
 
 
@@ -12579,7 +12532,7 @@ def doc_born(top, rel, p):
 def embark_doc(path):
     """[(reason, item)] for the open items of one doc the stand sweep cannot take (review D4-A,
     `standable` and `stand_status`): an item that is `Reversible: no`, unmarked, conditional, pick-less or
-    reopened is the owner's whatever the doc; one that would stand waits on the doc — a physical repo, `main`,
+    reopened is the owner's whatever the doc; one that would stand waits on the doc — `main`,
     over ten items, no link, a touch that voided it. A doc the sweep will reach (`due`, `stands-at`,
     `part-stood`) lists only its first four kinds. No fetch: origin as last fetched. Read-only."""
     text = Path(path).read_text()
@@ -12659,7 +12612,7 @@ def embark_print(rows, hours=EMBARK_HOURS):
 # on them, `pickup seed --beside` and `dispatch` start one run (S5, lookout_gone), else a card.
 # The tiers (routed comments S4, judge section 3): an owner's new words in a thread are judged — the
 # rules first, then one `keel.comment` call a page for the free text (judge_threads; a confidential
-# scope's repo never reaches it) — T1, a plain act on an unshared page of a `physical: none` repo, is a
+# scope's repo never reaches it) — T1, a plain act on an unshared page, is a
 # `request` event, started as an answer is (a hail `--when idle` under a run-naming claim, else a seed
 # off the tip, marked `routed into` once dispatch returns 0); T2, a held or unclear act, is one `would
 # start` mark and one card, `go` under it the T1 road and `no` a `closed by` mark; the owner's `stop`
@@ -13260,8 +13213,8 @@ def lookout_card(ev, why, action="card"):
 def waiting_steps(text, items, repo=None, sets=None, slug=None, given=()):
     """The open steps a run would build once `items` are answered, and the doc whose Action plan holds
     them: (step ids, "entry" or `slug`). A step is a run's when it is a session's (or a `project`
-    step naming this repo — another repo's step is its own session's, and its contract's physical
-    gate is not this one), not started, whose `after:` names one of them and is met in full: every
+    step naming this repo — another repo's step is its own session's), not started, whose `after:`
+    names one of them and is met in full: every
     D-item answered, every S-step done. An `after:` entry of another shape (`shape D4`, another doc's
     item) is never taken as met. An answer with no such step leaves a run nothing to build, so it
     raises a card instead (S5 review, 2026-10-22). Never a `wip` step (another branch builds it) or
@@ -13866,7 +13819,7 @@ def lookout_gone(ev, kind, row, dry):
     """S5, with the host rule's rule 3 (routed comments S3): no run is in sight for the doc's branch B.
     A run starts only when the answers are on the branch (a Save still on the page goes with the run, which
     takes it in), an open step waits on them (in a set's entry for a component), no session holds the
-    worktree here or the branch on any host harness reads, the repo is `physical: none`, the week is not
+    worktree here or the branch on any host harness reads, the week is not
     tight and the tools are here. Then the claim: a `claiming` mark on each thread the event has (a talk
     event's; an answer's or a Save's claim is the seed's topic, seed_topic, which a second host's `pickup
     seed` refuses as already open), read again after CLAIM_WAIT, and a `claimed` row; one full pass later,
@@ -13931,10 +13884,6 @@ def lookout_gone(ev, kind, row, dry):
     if not landed and unstarted_seed(origin_view(top, branch, fetch_first=False) or ref):   # origin's tip: the seed may be another host's
         return lookout_card(ev, "%s is a seed no session has started (its dispatch failed, or its run is on its way): "
                             "`dispatch %s` starts it, and its run takes these in; no seed is cut off a seed" % (branch, branch))
-    phys = contract_physical(top)
-    if not (phys or "").startswith("- physical: none"):
-        return lookout_card(ev, "%s's contract says %s, not `physical: none`: the skipper starts it"
-                            % (top.name, (phys or "nothing").lstrip("- ").strip()))
     why = lookout_week(top)
     if why:
         return lookout_card(ev, why, action=GATED)
@@ -14570,19 +14519,17 @@ def stop_asked(t):
     return bool(said) and bool(STOP_WORD_RE.match(said[-1]["text"]))
 
 
-def thread_tier(label, why, shared, physical):
+def thread_tier(label, why, shared):
     """(tier, why) of one judged thread (judge section 3; entry D1-B): T1 — `act-plain`, on a page no
-    other account shares (until the owner's S1 probe), in a `physical: none` repo; `go` and `no` — the
+    other account shares (until the owner's S1 probe); `go` and `no` — the
     owner's word under our offer (the rules' labels); T2 — every other act, held or unclear, and a plain
-    one the page or the repo holds back; None — a question (T3), an answer or a remark: the comment
+    one the page holds back; None — a question (T3), an answer or a remark: the comment
     event's road, unchanged. More than one run is the run's own to find, never this read's."""
     if label in ("go", "no"):
         return label, why
     if label == "act-plain":
         if shared:
             return "T2", "act-plain, but the page holds another account's comments (entry D1-B, until S1)"
-        if not physical:
-            return "T2", "act-plain, but the repo is not `physical: none`"
         return "T1", why
     if label.startswith("act"):
         return "T2", "%s%s" % (label, " — %s" % why if why else "")
@@ -14628,13 +14575,12 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
         elif any(base(k) == tid for k in fresh):
             judge.append(t)
     shared = any(c.get("shared") for c in threads)
-    physical = bool(top) and (contract_physical(top) or "").startswith("- physical: none")
     # a dry pass spends no call: what the rules leave is held, T2, as with the row off (TODO.md's routed-s4 item as of 2026-11-02, its (d))
     got, _n = judged_cached(judge, key, pin["space"], name, log=not dry, call=not dry) if judge else ({}, 0)
     asked, questions = [], []   # the T1 threads and go's of this turn: ONE request, so one seed's gate never refuses on its sibling
     for t in judge:
         label, why, at = got[t["id"]]
-        tier, why = thread_tier(label, why, shared, physical)
+        tier, why = thread_tier(label, why, shared)
         if tier is None:
             if label == "question":
                 questions.append(t["id"])
@@ -14651,8 +14597,6 @@ def lookout_tiers(key, top, branch, rel, pin, threads, fresh, talk, dry):
             words = " ".join(" ".join(c["text"].split()) for c in said)
             ev.update(kind="offer", id="offer:%s:%s" % (t["id"], sig(t["id"], at)),
                       act='"%s"' % (words[:77] + "…" if len(words) > 80 else words).replace('"', "'"), cls=why)
-            if top and not physical:   # a go would be refused at the start: the offer says whose it is (TODO.md's routed-s4 item as of 2026-11-02, its (c))
-                ev["how"] = OFFER_HOW_SKIPPER
         out.append(ev)
         done.add(t["id"])
     if asked:
@@ -14781,11 +14725,6 @@ def lookout_page_act(ev, dry):
     except Exception as e:
         return lookout_card(ev, "the %s mark could not be posted (%s)" % (kind, str(e)[:120]), action=GATED)
     routed_log({"event": "mark", "doc": ev["doc"], "space": pin["space"], "thread": tid, "kind": kind, "id": new})
-    if offer and ev.get("how") == OFFER_HOW_SKIPPER:   # a repo that is not physical: none starts nothing from a go
-        return {"action": "card", "marked": kind,
-                "card": "%s [%s]: %s asked for %s (%s) — %s is not `physical: none`: its skipper starts it; `no` under "
-                        "the lookout's mark on the page closes it" % (ev["doc"], tid, WHO, ev.get("act"), ev.get("cls"),
-                                                                       ev["doc"].partition("@")[0])}
     if offer:
         return {"action": "card", "marked": kind,
                 "card": "%s [%s]: %s asked for %s (%s) — reply `go` under the lookout's `would start` mark on the page "
@@ -15660,7 +15599,7 @@ def main(argv=None):
             return 1 if bad else 0
         if a.cmd == "build":
             out = Path(a.out) if a.out else Path.cwd() / (memo.stem + ".form.html")
-            out.write_text(build(text, memo.name, figs=figs_on_disk(memo), physical=page_physical(memo.resolve())))
+            out.write_text(build(text, memo.name, figs=figs_on_disk(memo)))
             _, items, _ = parse(text)
             print("%s: %d decision%s → %s" % (memo.name, len(items), "" if len(items) == 1 else "s", out))
             return 0

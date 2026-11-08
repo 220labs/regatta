@@ -64,6 +64,12 @@ rules; E3, the triggers; E6's half, the /autofinish override.
         judged by rule C and started `--by brief`; `now` is refused for one. The yes predates the
         diff, so the landing re-judges it (brief_held: autofinish-run's landing(), bin/pr): class 2,
         the base's `autofinish_leaks`, and the list itself hold it at a ready PR; class 1 and 3 land.
+  autofinish landing [<worktree>] [--json]
+        gate-asks S1: reads whether <worktree>'s claude/* branch may land from config and state on
+        this Mac — landing()'s mode-and-slice core, this Mac's `armed` and `landings` switches
+        (absent reads off until task-shape S3), week_tight, a scheduled job, a `.next` or queued
+        entry, open doc D-items on the branch, origin/<main> — and prints one of `lands by <road>`,
+        `held: <why>`, `waits: <why>` or `nobody: <why>` with the config keys that decided.
 
 Read-only but for: --log and --sweep (the log), arm/disarm, override (its marker), the state dir
 (the started tips, the sweep lock), a rule-D start's `memo stand --apply` (one commit on that
@@ -165,7 +171,7 @@ D3-C), checked in this order, first veto wins:
             with one: M at once, as L), a busy session, a reply that asks, the idle clock or the
             GitHub gates. Gates are not skipped: autofinish-run's landing() reads the
             mode again and holds at a ready PR what held_slice names — under dnd money in the
-            prose added, a physical repo, `autofinish_exclude` and `in_place`, a path the public
+            prose added, `autofinish_exclude` and `in_place`, a path the public
             twin's allowlist publishes, a deleted data file, a yolo-taken answer; under both the
             launcher's own GATES. A branch whose mode is `ask` is judged by the rules here and
             every start of it holds (`--hold`). No mode (no sent task; a session the owner types in):
@@ -297,7 +303,7 @@ REPOS_JSON = Path(os.environ.get("AUTOFINISH_REPOS") or common.repos_json() or "
 ROOT = Path(os.environ.get("AUTOFINISH_PROJECTS") or Path.home() / "projects")
 # keel (M4) and account (lighthouse) are peers found through the core; absent, the path below does
 # not exist, the call raises OSError and its caller's own fallback holds (memo_status None, no pick).
-MEMO = os.environ.get("AUTOFINISH_MEMO") or str(common.tool("keel") or BIN / "keel")
+MEMO = os.environ.get("AUTOFINISH_MEMO") or os.environ.get("AUTOFINISH_KEEL") or str(common.tool("keel") or BIN / "keel")
 LOG_DIR = Path(os.environ.get("AUTOFINISH_LOG_DIR") or Path.home() / "Library/Logs/claude-weekly")
 
 IDLE_MIN = 40          # D2: "the owner is done" (40 min, decoupled from the lock)
@@ -506,7 +512,6 @@ MONEY_RE = re.compile(r"[$€£]\s?(?!0(?![\d.,]))\d|\blist-only\b|\b(?:usd|eur|
 MODEL_COST_RE = re.compile(r"\$[\d.,]+[kKmM]?\s*\(\s*\$[\d.,]+[kKmM]?\s+effective\s*\)")
 DATA_SUFFIXES = (".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".yaml", ".yml", ".sqlite", ".db")
 YOLO_TAKEN = "Taken unattended (%s's yolo, " % (common.OWNER_NAME or "Owner")   # keel's YOLO_ANSWER (its owner key, "Owner" unset): no holds were applied to it
-PHYSICAL_RE = re.compile(r"^\s*-\s*physical:\s*(.*?)\s*$", re.M)
 
 
 def landing_mode(branch, repo=None):
@@ -559,15 +564,6 @@ def effective_mode(by, mode, standing_yes=False, recorded=False, unreadable=Fals
     return mode
 
 
-def physical_line(repo, main):
-    """The contract's `physical:` value on origin/<main> (AGENTS.md, else CLAUDE.md), or None."""
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        m = PHYSICAL_RE.search(git(repo, "show", f"origin/{main}:{name}") or "")
-        if m:
-            return m.group(1)
-    return None
-
-
 def published(repo, main):
     """The paths origin/<main>'s .helloworld/allowlist.txt sends to the public twin (one per line)."""
     text = git(repo, "show", f"origin/{main}:.helloworld/allowlist.txt") or ""
@@ -579,8 +575,8 @@ def held_slice(repo, wt, main, mode, cfg=None):
     Every mode: the launcher's own gates (GATES, in the overlay) and a path in the base's
     `autofinish_exclude` or `in_place` — a branch never lands the gate it is judged by, nor what every
     session's hooks run; yolo's "all the way" stops there (the landing review, 2026-10-22; bin/pr
-    refuses it end to end anyway). dnd adds the slice the owner kept for themself: a repo whose `physical:`
-    is not none, a path the public twin publishes, a data file the branch deletes, money in the prose
+    refuses it end to end anyway). dnd adds the slice the owner kept for themself:
+    a path the public twin publishes, a data file the branch deletes, money in the prose
     it adds, and an answer taken under yolo (no holds applied).
     Any other mode holds everything: `ask` by its rule, `default` because a taken answer never lands
     there (yolo-veto D1). What it cannot read is a hold, never a pass."""
@@ -605,9 +601,6 @@ def held_slice(repo, wt, main, mode, cfg=None):
         return f"a gated path ({g}: autofinish_exclude or in_place)"
     if mode == "yolo":
         return None
-    phys = physical_line(repo, main)
-    if not phys or not phys.lower().startswith("none"):
-        return f"a physical repo (physical: {phys or 'no line in the contract'})"
     pub = published(repo, main)
     g = next((p for p in sorted(status) if p in pub), None)
     if g:
@@ -1061,12 +1054,15 @@ def last_reply(path):
 def reply_veto(text, live=True):
     """Why this reply leaves the next move to the owner, or None. `live`: a session is on the branch —
     a WAITING FOR SOMETHING reply, or the hand-over line, vetoes only then: with its session gone, nothing
-    wakes it, and a hand-over dispatch declined (disarmed, the week) is the sweep's to take once it may."""
+    wakes it, and a hand-over dispatch declined (disarmed, the week) is the sweep's to take once it may.
+    A lander line always vetoes: the tick owns that stop after its finish session ends too."""
     kind, _, _ = common.ending(text)
     if kind == "waiting":
         return f"waiting for {OWNER} (last reply ends in the WAITING line)"
     if kind == "relayed":  # session-asks R4: an ask is out with its skipper; the answer comes back here
         return "waiting on its skipper (last reply ends in the RELAYED line)"
+    if kind == "lander":  # stuck-ships S7: the tick owns it even after the finish's session ends
+        return "waiting on the lander (last reply ends in the lander line)"
     if kind == "pending" and live:  # mid-work: its reviewers, check or poll wake it, never launched under it
         return "waiting on its own work (last reply ends in the WAITING FOR SOMETHING line)"
     if kind == "handed" and live:  # dispatch's launch takes it as the run ends: never a second start under it
@@ -1192,12 +1188,13 @@ def default_week(who=""):
 def account(*args, timeout=PICK_TIMEOUT, finish=False):
     """(exit, parsed JSON or None) of bin/account; exit None when it could not run."""
     env = {k: v for k, v in os.environ.items() if k not in LOGIN_ENV}
+    acct_bin = os.environ.get("AUTOFINISH_ACCOUNT") or ACCOUNT
     try:
         if finish:
             with common.finish_pick_env(env) as (env, fds):
-                r = common.run_group([ACCOUNT, *args, "--for", "finish"], timeout, env=env, pass_fds=fds)
+                r = common.run_group([acct_bin, *args, "--for", "finish"], timeout, env=env, pass_fds=fds)
         else:
-            r = common.run_group([ACCOUNT, *args], timeout, env=env)
+            r = common.run_group([acct_bin, *args], timeout, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return None, None
     try:
@@ -1276,9 +1273,10 @@ def week_tight(repo, fresh=False, finish=False):
 def memo_status(worktree, doc, fetch=False):
     """bin/keel's verdict for one doc as a dict, or None when memo can't say. The contract
     (E10, built in parallel): JSON with `verdict` in stands-at|due|stood|part-stood|voided|too-big|
-    physical|no-contract|taken|answered, `deadline` (ISO or null) and, since S3, `unstandable`. `fetch` only for the judging a
+    taken|answered, `deadline` (ISO or null) and, since S3, `unstandable`. `fetch` only for the judging a
     start follows: a dry run writes no remote-tracking ref, and is no slower for GitHub."""
-    cmd = [MEMO, "status", "--json"] + ([] if fetch else ["--no-fetch"]) + [doc]
+    keel_bin = os.environ.get("AUTOFINISH_MEMO") or os.environ.get("AUTOFINISH_KEEL") or MEMO
+    cmd = [keel_bin, "status", "--json"] + ([] if fetch else ["--no-fetch"]) + [doc]
     try:
         r = subprocess.run(cmd, cwd=str(worktree), capture_output=True, text=True, timeout=MEMO_TIMEOUT)
         if r.returncode:
@@ -1739,7 +1737,7 @@ def verdict(repo, wt, branch, gitdir, main, cfg, own=None, reply=None, fetch=Fal
             # one only when it holds taken docs: rule L's start would be `--by sweep`, its taken docs read
             # as open by /finish and its held slice never applied (landing review 18); it keeps L's at-once
             # clock and the week does not pause it, as rule L's. A deployed one without taken docs is rule
-            # L's, below: M would hold a physical repo's deploy at a ready PR where L launches it at once,
+            # L's, below: M could hold a deployed branch at a ready PR where L launches it at once,
             # and live ahead of main is drift (skipper-modes follow-ups, item 1)
             if binary:
                 return f"skip: binary ({binary[0]})"
@@ -1956,6 +1954,12 @@ def log_lines(rows, kind="dry"):
 
 def armed():
     return common.autofinish_armed()
+
+
+def landings_armed():
+    """{"by", "ts"} when this Mac's `landings` switch is on (`autofinish arm --landings`, task-shape S3),
+    else None (absent reads off, R5)."""
+    return getattr(common, "autofinish_landings", lambda: None)()
 
 
 def keep_first_arm(ts):
@@ -2440,21 +2444,829 @@ def set_brief(branch, mode, here):
     return 0
 
 
+# ---- gate-asks S1: autofinish landing <wt> [--json] ---------------------------------------
+
+def _mode_key(mode, where):
+    w = str(where or "")
+    if w.startswith("helm mode --branch"):
+        return "helm:branch-modes.json"
+    if w.startswith("ship "):
+        return "plan.json:mode"
+    if w in ("the run's DISPATCH_MODE", "the run's mode hint"):
+        return "dispatch:mode"
+    if w.startswith("scope "):
+        return "wharf/repos.json:scopes.mode"
+    return f"mode:{mode}" if mode else "mode:default"
+
+
+def _held_key(held, mode):
+    h = str(held or "")
+    if "launcher's own gate" in h:
+        return "autofinish:GATES"
+    if "a gated path" in h:
+        return ".claude/workflow.json:autofinish_exclude"
+    if "a public publish" in h:
+        return ".helloworld/allowlist.txt"
+    if "a deletion of data" in h:
+        return ".claude/workflow.json:records"
+    if "repo's config" in h:
+        return ".claude/workflow.json"
+    return f"held_slice:{mode}" if mode else "autofinish:handed_held"
+
+
+def _runs_dir():
+    return Path(os.environ.get("HOME") or Path.home()) / "Library/Logs/claude-weekly/run-seed-runs"
+
+
+def _same_repo_path(a, b, helmlib_mod=None):  # noqa: ARG001
+    if not a or not b:
+        return False
+
+    def _strip_wt(p):
+        i = p.parts.index(".claude") if ".claude" in p.parts else None
+        return Path(*p.parts[:i]) if i is not None and p.parts[i + 1:i + 2] == ("worktrees",) else p
+
+    def norm(r):
+        s = str(r)
+        if s.startswith("~"):
+            s = os.path.expanduser(s)
+        if s.startswith(("./", "../")):
+            s = str(Path(s).resolve())
+        if s.startswith("/"):
+            s = str(_strip_wt(Path(os.path.normpath(s))))
+        k = common.repo_key(s)
+        if k and k.startswith("/") and os.environ.get("AUTOFINISH_PROJECTS"):
+            for p, base in ((_strip_wt(Path(os.path.normpath(k))), ROOT), (_strip_wt(Path(k).resolve()), ROOT.resolve())):
+                try:
+                    return str(p.relative_to(base))
+                except ValueError:
+                    continue
+        if k and k.startswith("/"):
+            return str(_strip_wt(Path(k).resolve()))
+        return k if k is not None else s
+
+    return norm(a) == norm(b)
+
+
+def _env_owned_by(repo, branch, topic, session=None, state_file=None, helmlib_mod=None):
+    """True when the caller's DISPATCH_* / CLAUDE_CODE_SESSION_ID environment belongs to (repo, branch)."""
+    env_repo = os.environ.get("DISPATCH_REPO")
+    if env_repo and not _same_repo_path(repo, env_repo, helmlib_mod):
+        return False
+    env_task = os.environ.get("DISPATCH_TASK")
+    if env_task and env_task != topic:
+        return False
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if session and env_sid and session != env_sid:
+        return False
+    check_sid = session or env_sid
+    matched_sid = False
+    if check_sid:
+        try:
+            for f in _runs_dir().glob("*.json"):
+                try:
+                    cand = json.loads(f.read_text())
+                except (OSError, ValueError):
+                    continue
+                if isinstance(cand, dict) and cand.get("session") == check_sid:
+                    if cand.get("branch") != branch or not _same_repo_path(repo, cand.get("repo"), helmlib_mod):
+                        return False
+                    matched_sid = True
+        except OSError:
+            pass
+    if state_file:
+        return True
+    return matched_sid or bool(env_repo and env_task)
+
+
+def _read_landing_mode(branch, repo=None, session=None, state_file=None, mode_hint=None):
+    """(mode, where, torn) for `branch` of `repo`. With `state_file` or `session`, reads that run's own
+    record when no plan.json task names `branch` directly so same-second starts never race; when no sent
+    task exists yet, falls through to `fire_mode` / `task_mode` so a scope's mode or a caller's hint reads."""
+    topic = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-", "", branch.rsplit("/", 1)[-1])
+    p = common.tool("helmlib.py")
+    if not p:
+        valid = ("default", "ask", "dnd", "yolo")
+        if mode_hint in valid:
+            return mode_hint, "the run's mode hint", False
+        if state_file:
+            try:
+                cand = json.loads(Path(state_file).read_text())
+                if isinstance(cand, dict) and cand.get("branch") == branch and not cand.get("mode_unread") \
+                        and cand.get("task_mode") in valid:
+                    return cand["task_mode"], "the run's DISPATCH_MODE", False
+            except (OSError, ValueError):
+                pass
+        if _env_owned_by(repo, branch, topic, session=session, state_file=state_file) \
+                and os.environ.get("DISPATCH_MODE") in valid:
+            return os.environ["DISPATCH_MODE"], "the run's DISPATCH_MODE", False
+        return "default", "the default", False
+    if str(p.parent) not in sys.path:
+        sys.path.insert(0, str(p.parent))
+    try:
+        import helmlib  # noqa: E402, PLC0415
+        rstr = str(repo) if repo else None
+        rec = None
+        if state_file:
+            try:
+                cand = json.loads(Path(state_file).read_text())
+                if isinstance(cand, dict) and cand.get("branch") == branch:
+                    rec = cand
+            except (OSError, ValueError):
+                pass
+        sid = session or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+        if rec is None and not state_file and sid:
+            try:
+                for f in helmlib.runs_dir().glob("*.json"):
+                    try:
+                        cand = json.loads(f.read_text())
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(cand, dict) and cand.get("session") == sid and cand.get("branch") == branch \
+                            and (cand.get("task_mode") or cand.get("plan") or cand.get("mode_unread")) \
+                            and _same_repo_path(repo, cand.get("repo"), helmlib):
+                        rec = cand
+                        break
+            except OSError:
+                pass
+        if state_file and rec is not None:
+            # dispatch's own launch read (main's mode_now): fire_mode with the run's hint, never a scan of
+            # every plan naming the branch, which drops the hint and reads a hinted dnd/yolo run as default
+            # (the landing review, 2026-11-07); never branch_mode whole either (an earlier step's record).
+            hint = mode_hint or (None if rec.get("mode_unread") else rec.get("task_mode")) or None
+            ship = helmlib.env("ship", os.environ) or rec.get("plan")
+            pair = helmlib.fire_mode(ship, rec.get("topic") or topic, rstr or rec.get("repo"), hint, branch)
+            torn = getattr(helmlib, "torn_read", lambda x: False)(pair)
+            return pair[0], pair[1], torn
+        if rec is not None and (rec.get("task_mode") or rec.get("plan") or rec.get("mode_unread")):
+            over = helmlib.branch_override(branch, rstr)
+            for pid in helmlib.list_plans():
+                plan = helmlib.load_plan(pid) or {}
+                for tid, t in (plan.get("tasks") or {}).items():
+                    if isinstance(t, dict) and branch in (t.get("branch"), t.get("seeded_branch")) \
+                            and helmlib._same_repo(repo, t.get("repo") or plan.get("repo")):
+                        pair = helmlib.under_ship(over, helmlib.task_mode(pid, tid, rstr or t.get("repo")))
+                        torn = getattr(helmlib, "torn_read", lambda x: False)(pair)
+                        return pair[0], pair[1], torn
+            hint = None if rec.get("mode_unread") else rec.get("task_mode")
+            pair = helmlib.under_ship(over, helmlib.task_mode(
+                rec.get("plan"), rec.get("topic"), rstr or rec.get("repo"), hint))
+            torn = getattr(helmlib, "torn_read", lambda x: False)(pair)
+            return pair[0], pair[1], torn
+        own_env = _env_owned_by(repo, branch, topic, session=session, state_file=state_file, helmlib_mod=helmlib)
+        if state_file and rec is None:
+            ship = helmlib.env("ship", os.environ) if own_env else None
+            pair = helmlib.fire_mode(ship, topic, rstr, mode_hint or None, branch)
+            torn = getattr(helmlib, "torn_read", lambda x: False)(pair)
+            return pair[0], pair[1], torn
+        pair = helmlib.branch_mode(branch, rstr)
+        if pair[0] is None:
+            ship = helmlib.env("ship", os.environ) if own_env else None
+            hint = mode_hint or (os.environ.get("DISPATCH_MODE") if own_env else None) or None
+            task_arg = (os.environ.get("DISPATCH_TASK") if own_env else None) or topic
+            pair = helmlib.fire_mode(ship, task_arg, rstr, hint, branch)
+            repos_env = os.environ.get("AUTOFINISH_REPOS")
+            if pair == ("default", "the default") and repos_env and rstr:
+                reg, rtorn = common.read_registry(Path(repos_env))
+                if rtorn:
+                    return "ask", getattr(helmlib, "TORN_WHERE", "the registry is unreadable"), True
+                if reg is not None:
+                    sname, sc = common.scope_of_repo(rstr, reg=reg)
+                    if isinstance(sc, dict) and sc.get("mode") in helmlib.MODES:
+                        pair = (sc["mode"], f"scope {sname}")
+        torn = getattr(helmlib, "torn_read", lambda x: False)(pair)
+        return pair[0], pair[1], torn
+    except Exception as e:  # noqa: BLE001
+        return None, f"the mode is unreadable ({type(e).__name__})", False
+
+
+def _own_session_for_branch(repo, branch, session=None, state_file=None):
+    if session:
+        return session
+    if state_file:
+        try:
+            cand = json.loads(Path(state_file).read_text())
+            if isinstance(cand, dict) and cand.get("branch") == branch and cand.get("session"):
+                return str(cand["session"])
+        except (OSError, ValueError):
+            pass
+        return os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if env_sid:
+        try:
+            for f in _runs_dir().glob("*.json"):
+                try:
+                    cand = json.loads(f.read_text())
+                except (OSError, ValueError):
+                    continue
+                if isinstance(cand, dict) and cand.get("session") == env_sid and cand.get("branch") == branch \
+                        and _same_repo_path(repo, cand.get("repo")):
+                    return env_sid
+        except OSError:
+            pass
+    return ""
+
+
+def _queue_home_set():
+    lines, why = common.config_read("wharf-runs/queue-repo")
+    if why and not lines:
+        return True
+    v = lines[0].strip() if lines else ""
+    return bool(v and v.lower() != "off")
+
+
+def _queue_claims_here(here_host):
+    h, mode = (here_host or "").lower(), ""
+    for line in common.config_lines("wharf-runs/queue-mode") or []:
+        name, sep, val = line.partition(":")
+        if sep and name.strip().lower() == h:
+            return (val.strip().lower() or "claim") != "writes"
+        if not sep and not mode:
+            mode = line.strip().lower()
+    return (mode or "claim") != "writes"
+
+
+def _has_local_queue(qlocal):
+    try:
+        return qlocal.is_dir() and any(p.is_dir() and p.name != "_land" for p in qlocal.iterdir())
+    except OSError:
+        return False
+
+
+def _plist_running(stem):
+    lc = os.environ.get("DISPATCH_LAUNCHCTL") or (
+        str(BIN / "systemd-launchctl") if sys.platform.startswith("linux") else "launchctl")
+    dom = common.launchd_domain() if hasattr(common, "launchd_domain") else f"gui/{os.getuid()}"
+    try:
+        r = subprocess.run([lc, "print", f"{dom}/{stem}"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "\tstate = running" in (r.stdout or "").splitlines()
+
+
+def _scheduled_step(repo, branch, session=None, state_file=None, exclude_label=None):
+    """(wait_kind, why, keys) when a scheduled job, `.next` marker or queued entry holds `branch`
+    (`wait_kind == "lander"` when `not state_file` and the branch's only queue hold is a readable finish), else None."""
+    lprefix = (common.config_lines("wharf-runs/label-prefix") or ["org.regatta.claude"])[0]
+    lprev = (common.config_lines("wharf-runs/label-prefix-previous") or [""])[0]
+    rname = os.path.basename(str(repo).rstrip("/"))
+    topic = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-", "", branch.rsplit("/", 1)[-1])
+    bases = [f"{lprefix}.dispatch.{rname}.{topic}", f"{lprefix}.run-seed.{rname}.{topic}"]
+    if lprev:
+        bases += [f"{lprev}.dispatch.{rname}.{topic}", f"{lprev}.run-seed.{rname}.{topic}"]
+    la = Path(os.environ.get("HOME") or Path.home()) / "Library/LaunchAgents"
+    skip_lbl = exclude_label if exclude_label is not None else (os.environ.get("DISPATCH_LABEL") or "")
+    for b in bases:
+        cands = ([la / f"{b}.plist"] if (la / f"{b}.plist").exists() else []) + sorted(
+            la.glob(f"{b}." + "[0-9]" * 12 + ".plist"))
+        for p in cands:
+            if skip_lbl and p.stem == skip_lbl:
+                continue
+            # a running sibling job still writes to the branch: dispatch's call (a label given, empty
+            # included) counts every plist but its own, as main's yolo_launch did; only the standalone
+            # verb, run inside its own job, skips the running one (the landing review, 2026-11-07)
+            if exclude_label is None and _plist_running(p.stem):
+                continue
+            return "scheduled", f"a next step is scheduled on this branch ({p.name})", ["wharf-runs/label-prefix"]
+
+    dq_stub = os.environ.get("AUTOFINISH_DISPATCH_QUEUE")
+    qlocal = Path(os.environ.get("HOME") or Path.home()) / "Library/Caches/run-seed/queue-local"
+    here_host = os.environ.get("DISPATCH_HOST") or host()
+    q_home = _queue_home_set()
+    q_claims = _queue_claims_here(here_host)
+    q_fleet = q_home and q_claims
+    q_local = _has_local_queue(qlocal) and (q_claims or not q_home)
+    has_finish = False
+    if dq_stub or q_fleet or q_local:
+        if str(BIN) not in sys.path:
+            sys.path.insert(0, str(BIN))
+        import queue_holds as qh  # noqa: PLC0415
+        qbin = dq_stub or os.environ.get("DISPATCH_QUEUE_BIN") or common.tool("dispatch-queue") or BIN / "dispatch-queue"
+        own_sid = _own_session_for_branch(repo, branch, session=session, state_file=state_file)
+        holds = qh.Holds(qbin)
+        q_msg = "a next step is queued on this branch, or the queue does not read (dispatch --queue)"
+        if state_file:
+            if holds.why(repo, branch, here=here_host, except_session=own_sid or None):
+                return "queued", q_msg, ["wharf-runs/queue-repo"]
+        else:
+            entries, bad, _ = holds.read()
+            if entries is None or (bad and holds._store_holds(repo, branch, bad)):
+                return "queued", q_msg, ["wharf-runs/queue-repo"]
+            for e in holds._of(repo, branch):
+                if e.get("state") == "ended":
+                    continue
+                if e.get("kind") == "finish":
+                    has_finish = True
+                    continue
+                if own_sid and e.get("session") == own_sid:
+                    continue
+                if here_host and e.get("state") == "running" and (e.get("running_on") or "").lower() == here_host.lower():
+                    continue
+                return "queued", q_msg, ["wharf-runs/queue-repo"]
+
+    if state_file:
+        if Path(str(state_file) + ".next").exists():
+            return "next", "a next step is scheduled on this branch (dispatch --next)", ["dispatch:--next"]
+    else:
+        rdir = _runs_dir()
+        try:
+            for f in sorted(rdir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                if not Path(str(f) + ".next").exists():
+                    continue
+                try:
+                    rec = json.loads(f.read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(rec, dict) or rec.get("branch") != branch:
+                    continue
+                if not _same_repo_path(repo, rec.get("repo")):
+                    continue
+                if (session and rec.get("session") == session) or (not session and not rec.get("ended")):
+                    return "next", "a next step is scheduled on this branch (dispatch --next)", ["dispatch:--next"]
+        except OSError:
+            pass
+    if has_finish:
+        return "lander", None, ["wharf-runs/queue-repo"]
+    return None
+
+
+def _open_d_items(wt, main):
+    """(unsettled, unanswered) D-items in `*.md` added or modified on `origin/<main>...HEAD`."""
+    out = raw(wt, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames",
+              "--diff-filter=AM", f"origin/{main}...HEAD", "--", "*.md")
+    if not out:
+        return [], []
+    keel_bin = os.environ.get("AUTOFINISH_MEMO") or os.environ.get("AUTOFINISH_KEEL") or MEMO
+    argv0 = [keel_bin] if os.access(keel_bin, os.X_OK) and not str(keel_bin).endswith(".py") else [sys.executable, keel_bin]
+    unsettled, unanswered = [], []
+    for f in out.splitlines():
+        if not f:
+            continue
+        try:
+            r = subprocess.run(argv0 + ["parse", str(Path(wt) / f)],
+                               capture_output=True, text=True, timeout=MEMO_TIMEOUT)
+            d = json.loads(r.stdout) if r.returncode == 0 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            d = None
+        if not isinstance(d, dict):
+            msg = f"{f} (memo could not parse it)"
+            unsettled.append(msg)
+            unanswered.append(msg)
+            continue
+        items = [i for i in (d.get("items") or []) if isinstance(i, dict)]
+        uns_ids = [str(i["id"]) for i in items if not i.get("settled")]
+        if uns_ids:
+            unsettled.append(f"{f} {','.join(uns_ids)}")
+        una_ids = [str(i["id"]) for i in items if not i.get("answered") and not i.get("settled")]
+        if una_ids:
+            unanswered.append(f"{f} {','.join(una_ids)}")
+    return unsettled, unanswered
+
+
+def _read_week(repo):
+    try:
+        return week_tight(repo, fresh=False, finish=True)
+    except Exception as e:  # noqa: BLE001
+        return "none", f"the pick could not be read ({type(e).__name__})"
+
+
+def _merge_auto(repo, main):
+    """True when `origin/<main>:.claude/workflow.json` carries `"merge": "auto"` (step 11.4's standing yes)."""
+    try:
+        raw_cfg = json.loads(git(repo, "show", f"origin/{main}:.claude/workflow.json") or "{}")
+    except ValueError:
+        return False
+    return isinstance(raw_cfg, dict) and raw_cfg.get("merge") == "auto"
+
+
+def _is_build_record(rec):
+    if not isinstance(rec, dict) or rec.get("probe"):
+        return False
+    if str(rec.get("topic") or "").startswith("finish-"):
+        return False
+    return bool(rec.get("task_mode") or rec.get("plan") or rec.get("mode_unread") or rec.get("brief"))
+
+
+def _unhanded_live_build(repo, branch, state_file=None):
+    """True when an unended build record matching (repo, branch) started with handed off."""
+    if state_file:
+        try:
+            cand = json.loads(Path(state_file).read_text())
+            if _is_build_record(cand) and cand.get("branch") == branch and not cand.get("ended"):
+                return not bool(cand.get("handed"))
+        except (OSError, ValueError):
+            pass
+        return False
+    best = None
+    try:
+        for f in _runs_dir().glob("*.json"):
+            try:
+                cand = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if not _is_build_record(cand) or cand.get("ended") or cand.get("branch") != branch \
+                    or not _same_repo_path(repo, cand.get("repo")):
+                continue
+            if best is None or (cand.get("started") or 0) > (best.get("started") or 0):
+                best = cand
+    except OSError:
+        pass
+    return bool(best is not None and not best.get("handed"))
+
+
+def _verdict_row(verdict_word, keys, *, road=None, why=None, mode=None, mode_where=None,
+                 mode_unread=False, deployed="", open_items=None, wait_kind=None,
+                 landings_on=False, gate_wait_kind=None, gate_why=None, week=None, week_why=None):
+    seen = []
+    for k in keys:
+        if k and k not in seen:
+            seen.append(k)
+    text = f"lands by {road}" if verdict_word == "lands" else f"{verdict_word}: {why}"
+    line = f"{text} [keys: {', '.join(seen)}]" if seen else text
+    return {
+        "verdict": verdict_word,
+        "road": road,
+        "why": why,
+        "keys": seen,
+        "text": text,
+        "line": line,
+        "mode": mode,
+        "mode_where": mode_where,
+        "mode_unreadable": bool(mode_unread),
+        "deployed": deployed or "",
+        "open_items": open_items,
+        "wait_kind": wait_kind,
+        "landings_on": bool(landings_on),
+        "gate_wait_kind": gate_wait_kind if gate_wait_kind is not None else wait_kind,
+        "gate_why": gate_why if gate_why is not None else why,
+        # the week as read (tight|none|ok), whatever the road: yolo_launch declines a tight week for every
+        # mode, a deployed branch included, as main did (the landing review, 2026-11-07); None when unread
+        "week": week,
+        "week_why": week_why,
+    }
+
+
+def land_verdict(repo, wt, branch, main, *, session=None, state_file=None, exclude_label=None,
+                 mode_hint=None, fetch=False, cfg=None):
+    """Judge whether `wt`'s `branch` on `repo` may land from config and state on this Mac (gate-asks S1).
+    Returns a dict with `verdict` in ('lands', 'held', 'waits', 'nobody'), `road`, `why`, `keys` and `line`."""
+    repo, wt = Path(repo), Path(wt)
+    if fetch:
+        git(wt, "fetch", "-q", "origin", main, timeout=30)
+
+    mode, mode_where, torn_mode = _read_landing_mode(
+        branch, repo, session=session, state_file=state_file, mode_hint=mode_hint)
+    repos_env = os.environ.get("AUTOFINISH_REPOS")
+    reg_unreadable = common.registry_unreadable() or (bool(repos_env) and common.registry_unreadable(Path(repos_env)))
+    mode_reg_torn = torn_mode or (reg_unreadable and (
+        mode_where == "the default" or str(mode_where or "").startswith("scope ")))
+    unread_mode = mode_reg_torn or mode_unreadable(mode_where)
+    shown_mode = None if mode_reg_torn else mode
+    l_on = bool(landings_armed())
+    handed_on = l_on and not _unhanded_live_build(repo, branch, state_file=state_file)
+
+    week_seen = {}
+
+    def _week():
+        if "kind" not in week_seen:
+            week_seen["kind"], week_seen["why"] = _read_week(repo)
+        return week_seen["kind"], week_seen["why"]
+
+    def row(v, keys, **kw):
+        kw.setdefault("week", week_seen.get("kind"))
+        kw.setdefault("week_why", week_seen.get("why"))
+        return _verdict_row(v, keys, mode=shown_mode, mode_where=mode_where,
+                            mode_unread=unread_mode, landings_on=l_on, **kw)
+
+    if mode_reg_torn:
+        return row("waits", ["wharf/repos.json"], why="the registry is unreadable (repos.json)", wait_kind="registry")
+    if unread_mode:
+        return row("waits", ["plan.json", "wharf/repos.json"],
+                   why=f"the mode is unreadable now ({mode_where})", wait_kind="mode")
+
+    gd = git(wt, "rev-parse", "--absolute-git-dir")
+    wstate = Path(gd) / "claude" if gd else None
+    if not state_file and wstate and common.autofinish_running(wstate, common.read_owner(wstate)):
+        return row("lands", ["autofinish.json:running"], road="lander")
+
+    sched = _scheduled_step(repo, branch, session=session, state_file=state_file, exclude_label=exclude_label)
+    if sched is not None:
+        wkind, wwhy, wkeys = sched
+        if wkind == "lander":
+            return row("lands", wkeys, road="lander")
+        return row("waits", wkeys, why=wwhy, wait_kind=wkind)
+
+    if git(wt, "rev-parse", "-q", "--verify", f"origin/{main}") is None:
+        return row("waits", [".claude/workflow.json:main"], why=f"origin/{main} unreadable here", wait_kind="origin")
+
+    unsettled_d, unanswered_d = _open_d_items(wt, main)
+    open_str = "; ".join(unsettled_d) if unsettled_d else None
+    via_rule_d = False
+
+    def _resolve_cfg(c):
+        if c is not None:
+            return c, False
+        if reg_unreadable and git(repo, "show", f"origin/{main}:.claude/no-workflow") is None \
+                and git(repo, "show", f"origin/{main}:.claude/workflow.json") is None:
+            return None, True
+        return repo_config(repo, main), False
+
+    def _post_d_verdict(cfg_in=cfg, skip_sweep=False):
+        nonlocal via_rule_d
+        mkey = _mode_key(mode, mode_where)
+        if mode == "ask":
+            return row("nobody", [mkey], why=f"mode ask — nothing lands by itself ({mode_where})")
+
+        tip = git(wt, "rev-parse", "HEAD")
+        mbase = git(wt, "merge-base", f"origin/{main}", tip) if tip else None
+        raw_live = (deployed_on(wt, mbase, tip)[0] or "") if mbase else ""
+
+        def _live_info(check_exclude=False):
+            if not raw_live:
+                return "", False
+            st_map, _, _, add_map, unp = diff_facts(wt, mbase, tip)
+            asks_l = [h for p in sorted(st_map) if not p.startswith(HANDOFF)
+                      for h in asks_in(p, add_map.get(p, []), st_map[p])]
+            sk, tk = mode_asks(wt, asks_l, st_map, False) if asks_l else (None, [])
+            c_res, c_torn = _resolve_cfg(cfg_in)
+            prob = c_res[2] if c_res else None
+            bad_cfg = bool(prob and not prob.startswith(("no .claude/workflow.json", "unknown autofinish value")))
+            gated = c_torn or bad_cfg or bool(
+                touches_gate(repo, main, (c_res[3] if c_res else ()) if check_exclude else (), st_map))
+            clean = "" if (sk or tk or unp or gated) else raw_live
+            return clean, not (unp or gated)
+
+        if mode in LAND_MODES:
+            live, _ = _live_info(check_exclude=True)
+            if not armed():
+                return row("waits", [mkey, "autofinish:armed"],
+                           why="autofinish is disarmed on this Mac (bin/autofinish arm)",
+                           deployed=live, wait_kind="disarmed")
+            wkind, wdetail = _week()
+            if wkind == "none":
+                return row("waits", [mkey, "account:pool"],
+                           why=f"no account may run it ({wdetail})", deployed=live, wait_kind="no-account")
+            if wkind == "tight" and not live:   # a true rule L alone starts in a tight week (attempt() pauses M)
+                return row("waits", [mkey, "account:week"],
+                           why=f"the week is tight ({wdetail})", wait_kind="week-tight")
+            if mbase:
+                _, _, binary, _, _ = diff_facts(wt, mbase, tip)
+                if binary:
+                    return row("held", [mkey], why=f"a binary ({binary[0]}): no landing carries one unread")
+            if live:
+                return row("lands", [mkey, "git:Deployed"], road="L", deployed=live)
+            cfg_in, cfg_torn = _resolve_cfg(cfg_in)
+            if cfg_torn:
+                return row("waits", ["wharf/repos.json"],
+                           why="the registry is unreadable (repos.json)", wait_kind="registry")
+            held = held_slice(repo, wt, main, mode, cfg_in)
+            if held:
+                return row("held", [mkey, _held_key(held, mode)], why=held)
+            return row("lands", [mkey, "autofinish:armed"], road=mode)
+
+        # mode `default` (or no sent task): `handed` when this Mac's landings switch is on (task-shape D1-C, S3)
+        if handed_on:
+            live, _ = _live_info()
+            wkind, wdetail = _week()
+            if wkind == "none":
+                return row("waits", ["autofinish:landings", "account:pool"],
+                           why=f"no account may run it ({wdetail})", deployed=live, wait_kind="no-account")
+            if wkind == "tight" and not live:   # a true rule L alone starts in a tight week (attempt() pauses M)
+                return row("waits", ["autofinish:landings", "account:week"],
+                           why=f"the week is tight ({wdetail})", wait_kind="week-tight")
+            cfg_in, cfg_torn = _resolve_cfg(cfg_in)
+            if cfg_torn:
+                return row("waits", ["wharf/repos.json"],
+                           why="the registry is unreadable (repos.json)", deployed=live, wait_kind="registry")
+            held = handed_held(repo, wt, main, cfg_in)
+            if held:
+                return row("held", ["autofinish:landings", mkey, _held_key(held, None)], why=held, deployed=live)
+            return row("lands", ["autofinish:landings", mkey], road="handed", deployed=live)
+
+        wt_ov = override(wstate) if wstate else None
+        ov = wt_ov or brief_yes(repo, branch)
+        if ov:
+            ov_key = "autofinish:override" if wt_ov else "autofinish:brief"
+            live, _ = _live_info()
+            if not armed():
+                return row("waits", [ov_key, "autofinish:armed"],
+                           why="autofinish is disarmed on this Mac (bin/autofinish arm)",
+                           deployed=live, wait_kind="disarmed")
+            wkind, wdetail = _week()
+            if wkind == "none":
+                return row("waits", [ov_key, "account:pool"],
+                           why=f"no account may run it ({wdetail})", deployed=live, wait_kind="no-account")
+            if mbase:
+                _, _, binary, _, _ = diff_facts(wt, mbase, tip)
+                if binary:
+                    return row("held", [ov_key], why=f"a binary ({binary[0]}): no landing carries one unread")
+            if not wt_ov:
+                cfg_in, cfg_torn = _resolve_cfg(cfg_in)
+                if cfg_torn:
+                    return row("waits", ["wharf/repos.json"],
+                               why="the registry is unreadable (repos.json)", deployed=live, wait_kind="registry")
+                held = brief_held(repo, wt, main, cfg_in)
+                if held:
+                    return row("held", [ov_key, ".claude/workflow.json:autofinish_leaks"], why=held, deployed=live)
+                return row("lands", [ov_key], road="brief", deployed=live)
+            return row("lands", [ov_key], road="override", deployed=live)
+
+        sw_off = "this build started with the landings switch off" if l_on else "the landings switch off"
+        sw_is_off = "this build started with the landings switch off" if l_on else "the landings switch is off"
+        if skip_sweep:
+            return row("nobody", ["autofinish:landings", mkey], why=f"mode default with {sw_off}")
+
+        # landings switch off: judge whether a sweep rule (A, B, D, E, L) covers the branch on this Mac
+        cfg_in, cfg_torn = _resolve_cfg(cfg_in)
+        if cfg_torn:
+            return row("waits", ["wharf/repos.json"],
+                       why="the registry is unreadable (repos.json)", wait_kind="registry")
+        af_mode, records, problem, exclude = cfg_in
+        if af_mode == "off":
+            why = f"autofinish is off ({problem})" if problem else "autofinish is off in .claude/workflow.json"
+            return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey], why=why)
+        if not mbase:
+            return row("nobody", ["autofinish:landings", mkey], why=f"no merge-base with origin/{main}")
+        status, inserted, binary, added, unparsed = diff_facts(wt, mbase, tip)
+        if not status:
+            return row("nobody", ["autofinish:landings", mkey], why="nothing committed ahead of base")
+        # verdict()'s own skip: a brief whose step its Course doc keeps open lands by no rule (the landing review)
+        if any(p.startswith(HANDOFF) for p in status):
+            ow = open_steps(wt, mbase)
+            if ow:
+                return row("nobody", ["autofinish:landings", mkey], why=f"open step ({ow})")
+        if binary:
+            return row("nobody", ["autofinish:landings", mkey],
+                       why=f"mode default with {sw_off}, and diff carries a binary ({binary[0]})")
+        if unparsed:
+            return row("nobody", ["autofinish:landings", mkey],
+                       why=f"mode default with {sw_off} ({unparsed[0]}: unparsed diff)")
+        ua = {p for p in status if p == ".gitattributes" and status[p] in ("A", "M") and union_lines_only(wt, mbase, tip, p)}
+
+        asks = [h for p in sorted(status) for h in asks_in(p, added.get(p, []), status[p])]
+        sweep_rule, sweep_keys = None, []
+        if asks:
+            docs = sorted({p for p, _, dl in asks if dl and status.get(p) == "A" and p.endswith(".md")})
+            if not docs or any(not dl or p not in docs for p, _, dl in asks):
+                p, marker, _ = next(h for h in asks if not h[2] or h[0] not in docs)
+                return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey],
+                           why=f"mode default with {sw_off} ({p}: {marker})")
+            beside = next((p for p in sorted(status) if not under(p, records) or not p.endswith(TEXT_SUFFIXES)), None)
+            if beside and af_mode != "all":
+                return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey],
+                           why=f"mode default with {sw_off} ({beside} is outside records)")
+            if beside:
+                for doc in docs:
+                    s = memo_status(wt, doc, False)
+                    if not s or s.get("verdict") != "answered":
+                        v = (s or {}).get("verdict") or "unavailable"
+                        return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey],
+                                   why=f"mode default with {sw_off} ({doc}: memo {v} beside code)")
+                asks = []
+        if asks:
+            for doc in docs:
+                s = memo_status(wt, doc, False)
+                if s is None:
+                    via_rule_d = True
+                    return row("waits", [".claude/workflow.json:records", "keel:stand"],
+                               why=f"memo status unavailable ({doc})", wait_kind="stands-at")
+                v = s.get("verdict")
+                if v == "stands-at":
+                    via_rule_d = True
+                    when = f" {s['deadline']}" if s.get("deadline") else ""
+                    return row("waits", [".claude/workflow.json:records", "keel:stand"],
+                               why=f"{doc} stands-at{when}", wait_kind="stands-at")
+                if v == "due" and not s.get("unstandable"):
+                    continue
+                if v == "stood" and git(wt, "log", "-1", "--format=%h", "--fixed-strings",
+                                        f"--grep={STOOD_BY}", f"{mbase}..{tip}", "--", doc):
+                    continue
+                if v == "answered":
+                    continue
+                return row("nobody", ["autofinish:landings", ".claude/workflow.json:records", mkey],
+                           why=f"mode default with {sw_off} ({doc}: memo {v})")
+            gate = touches_gate(repo, main, exclude, status)
+            if gate:
+                return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish_exclude", mkey],
+                           why=f"touches a gate ({gate}) and {sw_is_off}")
+            via_rule_d = True
+            sweep_rule, sweep_keys = "D", [".claude/workflow.json:records", mkey]
+        else:
+            live, before = deployed_on(wt, mbase, tip)
+            message = git(wt, "log", "-1", "--format=%B", "HEAD") or ""
+            if re.search(r"open item", message, re.I):
+                return row("nobody", ["autofinish:landings", mkey],
+                           why=f"open item in the tip's message and {sw_is_off}")
+            if before and not live:
+                return row("nobody", ["autofinish:landings", mkey],
+                           why=f"deployed before rule L and {sw_is_off}")
+            if live:
+                gate = touches_gate(repo, main, exclude, status)
+                if gate:
+                    return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish_exclude", mkey],
+                               why=f"touches a gate ({gate}) and {sw_is_off}")
+                sweep_rule, sweep_keys = "L", [".claude/workflow.json:autofinish", "git:Deployed", mkey]
+            else:
+                outside = next((p for p in sorted(status) if p not in ua and not under(p, records)), None)
+                untext = next((p for p in sorted(status) if p not in ua and not p.endswith(TEXT_SUFFIXES)), None)
+                if not outside and not untext:
+                    gate = touches_gate(repo, main, exclude, status)
+                    if gate:
+                        return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish_exclude", mkey],
+                                   why=f"touches a gate ({gate}) and {sw_is_off}")
+                    sweep_rule, sweep_keys = "A", [".claude/workflow.json:records", mkey]
+                elif af_mode not in ("small", "all"):
+                    return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey],
+                               why=f"mode default with {sw_off}, and autofinish is {af_mode} ({outside or untext})")
+                elif inserted >= SMALL_LINES and af_mode == "small":
+                    return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish", mkey],
+                               why=f"mode default with {sw_off}, and diff is too big for B ({inserted} inserted lines)")
+                else:
+                    cand = "B" if inserted < SMALL_LINES else "E"
+                    gate = touches_gate(repo, main, exclude, status)
+                    if gate:
+                        return row("nobody", ["autofinish:landings", ".claude/workflow.json:autofinish_exclude", mkey],
+                                   why=f"touches a gate ({gate}) and {sw_is_off}")
+                    if host() != LAPTOP:
+                        return row("nobody", ["autofinish:landings", "regatta/laptop", ".claude/workflow.json:autofinish", mkey],
+                                   why=f"mode default with {sw_off} on {host()} (rule {cand} is laptop-only)")
+                    sweep_rule, sweep_keys = cand, [".claude/workflow.json:autofinish", "regatta/laptop", mkey]
+
+        if not armed():
+            return row("waits", ["autofinish:armed"] + sweep_keys,
+                       why="autofinish is disarmed on this Mac (bin/autofinish arm)", wait_kind="disarmed")
+        if sweep_rule in ("B", "E"):
+            was = None if sweep_rule == "E" else mode_at_first_arm(repo, main) if first_arm() is not None \
+                else af_mode if af_mode == "small" else None
+            if sweep_rule == "E" or was not in ("small", "all"):
+                n, _ = launches()
+                if n < E_LAUNCHES:
+                    return row("waits", ["autofinish:first-armed"] + sweep_keys,
+                               why=f"rule {sweep_rule} waits for {E_LAUNCHES} launches ({n}/{E_LAUNCHES})", wait_kind="door")
+        wkind, wdetail = _week()
+        if wkind == "none":
+            return row("waits", ["account:pool"] + sweep_keys, why=f"no account may run it ({wdetail})", wait_kind="no-account")
+        if wkind == "tight" and sweep_rule in ("A", "B", "E"):
+            return row("waits", ["account:week"] + sweep_keys, why=f"the week is tight ({wdetail})", wait_kind="week-tight")
+        mauto = _merge_auto(repo, main)
+        if mauto:
+            sweep_keys = sweep_keys + [".claude/workflow.json:merge"]
+        road = "merge: auto" if mauto and host() != LAPTOP else sweep_rule
+        return row("lands", ["autofinish:armed"] + sweep_keys, road=road)
+
+    inner = _post_d_verdict(skip_sweep=False)
+    d_hold = unsettled_d if shown_mode in LAND_MODES else unanswered_d
+    if d_hold and not via_rule_d:
+        joined = "; ".join(d_hold)
+        return row("waits", ["keel:D-items"], why=f"open D-items ({joined})",
+                   open_items=open_str or joined, wait_kind="d-items", deployed=inner["deployed"],
+                   gate_wait_kind=inner["wait_kind"], gate_why=inner["why"])
+    inner["open_items"] = open_str
+    return inner
+
+
+def cmd_landing(args, as_json=False, session=None, state_file=None, exclude_label=None, mode_hint=None, fetch=False):
+    if len(args) > 1:
+        sys.exit("usage: autofinish landing [<worktree>] [--json]")
+    path = Path(args[0] if args else ".").expanduser()
+    top = git(path, "rev-parse", "--show-toplevel")
+    gitdir = git(path, "rev-parse", "--absolute-git-dir")
+    if not top or not gitdir:
+        sys.exit(f"autofinish: {args[0] if args else '.'} is not in a git checkout")
+    branch = git(path, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
+    name, repo = resolve(top)
+    if not branch.startswith("claude/"):
+        sys.exit(f"autofinish landing: {name} is on {branch or 'a detached HEAD'} here, not a claude/* worktree")
+    main = branches.main_branch(repo)
+    res = land_verdict(repo, Path(top), branch, main, session=session, state_file=state_file,
+                       exclude_label=exclude_label, mode_hint=mode_hint, fetch=fetch)
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False), flush=True)
+    else:
+        print(res["line"], flush=True)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="autofinish", description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", nargs="?", choices=("arm", "disarm", "status", "override"))
-    ap.add_argument("args", nargs="*", help="override: [now | off] [<branch>]")
+    ap.add_argument("cmd", nargs="?", choices=("arm", "disarm", "status", "override", "landing"))
+    ap.add_argument("args", nargs="*", help="override: [now | off] [<branch>]; landing: [<worktree>]")
     ap.add_argument("--dry-run", nargs="?", const="", metavar="REPO",
                     help="one verdict per claude/* worktree (every workflow repo when no REPO)")
     ap.add_argument("--log", action="store_true", help="append the verdicts to the day's log")
     ap.add_argument("--sweep", action="store_true", help="launchd's tick: judge, log, and (armed) start")
     ap.add_argument("--worktree", metavar="PATH", help="judge one worktree, and (armed) start it")
     ap.add_argument("--after", type=float, default=0, metavar="S", help="with --worktree: wait first")
-    ap.add_argument("--session", metavar="ID", help="with --worktree: the caller's session, never busy for itself")
+    ap.add_argument("--session", metavar="ID", help="with --worktree or landing: the caller's session")
     ap.add_argument("--reply", metavar="FILE", help="with --worktree: the last reply's text, in place of the transcript")
     ap.add_argument("--by", default=os.environ.get("USER") or "?", help="arm: who armed it")
     ap.add_argument("--landings", action="store_true",
                     help="arm | disarm: the landing switch alone (task-shape S3), not the sweep's")
+    ap.add_argument("--json", action="store_true", help="landing: output structured JSON")
+    ap.add_argument("--fetch", action="store_true", help="landing: fetch origin/<main> before judging")
+    ap.add_argument("--state", metavar="FILE", help="landing: dispatch's run record for this session")
+    ap.add_argument("--exclude-label", metavar="LABEL", help="landing: running launchd label to ignore")
+    ap.add_argument("--mode-hint", metavar="MODE", help="landing: dispatch's fire-time mode hint")
     a = ap.parse_args(argv)
     if a.landings and a.cmd not in ("arm", "disarm"):
         ap.error("--landings goes with arm or disarm")
@@ -2481,6 +3293,9 @@ def main(argv=None):
         return 0
     if a.cmd == "override":
         return set_override(a.args, Path.cwd())
+    if a.cmd == "landing":
+        return cmd_landing(a.args, as_json=a.json, session=a.session, state_file=a.state,
+                           exclude_label=a.exclude_label, mode_hint=a.mode_hint, fetch=a.fetch)
     if a.sweep:
         return sweep()
     if a.worktree:
@@ -2488,7 +3303,7 @@ def main(argv=None):
             ap.error("--worktree takes --dry-run without a repo")
         return one(a.worktree, a.after, a.session, a.reply, dry=a.dry_run is not None, log=a.log)
     if a.dry_run is None:
-        ap.error("give --dry-run, --sweep, --worktree, or arm | disarm | status | override")
+        ap.error("give --dry-run, --sweep, --worktree, or arm | disarm | status | override | landing")
     targets = [resolve(a.dry_run)] if a.dry_run else known_repos()
     rows = []
     for name, repo in targets:

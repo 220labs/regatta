@@ -2027,8 +2027,17 @@ out=$(nct Bash '{"command":"git push -u origin claude/laptop/2026-10-18-x"}' "$R
 ok "  even the allowed shape: no core, no check of the /move marker" '[ "$(dec "$out")" = deny ]'
 out=$(nct Bash '{"command":"cd /x && git commit -qm x"}' "$P")
 ok "a git verb that writes: denied" '[ "$(dec "$out")" = deny ]'
-out=$(nct Edit "{\"file_path\":\"$P/y.txt\"}" "$P")
+# No file is written by nct. A synthetic path below / stays outside any checkout
+# around TMPDIR; that parent checkout correctly makes the missing-core guard deny $P.
+out=$(nct Edit '{"file_path":"/checkpoint-no-git-fixture/y.txt"}' /)
 ok "an Edit outside any git work tree: passes, said once" '[ "$out" = rc=0 ] && [ "$(grep -cF "$LINE" "$T/nc.err")" = 1 ]'
+mkdir "$P/.git"
+out=$(nct Edit "{\"file_path\":\"$P/y.txt\"}" "$P")
+ok "an empty .git directory (a sandbox mount point): still no checkout" '[ "$out" = rc=0 ]'
+: > "$P/.git/HEAD"
+out=$(nct Edit "{\"file_path\":\"$P/y.txt\"}" "$P")
+ok "a populated .git directory with incomplete metadata: still refused" '[ "$(dec "$out")" = deny ]'
+rm "$P/.git/HEAD"; rmdir "$P/.git"
 out=$(nct Bash '{"command":"bash ~/projects/layer/bootstrap.sh --config"}' "$R")
 ok "  the fix itself, and a read: pass" '[ "$out" = rc=0 ] && [ "$(nct Bash "{\"command\":\"git status\"}" "$R")" = rc=0 ]'
 # B1 finish review: the floor is fallback_bash()'s, bar LIVEISH_RE, and a stale core can be pulled
@@ -2141,5 +2150,23 @@ ok "  attended, \`gh api\`: allowed (the list is the unattended run's)" \
   '[ "$(vtool codex Bash "{\"command\":\"gh api user\"}" "$VW")" = allow ]'
 ok "a Codex write into another checkout remembers no claim (remember_claim, VENDOR)" \
   '[ "$(vtool codex Write "{\"file_path\":\"$VW/r.txt\"}" "$R")" = allow ] && ! ls "$(git -C "$R" rev-parse --absolute-git-dir)/claude/" 2>/dev/null | grep -q "^claimed-codex"'
+
+echo ".git directory writes: refused for Claude and vendor file tools alike"
+ok "Write into <primary>/.git/config: denied" \
+  '[ "$(tool A Write "{\"file_path\":\"$R/.git/config\"}" "$VW")" = deny ]'
+ok "  and <primary>/.git/hooks/post-commit by an Antigravity payload: denied" \
+  '[ "$(vtool antigravity Write "{\"file_path\":\"$R/.git/hooks/post-commit\"}" "$VW")" = deny ]'
+ok "  Edit of the worktree .git file itself: denied" \
+  '[ "$(tool A Edit "{\"file_path\":\"$VW/.git\"}" "$VW")" = deny ]'
+ok "  MultiEdit of a relative .git/config path: denied" \
+  '[ "$(tool A MultiEdit "{\"file_path\":\".git/config\"}" "$R")" = deny ]'
+ln -s "$R/.git" "$T/git-dir-link"
+ok "  Write through a symlink into .git: denied" \
+  '[ "$(tool A Write "{\"file_path\":\"$T/git-dir-link/hooks/pre-push\"}" "$VW")" = deny ]'
+git init -q --separate-git-dir="$T/sep-git" "$T/sep-wt"
+ok "  Write into a --separate-git-dir without .git in its path: denied" \
+  '[ "$(tool A Write "{\"file_path\":\"$T/sep-git/hooks/post-commit\"}" "$VW")" = deny ]'
+ok "  while .github and .gitignore inside the worktree stay allowed" \
+  '[ "$(tool A Write "{\"file_path\":\"$VW/.github/x.yml\"}" "$VW")" = allow ] && [ "$(tool A Edit "{\"file_path\":\"$VW/.gitignore\"}" "$VW")" = allow ]'
 
 echo; [ $fails -eq 0 ] && echo "all passed" || { echo "$fails FAILED"; exit 1; }

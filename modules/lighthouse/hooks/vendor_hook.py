@@ -92,8 +92,9 @@ CODEX_SHELL = {"Bash", "exec_command", "shell", "local_shell", "unified_exec"}
 CODEX_STDIN = {"write_stdin"}   # unified exec: text typed into a running shell (`chars`)
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 CLAUDE_TOOLS = {"Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"}
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 AG_TOOLS = {   # Antigravity's tool → Claude's
-    "run_command": "Bash",
+    "run_command": "Bash", "manage_task": "Task",
     "send_command_input": "Stdin", "write_stdin": "Stdin",
     "view_file": "Read", "read_file": "Read", "view_code_item": "Read", "view_file_outline": "Read",
     "view_content_chunk": "Read", "read_url_content": "Read", "read_terminal": "Read",
@@ -108,10 +109,10 @@ AG_PATH_KEYS = {"AbsolutePath", "TargetFile", "Path", "FilePath", "File", "Direc
                 # the snake_case tools' own (`write_file`, `edit_file`, `read_file`; the finish review, 2026-10-31)
                 "file_path", "path", "absolute_path", "target_file", "directory", "dir_path", "paths"}
 # keys that hold text, never a path, however it starts (a file's new content may begin with `/`)
-AG_TEXT_KEYS = {"CodeContent", "ReplacementContent", "TargetContent", "Instruction", "Query", "Pattern",
-                "Description", "explanation", "ReplacementChunks", "CodeMarkdownLanguage", "Includes", "Excludes",
-                "content", "new_string", "old_string", "new_content", "old_content", "text", "query", "pattern",
-                "instruction", "description", "CodeEdit"}
+AG_TEXT_KEYS = {"CodeContent", "ReplacementContent", "TargetContent", "Content", "Target", "Replacement",
+                "Instruction", "Query", "Pattern", "Description", "explanation", "ReplacementChunks",
+                "CodeMarkdownLanguage", "Includes", "Excludes", "content", "new_string", "old_string",
+                "new_content", "old_content", "text", "query", "pattern", "instruction", "description", "CodeEdit"}
 AG_STDIN_SKIP = {"CommandId", "ProcessID", "ProcessId", "Name", "WaitMs", "WaitMsBeforeAsync", "SafeToAutoRun",
                  "explanation", "Terminate", "SessionId", "session_id", "yield_time_ms", "max_output_tokens"}
 PATCH_FILE = re.compile(r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
@@ -215,18 +216,84 @@ def ag_paths(args, cwd):
     return out
 
 
+def ag_call(ev):
+    call = ev.get("toolCall") if isinstance(ev.get("toolCall"), dict) else {}
+    name = call.get("name") if isinstance(call.get("name"), str) else (ev.get("toolName") or ev.get("tool_name"))
+    args = call.get("args") if isinstance(call.get("args"), dict) else (ev.get("tool_input") if isinstance(ev.get("tool_input"), dict) else {})
+    return (name if isinstance(name, str) else None), args
+
+
+def ag_cwd(ev):
+    wp = next(iter(workspace_paths(ev.get("workspacePaths"))), None)
+    if wp:
+        return wp
+    if os.environ.get("REGATTA_UNATTENDED") and os.environ.get("REGATTA_WORKTREE"):
+        return os.path.abspath(os.path.expanduser(os.environ["REGATTA_WORKTREE"]))
+    return os.getcwd()
+
+
+# agy's own tools that touch no path and run nothing (polling a started command, waiting): allowed unattended beside
+# AG_TOOLS, as main allowed them and the council's agy_hook.py ALLOW records them; sed_file edits a file and stays out
+AG_UNATTENDED_PASS = {"command_status", "wait", "wait_5_seconds"}
+
+
+def ag_unattended_deny(ev):
+    """Why an unattended Antigravity call is denied before the guards run, or None."""
+    if not os.environ.get("REGATTA_UNATTENDED"):
+        return None
+    name, args = ag_call(ev)
+    if name in AG_UNATTENDED_PASS:
+        return None
+    if not name or name not in AG_TOOLS or name == "read_url_content":
+        return f"regatta vendor-hooks: tool {name or '<unnamed>'!r} is not allowed in an unattended Antigravity run"
+    if name == "run_command" and (args.get("BypassSandbox") or args.get("bypass_sandbox")):
+        return "regatta vendor-hooks: run_command BypassSandbox is not allowed in an unattended Antigravity run"
+    return None
+
+
+def in_git_dir(path, cwd="."):
+    """True when `path` is `.git` or lies inside a `.git` directory, before or after symlink resolution."""
+    if not isinstance(path, str) or not path:
+        return False
+    raw = os.path.expanduser(path)
+    norm = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(cwd or ".", raw))
+    if ".git" in os.path.normpath(norm).split(os.sep):
+        return True
+    try:
+        real = os.path.realpath(norm)
+    except (OSError, ValueError):   # a NUL or a lone surrogate: fail closed, as an unreadable path does
+        return True
+    return ".git" in os.path.normpath(real).split(os.sep)
+
+
+def git_write_deny(cli, ev):
+    """Why a file-write call of `cli` into `.git` is denied before the guards run, or None."""
+    calls = codex_calls(ev) if cli == "codex" else ag_calls(ev)
+    for tool, inp, cwd in calls:
+        if tool not in WRITE_TOOLS or not isinstance(inp, dict):
+            continue
+        for k in ("file_path", "notebook_path", "path"):
+            p = inp.get(k)
+            if isinstance(p, str) and in_git_dir(p, cwd):
+                return f"regatta vendor-hooks: refusing to {tool.lower()} {p!r} inside a .git directory"
+    return None
+
+
 def ag_calls(ev):
     """Antigravity's PreToolUse payload → [(Claude tool, tool_input, cwd)]."""
-    call = ev.get("toolCall") if isinstance(ev.get("toolCall"), dict) else {}
-    name = call.get("name") if isinstance(call.get("name"), str) else ev.get("toolName")
-    args = call.get("args") if isinstance(call.get("args"), dict) else {}
+    name, args = ag_call(ev)
     tool = AG_TOOLS.get(name)
     if not tool:
         return []
-    cwd = next(iter(workspace_paths(ev.get("workspacePaths"))), None) or os.getcwd()
+    cwd = ag_cwd(ev)
     wd = args.get("Cwd") if isinstance(args.get("Cwd"), str) and args.get("Cwd") else None
     if tool == "Bash":
         return [("Bash", {"command": _text(args.get("CommandLine"))}, _abs(wd, cwd) if wd else cwd)]
+    if tool == "Task":
+        raw = args.get("Input") if args.get("Input") is not None else args.get("Stdin")
+        if str(args.get("Action") or args.get("action") or "").lower() == "send_input" or raw is not None:
+            return [("Bash", {"command": _text(raw)}, _abs(wd, cwd) if wd else cwd)]
+        return []
     if tool == "Stdin":   # each text argument is shell input; an id, a wait or a flag is not
         return [("Bash", {"command": v}, _abs(wd, cwd) if wd else cwd)
                 for k, v in args.items() if k not in AG_STDIN_SKIP and isinstance(v, str) and v]
@@ -402,13 +469,21 @@ def decide(cli, guard, ev, deadline=None):
     """('deny', reason) | ('rewrite', new command — a string, or the argv list with its script replaced) |
     ('allow', None) for one call of `cli`."""
     deadline = time.monotonic() + BUDGET if deadline is None else deadline
+    if cli == "antigravity":
+        why = ag_unattended_deny(ev)
+        if why:
+            return ("allow", None) if guard == "trailer" else ("deny", why)
+    if guard in ENTRIES or os.path.isfile(guard):
+        why = git_write_deny(cli, ev)
+        if why:
+            return ("allow", None) if guard == "trailer" else ("deny", why)
     if guard == "guards":
         return chain(cli, ev, deadline)
     if guard == "trailer":
         ti = ev.get("tool_input") if cli == "codex" and isinstance(ev.get("tool_input"), dict) else {}
         calls = codex_calls(ev) if cli == "codex" else ag_calls(ev)
         typed = ev.get("tool_name") in CODEX_STDIN if cli == "codex" else \
-            AG_TOOLS.get((ev.get("toolCall") or {}).get("name") or ev.get("toolName")) != "Bash"   # text typed into a shell is no command line; the name read as ag_calls reads it
+            AG_TOOLS.get(ag_call(ev)[0]) != "Bash"   # text typed into a shell is no command line; the name read as ag_calls reads it
         if typed or not (len(calls) == 1 and calls[0][0] == "Bash"):
             return "allow", None
         new = with_trailer(calls[0][1]["command"], trailer_for(cli, ev))

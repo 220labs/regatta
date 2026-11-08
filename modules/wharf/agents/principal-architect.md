@@ -306,7 +306,7 @@ Status: <proposed | answered | building | blocked | built | measured | supersede
   it, reads as unmarked). A `dispatch --yolo` run takes every bare pick unattended, `no` and
   unmarked items included, and stops only at one with no pick, a conditional pick or a reopened
   one (`bin/keel yolo`; skipper-modes D1); a `dnd` run takes the same picks bar its held classes
-  (money, a physical repo, a deletion or public publish, a third party's answer, an
+  (money, a deletion or public publish, a third party's answer, an
   unmarked item). The mark still
   decides everywhere else: the stand sweep takes a `yes` item's pick after 24 h untouched, never a
   `no`. When in doubt, `no`: a wrong `yes` stands without the owner, a wrong `no` costs one answer.

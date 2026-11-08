@@ -10,7 +10,7 @@ the checkpoint hook commits each turn there, pushes it, and keeps the primary ch
 | `hooks/sync.py` | at session start: `main` fast-forwarded from origin, dead sessions' worktrees committed and pushed, landed branches archived, one note |
 | `hooks/branches.py`, `hooks/carried.py` | the branch survey and the proof a branch's content is on `main`; what one branch carries from another |
 | `hooks/worktree_allow.py` | EnterWorktree and ExitWorktree into any repo's `.claude/worktrees/` never ask |
-| `libexec/pr` | the branch's pull request without `gh`: `regatta pr status | ready | strays | merge | carried` — outside `bin/`, since `/usr/bin/pr` wins on a stock PATH |
+| `libexec/pr` | the branch's pull request without `gh`: `regatta pr status | ready | strays | merge | carried | restack | carry | stuck` — outside `bin/`, since `/usr/bin/pr` wins on a stock PATH |
 | `bin/council` | the principal tier's council: blind complete designs from an Opus, a Codex and a Gemini arm, each on its own copy of the home repo (git writes it from a pack of the commit's trees) behind its fence, a blind cross-examination (each arm adopts, concedes or holds with evidence), the build path's `codex exec review`, the Receipt read from what the arms recorded, and `council fences`, the monthly re-probe: the H probes' nine commands and a denied tool per arm as a table, an arm a case broke refused until one holds; its model rows in `settings/models.json` |
 | `bin/review-gate` | `/finish`'s review step: which two reviews a branch gets (by inserted lines and the week), and one merged list from their reports |
 | `skills/finish`, `skills/evacuate`, `skills/todo` | land a branch; park a session's open items; keep `TODO.md` short |
@@ -42,6 +42,17 @@ wharf-runs' `rc-hosts`, wharf-runs' `harness` (council's Codex arm, its sibling 
 module's own `ci-provider`, its sibling in `bin/`, loaded directly (missing or broken, its CI line
 says `ci-provider unloadable`). The registry is the core's `repos_json()`:
 `$CLAUDE_REPOS_JSON`, else `wharf/repos.json` in the regatta config dir.
+
+`regatta pr stuck [--json] [--dry-run]` reads ready `claude/*` PRs on one host per repo: its scope's yard,
+else the configured laptop. It reports required reds by source, holds and live runs, and requests re-finish
+for a DIRTY PR restack refuses only at this host's worktree head under S1's stop predicate. List conflicts stay
+with `pr restack`. An unarmed PR can rerun its newest non-skipped `automerge.yml` run at that head, through
+`autofinish-run lander spend reruns` first (two per branch, the existing lander store). Required checks come
+from the repo's `.github/main-protection.json`, both `checks[].context` and `contexts`. The Linux context
+keeps its name on Actions too; when absent, its pending trigger or a trigger successful within an hour
+counts as pending. Nothing arms automerge directly. JSON's `prs` rows carry `kind`, `red`, `pending` and
+an optional `request: {road, worktree, head}` for the tick to re-judge; exit 2 and `error` mean an incomplete
+read. A non-owner returns no rows and spends nothing; `--dry-run` previews reruns without spending.
 
 Install it from the marketplace (`claude plugin install wharf@regatta`), or from a clone, where the
 module runs in place. The hooks are not in the plugin yet: `sh modules/wharf/install.sh --hooks` prints the settings

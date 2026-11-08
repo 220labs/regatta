@@ -45,6 +45,28 @@ echo server:server-claude > "$REGATTA_CONFIG/wharf-runs/ssh"
 unset CLAUDE_CONFIG_DIR
 P1="$HOME/.claude"; S1="$HOME/.claude-spare"
 mkdir -p "$P1" "$S1"
+# Signed in, as the login guard reads a home (bin/account's header, "The login guard"): .claude.json's oauthAccount
+# and a credential. The keychain is a stand-in on every OS (ACCOUNT_SECURITY): an entry is a file named for its
+# service under $T/keychain, $T/keychain-locked makes every lookup answer as a locked keychain does over ssh (36).
+creds() { echo '{"claudeAiOauth": {"accessToken": "t", "refreshToken": "t"}}' > "$1/.credentials.json"; }
+# signed: both homes back to the baseline sign-in, after a section that rewrote or removed it
+signed() {
+  echo '{"oauthAccount": {"accountUuid": "u-main-0001", "emailAddress": "m@example.com"}}' > "$HOME/.claude.json"
+  echo '{"oauthAccount": {"accountUuid": "u-spare-0001", "emailAddress": "y@example.com"}}' > "$S1/.claude.json"
+  creds "$P1"; creds "$S1"
+}
+signed
+# a logins file that describes no row: every row is judged as before but for (a); the guard's cases write their own
+echo '{"logins": {}}' > "$REGATTA_CONFIG/lighthouse/logins.json"
+mkdir -p "$T/keychain"
+cat > "$T/security" <<'EOF'
+#!/bin/sh
+[ "$1" = find-generic-password ] && [ "$2" = -s ] || exit 2
+[ -f "$T_KEYCHAIN-locked" ] && exit 36
+[ -f "$T_KEYCHAIN/$3" ] && exit 0
+exit 44
+EOF
+chmod +x "$T/security"; export ACCOUNT_SECURITY="$T/security" T_KEYCHAIN="$T/keychain"
 # what a plain bootstrap.sh run leaves in ~/.claude: the full memory file and the employer one
 # (bin/account links a dir's CLAUDE.md to them, and never to a file that does not exist)
 printf '@~/projects/privy/me/core.md\n' > "$P1/CLAUDE.md"; printf '@~/projects/privy/me/core.md\n' > "$P1/CLAUDE-work.md"
@@ -80,23 +102,24 @@ echo "$dir" >> "$T_PROBES"
 set -- $(cat "$dir/stub-usage")
 lock=null; [ "${3:-}" = locked ] && lock='"rate_limited"'
 fr='"2026-10-07T22:00:00+00:00"'; [ -f "$dir/stub-resets" ] && fr=$(cat "$dir/stub-resets")
+wr='"2026-10-10T20:00:00+00:00"'; [ -f "$dir/stub-week-resets" ] && wr=$(cat "$dir/stub-week-resets")
 echo '{"type":"system","subtype":"init"}'
 lim=''
 fw=37; [ -s "$dir/stub-fable" ] && fw=$(cat "$dir/stub-fable")   # stub-fable's text, when any, is Fable's week
-[ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":'"$fw"',"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"id":null,"display_name":"Fable"}}}]'
+[ -f "$dir/stub-fable" ] && lim=',"limits":[{"kind":"weekly_all","scope":null},{"kind":"weekly_scoped","percent":'"$fw"',"resets_at":'"$wr"',"scope":{"model":{"id":null,"display_name":"Fable"}}}]'
 [ -f "$dir/stub-nofable" ] && lim=',"limits":[{"kind":"session","scope":null},{"kind":"weekly_all","scope":null}]'
 # paid overage on, in the get_usage answer's shape (probed 2026-10-24: rate_limits.extra_usage)
 [ -f "$dir/stub-overage" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"monthly_limit":4000,"used_credits":120,"utilization":3,"currency":"USD","user_disabled":false,"spend_limit_reached":false}'
 # on for the org, switched off by the user: it cannot bill (the /usage cache's field; the finish review)
 [ -f "$dir/stub-overage-off" ] && lim="$lim"',"extra_usage":{"is_enabled":true,"user_disabled":true}'
-echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":$fr,\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":\"2026-10-10T20:00:00+00:00\",\"locked_reason\":null}$lim}}}}"
+echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"u1\",\"response\":{\"subscription_type\":\"pro\",\"rate_limits\":{\"five_hour\":{\"utilization\":$1,\"resets_at\":$fr,\"locked_reason\":$lock},\"seven_day\":{\"utilization\":$2,\"resets_at\":$wr,\"locked_reason\":null}$lim}}}}"
 EOF
 chmod +x "$T/claude"
 export T_PROBES="$T/probes" T_NOVERSION="$T/no-version" ACCOUNT_SETTLE=0
 at() { python3 -c "import datetime as d,zoneinfo as z;print(d.datetime($1,tzinfo=z.ZoneInfo('America/Los_Angeles')).timestamp())"; }
-WED=$(at 2026,10,7,12); SAT=$(at 2026,10,10,10); THU=$(at 2026,10,8,12)
+WED=$(at 2026,10,7,12); SAT=$(at 2026,10,10,10); THU=$(at 2026,10,8,12); TUE=$(at 2026,10,6,12)
 A() { python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
-reset() { rm -f "$P1/usage-probe.json" "$S1/usage-probe.json" "$P1/exhaustion.jsonl" "$S1/exhaustion.jsonl" "$T/probes" "$P1/stub-resets" "$S1/stub-resets"; }
+reset() { rm -f "$P1/usage-probe.json" "$S1/usage-probe.json" "$P1/exhaustion.jsonl" "$S1/exhaustion.jsonl" "$T/probes" "$P1/stub-resets" "$S1/stub-resets" "$P1/stub-week-resets" "$S1/stub-week-resets"; }
 # the 5-hour reset <minutes> after <epoch>, as the stub's stub-resets wants it (a quoted UTC time)
 resets() { python3 -c "import datetime as d;print('\"%s\"' % d.datetime.fromtimestamp($2 + $3 * 60, d.timezone.utc).isoformat())" > "$1/stub-resets"; }
 use() { echo "$2" > "$1/stub-usage"; }
@@ -299,10 +322,13 @@ A pick > /dev/null
 has "$T/out" "the registry's ceilings stand" "…said on stderr, outside --json"
 rm -f "$BF" "$(dirname "$BF")/.$(basename "$BF").last"
 echo "budgets — an owner's cap is a cap: it caps the reserve too (budgets-edges, 2026-11-02)"
-reset; use "$S1" "10 75"; use "$P1" "10 10"
+reset; use "$S1" "10 75"; use "$P1" "10 10"; echo '"2026-10-14T20:00:00+00:00"' > "$S1/stub-week-resets"
 echo '{"spare": {"week_max": 60}}' > "$BF"
-check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 main" "75% on spare's Saturday reserve (100) with budgets.json's week_max 60 → the primary"
+check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 main" "75% on spare's Saturday reserve (100) with budgets.json's week_max 60 (mid-week reset, above week pace) → the primary"
 has "$T/out" "week 75% ≥ 60% (Saturday reserve, capped by budgets.json)" "…the reason naming both"
+reset; use "$S1" "10 75"; use "$P1" "10 10"
+check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 spare" "…near week reset (3 h left, pace 98%), D1 week pace lifts the capped soft reserve"
+has "$T/out" "under pace 98% (soft 60% Saturday reserve, capped by budgets.json)" "…naming week pace and the capped soft reserve"
 reset; use "$S1" "10 75"
 echo '{"spare": {"week_max": 100}}' > "$BF"
 check "$(ACCOUNT_NOW=$SAT A pick --json) $(field "['account']")" "0 spare" "a budget no tighter than the reserve leaves the reserve's 100"
@@ -492,6 +518,10 @@ rm -f "$T/od.calls" "$T/od-open" "$ODL" "$ACCOUNTS_FILE.od" "$ACCOUNTS_FILE.odx"
 
 echo "overdraw-max — per-login ceiling on lifted rows (lighthouse/overdraw-max)"
 OX="$HOME/.claude-acct-x"; OY="$HOME/.claude-acct-y"; mkdir -p "$OX" "$OY"
+# signed in, each as its own account (the login guard refuses a home that is not)
+echo '{"oauthAccount": {"accountUuid": "u-acct-x-01", "emailAddress": "x@example.com"}}' > "$OX/.claude.json"
+echo '{"oauthAccount": {"accountUuid": "u-acct-y-01", "emailAddress": "q@example.com"}}' > "$OY/.claude.json"
+creds "$OX"; creds "$OY"
 cat > "$ACCOUNTS_FILE.odm" <<'EOF'
 {"accounts": [
   {"label": "acct-x", "provider": "claude", "home": "~/.claude-acct-x", "rules": {"week_max": 40, "window_max": 50}},
@@ -499,7 +529,7 @@ cat > "$ACCOUNTS_FILE.odm" <<'EOF'
   {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}}]}
 EOF
 OM="$REGATTA_CONFIG/lighthouse/overdraw-max"
-ODM() { ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED python3 "$B/account" "$@" > "$T/out" 2> "$T/odm.err"; echo $?; }
+ODM() { ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$TUE python3 "$B/account" "$@" > "$T/out" 2> "$T/odm.err"; echo $?; }
 odm_reset() { rm -f "$OX/usage-probe.json" "$OY/usage-probe.json" "$P1/usage-probe.json" "$OX/exhaustion.jsonl" "$OY/exhaustion.jsonl" "$P1/exhaustion.jsonl" "$T/probes"; }
 rm -f "$OM"; odm_reset; use "$OX" "10 55"; use "$OY" "10 100"; use "$P1" "10 97"
 check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "with no overdraw-max line, a lifted row reads 100 as before"
@@ -557,11 +587,11 @@ check "$(ODM pick --overdraw --json) $(field "['account']")" "0 acct-x" "overdra
 hasnt "$T/out" '"overdraw"' "…without overdrawing"
 printf 'acct-x:60\n' > "$OM"; printf 'acct-x:97\n' > "$FC"
 odm_reset; use "$OX" "10 92"; use "$OY" "10 100"; use "$P1" "10 100"
-check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED F --overdraw --job b) $(field "['account']")" "0 acct-x" "finishes keep week-max-finish past a lower overdraw-max"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$TUE F --overdraw --job b) $(field "['account']")" "0 acct-x" "finishes keep week-max-finish past a lower overdraw-max"
 has "$T/out" "week 92% < 97% (finish ceiling)" "…judged by the finish ceiling"
 printf 'acct-x:99\n' > "$OM"
 odm_reset; use "$OX" "10 97"; use "$OY" "10 100"; use "$P1" "10 100"
-check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$WED F --overdraw --job b)" 3 "a finish-ceiling row is still never lifted, even under a higher overdraw-max"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.odm" ACCOUNT_NOW=$TUE F --overdraw --job b)" 3 "a finish-ceiling row is still never lifted, even under a higher overdraw-max"
 rm -f "$OM" "$FC" "$ACCOUNTS_FILE.odm" "$T/odm.err"; rm_own "$OX" "$OY"
 
 echo "exhaustion — cooldown and margin (D6)"
@@ -672,7 +702,7 @@ echo '{"oauthAccount": {"accountUuid": "u-spare-0001"}}' > "$S1/.claude.json"
 { printf '\377\376 torn\n'; rec seven_day 432000 u-spare-; } > "$S1/exhaustion.jsonl"
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "a log with a byte that is no UTF-8: that line skipped, the next still read"
 check "$(CLAUDE_CONFIG_DIR="$S1" ACCOUNT_NOW=$WED A exhausted --window five_hour --resets-at "$(python3 -c "print($WED + 3600)")" --session s13 --used 100) $(grep -c five_hour "$S1/exhaustion.jsonl")" "0 1" "…and a write beside it succeeds"
-rm -f "$S1/.claude.json" "$S1/exhaustion.jsonl" "$T/main-log.jsonl"; unset -f rec
+rm -f "$S1/exhaustion.jsonl" "$T/main-log.jsonl"; signed; unset -f rec
 
 echo "usage-probe.json — a row reads only its own login's cached reading (cooldown-account D1, 2026-11-02)"
 # Orca copies ~/.claude's top-level files into a profile at each selection, usage-probe.json too: the profile's row
@@ -707,10 +737,17 @@ hasnt "$T/out" "usage cache" "…but not one with no stamp on such a row"
 cache u-spare- org-aaaa > "$S1/usage-probe.json"; ACCOUNT_NOW=$WED A check > /dev/null
 hasnt "$T/out" "usage cache" "…never its own"
 echo '{"oauthAccount": {}}' > "$S1/.claude.json"; cache u-main-0 > "$S1/usage-probe.json"
-check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits']['seven_day']")" "0 100" "a home whose login does not read takes any reading, as before"
+check "$(ACCOUNT_NOW=$WED python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+a = SourceFileLoader("acct_or", sys.argv[1]).load_module()
+r = next(x for x in a.load_registry()["accounts"] if x["label"] == "spare")
+print(a.limits(r, cached=True)[0]["seven_day"])' "$B/account")" "100" "a home whose login does not read takes any reading, as before (limits())"
+check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits'], d[0]['login_off'][:13]")" "0 None not signed in" \
+  "…while \`limits\` shows none for it: the login guard refuses the row, and its figures are not its own"
 echo '[1]' > "$S1/usage-probe.json"
 check "$(ACCOUNT_NOW=$WED A limits spare --cached --json) $(field "[0]['limits']")" "0 None" "a cache that is no object reads as none, no crash"
-rm -f "$S1/.claude.json" "$S1/usage-probe.json"; unset -f cache probed
+rm -f "$S1/usage-probe.json"; signed; unset -f cache probed
 reset; use "$S1" "80 10"; rm -f "$P1/stub-usage"
 check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "the primary's probe fails → the primary runs it rather than nothing"
 has "$T/out" "limits unknown — the primary runs it rather than nothing" "…and says so"
@@ -981,8 +1018,11 @@ has "$T/out" "links: sessions is a real directory" "…is named"
 
 echo "two dirs on one login (2026-10-05: spare signed in as the primary's account)"
 # a signed-in dir has started once, so it carries the first-start keys (bare_login: one that has not)
-login() { echo "{\"hasCompletedOnboarding\": true, \"lastOnboardingVersion\": \"2.1.300\", \"numStartups\": 3, \"claudeInChromeDefaultEnabled\": true, \"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; }
-bare_login() { echo "{\"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; }
+# each writes the credential too (the login guard reads both): beside the file, or in <dir>/.claude where the file is
+# a home folder's (the default dir keeps its .claude.json one level up)
+login() { echo "{\"hasCompletedOnboarding\": true, \"lastOnboardingVersion\": \"2.1.300\", \"numStartups\": 3, \"claudeInChromeDefaultEnabled\": true, \"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; creds_of "$1"; }
+bare_login() { echo "{\"oauthAccount\": {\"accountUuid\": \"$2\", \"emailAddress\": \"$3\"}}" > "$1"; creds_of "$1"; }
+creds_of() { local d; d=$(dirname "$1"); if [ -d "$d/.claude" ]; then creds "$d/.claude"; else creds "$d"; fi; }
 login "$HOME/.claude.json" u-primary p@example.com; login "$S1/.claude.json" u-primary p@example.com
 echo p@example.com > "$S1/stub-login"; ln -s "$P1/CLAUDE.md" "$S1/CLAUDE.md"
 reset; use "$S1" "10 10"; use "$P1" "10 10"
@@ -1033,7 +1073,8 @@ check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.old" ACCOUNT_NOW=$WED A pick --json) $(fi
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.old" A limits --all --parked --cached --json; python3 -c "import json;print(dict((r['label'], r['same_as']) for r in json.load(open('$T/out')) if r['label'] in ('old', 'spare')))")" "0
 {'old': 'spare', 'spare': None}" "limits --all --parked: the parked row is the duplicate, never the enabled one (one week, one card)"
 echo '[]' > "$S1/.claude.json"
-check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 spare" "an unreadable .claude.json marks nothing and crashes nothing"
+check "$(ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 main" "an unreadable .claude.json marks nothing and crashes nothing (and holds no login: the guard passes it by)"
+login "$S1/.claude.json" u-second t@example.com
 
 echo "setup — a Mac built from the logins file (work-account E1)"
 export ACCOUNT_LOGINS="$T/logins.json" ACCOUNT_HOST=laptop
@@ -1074,6 +1115,7 @@ check "$(SA)" 0 "a second run changes nothing"
 check "$(grep -c '^  ok  ' "$T/out")" 2 "…and prints ok per row it builds"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.f" A limits --all --cached --json; python3 -c "import json;print([r['label'] for r in json.load(open('$T/out'))])")" "0
 ['main']" "limits --all: a parked row is not listed (the walk, the tier check)"
+rm -f "$P1/usage-probe.json"   # setup probed the primary once login() gave it a credential (doctor's blind reads it)
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.f" A limits --all --parked --cached --json; python3 -c "import json;print([(r['label'], r['enabled'], r['eligible'], r['why']) for r in json.load(open('$T/out'))])")" \
   "0
 [('work', False, False, 'parked (enabled: false in accounts.json.f); limits unknown (no probe answered, none cached)'), ('spare', False, False, 'parked (enabled: false in accounts.json.f); week 0% < 100% (week ceiling), 5h 0% ≤ 100%'), ('main', True, False, 'limits unknown (no probe answered, none cached)')]" "limits --all --parked: the parked rows too, never eligible, judge's own reason kept (the widget draws them as off)"
@@ -1487,6 +1529,7 @@ mv "$IH/.claude/stub-login.off" "$IH/.claude/stub-login"
 check "$(DR)" 0 "…both restored → clean again"
 mv "$IH/.claude/.credentials.json" "$T/creds.off"; touch "$IH/.claude/stub-nologin"; rm -f "$IH/.claude/usage-probe.json"
 mv "$IH/.claude/stub-login" "$IH/.claude/stub-login.off"
+touch "$T_KEYCHAIN-locked"   # the keychain over ssh: the login guard cannot tell, so it skips the store (never "empty")
 check "$(DR)" 0 "the peer's login in its keychain (no .credentials.json): ssh cannot read it, so no false alarm"
 has "$T/out" "main: its login is in the keychain, which ssh cannot read" "…said, not judged"
 check "$(grep -c 'says logged out' "$T/out")" 0 "…auth status's logged-out reading not judged either"
@@ -1495,7 +1538,7 @@ check "$(test -f "$IH/.claude/usage-probe.json"; echo $?)" 1 "…and no probe, s
 printf '#!/bin/sh\nexec env -u ACCOUNT_VSCODE_USER HOME="%s" ACCOUNT_HOST=server SSH_CONNECTION="10.0.0.1 1 10.0.0.2 22" sh -c "$(echo "$1" | sed "s/ --peer [^ ]*//")"\n' "$IH" > "$T/ssh-nopeer"; chmod +x "$T/ssh-nopeer"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.f.on" ACCOUNT_LOGINS="$ACCOUNT_LOGINS.d" ACCOUNT_HOST=laptop ACCOUNT_SSH="$T/ssh-nopeer" ACCOUNT_NOW=$WED A doctor)" 0 "…and the same over ssh without --peer"
 has "$T/out" "main: its login is in the keychain, which ssh cannot read" "…said the same way"
-mv "$IH/.claude/stub-login.off" "$IH/.claude/stub-login"
+mv "$IH/.claude/stub-login.off" "$IH/.claude/stub-login"; rm -f "$T_KEYCHAIN-locked"
 mv "$T/creds.off" "$IH/.claude/.credentials.json"; rm -f "$IH/.claude/stub-nologin" "$IH/.claude/usage-probe.json"
 check "$(DR --local --json; python3 -c "import json;print(len([x for x in json.load(open('$T/out')) if x['mac'] == 'laptop']) > 0)")" "0
 True" "--local --json: the peer leg's form"
@@ -1516,6 +1559,7 @@ unset ACCOUNT_LOGINS ACCOUNT_HOST
 
 echo "a login Orca holds (via: orca, docs/orca-accounts-2026-10-16.md) and ships that stay on one login"
 OD="$T/orca-data"; G="$OD/claude-profiles/acc-g/home"; X="$HOME/.claude-stray2"; mkdir -p "$G" "$X" "$OD/claude-profiles/acc-z/home"
+login "$X/.claude.json" u-stray2 c@example.com   # signed in, so the walk reaches past it on its limits alone
 cat > "$ACCOUNTS_FILE.g" <<'EOF'
 {"accounts": [
   {"label": "work2", "provider": "claude", "via": "orca",
@@ -1570,6 +1614,7 @@ check "$(AG orca-sync)" 1 "orca-sync: Orca has the account, but no dir there is 
 has "$T/out" "no dir under $OD is signed in as g@example.com yet" "…said, nothing guessed"
 echo '{"oauthAccount": {"accountUuid": "u-g", "emailAddress": "g@example.com"}}' > "$G/.claude.json"
 echo '{"oauthAccount": {"accountUuid": "u-z", "emailAddress": "z@example.com"}}' > "$OD/claude-profiles/acc-z/home/.claude.json"
+creds "$G"; creds "$OD/claude-profiles/acc-z/home"
 check "$(AG orca-sync)" 1 "the dir found, but Claude Code reads no login there → nothing recorded"
 check "$([ -f "$P1/account-orca.json" ] && echo written || echo none)" "none" "…ORCA_FILE untouched"
 echo g@example.com > "$G/stub-login"
@@ -1683,7 +1728,7 @@ check "$(AG pick --ship x --bound)" 1 "--ship with --bound: refused"
 echo "every Orca login in the walk by default, no registry row needed (the owner, 2026-10-16)"
 H2="$OD/claude-profiles/acc-h/home"; mkdir -p "$H2"
 echo '{"oauthAccount": {"accountUuid": "u-h", "emailAddress": "h@example.com"}}' > "$H2/.claude.json"
-echo h@example.com > "$H2/stub-login"; use "$H2" "5 10"
+echo h@example.com > "$H2/stub-login"; use "$H2" "5 10"; creds "$H2"
 cat > "$ACCOUNTS_FILE.h" <<'EOF'
 {"accounts": [
   {"label": "stray2", "provider": "claude", "home": "~/.claude-stray2", "rules": {"week_max": 70, "window_max": 50}, "tenant": "owner"},
@@ -2192,7 +2237,8 @@ check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl5" ACCOUNT_NOW=$WED A pick --repo "$PR/
 week 60% ≥ 50% (lend bar: past it, acme's work only)" "overdraw's walk: the lent login refused by its bar, the other past its ceiling, the primary its own"
 check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl5" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --overdraw --json) $(field "['account']")" "0 work" "…the overdraw lifts the other row first, never the lent one ahead of it in the walk"
 sed 's#"week_max": 90#"week_max": 90, "overdraw": false#' "$ACCOUNTS_FILE.tl5" > "$ACCOUNTS_FILE.tl6"
-check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl6" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --overdraw --json) $(field "['account']")" "0 lab" "…and lends past its bar only when no other row may be lifted"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.tl6" ACCOUNT_NOW=$WED A pick --repo "$PR/app" --overdraw --json)" 3 "…and never lifts a row past its hard lend bar, even when no other row may be lifted"
+has "$T/out" "lend bar: past it, acme's work only" "…keeping the lend bar refusal"
 mv "$T/f-usage.keep" "$F/stub-usage"; mv "$T/p-usage.keep" "$P1/stub-usage"; rm -f "$F/usage-probe.json" "$P1/usage-probe.json"
 use "$L" "10 10"; rm -f "$L/usage-probe.json"
 echo '{"accounts": [{"label": "lab", "provider": "claude", "home": "~/.claude-lab", "tenant": "acme"},
@@ -3202,6 +3248,493 @@ ALO logged-out --set spare >/dev/null
 check "$(ALO pick --ship s2ship --json) $(field "['account']")" "0 main" "a ship pinned to a logged-out row moves to main while main has room"
 lo_reset
 
+echo "account-limit-pairs — soft_max / hard_max pairs, week pace at sample time, aliases, and budgets.json '*' (2026-11-07)"
+PA="$T/acct-a"; PB="$T/acct-b"; PP="$T/acct-p"
+mkdir -p "$PA" "$PB" "$PP" "$PR/acme-one" "$PR/app"
+# signed in, each as its own account (the login guard refuses a home that is not)
+# (no logins entry names them, so any address serves: these are exempted ones)
+bare_login "$PA/.claude.json" u-acct-a-02 c@example.com; bare_login "$PB/.claude.json" u-acct-b-02 f@example.com
+bare_login "$PP/.claude.json" u-acct-p-02 h@example.com
+ALP_AF="$T/acct-pairs.json"; ALP_BF="$T/acct-pairs.budgets"; ALP_TF="$T/acct-pairs.tenants"
+alp_clean() {
+  rm -f "$PA/usage-probe.json" "$PB/usage-probe.json" "$PP/usage-probe.json" \
+        "$PA/exhaustion.jsonl" "$PB/exhaustion.jsonl" "$PP/exhaustion.jsonl" \
+        "$PA/stub-resets" "$PB/stub-resets" "$PP/stub-resets" \
+        "$PA/stub-week-resets" "$PB/stub-week-resets" "$PP/stub-week-resets" \
+        "$ALP_BF" "$T/.acct-pairs.budgets.last" "$ALP_TF" "$T/.acct-pairs.tenants.last" \
+        "$REGATTA_CONFIG/lighthouse/week-soft-max" "$REGATTA_CONFIG/lighthouse/week-hard-max" \
+        "$REGATTA_CONFIG/lighthouse/week-finish-hard-max" "$REGATTA_CONFIG/lighthouse/window-soft-max" \
+        "$REGATTA_CONFIG/lighthouse/window-hard-max" "$REGATTA_CONFIG/lighthouse/week-max" \
+        "$REGATTA_CONFIG/lighthouse/week-max-finish" "$REGATTA_CONFIG/lighthouse/overdraw-max" \
+        "$T/probes" "$T/alp.err"
+}
+ALP() { ACCOUNTS_FILE="$ALP_AF" ACCOUNT_BUDGETS="$ALP_BF" TENANTS_FILE="$ALP_TF" python3 "$B/account" "$@" > "$T/out" 2> "$T/alp.err"; echo $?; }
+ALPF() { ACCOUNTS_FILE="$ALP_AF" ACCOUNT_BUDGETS="$ALP_BF" TENANTS_FILE="$ALP_TF" python3 "$T/finish-pick.py" "$B/../../regatta/hooks" "$B/account" "$@" > "$T/out" 2> "$T/alp.err"; echo $?; }
+
+# 1. Week pair (week_soft_max / week_hard_max): soft passed by week pace and by --overdraw, hard never passed
+alp_clean
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 40, "week_hard_max": 70, "window_soft_max": 70, "window_hard_max": 90}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95, "week_hard_max": 98, "window_soft_max": 80, "window_hard_max": 90}}]}
+EOF
+use "$PA" "10 35"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json) $(field "['account']")" "0 acct-a" "week_soft_max: 35% < 40% runs"
+has "$T/out" "week 35% < 40% (week ceiling)" "…below week_soft_max reason"
+alp_clean; use "$PA" "10 50"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "week_soft_max: 50% ≥ 40% refused on Tuesday (pace 39%)"
+has "$T/out" "week 50% ≥ 40% (week ceiling); resets" "…refusal keeps exact OVER_BAR_RE wording"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json) $(field "['account']")" "0 acct-a" "…--overdraw lifts week_soft_max up to week_hard_max (70%)"
+has "$T/out" "week 50% < 70% (overdraw: no login was under its bar, to the overdraw ceiling 70%)" "…naming the hard ceiling 70% on lifted row"
+alp_clean; use "$PA" "10 50"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "D1 week pace: 50% ≥ 40% runs on Wednesday (pace 57% < 70%)"
+has "$T/out" "week 50% under pace 57% (soft 40% week ceiling, hard 70%)" "…naming week pace, soft ceiling and hard ceiling"
+hasnt "$T/out" '"overdraw"' "…without overdrawing"
+alp_clean; use "$PA" "10 70"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "week_hard_max: 70% ≥ 70% refused even on Saturday when week pace is 98%"
+has "$T/out" "week 70% ≥ 70% (week hard ceiling)" "…refusal names week hard ceiling"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "…and --overdraw never lifts past week_hard_max (70%)"
+# Reserve rises week_soft_max as a soft line, capped by week_hard_max
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 40, "week_hard_max": 70, "reserve": {"day": "Saturday", "week_soft_max": 95}}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95, "week_hard_max": 98}}]}
+EOF
+alp_clean; use "$PA" "10 65"; use "$PP" "10 99"; echo '"2026-10-14T20:00:00+00:00"' > "$PA/stub-week-resets"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json) $(field "['account']")" "0 acct-a" "reserve.week_soft_max raises soft ceiling on Saturday (65% < 70%, mid-week reset)"
+alp_clean; use "$PA" "10 75"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "…but reserve never passes week_hard_max (75% ≥ 70%), even with --overdraw"
+has "$T/out" "week 75% ≥ 70% (week hard ceiling)" "…capped at week hard ceiling"
+
+# 2. Week pace judged strictly at reading's sample time `at`, never wall-clock ACCOUNT_NOW
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 40, "week_hard_max": 70, "window_soft_max": 70}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95, "week_hard_max": 98}}]}
+EOF
+alp_clean; use "$PA" "10 50"; use "$PP" "10 99"
+ACCOUNT_NOW=$TUE ALP limits acct-a --json >/dev/null   # writes usage-probe.json stamped with at = TUE (pace 39%)
+rm -f "$PA/stub-usage"   # force probe fallback onto stale Tuesday cache
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "week pace uses reading's sample time (Tuesday 39%), never wall-clock Saturday (98%)"
+has "$T/out" "week 50% ≥ 40% (week ceiling); resets" "…refusal holds at sample time on Saturday"
+check "$(ACCOUNT_NOW=$SAT ALP pick --cached --json)" 3 "…and --cached uses sample-time pace too"
+alp_clean; use "$PA" "10 50"; use "$PP" "10 99"
+ACCOUNT_NOW=$WED ALP limits acct-a --json >/dev/null   # writes usage-probe.json stamped with at = WED (pace 57%)
+check "$(ACCOUNT_NOW=$TUE ALP pick --cached --json) $(field "['account']")" "0 acct-a" "…reverse: Wednesday sample (pace 57%) passes under --cached even if wall clock says Tuesday"
+check "$(python3 - "$B/account" "$PA" <<'PY'
+import sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("acct_cx", sys.argv[1]).load_module()
+lim = m.parse_codex({"rateLimits": {"secondary": {"usedPercent": 50, "resetsAt": 1000000, "windowDurationMins": 10080}}})
+row = {"label": "acct-cx", "provider": "codex", "home": Path(sys.argv[2]), "rules": {"week_soft_max": 40, "week_hard_max": 70}}
+print(lim["seven_day_window_s"], m.judge(row, lim, 990000, False, at=1000000 - 400000)[0], m.judge(row, lim, 100000, False, at=1000000 - 150000)[0])
+PY
+)" "604800 False True" "…Codex week windowDurationMins parsed into seven_day_window_s and judged at sample_t"
+
+# 3. week_finish_hard_max (JSON and live): passed only by receipted finish, never lifted by pace or --overdraw
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 40, "week_hard_max": 70, "week_finish_hard_max": 80, "window_soft_max": 70}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95, "week_hard_max": 98}}]}
+EOF
+alp_clean; use "$PA" "10 75"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "week_finish_hard_max: build at 75% refused at week_hard_max 70% even with pace and --overdraw"
+check "$(ACCOUNT_NOW=$TUE ALPF) $(field "['account']")" "0 acct-a" "…receipted finish at 75% passes under JSON week_finish_hard_max 80%"
+has "$T/out" "week 75% < 80% (finish ceiling)" "…verdict names finish ceiling"
+alp_clean; use "$PA" "10 80"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALPF --overdraw --job b)" 3 "…finish at 80% refused by week_finish_hard_max 80%, never lifted by pace or --overdraw"
+printf '*:90\n' > "$REGATTA_CONFIG/lighthouse/week-finish-hard-max"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 75"
+check "$(ACCOUNT_NOW=$TUE ALPF --job c) $(field "['account']")" "0 acct-a" "…fleet *:90 on week-finish-hard-max leaves acct-a's own JSON 80% intact (75% passes)"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 85"
+check "$(ACCOUNT_NOW=$TUE ALPF --job d)" 3 "…fleet *:90 does not raise acct-a past its own JSON 80% (85% refused)"
+printf 'acct-a:85\n' > "$REGATTA_CONFIG/lighthouse/week-finish-hard-max"
+printf 'acct-a:92\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 80"
+check "$(ACCOUNT_NOW=$TUE ALPF --overdraw --job e) $(field "['account']")" "0 acct-a" "…live lighthouse/week-finish-hard-max 85% overrides JSON 80% and alias week-max-finish 92%"
+check "$(grep -c 'both set' "$T/alp.err")" 0 "…alias notes stay quiet under --json (a caller may parse stderr merged in)"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 88"
+check "$(ACCOUNT_NOW=$TUE ALPF --job f)" 3 "…88% ≥ 85% refused (week-finish-hard-max 85% wins over alias week-max-finish 92%)"
+
+# 4. week_lend_hard_max: hard lend bar (lifted by neither week pace nor --overdraw; bad value lends nothing)
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 25, "week_hard_max": 70, "week_lend_hard_max": 30, "window_soft_max": 70}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "overdraw": false,
+   "rules": {"week_soft_max": 95, "week_hard_max": 98}}]}
+EOF
+alp_clean
+echo '{"acme": {"repos": ["acme-*"], "logins": ["acct-a"]}}' > "$ALP_TF"
+use "$PA" "10 35"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 acct-a" "week_lend_hard_max: own tenant repo at 35% passes on week pace"
+check "$(ACCOUNT_NOW=$SAT ALP pick --repo "$PR/app" --json)" 3 "…other repo at 35% ≥ 30% refused even on Saturday (week pace 98% never lifts lend bar)"
+has "$T/out" "lend bar: past it, acme's work only" "…naming lend bar refusal"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/app" --overdraw --json)" 3 "…and --overdraw never lifts past week_lend_hard_max (even when week_soft_max 25 < lend 30)"
+has "$T/out" "lend bar: past it, acme's work only" "…overdraw keeps lend bar refusal"
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 40, "week_lend_hard_max": "nope"}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; echo '{"acme": {"repos": ["acme-*"], "logins": ["acct-a"]}}' > "$ALP_TF"
+use "$PA" "10 5"; use "$PP" "10 10"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/app" --json) $(field "['account']")" "0 acct-p" "bad week_lend_hard_max narrows to lending nothing"
+
+# 5. Window pair (window_soft_max / window_hard_max): margin lowers soft, 5h pace lifts soft, hard (default 90) never passed
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 80, "window_soft_max": 70}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95, "window_soft_max": 85, "window_hard_max": 90}}]}
+EOF
+alp_clean; use "$PA" "65 10"; use "$PP" "10 99"; resets "$PA" "$WED" 240
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "window_soft_max: 65% ≤ 70% runs even when 5h pace is 20%"
+echo "{\"at\": $WED, \"window\": \"five_hour\", \"resets_at\": $(python3 -c "print($WED - 3600)")}" > "$PA/exhaustion.jsonl"
+rm -f "$PA/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "exhaustion margin lowers window_soft_max (70 - 10 = 60%): 65% refused at pace 20%"
+has "$T/out" "5h 65% ≥ 60%, 10 points of margin after an exhaustion, over pace 20%" "…naming lowered soft window and pace"
+alp_clean; use "$PA" "75 10"; use "$PP" "10 99"; resets "$PA" "$WED" 45
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "window_soft_max: 75% > 70% lifted by 5h pace 85% (< default window_hard_max 90%)"
+has "$T/out" "5h 75% under pace 85% (soft 70%, hard 90%)" "…naming 5h pace, soft 70% and hard 90%"
+alp_clean; use "$PA" "91 10"; use "$PP" "10 99"; resets "$PA" "$WED" 10
+check "$(ACCOUNT_NOW=$WED ALP pick --overdraw --json)" 3 "window_hard_max (default 90): 91% refused even when 5h pace is 97% and --overdraw is passed"
+has "$T/out" "5h 91% ≥ 90% (window hard ceiling; under pace 97%)" "…naming window hard ceiling 90%"
+printf 'acct-a:95\n' > "$REGATTA_CONFIG/lighthouse/window-hard-max"
+rm -f "$PA/usage-probe.json"
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "live lighthouse/window-hard-max 95% raises the hard window ceiling"
+printf 'acct-a:60\n' > "$REGATTA_CONFIG/lighthouse/window-hard-max"
+printf 'acct-a:80\n' > "$REGATTA_CONFIG/lighthouse/window-soft-max"
+rm -f "$PA/usage-probe.json"; use "$PA" "65 10"; resets "$PA" "$WED" 10
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "live window-hard-max 60% caps a higher window-soft-max 80% (65% ≥ 60% refused)"
+has "$T/out" "5h 65% ≥ 60% (window hard ceiling; under pace 97%)" "…naming window hard ceiling 60%"
+
+# 6. Aliases & both old and new set: new wins, said once on stderr (JSON, reserve, budgets.json, and live)
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 45, "week_max": 85, "window_soft_max": 60, "window_max": 80, "free_below": 75,
+             "window_hard_max": 88, "pace_headroom": 5, "week_lend_hard_max": 30, "lend_max": 60,
+             "reserve": {"day": "Saturday", "week_soft_max": 65, "week_max": 95}}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; echo '{"acme": {"repos": ["acme-*"], "logins": ["acct-a"]}}' > "$ALP_TF"
+use "$PA" "10 50"; use "$PP" "10 99"; echo '"2026-10-14T20:00:00+00:00"' > "$PA/stub-week-resets"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" --json)" 3 "both old and new JSON keys: week_soft_max 45 wins over week_max 85 (50% refused)"
+ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" >/dev/null   # without --json the alias notes say themselves
+check "$(grep -F -c '(acct-pairs.json): week_soft_max and alias week_max both set; week_soft_max wins' "$T/alp.err")" 1 "…week_soft_max conflict said once on stderr"
+check "$(grep -c 'window_soft_max and alias window_max, free_below both set; window_soft_max wins' "$T/alp.err")" 1 "…window_soft_max conflict said once on stderr"
+check "$(grep -c 'window_hard_max and alias pace_headroom both set; window_hard_max wins' "$T/alp.err")" 1 "…window_hard_max conflict said once on stderr"
+check "$(grep -c 'week_lend_hard_max and alias lend_max both set; week_lend_hard_max wins' "$T/alp.err")" 1 "…week_lend_hard_max conflict said once on stderr"
+check "$(grep -c 'reserve): week_soft_max and alias week_max both set; week_soft_max wins' "$T/alp.err")" 1 "…reserve conflict said once on stderr"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 70"; echo '"2026-10-14T20:00:00+00:00"' > "$PA/stub-week-resets"
+check "$(ACCOUNT_NOW=$SAT ALP pick --repo "$PR/acme-one" --json)" 3 "…on Saturday reserve.week_soft_max 65 wins over reserve.week_max 95 (70% refused)"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 35"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/app" --json)" 3 "…week_lend_hard_max 30 wins over lend_max 60 (35% refused)"
+rm -f "$PA/usage-probe.json"; use "$PA" "65 10"; resets "$PA" "$TUE" 240
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" --json)" 3 "…window_soft_max 60 wins over window_max 80 and free_below 75 (65% refused at pace 20%)"
+rm -f "$PA/usage-probe.json"; use "$PA" "90 10"; resets "$PA" "$TUE" 10
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" --json)" 3 "…window_hard_max 88 wins over pace_headroom 5 (90% refused at pace 97%)"
+
+# Legacy live lighthouse/week-max: own line hard (neither pace nor overdraw passes), *: soft (pace and overdraw pass); new live keys win over old
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf '*:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+use "$PA" "10 50"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "old live lighthouse/week-max *:40 is soft: Wednesday pace 57% lifts 50%"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json) $(field "['account']")" "0 acct-a" "…and --overdraw lifts *:40 on Tuesday"
+alp_clean; printf 'acct-a:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+use "$PA" "10 50"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "old live lighthouse/week-max acct-a:40 is hard: neither Saturday pace 98% nor --overdraw passes it"
+printf '*:60\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+printf '*:30\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 50"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json) $(field "['account']")" "0 acct-a" "both live week-soft-max *:60 and week-max *:30: week-soft-max wins"
+ACCOUNT_NOW=$TUE ALP pick >/dev/null
+check "$(grep -c 'lighthouse/week-soft-max and alias lighthouse/week-max \*: both set; lighthouse/week-soft-max wins' "$T/alp.err")" 1 "…live week-soft-max conflict said once on stderr"
+alp_clean
+printf 'acct-a:70\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"
+printf 'acct-a:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf 'acct-a:50\n' > "$REGATTA_CONFIG/lighthouse/overdraw-max"
+use "$PA" "10 60"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json) $(field "['account']")" "0 acct-a" "both live week-hard-max 70 and own week-max 40 / overdraw-max 50: week-hard-max wins"
+check "$(ACCOUNT_NOW=$TUE ACCOUNTS_FILE="$ALP_AF" ACCOUNT_BUDGETS="$ALP_BF" TENANTS_FILE="$ALP_TF" python3 "$B/account" pick --overdraw --json 2>&1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])' 2>&1)" "acct-a" "…and pick --json with stderr merged still parses: the alias notes stay quiet (aurora's scope pass reads it so)"
+ACCOUNT_NOW=$TUE ALP pick --overdraw >/dev/null
+check "$(grep -c 'lighthouse/week-hard-max and alias lighthouse/week-max acct-a: both set; lighthouse/week-hard-max wins' "$T/alp.err")" 1 "…live week-hard-max vs week-max said once on stderr"
+check "$(grep -c 'lighthouse/week-hard-max and alias lighthouse/overdraw-max both set; lighthouse/week-hard-max wins' "$T/alp.err")" 1 "…live week-hard-max vs overdraw-max said once on stderr"
+
+# A login's own legacy week-max line stays hard beside the new keys (the landing review, 2026-11-07): a JSON
+# week_hard_max never lifts past it nor replaces it, and a week-soft-max line, own or *:, may only lower it
+alp_clean; printf 'acct-a:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf '{"*": {"week_hard_max": 70}}\n' > "$ALP_BF"
+use "$PA" "10 55"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json)" 3 "own week-max acct-a:40 with budgets '*' week_hard_max 70: --overdraw never lifts 55% past the own line"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "…nor Saturday's week pace with --overdraw"
+alp_clean; printf 'acct-a:80\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf '{"*": {"week_hard_max": 70}}\n' > "$ALP_BF"
+use "$PA" "10 75"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json) $(field "['account']")" "0 acct-a" "own week-max acct-a:80 stands over budgets '*' week_hard_max 70 (75% runs), as a live week-hard-max does"
+alp_clean; printf 'acct-a:41\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf '*:60\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+use "$PA" "10 55"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "own week-max acct-a:41 beside week-soft-max *:60: the own line stands (55% refused)"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "…and stays unlifted by Saturday's pace and --overdraw"
+ACCOUNT_NOW=$SAT ALP pick --overdraw >/dev/null
+check "$(grep -c 'lighthouse/week-soft-max and alias lighthouse/week-max acct-a: both set; the lower stands' "$T/alp.err")" 1 "…both set said once on stderr"
+alp_clean; printf 'acct-a:41\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf 'acct-a:30\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+use "$PA" "10 35"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "own week-soft-max acct-a:30 lowers the own week-max 41 (35% refused, unlifted)"
+alp_clean; printf 'acct-a:50\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf '*:95\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"
+use "$PA" "10 60"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --overdraw --json)" 3 "a fleet week-hard-max *:95 never supersedes the own week-max acct-a:50 (60% refused, unlifted)"
+ACCOUNT_NOW=$SAT ALP pick --overdraw >/dev/null
+check "$(grep -c 'both set; lighthouse/week-hard-max wins' "$T/alp.err")" 0 "…and no 'week-hard-max wins' note for a *: line"
+# A fleet week-hard-max *: line never widens a login's own overdraw-max line (the landing review, 2026-11-07, pick A):
+# the lift stops at the lower of the two, as a fleet line never stands over a login's own
+alp_clean; printf 'acct-a:60\n' > "$REGATTA_CONFIG/lighthouse/overdraw-max"
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"week_max": 50}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+use "$PA" "10 70"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json)" 3 "own overdraw-max acct-a:60: --overdraw never lifts 70%"
+printf '*:98\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json)" 3 "…nor once a fleet week-hard-max *:98 is set"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 55"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json) $(field "['account']")" "0 acct-a" "…while 55% lifts, to the own line's 60"
+has "$T/out" "to the overdraw ceiling 60%" "…said as the own overdraw-max's ceiling"
+ACCOUNT_NOW=$TUE ALP pick --overdraw >/dev/null
+check "$(grep -c 'week-hard-max and alias lighthouse/overdraw-max both set' "$T/alp.err")" 0 "…and no 'week-hard-max wins' note for a fleet line beside an own overdraw-max"
+
+# A login labelled `read` with a bad finish line never voids another row's finish ceiling: the said sets' markers are
+# tuples no label equals (the landing review, 2026-11-07)
+alp_clean; printf 'read:abc\nacct-a:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+cat > "$T/said.py" <<'PY2'
+import importlib.machinery, importlib.util, sys
+ld = importlib.machinery.SourceFileLoader("acct_said", sys.argv[1]); spec = importlib.util.spec_from_loader("acct_said", ld)
+m = importlib.util.module_from_spec(spec); sys.argv = ["account"]; ld.exec_module(m)
+x = {"label": "acct-a", "rules": {}, "own_rules": []}
+r = {"label": "read", "rules": {}, "own_rules": []}
+print(m.finish_hard(x, "week ceiling"), m.finish_hard(r, "week ceiling"), m.finish_hard(x, "week ceiling"))
+PY2
+check "$(python3 "$T/said.py" "$B/account" 2>/dev/null | awk '{print $1, $3}')" "97 97" "a login named read with a bad finish line leaves acct-a's finish ceiling 97"
+
+# A budget's free_below alone never drops a row's window_soft_max (the landing review, 2026-11-07, pick A): the row
+# keeps its soft line and the default hard 90, never a flat window to 100
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"week_soft_max": 80, "window_soft_max": 50}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf '{"acct-a": {"free_below": 70}}\n' > "$ALP_BF"
+use "$PA" "95 10"; use "$PP" "10 99"; resets "$PA" "$WED" 240
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "registry window_soft_max 50 with a budget's free_below 70: 5h 95% refused, never a flat window to 100"
+
+# A bad own soft line fails closed both ways (the landing review's rounds 2 and 3, 2026-11-07): the lower of the *: line
+# and the row's own rule serves (budgets.json * included, 100 where none is set), and a *: window line keeps the pair
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf 'acct-a:6O\n*:60\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+use "$PA" "10 80"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "week-soft-max acct-a:6O beside *:60, a row with no rule: *:60 serves (80% refused)"
+has "$T/alp.err" "the lower of its \`*:\` line and" "…said on stderr"
+alp_clean; printf 'acct-a:5O\n*:50\n' > "$REGATTA_CONFIG/lighthouse/window-soft-max"
+use "$PA" "95 10"; use "$PP" "10 99"; resets "$PA" "$WED" 240
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "window-soft-max acct-a:5O beside *:50: the pair stays on (5h 95% refused at hard 90)"
+alp_clean; printf '{"*": {"week_soft_max": 40}}\n' > "$ALP_BF"
+printf 'acct-a:4O\n*:95\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+use "$PA" "10 60"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "week-soft-max acct-a:4O beside *:95 with budgets * week_soft_max 40: the lower 40 judges (60% refused)"
+# …compared with what the row falls to: an old-key window row's free_below floor is no reason to decline the *: line
+# (the landing review's round 4, 2026-11-07)
+alp_clean; printf '{"*": {"window_max": 50, "free_below": 80}}\n' > "$ALP_BF"
+printf 'acct-a:6O\n*:60\n' > "$REGATTA_CONFIG/lighthouse/window-soft-max"
+use "$PA" "70 10"; use "$PP" "10 99"; resets "$PA" "$WED" 120
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "window-soft-max acct-a:6O beside *:60 over budgets * window_max 50 / free_below 80: *:60 judges (5h 70% refused)"
+
+# A ceiling rule that is present but no number refuses the row (round 4, pick A: a narrowing key never reads as its default)
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"week_soft_max": "40"}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; use "$PA" "10 20"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --overdraw --json)" 3 "registry week_soft_max \"40\": the row is refused at 20%, the overdraw included"
+has "$T/out" "rules.week_soft_max '40' is not a number" "…the refusal names the key"
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"window_soft_max": 40, "window_hard_max": "50"}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; use "$PA" "20 10"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "registry window_hard_max \"50\": the row is refused at 5h 20%"
+
+# A fleet week-finish-hard-max *: line never stands over the login's own week-max-finish line (round 4)
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf '{"*": {"week_soft_max": 70}}\n' > "$ALP_BF"
+printf 'acct-a:80\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+printf '*:95\n' > "$REGATTA_CONFIG/lighthouse/week-finish-hard-max"
+use "$PA" "10 90"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALPF --job r4)" 3 "own week-max-finish 80 beside fleet week-finish-hard-max *:95: a finish at 90% refused"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 75"
+check "$(ACCOUNT_NOW=$TUE ALPF --job r4b) $(field "['account']")" "0 acct-a" "…while 75% passes under the own 80"
+
+# A budget's free_below keeps its floor beside a lower layer's window_soft_max (the landing review's round 3, pick A):
+# it runs below the floor whatever the pace, the soft line and its hard 90 kept
+alp_clean; printf '{"*": {"window_soft_max": 50}, "acct-a": {"free_below": 80}}\n' > "$ALP_BF"
+use "$PA" "60 10"; use "$PP" "10 99"; resets "$PA" "$WED" 240
+check "$(ACCOUNT_NOW=$WED ALP pick --json) $(field "['account']")" "0 acct-a" "budgets row free_below 80 over budgets * window_soft_max 50: 5h 60% runs"
+rm -f "$PA/usage-probe.json"; use "$PA" "92 10"
+check "$(ACCOUNT_NOW=$WED ALP pick --json)" 3 "…and 5h 92% is refused at the hard 90"
+
+# A fleet week-hard-max *: beside a fleet overdraw-max *: still says which wins (outside --json)
+alp_clean; printf '*:98\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"; printf '*:60\n' > "$REGATTA_CONFIG/lighthouse/overdraw-max"
+use "$PA" "10 55"; use "$PP" "10 99"
+ACCOUNT_NOW=$TUE ALP pick --overdraw >/dev/null
+check "$(grep -c 'week-hard-max and alias lighthouse/overdraw-max both set; lighthouse/week-hard-max wins' "$T/alp.err")" 1 "fleet week-hard-max *:98 beside fleet overdraw-max *:60: the note says week-hard-max wins"
+
+# Week pace honours an own overdraw-max line under a fleet week-hard-max *: (the landing review's round 2)
+alp_clean; printf 'acct-a:60\n' > "$REGATTA_CONFIG/lighthouse/overdraw-max"; printf '*:98\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"week_max": 50}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+use "$PA" "10 70"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "Saturday's pace never lifts 70% past the own overdraw-max 60 under a fleet *:98"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 55"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json) $(field "['account']")" "0 acct-a" "…while 55% runs under pace"
+# A reserve's ceiling stays unliftable on a row with its own legacy week-max line, as before the pairs
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_max": 80, "reserve": {"last_hours": 24, "week_max": 90}}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf 'acct-a:50\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+use "$PA" "10 93"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "reserve 90 in the last 24 h on a row with its own week-max line: 93% refused, Saturday's pace no lift"
+# …and inside the reserve week_hard_max still caps it: the own line no longer stands in its place there (round 3, pick A)
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_max": 80, "week_hard_max": 70, "reserve": {"day": "Saturday", "week_max": 95}}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf 'acct-a:50\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+use "$PA" "10 75"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "Saturday reserve 95 with week_hard_max 70 and an own week-max line: 75% refused at the hard max"
+has "$T/out" "(week hard ceiling)" "…naming the week hard ceiling"
+# A login's own week-hard-max line supersedes its own week-max line, and the week-max *: line then serves as soft
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf 'acct-a:50\n*:60\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf 'acct-a:90\n' > "$REGATTA_CONFIG/lighthouse/week-hard-max"
+use "$PA" "10 70"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "own week-hard-max 90 supersedes own week-max 50, and week-max *:60 serves: 70% refused on Tuesday"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json) $(field "['account']")" "0 acct-a" "…and Saturday's pace lifts it under the hard 90"
+# In a reserve with a tightening budget, an own week-soft-max line may only lower the own week-max line
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_max": 80, "reserve": {"day": "Saturday", "week_max": 95}}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf '{"acct-a": {"week_max": 60}}\n' > "$ALP_BF"
+printf 'acct-a:40\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+printf 'acct-a:70\n' > "$REGATTA_CONFIG/lighthouse/week-soft-max"
+use "$PA" "10 50"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json)" 3 "Saturday reserve on a budget-tightened row: own week-soft-max 70 never raises it above the own week-max 40 (50% refused)"
+# A finish never gets less than a build of the same row: week pace runs a build past week_max 80, so a finish line 85 never refuses it
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA", "rules": {"week_max": 80}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf 'acct-a:85\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+use "$PA" "10 90"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$SAT ALP pick --json) $(field "['account']")" "0 acct-a" "build: week 90% past week_max 80 runs under Saturday's pace"
+check "$(ACCOUNT_NOW=$SAT ALPF --repo "$PR/app") $(field "['account']")" "0 acct-a" "…and the receipted finish of the same row runs too, though its finish line is 85"
+
+# An implicit row's ORCA_ROW keys count as its own: a fleet *: week-max or finish line never raises it past week_max 90
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-o", "provider": "claude", "home": "$PA", "implicit": true,
+   "rules": {"week_max": 90, "window_max": 50, "free_below": 70}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true, "rules": {"week_soft_max": 95}}]}
+EOF
+alp_clean; printf '*:95\n' > "$REGATTA_CONFIG/lighthouse/week-max"
+use "$PA" "10 92"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALP pick --json)" 3 "implicit row (ORCA_ROW week_max 90) under week-max *:95: 92% refused, as before the pairs"
+alp_clean; printf '*:97\n' > "$REGATTA_CONFIG/lighthouse/week-max-finish"
+use "$PA" "10 92"; use "$PP" "10 99"
+check "$(ACCOUNT_NOW=$TUE ALPF --repo "$PR/app")" 3 "…and a *:97 week-max-finish line never raises its finish"
+
+# 7. Addendum fixture: budgets.json '*' global defaults + account-specific overrides (budgets row > budgets * > registry row > default)
+alp_clean
+cat > "$ALP_AF" <<EOF
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "$PA",
+   "rules": {"week_soft_max": 60, "window_soft_max": 50}},
+  {"label": "acct-b", "provider": "claude", "home": "$PB",
+   "rules": {"week_soft_max": 35}},
+  {"label": "acct-p", "provider": "claude", "home": "$PP", "primary": true,
+   "rules": {"week_soft_max": 95}}]}
+EOF
+cat > "$ALP_BF" <<'EOF'
+{"*": {"week_soft_max": 40, "week_hard_max": 70, "week_finish_hard_max": 80, "week_lend_hard_max": 30, "window_soft_max": 70, "window_hard_max": 90},
+ "acct-b": {"week_soft_max": 55, "week_hard_max": 85}}
+EOF
+echo '{"acme": {"repos": ["acme-*"], "logins": ["acct-a"]}, "beta": {"repos": ["beta-*"], "logins": ["acct-b"]}}' > "$ALP_TF"
+use "$PA" "65 50"; use "$PB" "10 50"; use "$PP" "10 99"; resets "$PA" "$TUE" 240
+# On Tuesday (pace 39%): acct-a gets '*' week_soft_max 40 (overriding registry 60 -> 50% refused), while acct-b gets row override 55 (50% < 55% -> picked!), and zero unmatched-label stderr for '*'
+ALP pick --repo "$PR/beta-one" >/dev/null
+check "$(grep -c 'no login row' "$T/alp.err")" 0 "budgets.json '*' emits zero unmatched-label warning"
+rm -f "$PA/usage-probe.json" "$PB/usage-probe.json"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" --json)" 3 "budgets.json '*' week_soft_max 40 overrides registry row's 60 (acct-a at 50% refused on Tuesday)"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/beta-one" --json) $(field "['account']")" "0 acct-b" "budgets.json row override (acct-b week_soft_max 55) overrides '*' 40"
+rm -f "$PA/usage-probe.json"; use "$PA" "65 35"; resets "$PA" "$TUE" 240
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/acme-one" --json) $(field "['account']")" "0 acct-a" "budgets.json '*' window_soft_max 70 overrides registry row's 50 (65% ≤ 70% passes)"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/app" --overdraw --json)" 3 "budgets.json '*' week_lend_hard_max 30 holds both tenant logins on non-tenant repo, even with --overdraw"
+rm -f "$PA/usage-probe.json"; use "$PA" "10 75"
+check "$(ACCOUNT_NOW=$TUE ALPF --repo "$PR/acme-one") $(field "['account']")" "0 acct-a" "budgets.json '*' week_finish_hard_max 80 raises receipted finish ceiling past '*' week_hard_max 70"
+cat > "$ALP_BF" <<'EOF'
+{"*": {"week_soft_max": 40, "week_hard_max": 70, "week_finish_hard_max": 80, "week_lend_hard_max": 30, "window_soft_max": 70, "window_hard_max": 90},
+ "acct-b": {"week_soft_max": 55, "week_hard_max": 85, "week_lend_hard_max": 60}}
+EOF
+rm -f "$T/.acct-pairs.budgets.last"
+check "$(ACCOUNT_NOW=$TUE ALP pick --repo "$PR/app" --json) $(field "['account']")" "0 acct-b" "budgets.json row week_lend_hard_max 60 overrides '*' 30"
+alp_clean; rm_own "$PA" "$PB" "$PP" "$ALP_AF"
+
 echo "agy-pick-orca: pick --provider antigravity judges Orca's card on this host (2026-11-06)"
 AG1="$T/ag-one"; AG2="$T/ag-two"; mkdir -p "$AG1" "$AG2"
 cat > "$T/orca-ag" <<'SH'
@@ -3385,6 +3918,250 @@ check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "0" "…without calling Orca"
 check "$(AP pick --repo "$PR/app" --json) $(field "['account'], d['provider']")" "0 spare claude" "Claude pick alongside the agy row: unchanged"
 check "$(AP pick --provider codex --repo "$PR/app" --json) $(field "['account'], d['provider']")" "0 codex-own codex" "Codex pick alongside the agy row: unchanged"
 check "$(wc -l < "$T/orca-ag.calls" | tr -d ' ')" "0" "…neither called Orca"
+
+# Antigravity Orca card with soft_max / hard_max pairs and sample-time week pace
+cat > "$ACCOUNTS_FILE.agpairs" <<EOF
+{"accounts": [{"label": "acct-ag", "provider": "antigravity", "home": "$AG1",
+  "rules": {"week_soft_max": 40, "week_hard_max": 70, "window_soft_max": 70, "window_hard_max": 90}}]}
+EOF
+orca_ag_card 10 50 -300 14400
+check "$(AG_ACCTS="$ACCOUNTS_FILE.agpairs" AP pick --provider antigravity --json) $(field "['account']")" "0 acct-ag" \
+  "Antigravity row with week_soft_max 40 / week_hard_max 70: week 50% lifted by sample-time week pace 57%"
+has "$T/out" "week 50% under pace 57% (soft 40% week ceiling, hard 70%)" "…naming week pace, soft and hard ceilings"
+orca_ag_card 10 70 -300 14400
+check "$(AG_ACCTS="$ACCOUNTS_FILE.agpairs" AP pick --provider antigravity --overdraw --json)" 3 \
+  "…Antigravity row at week 70% ≥ week_hard_max 70%: refused even under --overdraw"
+has "$T/out" "week 70% ≥ 70% (week hard ceiling)" "…naming week hard ceiling"
+python3 - "$T/orca-ag.json" "$WED" <<'PY'
+import json, sys
+out, wed = sys.argv[1], float(sys.argv[2])
+ms = lambda off: int((wed + off) * 1000)
+json.dump({"ok": True, "result": {"rateLimits": {"antigravity": {
+    "provider": "antigravity", "status": "ok", "updatedAt": ms(-3000),
+    "session": {"usedPercent": 10, "windowMinutes": 300, "resetsAt": ms(14400)},
+    "weekly": {"usedPercent": 50, "windowMinutes": 10080, "resetsAt": ms(300000)}}}}}, open(out, "w"))
+PY
+check "$(AG_ACCTS="$ACCOUNTS_FILE.agpairs" AP pick --provider antigravity --json)" 3 \
+  "…Antigravity week pace weighed at card updatedAt (49.9% 50 min ago, vs 50.4% now): week 50% refused"
+has "$T/out" "week 50% ≥ 40% (week ceiling); resets" "…holding at sample time"
+
+echo "the login guard — a home not signed in, or signed in as another account, is never picked (login-guard, 2026-11-06)"
+# one registry on every host: a node's ~/.claude was signed in as a tenant's seat, and the primary's at-once road would
+# have run owner work there. Its own rows and homes; every login a made-up acct-* or example.com one
+LA="$HOME/.claude-lga"; LB="$HOME/.claude-lgb"; mkdir -p "$LA" "$LB"
+cat > "$ACCOUNTS_FILE.lg" <<'EOF'
+{"accounts": [
+  {"label": "acct-a", "provider": "claude", "home": "~/.claude-lga", "rules": {"week_max": 70, "window_max": 50}},
+  {"label": "acct-b", "provider": "claude", "home": "~/.claude-lgb", "rules": {"week_max": 70, "window_max": 50}},
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}}]}
+EOF
+LGL="$T/lg-logins.json"
+cat > "$T/lg-logins.py" <<'PY'
+import json, sys
+p, rows = sys.argv[1], {l: {"email": e, "macs": ["laptop"]} for l, e in (("acct-a", "z@example.com"), ("acct-b", "q@example.com"), ("main", "p@example.com"))}
+for kv in sys.argv[2:]:   # LABEL=- drops a row; LABEL.KEY=VALUE sets a key (a JSON value where one reads)
+    k, v = kv.split("=", 1)
+    if v == "-":
+        rows.pop(k, None)
+        continue
+    lab, key = k.split(".", 1)
+    try:
+        v = json.loads(v)
+    except ValueError:
+        pass
+    rows.setdefault(lab, {})[key] = v
+json.dump({"logins": rows}, open(p, "w"))
+PY
+lg_logins() { python3 "$T/lg-logins.py" "$LGL" "$@"; }
+lg_home() {   # every home signed in as its own row's account, nothing cached, the keychain empty
+  bare_login "$LA/.claude.json" u-acct-a z@example.com; bare_login "$LB/.claude.json" u-acct-b q@example.com
+  bare_login "$HOME/.claude.json" u-main-0001 p@example.com
+  rm -f "$LA/usage-probe.json" "$LB/usage-probe.json" "$P1/usage-probe.json" "$LA/exhaustion.jsonl" "$LB/exhaustion.jsonl" \
+        "$P1/exhaustion.jsonl" "$T/probes" "$T_KEYCHAIN-locked" "$P1/account-ships.json"
+  rm_own "${T:?}/keychain"; mkdir -p "$T_KEYCHAIN"; use "$LA" "10 10"; use "$LB" "10 10"; use "$P1" "10 10"
+}
+LG() { ACCOUNTS_FILE="$ACCOUNTS_FILE.lg" ACCOUNT_LOGINS="$LGL" ACCOUNT_NOW=$WED A "$@"; }
+skip_of() { python3 -c "import json;print(dict(json.load(open('$T/out')).get('skipped') or []).get('$1', ''))"; }
+lg_probed() { grep -c "^$1\$" "$T/probes" 2>/dev/null; }
+lg_logins; lg_home
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "control: every home signed in as its row's account → the walk as before"
+echo '{"oauthAccount": {}}' > "$LA/.claude.json"; rm -f "$T/probes"
+check "$(LG pick --json) $(field "['account']") $(lg_probed "$LA")" "0 acct-b 0" "(a) .claude.json holds no login → passed by, never probed"
+has "$T/out" "not signed in: $LA/.claude.json holds no login (oauthAccount)" "…the skip says which"
+rm -f "$LA/.claude.json"
+check "$(LG pick --json) $(field "['account']")" "0 acct-b" "…and no .claude.json at all, the same"
+lg_home; rm -f "$LA/.credentials.json"
+check "$(LG pick --json) $(field "['account']") $(lg_probed "$LA")" "0 acct-b 0" "(a) a login in .claude.json, but no credential (no file, no keychain entry) → passed by"
+has "$T/out" "not signed in: its credential store holds no login ($LA/.credentials.json, nor the keychain)" "…the skip says which store"
+echo '{"claudeAiOauth": {}}' > "$LA/.credentials.json"
+check "$(LG pick --json) $(field "['account']")" "0 acct-b" "…a credentials file with no token is none"
+rm -f "$LA/.credentials.json"; touch "$T_KEYCHAIN/Claude Code-credentials-$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])" "$LA")"
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "…its keychain entry (by the dir's hash) is a credential: picked"
+rm_own "${T:?}/keychain"; mkdir -p "$T_KEYCHAIN"; touch "$T_KEYCHAIN-locked"
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "…a keychain that cannot answer without a prompt (locked, over ssh) is skipped, never read as empty"
+lg_home; bare_login "$LA/.claude.json" u-other x@example.com
+check "$(LG pick --json) $(field "['account']") $(lg_probed "$LA")" "0 acct-b 0" "(b) signed in as another account than the logins file's → passed by, unprobed"
+has "$T/out" "signed in as another account than the logins file's acct-a ($LA/.claude.json)" "…the skip says which"
+hasnt "$T/out" "x@example.com" "…naming no e-mail (the reasons reach the overdraw logbook)"
+bare_login "$LA/.claude.json" u-other Z@example.com
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "…the same e-mail in another case is the same account"
+lg_logins acct-a.account_uuid=u-acct-a; bare_login "$LA/.claude.json" u-other z@example.com
+check "$(LG pick --json) $(field "['account']")" "0 acct-b" "(b) an account_uuid in the logins file: another account under the same e-mail → passed by"
+has "$T/out" "signed in as another account: $LA/.claude.json holds account u-other, the logins file's acct-a is u-acct-a" "…by the uuid's prefix"
+bare_login "$LA/.claude.json" u-acct-a z@example.com
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "…the uuid and the e-mail both the row's → picked"
+bare_login "$LA/.claude.json" u-acct-a c@example.com
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "…the uuid alone decides where written: the same account under a changed e-mail → picked"
+bare_login "$LA/.claude.json" u-acct-a z@example.com
+lg_logins acct-a.email=7
+check "$(LG pick --json) $(field "['account']")" "0 acct-b" "an e-mail that does not read narrows: refused, never read as absent"
+has "$T/out" "its login cannot be checked: the logins file's email for acct-a does not read (7)" "…saying so"
+lg_logins acct-a.email=null
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "an entry with no e-mail (not recorded yet) describes no login: as before"
+lg_logins acct-a=-; bare_login "$LA/.claude.json" u-other x@example.com
+check "$(LG pick --json) $(field "['account']")" "0 acct-a" "a row the logins file lacks keeps today's behaviour: picked on whatever its home holds"
+lg_logins; lg_home
+
+echo "the login guard — the primary loses its at-once road"
+bare_login "$HOME/.claude.json" u-g g@example.com; use "$LA" "10 80"; use "$LB" "10 80"; rm -f "$P1/stub-usage"
+check "$(LG pick --json)" 3 "the primary's home signed in as another account, no row with room → refused, not taken at once"
+check "$(skip_of main | cut -c1-56)" "signed in as another account than the logins file's main" "…the skip says which"
+hasnt "$T/out" "the primary runs it rather than nothing" "…never the at-once road"
+check "$(LG pick --bound --json)" 3 "--bound (account-bound work, the primary alone) → refused"
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));[r.setdefault('rules', {}).update(overdraw=r['label'] == 'main') for r in d['accounts']];json.dump(d, open(sys.argv[1] + '.o', 'w'))" "$ACCOUNTS_FILE.lg"
+use "$P1" "10 96"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.lg.o" ACCOUNT_LOGINS="$LGL" ACCOUNT_NOW=$WED A pick --overdraw --json)" 3 \
+  "--overdraw never lifts a primary on another seat, its rules.overdraw true and its week past its bar"
+rm -f "$P1/stub-usage"
+use "$P1" "10 10"
+check "$(LG pick --json)" 3 "…the same with a reading of its own (the home's seat's figures are not the row's)"
+echo '{"oauthAccount": {}}' > "$HOME/.claude.json"
+check "$(LG pick --json)" 3 "the primary's home not signed in → refused the same way"
+has "$T/out" "not signed in: $HOME/.claude.json holds no login (oauthAccount)" "…the skip says which"
+lg_home; rm -f "$P1/.credentials.json"; use "$LA" "10 80"; use "$LB" "10 80"
+check "$(LG pick --json)" 3 "the primary with no credential (the default dir's .credentials.json, no keychain entry) → refused"
+touch "$T_KEYCHAIN/Claude Code-credentials"
+check "$(LG pick --json) $(field "['account']")" "0 main" "…its keychain entry is the default dir's unhashed one: picked"
+creds "$P1"
+
+echo "the login guard — no logins file on a node"
+lg_home; use "$LA" "10 80"; use "$LB" "10 80"; bare_login "$LB/.claude.json" u-other x@example.com
+NL() { ACCOUNTS_FILE="$ACCOUNTS_FILE.lg" ACCOUNT_LOGINS="$T/lg-none.json" ACCOUNT_NOW=$WED A "$@"; }
+rm -f "$T/lg-none.json" "$T/.lg-none.json.last"
+check "$(NL pick --json)" 3 "no logins file and no copy: the primary's login cannot be checked → refused, never a pass"
+has "$T/out" "its login cannot be checked: no logins file here" "…saying so"
+use "$LB" "10 10"; rm -f "$LB/usage-probe.json"
+check "$(NL pick --json) $(field "['account']")" "0 acct-b" "…while another row is judged as before (its home's account is not compared)"
+for bad in '[]' '{"logins": null}' '{"logins": [1]}' '{"logins": {'; do
+  printf '%s\n' "$bad" > "$T/lg-none.json"
+  check "$(NL pick --json)" 3 "a logins file that is there but does not read ($bad), no copy: every row refused, never read as none"
+  check "$(skip_of acct-b | cut -d' ' -f1-6)" "its login cannot be checked: $T/lg-none.json" "…naming the file"
+done
+printf '{"logins": null}\n' > "$T/lg-none.json"   # a torn file doctor already refuses as JSON that does not read
+ACCOUNT_HOST=laptop NL doctor > /dev/null
+has "$T/out" "the login guard: $T/lg-none.json is there but does not read, so every row is refused" "…and doctor says so"
+use "$LB" "10 80"; rm -f "$LB/usage-probe.json"
+rm -f "$T/lg-none.json"
+lg_logins; cp "$LGL" "$T/.lg-none.json.last"
+check "$(NL pick --json) $(field "['account']")" "0 main" "a node holding only the copy (.logins.json.last): judged by it, the primary matched"
+use "$LB" "10 10"
+check "$(NL pick --json) $(field "['account']")" "0 main" "…and the copy refuses acct-b, signed in as another account"
+has "$T/out" "signed in as another account than the logins file's acct-b" "…saying so"
+rm -f "$T/.lg-none.json.last"
+# a logins link into a drive, outside claude-host: only its copy is read, never the link (a FIFO stands in for a drive
+# no grant reaches, which blocks a reader; AGENTS.md's Drive-link trap)
+mkdir -p "$T/lgdrive"; mkfifo "$T/lgdrive/logins.json"; ln -s "$T/lgdrive/logins.json" "$T/lg-link.json"
+DL() { ACCOUNTS_FILE="$ACCOUNTS_FILE.lg" ACCOUNT_LOGINS="$T/lg-link.json" ACCOUNT_NOW=$WED timeout 20 python3 "$B/account" "$@" > "$T/out" 2>&1; echo $?; }
+lg_home; use "$LA" "10 80"; use "$LB" "10 80"
+check "$(DL pick --cached --json)" 3 "a drive link with no copy: never opened (no hang), the primary's login unknown → refused"
+has "$T/out" "its login cannot be checked" "…saying so"
+lg_logins; cp "$LGL" "$T/.lg-link.json.last"
+check "$(DL pick --cached --json) $(field "['account']")" "0 main" "…with its copy: judged by the copy, the link still unopened"
+# doctor reads the link itself (a person runs it): a file behind it now, the copy older than it
+rm -f "$T/lgdrive/logins.json"; cp "$LGL" "$T/lgdrive/logins.json"
+bare_login "$HOME/.claude.json" u-other p@example.com; python3 "$T/lg-logins.py" "$T/.lg-link.json.last" main.email='"other@example.com"'
+check "$(DL pick --cached --json)" 3 "a copy older than the file (another e-mail): the pick refuses by the copy"
+ACCOUNT_HOST=laptop REGATTA_CLAUDE_HOST=0 DL doctor --local > /dev/null
+has "$T/out" "main: never picked: signed in as another account than the logins file's main" "…and doctor says what the pick does, not what the link says"
+python3 "$T/lg-logins.py" "$T/lgdrive/logins.json" acct-a=-; bare_login "$LA/.claude.json" u-other x@example.com
+ACCOUNT_HOST=laptop REGATTA_CLAUDE_HOST=0 DL doctor --local > /dev/null
+has "$T/out" "acct-a: not in the logins file — add a row for acct-a to it; the hooks' local copy still lists it" \
+  "doctor: a row the link's file lacks but the hooks' copy lists is compared by the copy, said so"
+hasnt "$T/out" "acct-a to it; until then the pick never compares" "…never that the pick does not compare"
+rm -f "$T/.lg-link.json.last" "$T/lg-link.json" "$T/lgdrive/logins.json"
+
+echo "the login guard — a login two rows share goes to the row whose entry it is"
+LG2="$HOME/.claude-lgg"; mkdir -p "$LG2"
+cat > "$ACCOUNTS_FILE.lgg" <<'EOF'
+{"accounts": [
+  {"label": "main", "provider": "claude", "home": "~/.claude", "primary": true, "rules": {"week_max": 95, "window_max": 80}},
+  {"label": "acct-g", "provider": "claude", "home": "~/.claude-lgg", "rules": {"week_max": 70, "window_max": 50}}]}
+EOF
+lg_logins acct-g.email='"g@example.com"' acct-g.macs='["laptop"]'
+lg_home; bare_login "$HOME/.claude.json" u-g g@example.com; bare_login "$LG2/.claude.json" u-g g@example.com; use "$LG2" "10 10"
+TWO() { ACCOUNTS_FILE="$ACCOUNTS_FILE.lgg" ACCOUNT_LOGINS="$LGL" ACCOUNT_NOW=$WED A "$@"; }
+check "$(TWO pick --json) $(field "['account']")" "0 acct-g" "the primary's home on acct-g's account, acct-g's own too → acct-g runs it, never refused as a duplicate"
+check "$(skip_of main | cut -c1-56)" "signed in as another account than the logins file's main" "…the primary skipped for its own login"
+bare_login "$HOME/.claude.json" u-main-0001 p@example.com; bare_login "$LG2/.claude.json" u-main-0001 p@example.com
+check "$(TWO pick --json) $(field "['account']")" "0 main" "control: acct-g's home on the primary's account → the primary keeps it…"
+check "$(TWO limits --all --cached --json; field "[1]['same_as']")" "0
+main" "…and acct-g is the duplicate, as before"
+ACCOUNT_HOST=node-x TWO doctor --local > /dev/null
+hasnt "$T/out" "main: never picked" "doctor on a node: a primary that matches is not named"
+bare_login "$HOME/.claude.json" u-g g@example.com; bare_login "$LG2/.claude.json" u-lgg other@example.com
+ACCOUNT_HOST=node-x TWO doctor --local > /dev/null
+has "$T/out" "main: never picked: signed in as another account than the logins file's main" "doctor on a node the file lists the primary for no Mac: the refused primary named"
+# the login moves only to a row whose own entry names it, and only off a row refused for its own sign-in (round 2)
+bare_login "$HOME/.claude.json" u-g g@example.com; bare_login "$LG2/.claude.json" u-g g@example.com
+rm -f "$T/lg-none.json" "$T/.lg-none.json.last"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.lgg" ACCOUNT_LOGINS="$T/lg-none.json" ACCOUNT_NOW=$WED A pick --json)" 3 \
+  "no logins file: the primary's login cannot be checked, and acct-g, on that same login, stays its duplicate"
+check "$(skip_of acct-g | cut -c1-20)" "same login as main (" "…saying so: a refusal that cannot tell moves no login"
+LGU="$HOME/.claude-lgu"; mkdir -p "$LGU"; bare_login "$LGU/.claude.json" u-g g@example.com; use "$LGU" "10 10"
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));d['accounts'].insert(1, {'label': 'acct-u', 'provider': 'claude', 'home': '~/.claude-lgu', 'rules': {'week_max': 70, 'window_max': 50}});json.dump(d, open(sys.argv[1] + '.u', 'w'))" "$ACCOUNTS_FILE.lgg"
+lg_logins acct-g.email='"g@example.com"' acct-g.macs='["laptop"]'
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.lgg.u" ACCOUNT_LOGINS="$LGL" ACCOUNT_NOW=$WED A pick --json) $(field "['account']")" "0 acct-g" \
+  "a row the logins file does not describe, walked first on the same login, never takes it from the row whose entry names it"
+check "$(skip_of acct-u | cut -c1-20)" "same login as acct-g" "…it stays the duplicate, now of the row that took the login, never of the refused primary"
+check "$(ACCOUNTS_FILE="$ACCOUNTS_FILE.lgg.u" ACCOUNT_LOGINS="$LGL" ACCOUNT_NOW=$WED A limits --all --cached --json; field "[1]['label'], d[1]['same_as']")" "0
+acct-u acct-g" "…and its card says so (the build review, 2026-11-08)"
+lg_logins; signed
+
+echo "the login guard — limits, check, a pinned ship and doctor say it"
+lg_home; bare_login "$LA/.claude.json" u-other x@example.com
+check "$(LG limits --all --json; python3 -c "import json;print([(r['label'], r['eligible'], bool(r['login_off'])) for r in json.load(open('$T/out'))])")" "0
+[('acct-a', False, True), ('acct-b', True, False), ('main', True, False)]" "limits --all: the refused row not eligible, login_off set"
+check "$(lg_probed "$LA")" 0 "…and never probed"
+check "$(LG limits --all --cached)" 0 "limits --all, as text"
+has "$T/out" "acct-a: not eligible: signed in as another account than the logins file's acct-a" "…names the refusal"
+LG check > /dev/null
+has "$T/out" "never picked: signed in as another account than the logins file's acct-a" "check names it"
+lg_home
+check "$(LG pick --ship lg/one --json) $(field "['account']")" "0 acct-a" "a ship pinned to acct-a"
+bare_login "$LA/.claude.json" u-other x@example.com
+check "$(LG pick --ship lg/one --json) $(field "['account']")" "0 acct-b" "…its home signed in as another account: the ship moves, never waits there"
+has "$T/out" "acct-a is refused its login (signed in as another account than the logins file's acct-a" "…saying why"
+ACCOUNT_HOST=laptop LG doctor --local > /dev/null
+has "$T/out" "acct-a: never picked: signed in as another account than the logins file's acct-a" "doctor names the refusal"
+ACCOUNT_HOST=node-x LG doctor --local > /dev/null
+has "$T/out" "acct-a: never picked: signed in as another account" "…on a host the logins file lists it for no Mac (a node), too"
+lg_logins acct-b=-
+ACCOUNT_HOST=laptop LG doctor --local > /dev/null
+has "$T/out" "until then the pick never compares its home's sign-in with the row's" "doctor: a row the logins file lacks is judged as before, said"
+lg_logins acct-b.email=null
+ACCOUNT_HOST=laptop LG doctor --local > /dev/null
+has "$T/out" "the logins file names no e-mail for it: the pick never compares" "…and one whose entry names no e-mail"
+lg_logins
+rm -f "$T/lg-none.json" "$T/.lg-none.json.last"
+ACCOUNT_HOST=laptop NL doctor > /dev/null
+has "$T/out" "the login guard: no logins file and no local copy it may read, so no home's sign-in is compared with its row's, and the primary main is never picked" \
+  "doctor with no logins file: says the primary is never picked"
+cp "$LGL" "$T/.lg-none.json.last"
+ACCOUNT_HOST=laptop NL doctor > /dev/null
+has "$T/out" "the login guard judges each row by $T/.lg-none.json.last" "…and with the copy alone, that the guard reads it"
+has "$T/out" "acct-a: never picked: signed in as another account" "…naming each row it refuses"
+rm -f "$T/.lg-none.json.last" "$LGL"; rm_own "${T:?}/keychain"; mkdir -p "$T_KEYCHAIN"; signed
+unset -f lg_logins lg_home LG NL skip_of lg_probed
 
 echo
 [ "$fails" -eq 0 ] && echo "all account tests pass" || { echo "$fails account test(s) FAILED"; exit 1; }

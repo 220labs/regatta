@@ -107,7 +107,7 @@ come `--from`, and a script has none of its own — P2, P6). Orca refuses a call
 state: a Task is found again by its title (the diff's `record` row), a Dispatch by `worker-list`,
 a Run by its objective in `run-list`. What stays ours, because Orca has no slot for it: the
 blueprint and its digest, the plan's ids and ledger, `done_when`, the memo answers behind a gate,
-the gates on a start (`physical: none`, the week, depth 0, attended only), the worktree (made our
+the gates on a start (the week, depth 0, attended only), the worktree (made our
 way and handed by `path:`, B6a's pick A), and the launch — Orca never launches.
 
 Words: `skipper:` is read beside `manager:`; `launch:` is the release verb. Helm's words since rename
@@ -424,14 +424,13 @@ def memo_answered(bp, rec=None, mode=None):
     dnd none held (keel's dnd_held), under yolo every one with a bare pick — resolves as taken, with
     "taken unattended (dnd)" in its text: nothing is written to the doc here (it may sit in another
     session's worktree), and the block after it, a run in the same mode, writes the picks itself
-    through its prompt's `keel yolo` gate. One item held, and the gate waits on the owner as before. dnd
-    reads the contract's `physical:` in the doc's checkout — a pinned doc's in the ship's main —
-    and with no checkout to read it in holds the item (keel's dnd_held reads None as physical)."""
+    through its prompt's `keel yolo` gate. One item held, and the gate waits on the owner as before."""
     memo = _mod("memo", common.tool("keel") or HERE / "keel")
 
-    def takeable(it, lines, physical):
+    def takeable(it, lines):
         if mode == "dnd":
-            return memo.dnd_held(it, lines, physical) is None
+            # Older Keel versions still require this retired argument. Never read a contract.
+            return memo.dnd_held(it, lines, "- physical: none") is None
         rec = " ".join((it.get("recommended") or "").split())
         return bool(rec) and not memo.CONDITIONAL_RE.search(rec) and not memo.reopened(it, lines)
 
@@ -440,15 +439,15 @@ def memo_answered(bp, rec=None, mode=None):
         # a doc answered on main (or a keel branch merged there) must not be hidden by a stale branch copy
         pinned = pinned_doc(rec, rel) if rec else None
         if pinned is not None:
-            got = settle(pinned, rel, items, Path(rec["main"], rel) if rec.get("main") else None)
+            got = settle(pinned, rel, items)
             if got[0]:
                 return got
         p = doc_path(bp, rel, rec)
         if p is None:
             return got if pinned is not None else (False, "%s not found" % rel)
-        return settle(p.read_text(), rel, items, p)
+        return settle(p.read_text(), rel, items)
 
-    def settle(text, rel, items, path):
+    def settle(text, rel, items):
         lines, found, _ = memo.parse(text)
         got = {it["id"]: it for it in found}
         missing = [i for i in items if i not in got]
@@ -457,15 +456,8 @@ def memo_answered(bp, rec=None, mode=None):
         # yolo_settled, not answered: a session's own `> Proceeding with B` must not open a gate
         ok = all(memo.yolo_settled(got[i], lines) for i in items)
         if not ok and mode in ("dnd", "yolo"):
-            # keel's doc_physical reads the checkout from the doc's folder, and a pinned doc new on its
-            # branch has no folder in the ship's main: there, the nearest folder that is (the pinned
-            # dnd case, skipper-modes follow-ups — it read None, so dnd held every such doc)
-            at = path
-            while at and not at.parent.is_dir() and at.parent != at.parent.parent:
-                at = at.parent
-            physical = memo.doc_physical(at) if mode == "dnd" and at else None
             open_ = [i for i in items if not memo.yolo_settled(got[i], lines)]
-            if all(takeable(got[i], lines, physical) for i in open_):
+            if all(takeable(got[i], lines) for i in open_):
                 return True, "taken unattended (%s): %s" % (mode, "; ".join(
                     "%s %s" % (i, " ".join((got[i].get("recommended") or "").split())[:40]) for i in open_))
         return ok, "; ".join("%s %s" % (i, (got[i].get("answer") or "").strip().splitlines()[0][:40] if (got[i].get("answer") or "").strip() else "replied")
@@ -720,19 +712,14 @@ def remote_refusal(s):
 
 def start_refusal(bp, st, repo):
     """Why this block may not start now, or None. A session start (orca, claude-code) is attended
-    and at depth 0 only (bin/harness's guard; the 10-15 doc's Q2: a ship is flat), on a repo whose
-    contract says `physical: none`, with a login whose week is not tight (bin/autofinish's
+    and at depth 0 only (bin/harness's guard; the 10-15 doc's Q2: a ship is flat),
+    with a login whose week is not tight (bin/autofinish's
     week_tight: `account pick --cached`). A shell block passes the first two: it starts no session."""
     s = st["raw"]
     if blueprintlib.remote_host(s, helmlib.host()):
         why = remote_refusal(s)
         if why:
             return why
-    if s.get("physical") and s["physical"] != "none":
-        return "physical: %s — apply starts only physical: none" % s["physical"]
-    why = harness().physical_ok(str(repo))
-    if why:
-        return why
     if s.get("provider") == "shell":
         return None
     if core().unattended():

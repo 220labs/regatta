@@ -41,11 +41,11 @@ open(os.environ["STUB_AGY_CALLS"], "a").write(json.dumps({"argv": a, "cwd": os.g
     "env": {k: os.environ.get(k) for k in ("CLAUDECODE", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SESSION_ID", "PLAN_HARNESS",
                                            "REGATTA_UNATTENDED", "HARNESS_DISPATCHED")}}) + "\n")
 if a == ["--help"]:
-    print("Usage: agy [options]\n  --input-format\n  --output-format\n  --mode\n  --log-file\n  --model\n  --effort\n  --conversation"
+    print("Usage: agy [options]\n  --input-format\n  --output-format\n  --mode\n  --log-file\n  --add-dir\n  --model\n  --effort\n  --conversation"
           + ("" if os.environ.get("STUB_AGY_NOSANDBOX") else "\n  --sandbox") + "\n  -p, --print")
     sys.exit(0)
 VALUED = {"--input-format": ("stream-json",), "--output-format": ("stream-json",), "--mode": ("accept-edits", "auto"),
-          "--log-file": None, "--model": None, "--effort": None, "--conversation": None}
+          "--log-file": None, "--add-dir": None, "--model": None, "--effort": None, "--conversation": None}
 seen, log, i = set(), None, 0
 while i < len(a):
     f = a[i]
@@ -57,6 +57,8 @@ while i < len(a):
         seen.add(f); i += 1; continue
     if f not in VALUED or i + 1 >= len(a) or (VALUED[f] and a[i + 1] not in VALUED[f]):
         print("usage: unknown or malformed flag %r" % f, file=sys.stderr); sys.exit(2)
+    if f == "--add-dir" and not os.path.isdir(a[i + 1]):
+        print("Failed to resolve add-dir path %r" % a[i + 1], file=sys.stderr); sys.exit(2)
     if f == "--log-file":
         log = a[i + 1]
     seen.add(f); i += 2
@@ -114,12 +116,19 @@ print(json.dumps(d))
 PY
 chmod +x "$T/account"
 printf '#!/bin/sh\n[ "$1" = --slots ] && { echo "${STUB_SLOTS:-0 4}"; exit 0; }\nexit 2\n' > "$T/dispatch"; chmod +x "$T/dispatch"
-# the hook the entry names is there (a stand-in): the adapter refuses an entry whose vendor_hook.py is gone
-mkdir -p "$T/m/lighthouse/hooks"; : > "$T/m/lighthouse/hooks/vendor_hook.py"
-guards() {   # vendor-hooks' entry (plan_ag's shape), enabled unless $1 is off; $1 gone names a hook not there
-  local vh="$T/m/lighthouse/hooks/vendor_hook.py"; [ "${1:-}" = gone ] && vh="$T/gone/lighthouse/hooks/vendor_hook.py"
-  printf '{"regatta": {"enabled": %s, "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 -c x %s antigravity guards", "timeout": 30}]}]}}\n' \
-    "$([ "${1:-}" = off ] && echo false || echo true)" "$vh" > "$HD/.gemini/config/hooks.json"
+# vendor-hooks' real plan_ag entry: agybuild.guards() and dispatch-queue's agy_here() require exact equality
+guards() {   # enabled unless $1 is off; $1 gone names a hook not there
+  python3 - "$B/../../lighthouse/bin/vendor-hooks" "$HD/.gemini/config/hooks.json" "${1:-}" "$T/gone/lighthouse/hooks/vendor_hook.py" <<'PY'
+import importlib.machinery, json, sys
+vh = importlib.machinery.SourceFileLoader("vh", sys.argv[1]).load_module()
+cfg = vh.plan_ag({})[0]
+if sys.argv[3] == "off":
+    cfg["regatta"]["enabled"] = False
+elif sys.argv[3] == "gone":
+    h = cfg["regatta"]["PreToolUse"][0]["hooks"][0]
+    h["command"] = h["command"].replace(str(vh.adapter()), sys.argv[4])
+open(sys.argv[2], "w").write(json.dumps(cfg) + "\n")
+PY
 }
 guards
 mkrepo() {   # DIR CONTRACT: a repo, and its worktree DIR/.claude/worktrees/w on a claude/* branch
@@ -138,7 +147,7 @@ for k in sys.argv[2].split("."):
     d = d.get(k) if isinstance(d, dict) else None
 print(d)' "$@"; }
 
-mkrepo "$T/projects/site" "- physical: none"
+mkrepo "$T/projects/site" "# Test repository"
 WT="$T/projects/site/.claude/worktrees/w"
 echo "read the brief at $WT/docs/handoff/x.md and do what it says" > "$T/prompt"
 
@@ -156,9 +165,11 @@ python3 - "$STUB_AGY_CALLS" "$WT" > "$T/argv" <<'PY'
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 run = [c for c in calls if c["argv"] != ["--help"]][-1]
-print(" ".join(run["argv"][:7]), run["argv"][-1], run["cwd"] == sys.argv[2], json.dumps(run["env"], sort_keys=True))
+a = run["argv"]
+adds = [a[i + 1] for i in range(len(a) - 1) if a[i] == "--add-dir"]
+print(" ".join(a[:7]), a[-1], run["cwd"] == sys.argv[2], adds == [], json.dumps(run["env"], sort_keys=True))
 PY
-has "$T/argv" "--input-format stream-json --output-format stream-json --mode accept-edits --sandbox -p= True" "  argv: stream-json both ways, accept-edits, --sandbox, -p= last, in the worktree"
+has "$T/argv" "--input-format stream-json --output-format stream-json --mode accept-edits --sandbox -p= True True" "  argv: stream-json both ways, accept-edits, --sandbox, no --add-dir, -p= last, in the worktree"
 has "$T/argv" '"CLAUDECODE": null, "CLAUDE_CODE_SESSION_ID": null, "CLAUDE_CONFIG_DIR": null' "  no Claude Code variable reaches agy"
 has "$T/argv" '"PLAN_HARNESS": "agy"' "  PLAN_HARNESS says agy"
 has "$STUB_ACCOUNT_CALLS" "pick --provider antigravity --repo $T/projects/site --json" "  the login is account pick's, provider antigravity, for the checkout the fence judged"
@@ -214,8 +225,6 @@ echo site > "$T/config/wharf-runs/public-repos"
 H run --harness agy --cwd "$WT" --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "a public repo: refused"
 has "$T/err" "agy does not run in" "  in the public-repo rule's words"
 rm -f "$T/config/wharf-runs/public-repos"
-mkrepo "$T/live" "- physical: a sweep"
-H run --harness agy --cwd "$T/live/.claude/worktrees/w" --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "a repo not physical: none: refused"
 STUB_SLOTS="4 4" H run --harness agy --cwd "$WT" --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "the run cap full: refused"
 STUB_PICK_NONE=1 H run --harness agy --cwd "$WT" --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "no Antigravity login may run it: refused"
 has "$T/err" "agy-x: denied repo" "  with the pick's reason"
@@ -236,7 +245,7 @@ STUB_SLOTS="4 4" HARNESS_SLOTS="0 1" H run --harness agy --cwd "$WT" --prompt x 
 check "$?" 2 "  HARNESS_SLOTS without HARNESS_DISPATCHED is no count: --slots decides"
 
 echo "the vendor fence: a confidential repo only on a login its tenant owns"
-mkrepo "$T/projects/conf" "- physical: none"
+mkrepo "$T/projects/conf" "# Test repository"
 printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}}}\n' "$T/projects/conf" > "$T/conf.json"
 export CLAUDE_REPOS_JSON="$T/conf.json"; : > "$STUB_ACCOUNT_CALLS"; : > "$STUB_AGY_CALLS"
 REGATTA_ACCOUNT="$T/account" H run --harness agy --cwd "$T/projects/conf/.claude/worktrees/w" --prompt x > /dev/null 2>"$T/err"
@@ -300,12 +309,15 @@ q._AGY.clear(); HJ = os.path.join(os.environ["HOME"], ".gemini", "config", "hook
 os.rename(HJ, T + "/hooks.away")
 print("no-guards:", q.eligibility(e, "laptop", feats={"laptop": {"agy"}}))
 os.rename(T + "/hooks.away", HJ); q._AGY.clear()
-good = open(HJ).read(); open(HJ, "w").write(good.replace("/m/lighthouse/", "/gone/lighthouse/"))
+good = open(HJ).read(); open(HJ, "w").write(good.replace("/modules/lighthouse/hooks/vendor_hook.py", T + "/gone/lighthouse/hooks/vendor_hook.py"))
 print("gone-guards:", q.eligibility(e, "laptop", feats={"laptop": {"agy"}}))
 open(HJ, "w").write(good); q._AGY.clear()
 import json as _j
 c = _j.loads(good); c["regatta"]["PreToolUse"][0]["matcher"] = "run_command"; open(HJ, "w").write(_j.dumps(c))
 print("narrow-matcher:", q.eligibility(e, "laptop", feats={"laptop": {"agy"}}))
+open(HJ, "w").write(good); q._AGY.clear()
+c = _j.loads(good); c["regatta"]["PreToolUse"][0]["hooks"][0]["timeout"] = 5; open(HJ, "w").write(_j.dumps(c))
+print("drifted-timeout:", q.eligibility(e, "laptop", feats={"laptop": {"agy"}}))
 open(HJ, "w").write(good); q._AGY.clear()
 ld2 = importlib.machinery.SourceFileLoader("ag", os.path.join(os.path.dirname(sys.argv[1]), "harness_adapters", "agy.py"))
 ag = importlib.util.module_from_spec(importlib.util.spec_from_loader("ag", ld2)); ld2.exec_module(ag)
@@ -326,6 +338,7 @@ has "$T/q" "installed-finish-line: laptop lacks agy" "  nor a line that names ot
 has "$T/q" "no-guards: laptop declares agy, but no agy here" "  an agy the adapter would refuse (no guards entry) meets none"
 has "$T/q" "gone-guards: laptop declares agy, but no agy here" "  nor one whose guards entry names a vendor_hook.py that is gone"
 has "$T/q" "narrow-matcher: laptop declares agy, but no agy here" "  nor one whose guards group's matcher narrows it to some tools (the finish review)"
+has "$T/q" "drifted-timeout: laptop declares agy, but no agy here" "  nor one whose hooks.json drifted from vendor-hooks' plan_ag (agybuild.guards)"
 has "$T/q" "blank-ps: True" "  a live pid whose start ps does not print reads as agy still (dispatch-rc's rule)"
 has "$T/q" "bad-none: None" "  --harness agy with the need: a flag an entry may carry"
 has "$T/q" "bad-noneed: --harness agy without the agy need" "  without the need: refused"

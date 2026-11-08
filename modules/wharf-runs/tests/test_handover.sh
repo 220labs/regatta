@@ -170,6 +170,7 @@ for path in (str(course), "./docs/course.md", str(top / "docs/../docs/course.md"
 for path in (str(top.parent / "elsewhere/docs/course.md"), "../elsewhere/docs/course.md", "other-docs/course.md"):
     check(bool(judge(common.PENDING_PREFIX + "Stamp owed: %s S3" % path)), "a different document with the same suffix holds: " + path)
 check(bool(judge(common.PENDING_PREFIX + "Stamp owed: docs/course.md S3, then the review")), "a Stamp owed line with more work holds")
+check(bool(judge("⏳ " + common.LANDER_PREFIX + "fix round 1 of 3")), "a lander line holds: its next move is the lander's, never a launch beside it (S7)")
 check(bool(judge(common.HANDOVER_LINE)), "a wip step on this branch holds on the hand-over line")
 check(bool(judge(common.PENDING_PREFIX + "stamp S3")), "a stamp wait that names no doc waives no step on this branch")
 check("Stamp owed" not in h.finish_note(top, branch, "main", k) and "Still open" in h.finish_note(top, branch, "main", k),

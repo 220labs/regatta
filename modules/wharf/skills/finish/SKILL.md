@@ -106,8 +106,8 @@ step 4 counts them as answered, and the report lists them first. Whether this ru
 yours to judge: `autofinish-run` read the ship's mode from `plan.json` (only the owner raises it) and the
 held slice before it started you, and said so in the prompt. **Without `--hold`** — the mode is the
 yes: step 11 takes the laptop's path on any host, `bin/pr merge` included, and the report ends with
-the rollback line `pr merge` prints. **With `--hold`** — mode `ask`, the dnd slice (money, a physical
-repo, a public publish, a deletion of data, a gated path), a mode lowered since, or the keel's no (a ship's `--hold`, S6): step 11.3 as `bin/pr
+the rollback line `pr merge` prints. **With `--hold`** — mode `ask`, the dnd slice (money, a public
+publish, a deletion of data, a gated path), a mode lowered since, or the keel's no (a ship's `--hold`, S6): step 11.3 as `bin/pr
 ready --hold --body-file <report>`, always `--hold` (automerge would otherwise launch what the owner never
 saw; harmless where none runs), no step 11.4 — `bin/pr merge` is denied to this run. The reason is
 `hold` in `<git dir>/claude/autofinish.json`; put it in the report's first line. Then `rm` the
@@ -136,7 +136,6 @@ the name, so this hand-off is how a project keeps a specialised version.)
   which is itself worth an open item.
 - `live:` what live system runs *deployed* state and the command that shows drift — or
   `none` (git is the only state).
-- `physical:` a heavier sweep that acts on the real world — the owner's to run, never this one's.
 - `learnings:` where each kind of finding goes in this project.
 - `open-items:` where open items are recorded (default: `TODO.md` plus any heading matching
   `open|still manual`).
@@ -179,7 +178,7 @@ no Phase 1–3 to run. Do this instead, then stop:
   celebrates a launch; vary the pick, never the same three twice in a row.
 - End with the closing line (see "The closing line", below). Then stop.
 
-**The closing line.** Every `/finish` — this no-op path and Phase 3's report alike — ends
+**The closing line.** Every completed `/finish` — this no-op path and Phase 3's report alike — ends
 with exactly one of these two lines, on its own, in upper case, as the very last thing
 said. The owner runs many sessions in parallel and loses track of which ones have really been
 finished; a clear, always-identical marker is what tells a truly closed session from one
@@ -192,10 +191,40 @@ that still carries a thought worth reading:
   `✅ <OWNER>, THIS SESSION IS DONE — BUT READ THE NOTE ABOVE BEFORE YOU CLOSE IT.`
 
 Never use the first line when the second applies — a manual step the owner still owes counts as
-a note, so it takes the second line. A Phase 1 ⚠ stop (open items, another session's lock)
-is not a finished session and gets neither: when the owner owes the next move it ends with
-`🛑 <OWNER>, THIS SESSION IS WAITING FOR YOU — <what, in one line>` (the rules on working with the owner). A
-turn that ends while its own work runs on — the reviewers, the check — asks the owner nothing and
+a note, so it takes the second line. A ⚠ stop is not a finished session and gets neither.
+Choose its line by who owns the next move (stuck-ships S7):
+
+- **The lander:** a machine-class stop (G1r's fix round, a login or API/limit relaunch, a conflicting
+  ready PR's re-finish, or a G4 wait whose open items are all standable). Read
+  `autofinish-run lander armed` on this host before ending. Only exit 0 permits
+  `⏳ <OWNER>, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: <road and round, in one line>`.
+  This is the `lander` kind: this session ends and releases its lock; the tick owns the next move.
+  A missing tool, a failed read, a gate without a tick, a tick without the lander's roads (until S3), an
+  empty road, or any other non-zero exit takes the owner's
+  🛑 line and **Do this now** block below. Never arm anything to select a closing line.
+- **A skipper:** an item actually relayed to a standing skipper ends on the line `ask relay` prints,
+  `⏳ RELAYED TO <skipper> — <what was relayed>`. The relay must have succeeded; naming a skipper
+  alone does not hand it over.
+- **The owner:** a check red from main, G11, a held launch, an unstandable item, a spent cap or a
+  refused road ends `🛑 <OWNER>, THIS SESSION IS WAITING FOR YOU — <the owner's next move>` with
+  the **Do this now** block. An unknown class stays the owner's too.
+
+For a machine-class stop, use this read and formatter. Set `AUTOFINISH_RUN` to the resolved tool's
+absolute path, `FINISH_ADDRESS` to the upper-case owner followed by `, ` (empty with no owner),
+`FINISH_ROAD` to the next machine move and its count (for example `fix round 1 of 3`), and
+`FINISH_OWNER_MOVE` to the concrete owner action if the machine road is unavailable. Keep the
+⚠ block and its evidence above the line; the fallback also needs the **Do this now** block.
+
+```bash
+# finish-machine-closing (read only)
+if [ -n "$FINISH_ROAD" ] && "$AUTOFINISH_RUN" lander armed >&2; then
+  printf "⏳ %sTHIS SESSION IS WAITING FOR SOMETHING — the lander's road: %s\n" "$FINISH_ADDRESS" "$FINISH_ROAD"
+else
+  printf '🛑 %sTHIS SESSION IS WAITING FOR YOU — %s\n' "$FINISH_ADDRESS" "$FINISH_OWNER_MOVE"
+fi
+```
+
+A turn that ends while its own work runs on — the reviewers, the check — asks the owner nothing and
 ends `⏳ <OWNER>, THIS SESSION IS WAITING FOR SOMETHING — <what it waits on, in one line>`.
 Each line opens with its mark and a space — ✅ closeable, ⏳ work goes on without the owner, 🛑 the
 owner owes the next move (`hooks/common.py`'s `MARKS`) — so a panel of sessions reads at a glance.
@@ -206,7 +235,7 @@ is not one of these, or when anything but links follows a closing line; the tabl
 
 **A ⚠ stop hands over its external finish** (the owner, 2026-10-11: "when blocking a finish, don't
 forget to give me a line to run in a fresh window to do external finish"). Every ⚠ stop that
-ends on the WAITING line opens with a **Do this now** block holding one line (a review stop with
+ends on the owner's `WAITING FOR YOU` line opens with a **Do this now** block holding one line (a review stop with
 real findings left puts its fix round's dispatch above it: step 1): the launcher on this
 worktree, for the owner to run in a fresh Terminal window once the WAITING item is settled —
 `<autofinish-run's absolute path> <this worktree's absolute path>`; on the other Mac
@@ -218,7 +247,8 @@ writer). It refuses the tip a run already stopped on, so after an `--unattended`
 works once the answers arrive as a commit (`memo pull`); say so beside it. Each such line is an
 interruption — `bin/interruptions` counts it as a hand-off of kind `window` — so give it only where
 the stop really needs the owner. `bin/paste-paths --stop-hook` blocks a `/finish` reply once when a
-`⚠ step` ends on the WAITING line without it.
+`⚠ step` ends on the owner's line without it. A lander or successful skipper relay owes no manual
+external-finish command; its ⚠ evidence remains in the report.
 
 **A Remote Control host's session keeps its slot until it ends** (D8, 2026-09-25): a host has a
 fixed capacity, nothing in Claude Code ends an idle session, and the other Mac's home-repo host sat at
@@ -255,9 +285,8 @@ session's work sharing the branch — note them; they're reported separately.
    step 11.3 cannot launch until the check passes and the review is clean. The local road
    runs both here, with the review alongside its check.
 
-   A confidential repo, `/finish --local`, or a contract whose checks need deployed `live:` or
-   `physical:` state uses `check <this worktree> --local` here and after a changed rebase.
-   Never run the `physical:` sweep here; its owner-run verification remains separate. A `live:`
+   A confidential repo, `/finish --local`, or a contract whose checks need deployed `live:`
+   state uses `check <this worktree> --local` here and after a changed rebase. A `live:`
    deployment/drift command below stays local even when the code check uses CI. Unavailable CI
    explains its local fallback in one line. Local suites use the scoped line and pass memory
    under `CHECK_SLOTS`; `--only <script>…` reruns named failures locally, and `--full --fresh`
@@ -377,9 +406,9 @@ session's work sharing the branch — note them; they're reported separately.
         verifier's file> <this worktree>` reads them, one line each: `fix` — no choice, fix it; `take` — a
         choice whose `➤ Recommended:` pick this run takes: marked `Reversible: yes`, no conditional pick,
         none of keel's held classes in its fix (`DND_HOLDS`: money, a deletion, a public publish, a third
-        party's answer) and the contract's `physical:` is `none` (keel's `yolo --dnd` rule, `dnd_held`);
-        `stop` (exit 5) — `Reversible: no` or unmarked, no pick, a conditional pick, a held class, a
-        physical repo: the stop below, once the rest is fixed. Write each pick taken as `Taken unattended
+        party's answer), by keel's `yolo --dnd` rule, `dnd_held`;
+        `stop` (exit 5) — `Reversible: no` or unmarked, no pick, a conditional pick or a held class:
+        the stop below, once the rest is fixed. Write each pick taken as `Taken unattended
         (the landing by <the launch's by>, <date>): <pick> — <file:line>: <the claim>` (the `by` in
         `autofinish.json`; e.g. `the landing by handed`) under a **Taken unattended** heading at the top of
         the step 10 report, which step 11.3 makes the PR body, and fix by it.
@@ -424,9 +453,8 @@ session's work sharing the branch — note them; they're reported separately.
    There, also match `git diff --name-only main...HEAD` against `in_place` now, and take any
    hit off the branch before step 5: `--in` refuses it at the end.
 
-2. **Did this branch change behaviour the `physical:` sweep covers?** If so, say so in the
-   Phase 3 report and recommend the owner run it when it suits — it is theirs to trigger. Every
-   new behaviour gets a test case; a new one with no case is an open item for step 4.
+2. **Does every new behaviour have a test case?** A new behaviour with no case is an open
+   item for step 4.
 
 3. **Learnings go into the repo** (not just memory — the repo is what survives). Review
    the branch's prompts, diffs and this conversation for anything a future session would
@@ -583,7 +611,6 @@ session's work sharing the branch — note them; they're reported separately.
      state toggled, nothing in the log). `inferred` items go in their own **Unverified**
      list. A notification, a sound or a physical movement nobody observed is always
      `inferred`, whatever the system's state says.
-   - whether the `physical:` sweep is worth the owner's time (step 2)
    - a principal build (step 1's `principal:` line): the `principal-worker`'s pre-mortem and Receipt,
      verbatim from its hand-back, and the commit the review gate reviewed; a Receipt whose commit is
      older than the branch's tip says so. A dispatched principal run has no hand-back: quote them from

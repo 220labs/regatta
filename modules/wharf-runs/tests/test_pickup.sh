@@ -52,6 +52,10 @@ export PICKUP_SSH="$T/ssh-down"
 # This machine is the laptop, wherever the suite runs: every peer case reads buildbox as the other
 # one, and on the build Mac the real name made buildbox "this machine" (26 failures, 2026-10-08).
 export PICKUP_HOST=laptop
+# UI cases exercise a real dispatch refusal, never the live launcher. Dispatch-success cases
+# below override this with their own stand-in.
+printf '#!/bin/sh\necho "dispatch: no room for this test run" >&2\nexit 2\n' > "$T/dispatch-refuse"
+chmod +x "$T/dispatch-refuse"; export PICKUP_DISPATCH="$T/dispatch-refuse"
 P() { python3 "$B/pickup" "$@" > "$T/out" 2>&1; echo $?; }
 # PSR: P as a sandboxed Mac session runs it — every `ps` refused at the exec with EPERM, each refusal a line
 # of $T/ps.refused (ps_refused.py; sandboxed-seed, docs/sandboxed-seed-2026-11-04.md)
@@ -274,6 +278,24 @@ check "$(CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=cli PICKUP_NO_START=1 
 has "$T/out" "not opened (PICKUP_NO_START) in $R: claude --name 'demo: alpha' '/pickup '\"'\"'$BA'\"'\"' --fresh'" "…a new Terminal window running it (R1)"
 # --account (multi-account design E4): a registry, a secondary config dir, a stub claude for the probe
 mkdir -p "$HOME/.acct-b"
+# both homes signed in (lighthouse's login guard: account never picks a home with no login), merged into what each
+# .claude.json holds; the logins file describes no row, so the primary is judged as before
+cat > "$T/signin.py" <<'SIGNIN'
+import json, sys
+home, cj, sub, u = sys.argv[1:5]   # the home folder given alone, its parts joined here
+p, d = home + "/" + cj, home + "/" + sub
+try:
+    cur = json.load(open(p))
+except (OSError, ValueError):
+    cur = {}
+cur = cur if isinstance(cur, dict) else {}
+cur["oauthAccount"] = {"accountUuid": u}
+json.dump(cur, open(p, "w"))
+json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(d + "/.credentials.json", "w"))
+SIGNIN
+python3 "$T/signin.py" "$HOME" .acct-b/.claude.json .acct-b u-acct-b
+python3 "$T/signin.py" "$HOME" .claude.json .claude u-acct-a
+echo '{"logins": {}}' > "$T/logins.json"; export ACCOUNT_LOGINS="$T/logins.json"
 printf '{"accounts":[{"label":"acct-b","home":"~/.acct-b","rules":{"week_max":70,"window_max":50}},{"label":"acct-a","home":"~/.claude","primary":true,"rules":{"week_max":95,"window_max":80}}]}' > "$T/accounts.json"
 cat > "$T/claude-usage" <<'STUB'
 #!/bin/sh
@@ -505,6 +527,8 @@ echo "{\"session\":\"$F\",\"branch\":\"$BA\",\"seen\":$(date +%s)}" > "$gd/claud
 rm -f "$HOME/.claude/sessions/$$.json"
 
 echo "next: a stage hands over to the next (docs/subagent-cache-2026-10-04.md D6–D7)"
+# Tabs are the road outside the worktree workflow; the seeded road is covered below.
+printf '{"checkpoint": false, "main": "main"}\n' > "$R/.claude/workflow.json"
 NX=7e7e7e7e-0000-4000-8000-00000000000a; NEW=8e8e8e8e-0000-4000-8000-00000000000b
 PN="$HOME/.claude/projects/$(slug "$WA")/$NX.jsonl"
 transcript "$PN" $NX "$WA" $BA "Alpha, stage one" "$WA" "$WA" "design alpha's next part"
@@ -763,8 +787,8 @@ rm_own "$HOME/.claude/ide/"*.lock; { kill $LS $LD; wait $LS $LD; } 2>/dev/null
 trap 'rm -rf "$T"' EXIT  # the listeners are gone: their pids may be anyone's by exit (review 2026-10-14)
 
 echo "next in a repo dispatch takes (D1, 2026-10-05): seeded, not a tab"
-# the contract dispatch requires, untracked on the primary; a stage branch of its own
-printf -- '- physical: none\n' > "$R/AGENTS.md"
+# Opt in on the primary; no contract file is required.
+printf '{"checkpoint": true, "main": "main"}\n' > "$R/.claude/workflow.json"
 BS=claude/laptop/2026-10-05-stage; WS="$R/.claude/worktrees/stage"
 git worktree add -q "$WS" -b $BS main && commit "$WS" s.txt 5e5e5e5e "stage one"
 cat > "$T/dispatch" <<SH
@@ -807,7 +831,6 @@ check "$(NS "stage six" --tab --dry-run)" "0" "dry run"
 has "$T/out" "seeded (dry run) — would commit the prompt as $BRIEF" "…says what it would do"
 check "$(NS "under the threshold")" "0" "under 120k, without --tab…"
 has "$T/out" "continue — this session is at" "…continue is unchanged"
-rm -f "$R/AGENTS.md"
 
 echo "the other machine: read over ssh (D6), its conversation carried as a fork (D7)"
 # the build Mac's home: demo cloned, beta in a worktree with a file never committed, its session's
@@ -930,7 +953,7 @@ check "$(git worktree list | grep -c omega)" "0" "no worktree made"
 has "$T/out" "→ new-tab: fresh, as asked" "from VS Code with other work: its tab opens at once (D2 b)"
 has "$T/out" "prompt=%2Fpickup%20%27claude%2F$HN%2F$TODAY-omega%27%20--fresh" "…pre-filled with /pickup '<branch>' --fresh"
 echo "a fresh session where dispatch takes the repo: dispatched, not a tab or a window (the owner, 2026-10-13)"
-printf -- '- physical: none\n' > "$R/AGENTS.md"; : > "$T/dispatch.calls"
+: > "$T/dispatch.calls"
 SP=claude/$HN/$TODAY-psi
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seed psi --file "$SB" --no-fetch)" 0 "a seed, started…"
 has "$T/out" "dispatched $SP: a fresh session runs it unattended, not a tab" "…is dispatched"
@@ -999,7 +1022,6 @@ echo "$(date +%s) buildbox $SP" > "$(git -C "$R" rev-parse --path-format=absolut
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_DISPATCH="$T/dispatch" P seeds --mine --open --no-fetch)" 0 "seeds --open (finish) after dispatch already sent it…"
 has "$T/out" "already dispatched" "…says so"
 check "$(grep -c "$SP" "$T/dispatch.calls")" "0" "…and does not send it twice"
-rm -f "$R/AGENTS.md"
 check "$(P list --no-fetch)" 0 "list"
 has "$T/out" "omega · $SN" "the seed is an open branch"
 has "$T/out" "seed — not started; brief docs/handoff/$TODAY-omega.md" "…marked as a seed"
@@ -1208,23 +1230,23 @@ has "$T/out" "sib is not on the worktree workflow" "…and says where it goes in
 check "$(WEEKLY_RUN=sextant CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed chi --file "$SB" --no-fetch)" 1 "WEEKLY_RUN: a seed without --no-start is refused (S7 /finish review, F1)"
 has "$T/out" "under WEEKLY_RUN=sextant a seed takes --no-start" "…and says why"
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed phi --file "$SB" --no-start --no-fetch)" 0 "seed --no-start"
-has "$T/out" "start it: \`/pickup 'claude/$HN/$TODAY-phi' --fresh\` in a demo tab" "…prints the start line, the full name quoted"
+hasnt "$T/out" "start it: \`/pickup" "…no manual tab handoff in a workflow repo"
 hasnt "$T/out" "vscode://" "…and opens nothing"
 has "$T/out" "start it now, unattended: bash $B/dispatch 'claude/$HN/$TODAY-phi' --next --repo $R (Bash" "…and leads with dispatch (2026-10-04), --repo always: dispatch defaults to the launcher repo"
 IS=$(cd "$T/buildbox" && pwd -P)
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed sigma --file "$SB" --repo "$T/buildbox" --no-fetch)" 0 "seed in another repo"
 has "$T/out" "seeded claude/$HN/$TODAY-sigma in buildbox" "…is made there"
 check "$(git -C "$IS" log --format=%s main..claude/$HN/$TODAY-sigma)" "Seed: sigma" "…on that repo's main"
-has "$T/out" "start it: \`/pickup 'claude/$HN/$TODAY-sigma' --fresh\` in a buildbox window" "…prints its start line"
-has "$T/out" "a Terminal window that runs it at once" "…and what \"start it\" would cost"
-hasnt "$T/out" "not opened (PICKUP_NO_START)" "…and opens nothing without --start (D2's exception)"
+has "$T/out" "dispatch refused it (exit 2), so the tab or window instead" "…first tries dispatch in the target repo"
+has "$T/out" "not opened (PICKUP_NO_START) in $IS: claude --name 'buildbox: sigma'" "…then uses the existing window fallback on refusal"
+hasnt "$T/out" "start it: \`/pickup" "…no manual handoff based on a missing contract field"
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed tau --file "$SB" --repo "$T/buildbox" --start --no-fetch)" 0 "--start: \"start it\""
 has "$T/out" "not opened (PICKUP_NO_START) in $IS: claude --name 'buildbox: tau'" "…a Terminal window in that repo"
 # the old names, aliases for a week (S1 of docs/wharf-rename-2026-10-16.md; S8 drops them)
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_LAUNCH=1 P seed rho --file "$SB" --repo "$T/buildbox" --launch --no-fetch)" 0 "alias --launch, under the old PICKUP_NO_LAUNCH"
 has "$T/out" "not opened (PICKUP_NO_START) in $IS: claude --name 'buildbox: rho'" "…starts as --start does, and the old env still opens nothing"
 check "$(CLAUDE_CODE_SESSION_ID=$Q PICKUP_NO_START=1 P seed omicron --file "$SB" --no-launch --no-fetch)" 0 "alias --no-launch"
-has "$T/out" "start it: \`/pickup 'claude/$HN/$TODAY-omicron' --fresh\` in a demo tab" "…prints the start line as --no-start does"
+has "$T/out" "start it now, unattended: bash $B/dispatch 'claude/$HN/$TODAY-omicron' --next" "…prints the dispatch line as --no-start does"
 hasnt "$T/out" "vscode://" "…and opens nothing"
 check "$(CLAUDE_CODE_SESSION_ID=$Q CLAUDE_CODE_ENTRYPOINT=sdk-cli P open sigma --repo "$T/buildbox" --fresh --dry-run --no-fetch)" 1 "from the phone, another repo's seed still stops"
 has "$T/out" "it is buildbox's: open that repo's window" "…rather than adopting another repo's worktree here"

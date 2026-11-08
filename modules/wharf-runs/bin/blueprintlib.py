@@ -37,7 +37,6 @@ decision) with what this module computes: the order, the spec each Task carries,
                                          runs at its own model and effort (TIER_RUN) unless named
         model: sonnet                    passed through to Orca or dispatch
         effort: high                     low … max; on an Orca block only with a model (Orca's rule)
-        physical: none
         done_when: {marker: "docs/x.md#B6a"}   one of marker, pr_merged, check, memo_answered, file
         timeout_seconds: 7200
         retries: 2                       0–2: B3's two; Orca's own breaker fires at three (R4)
@@ -160,9 +159,11 @@ TOP_KEYS = {"ship", "repo", "skipper", "manager", "created", "mode", "blocks", "
 MERGE = {True: "yes", False: "no", "yes": "yes", "no": "no"}   # YAML 1.1 reads a bare yes/no as a bool
 MODES = ("default", "ask", "dnd", "yolo")   # helmlib.MODES: the same four words (skipper-modes S1)
 COMMON = {"id", "kind", "depends_on", "title"}
-WORK = COMMON | {"provider", "agent", "host", "tier", "model", "effort", "physical", "done_when",
+WORK = COMMON | {"provider", "agent", "host", "tier", "model", "effort", "done_when",
                  "timeout_seconds", "retries", "account", "yolo", "command", "launch", "branch", "owns", "live",
                  "lines"}
+# Accepted and ignored, so recorded and pinned blueprints still load unedited (an edit would change their digest).
+RETIRED_WORK = {"physical"}
 DECISION = COMMON | {"doc", "items", "options"}
 # What each provider refuses outright (the rest of WORK is open to every provider)
 # (Yolo is --dangerously-skip-permissions: stays off on Orca, Q3. An Orca worker's login is the
@@ -327,7 +328,7 @@ def _check_block(s, i, problems, hosts=None, yards=None, yard_problems=None):
         if "title" in s and not (isinstance(s["title"], str) and s["title"].strip()):
             problems.append("%s: title is a non-empty string" % where)
     elif kind == "block":
-        for k in sorted(set(s) - WORK):
+        for k in sorted(set(s) - WORK - RETIRED_WORK):
             problems.append("%s: %s is not a key of a block" % (where, k))
         p = s.get("provider")
         if p not in PROVIDERS:
@@ -382,7 +383,7 @@ def _check_block(s, i, problems, hosts=None, yards=None, yard_problems=None):
                                 % (where, s["tier"], te, s["effort"]))
         if "model" in s and not (isinstance(s["model"], str) and MODEL_RE.match(s["model"])):
             problems.append("%s: model %r is not a model name" % (where, s["model"]))
-        for k in ("physical", "account", "branch", "title"):
+        for k in ("account", "branch", "title"):
             if k in s and not (isinstance(s[k], str) and s[k].strip()):
                 problems.append("%s: %s is a non-empty string" % (where, k))
         if "branch" in s and isinstance(s["branch"], str) and not re.match(r"^claude/[a-z0-9-]+/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+$", s["branch"]):
@@ -773,7 +774,7 @@ def brief_specced(text):
 
 # The plain-Opus line, whole: Opus (an optional version), an optional `high`, and an optional "per rule <name>" or
 # "per the rules' tier table" tail — nothing else. An allowlist, not a list of words that keep a line out: a line
-# that says anything more ("(hooks are gates; judgement is the work)", "(physical: …)", "x-high", another model)
+# that says anything more ("(hooks are gates; judgement is the work)", "(extra notes)", "x-high", another model)
 # is the writer's choice and stays off the coin (the finish review, 2026-11-03: a denylist let sr-worker-in-all-
 # but-the-word lines draw Sonnet). Probed on every Opus Tier: line of the briefs on all refs (2026-11-03): the three default forms, 132 lines, all match.
 PLAIN_OPUS_RE = re.compile(r"^(?:claude-)?opus(?:[ -]5(?:[.-]5)?)?(?:\s+`?high`?)?"
@@ -831,8 +832,6 @@ def describe(st):
         extra.append("launched by %s" % s["launch"])
     if s.get("lines") is not None:
         extra.append("%s lines expected" % format(s["lines"], ","))
-    if s.get("physical") and s["physical"] != "none":
-        extra.append("physical: %s" % s["physical"])
     return " ".join(b.strip() for b in bits) + (" · " + ", ".join(extra) if extra else "")
 
 
@@ -1035,7 +1034,6 @@ def diff(blueprint, here, plan_tasks, orca, answered=None, ended=None, cancelled
             st = blueprint["by_id"][sid]
             s = st["raw"]
             t = mapped.get(sid)
-            phys = s.get("physical")
             if t is None:
                 after = [d for d in st["deps"]]
                 rows.append(("create", sid, "task-create --task-title %s%s" % (sid, (" --deps " + ",".join(after)) if after else "")))
@@ -1043,8 +1041,7 @@ def diff(blueprint, here, plan_tasks, orca, answered=None, ended=None, cancelled
                 if st["kind"] == "decision":
                     rows.append(("gate", sid, "gate-create on its task: %s#%s" % (s["doc"], ", ".join(s["items"]))))
                 elif not after:
-                    rows.append(("refuse", sid, "physical: %s — apply starts only physical: none" % phys) if phys and phys != "none"
-                                else ("start", sid, "ready once created: " + _start_text(blueprint, st, here)))
+                    rows.append(("start", sid, "ready once created: " + _start_text(blueprint, st, here)))
                 continue
             status = str(t.get("status") or "").lower()
             want_deps = sorted(mapped[d].get("id") if d in mapped else "<%s>" % d for d in st["deps"])
@@ -1085,8 +1082,7 @@ def diff(blueprint, here, plan_tasks, orca, answered=None, ended=None, cancelled
             if ended and ended(sid) and status != "completed":
                 rows.append(("complete", sid, "the plan has it ended, %s is %s: task-update completed" % (t.get("id"), status)))
             elif status == "ready" and not live:
-                rows.append(("refuse", sid, "physical: %s — apply starts only physical: none" % phys) if phys and phys != "none"
-                            else ("start", sid, _start_text(blueprint, st, here)))
+                rows.append(("start", sid, _start_text(blueprint, st, here)))
             elif status == "dispatched" and ds and not live and not any(_succeeded(d) for d in ds):
                 rows.append(("stalled", sid, "dispatch %s exited with no worker_done (S1: the tick's)" % ds[0].get("dispatchId")))
             elif status == "failed":

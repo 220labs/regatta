@@ -282,19 +282,22 @@ _AGY = []
 
 
 def agy_here():
-    """The agy this host would run, or None: none installed (harness_adapters/agy.py's exe()), or one the adapter would
-    refuse before any login is asked — no guards entry in agy's hooks.json, no --sandbox in its --help — so a host
-    that cannot run an agy build never claims one (agy-road's round 1). Read once per process; the adapter unread
-    meets no need. The login itself is the start's to judge (account pick), as a Claude run's is."""
+    """The agy this host would run, or None: none installed (harness_adapters/agy.py's exe()), or one the builder would
+    refuse before any login is asked — agybuild.guards() (vendor-hooks' exact entry alone in agy's hooks.json), or no
+    --sandbox in its --help — so a host that cannot run an agy build never claims one (agy-road's round 1). Read once
+    per process; the adapter unread meets no need. The login itself is the start's to judge (account pick), as a Claude
+    run's is."""
     try:
         if not _AGY:
-            import importlib.util
-            from importlib.machinery import SourceFileLoader
-            ld = SourceFileLoader("harness_agy", str(HERE / "harness_adapters" / "agy.py"))
-            m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
-            ld.exec_module(m)
-            exe = m.exe()
-            _AGY.append(exe if exe and m._guards_why() is None and m.sandbox_flag(exe) is None else None)
+            if str(HERE) not in sys.path:
+                sys.path.insert(0, str(HERE))
+            import agybuild
+            exe = agybuild.agy.exe()
+            try:
+                ok = bool(exe) and agybuild.agy.sandbox_flag(exe) is None and bool(agybuild.guards())
+            except agybuild.Error:
+                ok = False
+            _AGY.append(exe if ok else None)
         return _AGY[0]
     except Exception:   # noqa: BLE001 — an adapter that does not load meets no need
         return None
@@ -313,7 +316,10 @@ def builtin_met(n, h):
     """
     if n not in BUILTIN_NEEDS:
         return False
+    if h == host_name() and any(only_here()):
+        return False   # a builder user never runs /finish, even on Darwin
     return h != host_name() or sys.platform == "darwin" or finish_readiness()["reason"] is None
+
 
 
 AFTER_BOUND = 48 * 3600  # an entry waiting this long on an --after predecessor files one card (it still holds)
@@ -2108,7 +2114,9 @@ def eligibility(e, h, feats=None):
     """Why host H may not take entry E by the config alone, or None — the pin, the scope's berths and the
     clone hosts, and the feature line against E's needs. The one function the claim's `claimable` calls
     (and the sweep's unclaimed card, for every host the config names): what a host's own state decides — its
-    room, its hour's skip, its clone, the yolo rule — stays in `claimable`. `stopped` joins here once
+    room, its hour's skip, its clone, a build entry's yolo rule — stays in `claimable`, bar a few reads made for this host
+    alone (h == host_name()): its `wharf-runs/only` line and finish-queue readiness, agy's presence for an agy build, and a
+    finish's landing switches, so the sweep's unclaimed card can name them. Another host's verdict reads none of them. `stopped` joins here once
     host-power's key exists on main (the design doc's S5, "Not built here")."""
     if e.get("host") and e["host"].lower() != h:
         return "pinned to %s" % e["host"]
@@ -2131,13 +2139,27 @@ def eligibility(e, h, feats=None):
         miss = [n for n in needs if n not in grants
                 and (n == e.get("arm_need") or not builtin_met(n, h))]
         if FINISH_NEED in miss and h == host_name():
-            return "finish-queue: " + finish_readiness()["reason"]
+            if any(only_here()):
+                why_only = only_refusal(e)
+                if why_only:
+                    return why_only
+            elif finish_readiness()["reason"]:
+                return "finish-queue: " + finish_readiness()["reason"]
         if miss:
             return "%s %s %s" % (h, "lacks" if h in feats else "has no feature line, so lacks", ", ".join(miss))
         if AGY_NEED in needs and "--harness" in (e.get("args") or []) and h == host_name() and not agy_here():
             # the line is the owner's word that this host is a builder's; the agy road's own agy is this host's to
             # judge (an Argon draw's `--needs agy` alone is its own road's, with its pre-flight's Opus fallback)
             return "%s declares agy, but no agy here the adapter would run (installed, the guards entry, --sandbox)" % h
+    # the landing switches are this host's own word: judged here too, so the sweep records the host ineligible and the
+    # unclaimed card names the switch, where claimable()'s refusal alone left a vendor yolo/dnd finish (an entry with no
+    # needs) queued with no card on a disarmed fleet (S5's landing review)
+    if e.get("kind") == FINISH and h == host_name():
+        fby = (e.get("finish") or {}).get("by")
+        if fby == "handed" and not common.autofinish_landings():
+            return "a handed finish cannot run here (the landing switch is off here: bin/autofinish arm --landings)"
+        if fby in ("yolo", "dnd") and not common.autofinish_armed():
+            return "a %s finish cannot run here (autofinish disarmed here: bin/autofinish arm)" % fby
     return None
 
 
@@ -2302,6 +2324,12 @@ def claimable(e, h, t=None, fleet=False):
     # autofinish-run keeps every mode launch on its own Mac (the fourth review)
     if (e.get("mode") in ("yolo", "dnd")) and not common.autofinish_armed():
         return "a %s run's launch cannot run here (autofinish disarmed here)" % e.get("mode")
+    if e.get("kind") == FINISH:
+        fby = (e.get("finish") or {}).get("by")
+        if fby == "handed" and not common.autofinish_landings():
+            return "a handed finish cannot run here (the landing switch is off here: bin/autofinish arm --landings)"
+        if fby in ("yolo", "dnd") and not common.autofinish_armed():
+            return "a %s finish cannot run here (autofinish disarmed here: bin/autofinish arm)" % fby
     if bad_args(e):
         return bad_args(e)
     if fleet:
@@ -2540,12 +2568,22 @@ def finish_bad(e):
     if "land_by" in f and not (f["by"] == "lander" and f["land_by"] in ("yolo", "dnd")):
         return "finish.land_by %r is a lander finish's mode flag, yolo or dnd" % f.get("land_by")
     owed = f.get("owed")
-    if owed is not None and not (f["by"] in ("handed", "lander") and isinstance(owed, list) and len(owed) <= 50
+    owed_ok = f["by"] in ("handed", "lander", "chain") or ("build_record" in e and f["by"] in ("yolo", "dnd"))
+    if owed is not None and not (owed_ok and isinstance(owed, list) and len(owed) <= 50
                                  and all(isinstance(x, str) and OWED_WORD.fullmatch(x) for x in owed)):
-        return "finish.owed goes with a handed finish or its lander relaunch, as a list of `<doc>.md S<n>` stamps its judge waived"
+        return ("finish.owed goes with a handed finish, its lander or chain relaunch, or a vendor build's yolo/dnd "
+                "hand-over, as a list of `<doc>.md S<n>` stamps its judge waived")
     extra = set(f) - {"by", "rule", "merge", "hold", "from", "digest", "road", "land_by", "owed"}
     if extra:
         return "finish carries %s, which no finish reads" % ", ".join(sorted(extra))
+    if "build_record" in e:
+        if str(HERE) not in sys.path:   # loaded as a module from elsewhere (helm, a suite): its sibling still imports
+            sys.path.insert(0, str(HERE))
+        import vendorhandover
+        proj = Path(str(e.get("repo") or "")).name or None
+        why = vendorhandover.bad(e["build_record"], e.get("branch"), e.get("tip"), proj)
+        if why:
+            return why
     return None
 
 
@@ -2653,6 +2691,12 @@ def start_job(ctx, store, key, e, label):
     env.pop("DISPATCH_EXIT_CLAIMED", None)
     if getattr(ctx, "exit_claim", False):
         env["DISPATCH_EXIT_CLAIMED"] = "1"
+    # the claim's own word on whether another host could take the entry back (dispatch's pick_account): a pinned
+    # entry (typed, held here, a one-host login) or a host-local store's is this host's alone, so a refusal no reset
+    # lifts (lighthouse's login guard) fails plainly there rather than coming back each hour (login-guard's landing)
+    env.pop("DISPATCH_QUEUE_HERE", None)
+    if e.get("host") or store.name != "fleet":
+        env["DISPATCH_QUEUE_HERE"] = "1"
     plist = {**(common.launchd_session_keys(domain()) if hasattr(common, "launchd_session_keys") else {}),
              "Label": label, "ProgramArguments": args, "EnvironmentVariables": env, "RunAtLoad": True,
              "StandardOutPath": log, "StandardErrorPath": log}
@@ -3367,6 +3411,14 @@ def cmd_enqueue(a, ctx):
             raise Refused("dispatch-queue: --finish takes the finish's rights as JSON", 2)
     elif a.tip or a.finish:
         raise Refused("dispatch-queue: --tip and --finish go with --kind finish", 2)
+    build_record = None
+    if getattr(a, "build_record", None):
+        if fin is None:
+            raise Refused("dispatch-queue: --build-record goes with a finish", 2)
+        try:
+            build_record = json.loads(Path(a.build_record).read_text())
+        except (OSError, ValueError) as ex:
+            raise Refused("dispatch-queue: vendor evidence does not read: %s" % ex, 2)
     # a gated flag twice is refused before anything reads it: the readers here took the first, the fired
     # dispatch the last (AGENTS.md: refuse a gated flag given twice; the third review's item 1)
     twice = sorted({f for f in ("--mode", "--account", "--priority", "--yolo") if args.count(f) > 1})
@@ -3450,6 +3502,8 @@ def cmd_enqueue(a, ctx):
         e["arm_need"] = an
     if fin is not None:
         e.update(kind=FINISH, tip=a.tip, finish=fin, mode="", needs=sorted(set(needs) | {FINISH_NEED}))
+        if build_record is not None:
+            e["build_record"] = build_record
         if caller_unattended() or os.environ.get("SKIPPER_SCOPE"):
             # its person's label lifts no cancel and replaces no queued finish (tomb_holds). A skipper's `--by override`
             # is no person either, as autofinish-run's PRIO_UNATTENDED reads it (the finish review, 2026-11-02)
@@ -4727,7 +4781,7 @@ def cut_run(cp, st, h, when, why, out):
         return git_in(wt, "rev-parse", "-q", "--verify", "refs/heads/" + br)[1] or None
     reply = ""
     try:
-        reply = rc_mod().last_answer(sid) if sid else ""
+        reply = rc_mod().last_answer(sid, st) if sid else ""
     except Exception:
         reply = ""
     left = [l[3:] for l in git_in(wt, "status", "--porcelain")[1].splitlines() if len(l) > 3]
@@ -6053,6 +6107,7 @@ def main(argv=None):
     e.add_argument("--kind", choices=(FINISH,))
     e.add_argument("--tip", default="")
     e.add_argument("--finish", default="")
+    e.add_argument("--build-record", help="vendor evidence JSON carried to the claiming finish")
     lr = sub.add_parser("raise")
     ctxargs(lr)
     lr.add_argument("--repo", required=True)

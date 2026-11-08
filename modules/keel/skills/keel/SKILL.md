@@ -118,7 +118,7 @@ interface"). The doc stays the source; GitHub and the page are the other ways in
   - `continue` (under 120k context): build it here, run the check, and once it is green run
     `/finish` yourself (the Skill tool; skills/finish, "An agent may run it" — D8), whose
     open-items gate still stops on anything left.
-  - `seeded <branch>` (over 120k, in a repo dispatch takes — `physical: none`): the prompt is
+  - `seeded <branch>` (over 120k, in a repo dispatch takes): the prompt is
     committed as the branch's brief and `dispatch --next` started it unattended; end the turn
     with one line, `Started <branch> unattended (dispatch); its window is titled run · <topic>`, and
     write nothing more there. Its "then run /finish" is the run's to follow. Where the queue is on
@@ -177,8 +177,8 @@ changed and whether the open feedback did. Relay that, then act on the answers t
 
 **Recommendations stand** (D11-A, docs/autofinish-design-2026-10-02.md): `keel status <doc>`
 says whether an unanswered doc stands at link + 24 h untouched (`stands-at`, `due`, or why not),
-and on *stand it* / *stand it at <time>* run `keel stand <doc> [--by <hours>]` — the only way in
-where the contract's `physical:` is not none, `--by 0` now — or `keel stand --void <doc>` on
+and on *stand it* / *stand it at <time>* run `keel stand <doc> [--by <hours>]` to move the deadline,
+`--by 0` now — or `keel stand --void <doc>` on
 *don't stand it*; `stand --apply`, at the deadline, is the autofinish launcher's step: armed, it
 runs it on each `due` doc of a branch just before it starts that branch's `/finish` (rule D),
 and never in a repo whose autofinish is off. Since entry S3 (docs/design-docs-2026-10-14.md, D4-A)

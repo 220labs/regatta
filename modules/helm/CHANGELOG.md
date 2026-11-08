@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- `ask listen` wakes nobody on a replayed ASK (helm-ask-replay): one this session's listener printed before
+  (kept 30 days in the cache dir's `listen/`), or whose item is answered. The run's own doc decides when it is on
+  this Mac (an answer waiting in its pending row counts); only where it is not do the other roads speak: the ship's
+  `answered` event after the run's own relay (a re-hail's `--plan` read too; an open newer relay wakes, and a re-hail whose
+  ship holds no local event for it — or recorded another host — reads as another Mac's, never reading a docless event's
+  main-checkout fallback as the run's worktree); where the ship holds no relay of it,
+  an answer this Mac committed or Talk delivered (`ask answer`'s new `listen/answered.jsonl`, scoped to that repo) after a listener here
+  heard that same ASK (a new question under a reused D-number wakes); else the main checkout's copy (its file, its origin/main;
+  never for a `--send-only` run, whose doc is another Mac's). A replayed ANSWER the listener printed before wakes
+  nobody either, except a guarded answer's pointer, which names no item. `ask answer --send-only` writes the
+  ship's `answered` only once the send went or was handed to the session's own SendMessage (an unreachable one leaves the ask open), and a failure to write it after the send went is said, never a traceback, with this Mac's delivered record still kept. Each is said once in
+  a run of replays, as a replayed REPORT is; a check that fails wakes the session. The link's end line reads
+  "only lines heard before (REPORTs, ASKs, ANSWERs)". The record matches a real run session only (a run with no
+  session id, a Codex or Antigravity child's, keeps none, while its open ask in the ship still wakes), and the main checkout settles an ASK only by its newest
+  copy (origin/main over a lagging file) and only for the same item title (a D-number reused in a revised doc wakes).
+  An empty, deleted or unreadable doc at origin/main never falls back to an older answered file; the file decides
+  only when there is no origin/main ref. A plain shell's `ask listen --session <id>` keeps a heard record of its own (`shell-heard-<id>.json`).
+  An ANSWER heard before wakes again, and is kept, once this worktree relayed its item anew after the listener printed it.
+- Remove the retired repo-wide physical class from the dnd ask-guard guidance and fixture contracts.
+
+- A lander closing line belongs to the landing rules; the run rules never retry it as abandoned
+  work or classify it as an unknown ending (stuck-ships S7).
+- Vendor stalls read the launcher's end and last reply, including between turns with no vendor child. Builder hosts are read through `regatta/fleet-ssh`; failed, held and capped builds are raised from their recorded outcome, and a queued finish is left to its claiming owner's landing.
+
+- `stalls_tick.LANDER_ROADS` (False until stuck-ships S3) says whether the tick roads a lander stop;
+  `autofinish-run lander armed` reads it.
 - The board takes keel's Porthole tokens (rounded type, pill chips) and rounder cards, timeline and comment sheet (28 px).
 - A refused build's card puts dispatch's cause and next action first, so the evidence summary keeps them visible.
 - Landing retries use the finish week ceiling in their preflight, so a login past its build ceiling

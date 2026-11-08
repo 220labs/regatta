@@ -72,11 +72,22 @@
                                   aside? `CARRY …` exit 0, else `RUN …` exit 1: the workflow then keeps
                                   <before>'s green instead of the whole line.
 
+  pr stuck [--json] [--dry-run]   on the repo's scope yard, else the configured laptop: list ready
+                                  claude/* PRs by stop kind. DIRTY conflicts restack refuses at a
+                                  local head request refinish for the tick; list conflicts stay with restack.
+                                  Required reds are reported by source, never rerun here. An
+                                  unarmed PR reruns its newest non-skipped automerge.yml run at
+                                  that head, through `autofinish-run lander spend reruns` first.
+                                  Holds and live runs are listed without action. --dry-run spends
+                                  nothing. Exit 2 when ownership or an input cannot be read.
+
 Token and host come from hooks/common.py: the token git already has, nothing new. Base is the
 repo's main (workflow.json "main", else main). docs/record/repo-sync-2026-09-22.md.
 """
 import collections
 import datetime
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -675,16 +686,21 @@ def worktree_of(primary, ref):
     return next((path for path, name, _gd in branches.worktrees(Path(primary)) if name == ref), None)
 
 
-def restack_tree(primary, ref, sha, base, dry, red=False, before_push=None):
+def restack_tree(primary, ref, sha, base, dry, red=False, before_push=None, refresh=True):
     """(code, text, new): the rebase and its gates; pushed unless dry. code 0 pushed (or would), 1 refused
     with a finding for the PR, 2 not judged now (try again; nothing said on the PR). <red>: the red road's
     call, for a PR GitHub may not mark DIRTY, so no path need be changed on both sides. <before_push>(new): what
     must be written before the push (the red road's mark), False to push nothing."""
     up = f"origin/{base}"
-    f = run(primary, "fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}",
-            f"+refs/heads/{ref}:refs/remotes/origin/{ref}", timeout=180)
-    if f.returncode:
-        return 2, f"fetch failed: {f.stderr.strip()[:200]}", None
+    # stuck uses the same dry judgement on already-current refs: no second implementation of which
+    # conflicts restack settles, and no fetch or push from the reader the tick will call.
+    if not refresh and not dry:
+        raise ValueError("a restack without refresh is a dry judgement only")
+    if refresh:
+        f = run(primary, "fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}",
+                f"+refs/heads/{ref}:refs/remotes/origin/{ref}", timeout=180)
+        if f.returncode:
+            return 2, f"fetch failed: {f.stderr.strip()[:200]}", None
     if run(primary, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{ref}").stdout.strip() != sha:
         return 2, f"origin's {ref} is not the PR's head {sha[:8]} now: judged at the next pass", None
     lm = Path(__file__).resolve().parent.parent / "bin" / "list-merge"
@@ -1165,6 +1181,361 @@ def restack(args, slug, tok, base):
     return code
 
 
+# ---- stuck: one reader per repo, requests for the tick, capped automerge recovery -----------------
+
+STUCK_RED = {"failure", "error", "cancelled", "timed_out", "startup_failure", "action_required"}
+STUCK_PENDING = {"in_progress", "queued", "pending", "waiting", "requested", "expected"}
+LINUX_CONTEXT = "ci/circleci: check-linux"
+TRIGGER_WAIT_S = 60 * 60
+
+
+class StuckUnreadable(Exception):
+    """A partial read is no permission to rerun or request a finish."""
+
+
+def stuck_owner(primary):
+    """The one yard of every matching scope, else the laptop. One registry snapshot, all scopes:
+    an umbrella listed first must not hide the repo's own yard. Conflicting yards authorize nobody."""
+    reg, torn = common.read_registry()
+    if torn:
+        raise StuckUnreadable("the registry does not read: no owner can be chosen")
+    yards = set()
+    for name, sc in ((reg or {}).get("scopes") or {}).items():
+        if not isinstance(sc, dict):
+            continue
+        match, _ = common.scope_of_repo(primary, reg={"scopes": {name: sc}})
+        if match and sc.get("yard") is not None:
+            yard = sc["yard"]
+            if not isinstance(yard, str) or not yard.strip():
+                raise StuckUnreadable("a matching scope's yard does not read")
+            yards.add(yard.strip().lower())
+    if len(yards) > 1:
+        raise StuckUnreadable("matching scopes name different yards: no single owner")
+    return next(iter(yards)) if yards else common.LAPTOP.lower()
+
+
+def stuck_required(primary):
+    """The local protection file's union of both supported lists, never the protection endpoint."""
+    try:
+        d = json.loads((Path(primary) / ".github" / "main-protection.json").read_text())
+        r = d["required_status_checks"]
+        checks, contexts = r.get("checks", []), r.get("contexts", [])
+        if not isinstance(checks, list) or not isinstance(contexts, list):
+            raise ValueError("required checks are not lists")
+        names = [c["context"] for c in checks] + contexts
+        if any(not isinstance(n, str) or not n for n in names):
+            raise ValueError("a required context has no name")
+        return sorted(set(names))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        raise StuckUnreadable(".github/main-protection.json does not read: %s" % e) from e
+
+
+def stuck_pages(slug, path, tok, field=None):
+    """All REST pages, or no judgement. A full last page at the bound is a short read, not EOF."""
+    out = []
+    for page in range(1, 101):
+        sep = "&" if "?" in path else "?"
+        st, body = common.api("GET", f"/repos/{slug}/{path}{sep}per_page=100&page={page}", tok=tok)
+        rows = body.get(field) if field and isinstance(body, dict) else body if not field else None
+        if st != 200 or not isinstance(rows, list) or any(not isinstance(x, dict) for x in rows):
+            raise StuckUnreadable(f"{path} did not read (HTTP {st})")
+        out.extend(rows)
+        if len(rows) < 100:
+            return out
+    raise StuckUnreadable(f"{path} was truncated")
+
+
+def stuck_latest(rows):
+    """A pending check run first even without a start time (a queued rerun), then newest time/id. REST is
+    newest first, so an exact tie keeps the first. A commit status is never ranked pending-first: its history
+    keeps the `pending` row a context posted before its verdict (check-linux.yml posts both), so only the
+    newest status per context counts; `commits/{sha}/status` returns just that, and this ranks the same."""
+    out = {}
+    for r in rows:
+        name = r.get("name") or r.get("context")
+        if not name:
+            continue
+        key = lambda x: (bool(x.get("name"))
+                         and str(x.get("status") or x.get("state") or "").lower() in STUCK_PENDING,
+                         iso_epoch(x.get("started_at") or x.get("created_at")) or 0,
+                         int(x.get("id") or 0))
+        if name not in out or key(r) > key(out[name]):
+            out[name] = r
+    return out
+
+
+def stuck_checks(required, rows, now=None):
+    """Required reds with source, and pending contexts. The Linux context keeps its historical name
+    on both providers; an Actions target URL is Actions, not a CircleCI red."""
+    now = time.time() if now is None else now
+    latest = stuck_latest(rows)
+    red, pending = [], []
+    for ctx in required:
+        r = latest.get(ctx)
+        source, reason = "missing", "required context absent"
+        if r is None and ctx == LINUX_CONTEXT:
+            r = latest.get("trigger")
+            source = "actions:check-linux.yml/trigger"
+            if r:
+                state = str(r.get("status") or r.get("state") or "").lower()
+                end = iso_epoch(r.get("completed_at"))
+                if state in STUCK_PENDING or (str(r.get("conclusion")).lower() == "success"
+                                             and end is not None and now - end <= TRIGGER_WAIT_S):
+                    pending.append(ctx)
+                    continue
+                reason = "trigger failed or its success is older than 60 minutes"
+        elif r is not None:
+            url = str(r.get("details_url") or r.get("target_url") or "")
+            source = ("actions:check-linux.yml" if RUN_ID_RE.search(url) else "circleci") if ctx == LINUX_CONTEXT \
+                else "actions:" + ctx if r.get("name") else "status:" + ctx
+            state = str(r.get("status") or r.get("state") or "").lower()
+            if state in STUCK_PENDING:
+                pending.append(ctx)
+                continue
+            result = str(r.get("conclusion") or r.get("state") or "").lower()
+            if result in ("success", "neutral", "skipped"):
+                continue
+            reason = result if result in STUCK_RED else "required context has no final verdict"
+        red.append({"context": ctx, "source": source, "reason": reason})
+    return red, pending
+
+
+def stuck_local(primary, ref):
+    """(worktree, HEAD, stop, live). Missing/unreadable records never prove a re-finish predicate."""
+    wt = worktree_of(primary, ref)
+    if wt is None:
+        return None, None, None, False
+    if not Path(wt).is_dir():   # registered, its folder gone: no HEAD to read, and no reason to blind the pass
+        return str(wt), None, None, False
+    gd = run(wt, "rev-parse", "--absolute-git-dir").stdout.strip()
+    stop = common.autofinish_run(Path(gd) / "claude") if gd else None
+    live = bool(stop and not stop.get("ended")) or bool(gd and branches.lock_fresh(Path(gd), time.time()))
+    return str(wt), run(wt, "rev-parse", "HEAD").stdout.strip(), stop, live
+
+
+_STUCK_AFR = []
+
+
+def stuck_afr():
+    """S1's own module (autofinish-run), loaded once: its road_stop and ran_elsewhere are the judges."""
+    if not _STUCK_AFR:
+        exe = common.tool("autofinish-run")
+        if not exe:
+            raise StuckUnreadable("autofinish-run is absent: S1's stop rule cannot be read")
+        loader = importlib.machinery.SourceFileLoader("autofinish_run_stuck", str(exe))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        # its test seam would swap the shared common.api for the rest of this process
+        stub = os.environ.pop("AUTOFINISH_API_STUB", None)
+        try:
+            loader.exec_module(mod)
+            mod.road_stop, mod.ran_elsewhere
+        except Exception as e:   # a peer plugin at another version, mid-change: no judgement, never a crash
+            raise StuckUnreadable("autofinish-run did not load: %s" % type(e).__name__) from e
+        finally:
+            if stub is not None:
+                os.environ["AUTOFINISH_API_STUB"] = stub
+        _STUCK_AFR.append(mod)
+    return _STUCK_AFR[0]
+
+
+def stuck_lander_entry(primary, ref):
+    """This Mac's lander.json entry for the branch, through the store's own reader."""
+    exe = common.tool("autofinish-run")
+    if not exe:
+        raise StuckUnreadable("autofinish-run is absent: the lander store cannot be read")
+    a = subprocess.run([sys.executable, str(exe), "lander", "show", "--repo", str(primary), "--branch", ref],
+                       capture_output=True, text=True, timeout=30)
+    try:
+        e = json.loads(a.stdout) if a.returncode == 0 else None
+    except ValueError:
+        e = False
+    if a.returncode or not (e is None or isinstance(e, dict)):
+        raise StuckUnreadable("the lander store did not read: " + (a.stderr or a.stdout).strip()[:200])
+    return e
+
+
+def stuck_dirty(slug, tok, primary, p, base, row, stop):
+    """Only S1(a)'s stop is requested. The tick re-judges S1's full start predicate and cap.
+    Restack's dry success owns list conflicts; its refusals need the branch's own finish."""
+    sha, ref = row["head"], row["branch"]
+    # Main as GitHub has it now, from the base branch: a PR's own `base.sha` stays at the base of its last push
+    # (read live on a public repo's dirty PRs, 2026-11-07: hundreds of commits behind), so it would never equal a
+    # synced origin/main once main moved — the very DIRTY stop this road exists for.
+    st, br = common.api("GET", f"/repos/{slug}/branches/{base}", tok=tok)
+    base_sha = ((br or {}).get("commit") or {}).get("sha") if st == 200 and isinstance(br, dict) else None
+    if not isinstance(base_sha, str) or not base_sha:
+        row.update(kind="unknown", reason=f"GitHub's {base} did not read (HTTP {st})")
+        return
+    up = f"origin/{base}"
+    if run(primary, "rev-parse", up).stdout.strip() != base_sha:
+        row.update(kind="unknown", reason=f"this host's {up} is not GitHub's: wait for repo sync")
+        return
+    code, why, _ = restack_tree(primary, ref, sha, base, True, refresh=False)
+    if code != 1:
+        row.update(kind="restack" if code == 0 else "unknown", reason=why)
+        return
+    if not stop or not stop.get("ended"):
+        row["reason"] = "no ended landing record here"
+        return
+    # S1 judges which stop a road reads: a lander start dispatch refused, that never started or died is no stop
+    # of its own, and its road re-judges the stop kept in lander.json (autofinish-run's road_stop), on S1's host
+    # rule (`ran_elsewhere`: AUTOFINISH_HOST first). Read through S1's own code, never a second copy of it.
+    try:
+        afr = stuck_afr()
+        entry = stuck_lander_entry(primary, ref)
+    except StuckUnreadable as e:
+        row.update(kind="unknown", reason=str(e))
+        return
+    stop = afr.road_stop(stop, entry or {})
+    if not stop or not stop.get("ended"):
+        row["reason"] = "no ended landing record here"
+        return
+    if afr.ran_elsewhere(stop):
+        row["reason"] = "the stopped run belongs to another host"
+        return
+    eligible = stop.get("outcome") in common.LAUNCHED_OUTCOMES or (
+        stop.get("outcome") == "stopped" and stop.get("gate") in ("no-landing", "G11"))
+    if not eligible:
+        row["reason"] = "the last stop is outside S1's refinish predicate"
+        return
+    if sha != (stop.get("pushed") or stop.get("tip")):
+        row["reason"] = "this head holds work the stopped run did not see"
+        return
+    ancestor = run(primary, "merge-base", "--is-ancestor", base_sha, sha).returncode
+    if ancestor != 1:
+        row["reason"] = "main has not moved, or its history could not be read"
+        return
+    row.update(request={"road": "refinish", "worktree": row["worktree"], "head": sha}, reason=why)
+
+
+def stuck_rerun(slug, tok, p, primary, dry):
+    """No direct arming. The workflow re-reads holds and demands a non-skipped check.yml run.
+    Spend before POST, including a refused/ambiguous POST: a lost response must not evade the cap."""
+    head = p["head"]
+    runs = stuck_pages(slug, "actions/workflows/automerge.yml/runs?head_sha=" + head["sha"]
+                       + "&event=pull_request", tok, "workflow_runs")
+    runs = [r for r in runs if r.get("head_sha") == head["sha"] and r.get("head_branch") == head["ref"]
+            and r.get("conclusion") != "skipped"
+            and (not r.get("pull_requests") or any(x.get("number") == p["number"] for x in r["pull_requests"]))]
+    if not runs:
+        return "no non-skipped automerge.yml run at this head"
+    r = max(runs, key=lambda x: (iso_epoch(x.get("created_at")) or 0, int(x.get("id") or 0)))
+    if r.get("status") != "completed":
+        return "automerge.yml is already pending"
+    rid = r.get("id")
+    if not isinstance(rid, int) or rid <= 0:
+        raise StuckUnreadable("automerge.yml run has no id")
+    if dry:
+        return f"would rerun automerge.yml run {rid} through lander spend reruns"
+    # A label/head/draft may have changed while the check and workflow pages were being read.
+    st, fresh = common.api("GET", f"/repos/{slug}/pulls/{p['number']}", tok=tok)
+    if st != 200 or not isinstance(fresh, dict):
+        raise StuckUnreadable("the PR could not be re-read before its rerun")
+    labels = fresh.get("labels")
+    if (not isinstance(labels, list) or any(not isinstance(l, dict) or not l.get("name") for l in labels)
+            or "auto_merge" not in fresh):
+        raise StuckUnreadable("the PR's labels did not read before its rerun")
+    if (fresh.get("state") != "open" or fresh.get("draft") is not False or fresh.get("auto_merge")
+            or (fresh.get("head") or {}).get("sha") != head["sha"]
+            or (fresh.get("head") or {}).get("ref") != head["ref"]
+            or any(l.get("name") in ("hold", "lander-hold") for l in labels)):
+        return "the PR moved, armed or was held: nothing rerun"
+    exe = common.tool("autofinish-run")
+    if not exe:
+        raise StuckUnreadable("autofinish-run is absent: no cap can be spent")
+    a = subprocess.run([sys.executable, str(exe), "lander", "spend", "reruns", "--repo", str(primary),
+                        "--branch", head["ref"]], capture_output=True, text=True, timeout=30)
+    if a.returncode:
+        return "rerun not spent: " + (a.stderr or a.stdout).strip()
+    st, _ = common.api("POST", f"/repos/{slug}/actions/runs/{rid}/rerun", {}, tok=tok)
+    return f"automerge.yml run {rid}: rerun HTTP {st} (cap spent)"
+
+
+def stuck_one(slug, tok, p, primary, base, required, dry=False):
+    head = p.get("head") or {}
+    ref, sha = head.get("ref"), head.get("sha")
+    row = {"number": p["number"], "branch": ref, "head": sha, "kind": "unknown", "request": None,
+           "reason": "", "red": [], "pending": [], "worktree": None}
+    labels = p.get("labels")
+    if not ref or not sha or "auto_merge" not in p:
+        raise StuckUnreadable("the PR's head or automerge state does not read")
+    if not isinstance(labels, list) or any(not isinstance(l, dict) or not l.get("name") for l in labels):
+        raise StuckUnreadable("the PR's labels do not read")
+    if any(l["name"] in ("hold", "lander-hold") for l in labels):
+        row.update(kind="held", reason="hold or lander-hold: no action")
+        return row
+    wt, tip, stop, live = stuck_local(primary, ref)
+    row["worktree"] = wt
+    if live:
+        row.update(kind="live", reason="a run still owns the branch")
+        return row
+    rows = stuck_pages(slug, f"commits/{sha}/check-runs?filter=all", tok, "check_runs")
+    rows += stuck_pages(slug, f"commits/{sha}/status", tok, "statuses")   # newest per context, never the history
+    row["red"], row["pending"] = stuck_checks(required, rows)
+    state = p.get("mergeable_state")
+    if state == "dirty":
+        row["kind"] = "dirty"
+        if wt is None:
+            row["reason"] = "no worktree here: another host's ship"
+        elif tip is None:
+            row["reason"] = "its worktree here is gone: `git worktree prune`, then the next pass judges it"
+        elif tip != sha:
+            row["reason"] = "this worktree's HEAD %s is not the PR's head: its own /finish pushes it" % (tip or "?")[:12]
+        else:
+            stuck_dirty(slug, tok, primary, p, base, row, stop)
+    elif row["red"]:
+        row.update(kind="pending" if row["pending"] else "red",
+                   reason="required check red: wait for pending checks" if row["pending"]
+                   else "required check red: the owner's, never rerun here")
+    elif not p.get("auto_merge"):
+        row.update(kind="unarmed", reason=stuck_rerun(slug, tok, p, primary, dry))
+    elif state in (None, "unknown"):
+        row["reason"] = "GitHub has not judged mergeability: read next tick"
+    else:
+        row.update(kind="pending" if row["pending"] else "clean")
+    return row
+
+
+def stuck(args, slug, tok, base):
+    if any(a not in ("--json", "--dry-run") for a in args[1:]):
+        raise SystemExit("pr stuck: [--json] [--dry-run]")
+    primary = str(Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent)
+    result = {"repo": slug, "host": common.host_name().lower(), "owner": None, "prs": []}
+    rc = 0
+    try:
+        result["owner"] = stuck_owner(primary)
+        if result["host"] == result["owner"]:
+            required = stuck_required(primary)
+            prs = stuck_pages(slug, "pulls?state=open", tok)
+            for p in prs:
+                head = p.get("head") or {}
+                if (p.get("draft") is not False or not str(head.get("ref") or "").startswith("claude/")
+                        or (head.get("repo") or {}).get("full_name") != slug
+                        or (p.get("base") or {}).get("ref") != base):
+                    continue
+                detail = gh_pull(slug, p["number"], tok)
+                if not detail or (detail.get("head") or {}).get("sha") != head.get("sha"):
+                    raise StuckUnreadable("the PR changed or did not read: try next tick")
+                if detail.get("state") != "open" or detail.get("draft") is not False:
+                    continue
+                result["prs"].append(stuck_one(slug, tok, detail, primary, base, required, "--dry-run" in args))
+    except (StuckUnreadable, OSError, RuntimeError, subprocess.TimeoutExpired) as e:
+        result["error"] = str(e)
+        rc = 2
+    if "--json" in args:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"pr stuck: owner {result['owner'] or 'unknown'}; here {result['host']}")
+        for r in result["prs"]:
+            checks = "; ".join(x["context"] + " (" + x["source"] + ")" for x in r["red"])
+            print(f"#{r['number']} {r['branch']}: {r['kind']} — {r['reason']}"
+                  + (f"; red: {checks}" if checks else "")
+                  + ("; request --road refinish" if r["request"] else ""))
+        if result.get("error"):
+            print("pr stuck: " + result["error"])
+    return rc
+
+
 def main_branch():
     top = git("rev-parse", "--show-toplevel")
     for root in (Path(top), Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).parent):
@@ -1204,12 +1575,12 @@ def main():
         print(("CARRY " if ok else "RUN ") + why)
         sys.exit(0 if ok else 1)
     slug = common.repo_slug(git("remote", "get-url", "origin"))
-    if cmd == "restack":
+    if cmd in ("restack", "stuck"):
         # any checkout of the repo, on any branch: the PR names the branch (the sweep runs it from the main checkout)
         tok = common.token() if slug else None
         if not slug or not tok:
-            sys.exit(f"pr restack: {'no GitHub token' if slug else 'origin is not on GitHub'} — nothing done")
-        sys.exit(restack(args, slug, tok, main_branch()))
+            sys.exit(f"pr {cmd}: {'no GitHub token' if slug else 'origin is not on GitHub'} — nothing done")
+        sys.exit((stuck if cmd == "stuck" else restack)(args, slug, tok, main_branch()))
     if not branch.startswith("claude/") or not slug:
         sys.exit(f"pr: on {branch or 'a detached HEAD'} with origin {slug or 'not on GitHub'} — nothing to do")
     tok = common.token()

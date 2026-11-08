@@ -1,11 +1,18 @@
 # The limits `regatta limit` changes live (modules/regatta/libexec/limit; live-limits, 2026-11-01): see wharf-runs'
-# `limits` for the columns. The week ceiling is a login's (`<login>:<pct>`, `*:` for any login), read by account's
-# ceiling() over the registry's rules.week_max and budgets.json's (a `*:` line only over a row that sets neither); a
-# reserve still judges first (on a row budgets.json tightens, a tighter own line caps it: budgets-edges).
+# `limits` for the columns. Account limits come in soft/hard pairs (`<login>:<pct>`, `*:` for any login that sets no own
+# rule in `accounts.json` or `budgets.json`), read by `bin/account` over `budgets.json` and `accounts.json` on that host
+# (account-limit-pairs, 2026-11-07).
+lighthouse/week-soft-max  login  -  bin/account limit-read week-soft-max {login}
+lighthouse/week-hard-max  login  -  bin/account limit-read week-hard-max {login}
+lighthouse/week-finish-hard-max  login  -  bin/account limit-read week-finish-hard-max {login}
+lighthouse/window-soft-max  login  -  bin/account limit-read window-soft-max {login}
+lighthouse/window-hard-max  login  -  bin/account limit-read window-hard-max {login}
+# Old live keys kept reading as aliases until every host has the pair keys (`week-max`: own line hard, `*:` soft).
+# alias: lighthouse/week-soft-max (*:) and lighthouse/week-hard-max (LOGIN:)
 lighthouse/week-max  login  -  bin/account week-max {login}
-# Finish launches alone may raise the effective week ceiling; an absent or bad line keeps it.
+# alias: lighthouse/week-finish-hard-max
 lighthouse/week-max-finish  login  -  bin/account week-max {login} --for finish
-# The overdraw's week ceiling (`<login>:<pct>`, `*:<pct>`), read by account's lift() in place of 100; a bad own line leaves `*:` to serve, else 100.
+# alias: lighthouse/week-hard-max
 lighthouse/overdraw-max  login  -  bin/account week-max {login} --for overdraw
 # reef's bounds (bin/reef; 2026-11-04): `mode=on|advise|off,run=<floor>-<ceiling>,check=<floor>-<ceiling>` per host,
 # a `*:` line (a host without its own) only in the base file, as `regatta limit set` takes `<host>:` or `--all`; within

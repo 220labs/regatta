@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- Dnd gates work with either Keel version during independent updates. Recorded and pinned blueprints tolerate the retired key without changing their digests; the seed refusal fixture uses the workflow opt-out and covers success without a contract.
+
+- dispatch reads lighthouse's login guard refusals (not signed in, signed in as another account, its login cannot
+  be checked) as host-local on a walk of a claimed fleet entry the claim does not pin here: it is queued again for a
+  host that may run it, never dropped with a card. A named login, a pinned entry or a host-local store's fails as
+  before; dispatch-queue's claim tells its job which with `DISPATCH_QUEUE_HERE`.
+  autofinish-run no longer keeps a caller's own login the guard refuses: like a locked or parked row, the pick moves it.
+- Codex and Antigravity builder preflights accept the exact session reporting hooks keel's `sheep gate` writes beside Regatta's guards. Keel's writer supplies the expected entries and installed gate path; additional hooks, commands and events still refuse a headless build.
+- Remove the `physical:` contract and blueprint field from dispatch, pickup, harness, vendor builds, ship starts, verifier picks and automatic landing holds. Existing workflow, live-write, budget, scope and lock gates still apply.
+- A handed finish needs the claiming host's landing switch, and a yolo or dnd
+  finish its armed switch, Claude's and a vendor's alike: the queue judges both
+  in `eligibility()`, so a fleet where no host may take one shows the unclaimed
+  card naming the switch rather than a silent queued entry.
+- The builder coin: with both Claude weights 0 and a sized brief's GPT arm at 0 too (Codex off), a worker
+  or sr-worker brief draws among the other vendor arms by weight (Argon), never the other GPT size and never the
+  Claude arms (with no fresh Argon host it still falls back to Opus), and dispatch keeps that word where it fires,
+  a builder host without the odds included; before, it drew nothing and ran today's builder (gpt-zero-argon).
+- `autofinish-run lander spend` refuses a stuck key under the store lock, so CI reruns and fix rounds
+  cannot spend an unused counter after the ship has escalated.
+
+- A lander closing line ends an idle finish after `NEXT_IDLE` (one minute) and keeps the sweep
+  from starting a competing landing, including after the finish session ends (stuck-ships S7).
+- Vendor-only nodes need no spacesheep CLI or sign-in: a nonempty login fence naming
+  exclusively known vendor accounts makes its verdict `--` and starts no device login.
+  An `only` claim filter grants no exemption to a node whose fence includes Claude.
+- `yard-node up` requires spacesheep to be signed in on shared nodes, showing only the
+  handle. A missing CLI names its user-prefix install command; an unsigned CLI starts
+  a detached device flow and prints the approval link. Confidential nodes get neither
+  a spacesheep verdict nor a login; dry runs start nothing. Codex's sandbox probe now
+  uses the vendor road's own `fence_profile` and child environment, so a plain workspace
+  probe passing cannot hide a failure under the build's actual fence.
+  A node whose scope cannot be told (no or unreadable registry, a dangling marker, an
+  unknown scope or node, a core that crashes) FAILs `not judged` instead of staying
+  silent, still with no whoami or login; a pending login is reused only while its pid
+  is still this user's `spacesheep login`; one that has printed no link within 5 s is ended,
+  its whole group, before a new one starts, never left running unrecorded. A core without
+  the Codex adapter says so, never blaming the probe's folder. A pending flow past 5 minutes
+  is ended and started anew, never its link handed out with seconds left; the node alone
+  decides vendor-only, so a Mac whose fence disagrees with the node's logins file still asks.
 - builder-host check no longer crashes run as a builder on a Mac with a second
   builder or a CI user: another home's deny entry refuses even its stat, which
   raised PermissionError in the wall's loop (on Python 3.14 the same home was
@@ -16,7 +55,16 @@
   word (a D-item, the owner, a reason) and the house line still hold. The build
   prompt asks a hold to name its doc and D-item, and a finished build to end on
   its summary.
+- The launcher-wait rule reads both forms the same way: a wait, bare or in the
+  house line's pending form, that opens on the launcher releases the build unless
+  it also names a D-item, a doc or a person (`launcher_only`); a stage-word
+  allowlist held the prompt's own "checks or reviews" (S5's landing review). The
+  hand-over's queue put now times out (300 s) and declines, and helm's stall
+  card waits on a clean vendor run's hand-over for 30 minutes at most.
 
+- `autofinish-run lander armed` also needs helm's tick to road a lander stop (`stalls_tick.LANDER_ROADS`, S3's
+  to set), so a gate and an armed tick before S3 still end a stop 🛑; dispatch's yolo launch and the hand-over
+  judge hold a lander line as they hold pending work (S7's landing review).
 - The Codex fence keeps Codex's own install folder readable: a home-installed
   Codex (npm's user prefix in the home on a Linux node) failed every vendor start with
   `bwrap: execvp …/codex: Permission denied`, since its sandbox helper re-runs
@@ -25,6 +73,13 @@
 - `yard-node up` asks no Claude login on a vendor-only node (a fence that names only the walk's
   non-Claude rows, a Codex builder) and prints that node a sign-in line without `claude auth login`;
   a node where no signed-in login meets the fence is refused before anything reaches it.
+- Vendor road fixes (2026-11-06): `run-vendor` commits a builder turn's dirty tree before pushing (`<topic>: <vendor>
+  turn <n> — committed by the launcher`, why in the body, `Co-Authored-By` from `vendor_hook.py`'s `VENDORS`,
+  `launcher_commits: N` in the run record), still refusing conflict markers or a failed commit and holding any path the
+  vendor fence closes; the build prompt starts with `session_name("build", topic)` alone, names no private path, and
+  carries the `keel step <doc> S<n> done --branch <branch> --stamp` rule; `harness_adapters/agy.py`'s `git_dirs`, which
+  `agybuild.py` passes, names the worktree's `--git-dir` and `--git-common-dir` via `--add-dir` so `agy --sandbox` can lock and commit in a linked worktree.
+
 - Antigravity builds use the shared vendor launcher: stdin stream-json turns in
   one conversation, fresh vendor reviews and verifier, checks and fix rounds
   through a clean end or the cap, with no Claude process. Every typed or drawn
@@ -54,11 +109,27 @@
   line that disagrees. A node's own user is no builder user (the Argon design's D1), so a node's own row never carries
   it: a builder row's own line does (TODO.md [codex-row]); a claim with the feature and no road fell each GPT entry back
   to Opus (the landing review). The line is the claim side only: a draw reads the drawing host's own features file.
+- Vendor readers and hand-over (Argon S5): dispatch reads the launcher's reply record before a Claude transcript; clean final builds queue an unpinned finish after releasing their build claim. Builder users never claim finishes. The finish carries the vendor run, build review and gate rows into the claiming owner's logs. `wharf-runs/trust-vendor-review` is off by default, preserving the full Claude landing review and its fix rounds; both loops retain their verifier findings for comparison.
+
 - The `queue` shard runs on Linux: its finish cases judge a prepared host by stand-ins (`config_fixture.sh`'s
   `fixture_finish_ready`: a scheduler that says loaded, a one-word list, `/finish` in each login dir), so a claim's
   finish readiness reads as a Mac's on any host, and test_queue's `systemctl` stand-in answers for a systemd user
   manager (the self-hosted runners have none); `wharf-runs-queue` joins the Linux list and `LINUX_OK`, and only
   `macos` stays in the PR's Mac share (mac-share-speed, 2026-11-06).
+- Antigravity builds use the shared vendor launcher: stdin stream-json turns in
+  one conversation, fresh vendor reviews and verifier, checks and fix rounds
+  through a clean end or the cap, with no Claude process. Every typed or drawn
+  fire repeats the vendor fence. The builder's per-run keychain, domain and
+  model pre-flight fail before sending a task; started failures stay vendor
+  failures. Records and coin end rows retain provider tokens and the result.
+  The sign-in is read from agy's own log against `wharf-runs/agy-domain` (`account pick` prints no address, and an
+  open repo needs no pick: a builder host keeps no accounts registry); an agy reviewer gets no git dir and is held if
+  it changes a tracked or untracked file; a turn that changes the git dir's config or hooks is held and the launcher
+  runs no more git there (no push) — this run only, as the check runs the branch's code unsandboxed anyway; the
+  launcher's git runs with `core.fsmonitor=false`; the turn's guards read the launcher's config dir; a declared
+  reviewer that is not ready holds the loop; an unreadable features file waits at pre-flight; a confidential scope
+  runs no vendor build, typed or drawn, whatever the tenant's logins (the landing review, 2026-11-06).
+
 - `builder-host`: add the `codex` vendor (`<host>-codex`, feature `codex`, `only=codex`, the builder's `.codex` hooks and `AGENTS.md`, written again by the sweep after a fast-forward that moves the clone, another `CODEX_HOME` refused, `codex login status` with missing login `owed`, no model call in `probe`, its own sweep LaunchDaemon label, and a shared slot folder across builders on one Mac).
 - `dispatch-queue`: no host claims a landing (a `finish` entry) below `normal` priority (landing-floor, 2026-11-06).
   A `low` finish stays queued and the listing says why and how to lift it (`autofinish-run <worktree> --priority

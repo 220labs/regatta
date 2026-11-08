@@ -19,6 +19,8 @@ export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
 unset GH_TOKEN GITHUB_TOKEN WHARF_READ_TOKEN
 # share.sh's pool cases assert its default of 2: never the caller's (check.yml's `whole --scoped` step passes it)
 unset CI_SHARE_JOBS
+# mac_lacks and Mac install read only the case's stand-in Homebrew prefix, never this machine's /opt/homebrew or /usr/local
+export CI_RUNNER_BREW=
 : > "$GIT_CONFIG_GLOBAL"
 # A scratch config dir of its own, whatever the caller's REGATTA_CONFIG: every key a case reads is
 # pinned here, so the suite passes the same on a Mac whose login names real hosts and on a runner
@@ -39,7 +41,8 @@ printf 'ci\n' > "$REGATTA_CONFIG/wharf/ci-runner-user"
 # runs $T/gh/queued.json, and both runner tokens are $TOKEN. Its
 # repository variables are $T/gh/vars/<NAME>.json: a POST or PATCH body becomes one, a GET of
 # none is GitHub's 404; with $T/gh/vars/fail a GET fails with no output at all (gh's own failure), with
-# $T/gh/vars/<NAME>.unread a GET of that one does, and with $T/gh/vars/<NAME>.refuse GitHub refuses its write.
+# $T/gh/vars/<NAME>.unread a GET of that one does, and with $T/gh/vars/<NAME>.refuse GitHub refuses its write;
+# with $T/gh/vars/<NAME>.blind a PATCH is taken and every GET of it after fails (a write whose read-back does not).
 mkdir -p "$T/bin" "$T/gh"
 cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -79,7 +82,8 @@ json.dump({"strict": d.get("strict"), "contexts": ctx, "checks": ch}, open(sys.a
     [ -e "$D/vars/$n.json" ] && { echo "HTTP 409" >&2; exit 1; }; mv "$D/vars/post.json" "$D/vars/$n.json" ;;
   *"-X PATCH "*"/actions/variables/"*" --input -") n=${args##*/actions/variables/}; n=${n%% *}
     [ -e "$D/vars/$n.refuse" ] && { echo "HTTP 403" >&2; exit 1; }
-    [ -e "$D/vars/$n.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat > "$D/vars/$n.json" ;;
+    [ -e "$D/vars/$n.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat > "$D/vars/$n.json"
+    [ -e "$D/vars/$n.blind" ] && : > "$D/vars/$n.unread"; true ;;
   *"/actions/variables/"*) n=${args##*/}; { [ -e "$D/vars/fail" ] || [ -e "$D/vars/$n.unread" ]; } && exit 1
     [ -e "$D/vars/$n.json" ] && cat "$D/vars/$n.json" || { echo '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
   # a runner's custom labels set (PUT) or cleared (DELETE) in runners.json, answered as GitHub does
@@ -129,6 +133,14 @@ cat > "$T/ssh/rbin/uname" <<'EOF'
 [ "$1" = -s ] && { echo "${FAKE_SYSTEM:-Darwin}"; exit 0; }
 exec /usr/bin/uname "$@"
 EOF
+# the runner Mac's python3: the real one, except that `python3 -c 'import yaml'` is answered by the stand-in alone, so
+# the probe's mac_lacks reads the case and never the machine the suite runs on: it fails while $FAKE_NO_YAML is set
+# (a login with no PyYAML, a runner Mac's `pip3 install --user` not yet run), passes otherwise
+cat > "$T/ssh/rbin/python3" <<EOF2
+#!/usr/bin/env bash
+if [ "\$1" = -c ] && [ "\$2" = 'import yaml' ]; then [ -z "\${FAKE_NO_YAML:-}" ]; exit; fi
+exec $(command -v python3) "\$@"
+EOF2
 # and its installed locales $FAKE_LOCALES's (unset: C, en_US.UTF-8, C.UTF-8 and the suite's own LANG),
 # written in pieces with a pause and a long tail, as the real one is: a `locale -a | grep -q` reader
 # then meets SIGPIPE under pipefail, as on a Mac (497 of 500 there, 2026-10-27), not a single write
@@ -487,6 +499,9 @@ check "$(grep -c "$TOKEN" "$T/ssh/stdin" 2>/dev/null)" "0" "…none on ssh's std
 check "$(grep -cx 'actions-runners/acme/demo' "$T/ssh/argv")" "$(grep -cx 'install' "$T/ssh/argv")" "one directory per repo, nested owner/repo (J)"
 "$CP" "$R" --runner install > "$T/out" 2>&1; check "$?" "0" "a second install: no-op"
 check "$(cat "$T/ssh/svc")" "started" "…the loaded service not started twice"
+"$CP" "$R" --runner install > "$T/out" 2>&1; grep -q "lacks PyYAML" "$T/out"; check "$?" "1" "a login whose python3 imports yaml: nothing named (mac-share-lane)"
+FAKE_NO_YAML=1 "$CP" "$R" --runner install > "$T/out" 2>&1; check "$?" "0" "a login whose python3 cannot import yaml: install goes on"
+grep -q "⚠ laptop-ci lacks PyYAML for the login's python3 (pip3 install --user pyyaml)" "$T/out"; check "$?" "0" "…and names it, with the owner's step"
 : > "$T/gh/calls"
 "$CP" "$R" > "$T/out" 2>&1
 check "$(grep -c '/actions/runners' "$T/gh/calls")" "0" "status of an actions repo: no runners API call (K)"
@@ -1312,6 +1327,60 @@ printf '#!/bin/sh\n# npm install -g in a comment is no command\nnpm i -g left-pa
 grep -q '⚠ check.sh:3 runs npm install -g' "$T/out"; check "$?" "0" "…its npm -g said, with file and line"
 grep -q '⚠ check.sh:4 runs sudo' "$T/out"; check "$?" "0" "…its sudo said"
 grep -q 'check.sh:2' "$T/out"; check "$?" "1" "…a comment is not"
+
+echo "a job on the runner Mac: a document the line names is not read, every other file is (pick-prose-scan)"
+R="$T/gcg5b"; newrepo "$R"
+printf '#!/bin/sh\ntrue\n' > "$R/check.sh"
+printf -- '- [x1] `add`'"'"'s printed post-install line runs `sudo bash` on an empty file\n' > "$R/TODO.md"
+printf 'sudo true\n' > "$R/notes.txt"
+printf 'grep -q x TODO.md\nsudo bash /dev/null\n' > "$R/lint.sh"
+printf '#!/bin/sh\nsudo true\n' > "$R/runme"
+printf 'sudo true\n' > "$R/plain"
+printf 'ci:\n\tsudo make install\n' > "$R/Makefile"
+printf 'require("child_process").execSync("npm install -g left-pad");\n' > "$R/setup.js"
+mkdir -p "$R/tools"; printf 'sudo true\n' > "$R/tools/lint"; chmod +x "$R/tools/lint"
+printf '#!/bin/sh\nsudo true\n' > "$R/tools/check.txt"; chmod +x "$R/tools/check.txt"; ln -s check.txt "$R/tools/check"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && grep -q x TODO.md' > "$T/out" 2>&1; check "$?" "0" "a document the line names: the switch runs"
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…its prose is no host write"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/lint . TODO.md && grep -q bash notes.txt' --force > "$T/out" 2>&1
+grep -q -E 'TODO.md:|notes.txt:' "$T/out"; check "$?" "1" "a document after an argument . or bash: not read either"
+grep -q '⚠ tools/lint:1 runs sudo' "$T/out"; check "$?" "0" "…the executable beside it still read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && { [ ! -f TODO.md ] || sh lint.sh; } && echo a || sh check.sh TODO.md' --force > "$T/out" 2>&1
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…nor beside an || (no pipe into a shell) or as a script's argument"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && sh lint.sh TODO.md' --force > "$T/out" 2>&1
+grep -q '⚠ lint.sh:2 runs sudo' "$T/out"; check "$?" "0" "the same line in a script the check runs: still said"
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "…and the document beside it still not read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && ./runme' --force > "$T/out" 2>&1
+grep -q '⚠ runme:2 runs sudo' "$T/out"; check "$?" "0" "no document suffix: read as main read it (runme)"
+for c in 'bash plain' 'bash ./plain' 'bash "plain"' 'bash -o pipefail plain' 'sh < plain' 'cat plain | bash' 'grep -q x plain'; do
+  "$CP" "$R" --to self-hosted --check "sh check.sh && $c" --force > "$T/out" 2>&1
+  grep -q '⚠ plain:1 runs sudo' "$T/out"; check "$?" "0" "a plain file, no extension, no x bit, no #!, as main read it: $c"
+done
+"$CP" "$R" --to self-hosted --check 'sh check.sh && make -f Makefile ci && node setup.js' --force > "$T/out" 2>&1
+grep -q '⚠ Makefile:2 runs sudo' "$T/out"; check "$?" "0" "a Makefile after make -f: still read"
+grep -q '⚠ setup.js:1 runs npm install -g' "$T/out"; check "$?" "0" "…and a .js after node"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/check' --force > "$T/out" 2>&1
+grep -q '⚠ tools/check:2 runs sudo' "$T/out"; check "$?" "0" "a link named as a script, to a .txt: judged by the name on the line"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && tools/check.txt' --force > "$T/out" 2>&1
+grep -q '⚠ tools/check.txt:2 runs sudo' "$T/out"; check "$?" "0" "an executable #! script named .txt, run by its own name: still read"
+printf '#!/bin/sh\nsudo true\n' > "$R/hook.txt"; printf 'sudo true\n' > "$R/tools/run.txt"; chmod +x "$R/tools/run.txt"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && perl hook.txt && tools/run.txt' --force > "$T/out" 2>&1
+grep -q '⚠ hook.txt:2 runs sudo' "$T/out"; check "$?" "0" "a .txt with a #! line, not executable, in a spelling no interpreter rule reads: still read"
+grep -q '⚠ tools/run.txt:1 runs sudo' "$T/out"; check "$?" "0" "an executable .txt with no #! line, run by its name: still read"
+"$CP" "$R" --to self-hosted --check 'sh check.sh && node --eval 1 && python3 tests/eval.py && grep -q x TODO.md | sh-lint' --force > "$T/out" 2>&1
+grep -q 'TODO.md:' "$T/out"; check "$?" "1" "an eval in a flag or a path, a pipe into sh-lint: no shell fed, the document not read"
+words=$(printf '1/env %.0s' $(seq 40)); s0=$SECONDS
+"$CP" "$R" --to self-hosted --check "sh check.sh && env ${words}grep -q x notes.txt" --force > "$T/out" 2>&1
+check "$(( SECONDS - s0 < 30 ))" "1" "a run of 1/env words: no backtracking (it took minutes before round 3)"
+for c in 'bash notes.txt' '/usr/bin/env bash notes.txt' 'if sh notes.txt; then :; fi' '{ true; . notes.txt; }' \
+    'bash ./notes.txt' 'bash "notes.txt"' 'sh < notes.txt' 'bash -e notes.txt' 'bash -euo pipefail notes.txt' \
+    'CI=1 bash notes.txt' 'env FOO=1 bash notes.txt' 'nice -n 5 bash notes.txt' 'timeout 600 sh notes.txt' \
+    'cat notes.txt | sh' 'cat notes.txt |& sh' 'cat notes.txt > >(bash)' 'tee >(sh) < notes.txt' \
+    'bash <(cat notes.txt)' 'eval "$(cat notes.txt)"' 'true
+sh notes.txt'; do
+  "$CP" "$R" --to self-hosted --check "sh check.sh && $c" --force > "$T/out" 2>&1
+  grep -q '⚠ notes.txt:1 runs sudo' "$T/out"; check "$?" "0" "a document an interpreter runs: still read: $c"
+done
 R="$T/gcg6"; newrepo "$R"; W="$R/.github/workflows"
 cat > "$W/release.yml" <<'EOF'
 name: release
@@ -1539,6 +1608,19 @@ pickrepo() { # pickrepo <dir> [needs-json]: a repo in the variable form, its var
   echo true > "$T/gh/private"; echo false > "$T/gh/forkpr"; echo "$MACRUN" > "$T/gh/runners.json"; }
 varval() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' "$T/gh/vars/CI_RUNS_ON.json" 2>/dev/null || echo unset; }
 
+# before pk1, in the lanes and usage as first written: later cases leave other lanes and state
+echo "the pick: a document the check line names is no host write (pick-prose-scan)"
+R="$T/pk0"; pickrepo "$R"; usage ok 100
+printf -- '- [x1] `add`'"'"'s printed post-install line runs `sudo bash` on an empty file\n' > "$R/TODO.md"
+printf 'sudo true\n' > "$R/lint.sh"
+sed 's/sh check\.sh/sh check.sh \&\& grep -q x TODO.md/' "$R/.github/workflows/check.yml" > "$T/wf" && cp "$T/wf" "$R/.github/workflows/check.yml"
+grep -q 'grep -q x TODO.md' "$R/.github/workflows/check.yml"; check "$?" "0" "(the check line names TODO.md)"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q 'refused, the check writes' "$T/out"; check "$?" "1" "TODO.md's sudo prose: the self-hosted lane not refused"
+grep -q '  pick: mac' "$T/out"; check "$?" "0" "…and picked"
+sed 's/grep -q x TODO\.md/sh lint.sh/' "$R/.github/workflows/check.yml" > "$T/wf" && cp "$T/wf" "$R/.github/workflows/check.yml"
+"$CP" "$R" --pick > "$T/out" 2>&1
+grep -q "lane mac: refused, the check writes the runner login's own: lint.sh:1 sudo" "$T/out"; check "$?" "0" "…a script the check runs with the same sudo: refused, as on main"
 R="$T/pk1"; pickrepo "$R"; rm -f "$USAGE"
 "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a private repo, needs absent, the runner Mac online: picked"
 grep -q '  pick: mac (\["self-hosted","macOS","laptop"\])' "$T/out"; check "$?" "0" "…the Mac lane: needs absent reads as macOS"
@@ -1976,9 +2058,9 @@ if [ -f "$SH" ]; then
   # --scoped: the pull request's merge commit changes b's suite alone, so a and c print their SKIP line in their place
   if [ -f "$P/modules/wharf-runs/bin/check_scope.py" ]; then
     g() { git -C "$P" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
-    g init -q && g checkout -q -b base && g add -A && g commit -qm base && g checkout -q -b head \
-      && echo note > "$P/modules/b/tests/note" && g add -A && g commit -qm head && g checkout -q base \
-      && g merge -q --no-ff --no-edit head
+    g init -q && g checkout -q -b base && g add -A && g commit -qm base && g checkout -q -b topic \
+      && echo note > "$P/modules/b/tests/note" && g add -A && g commit -qm topic && g checkout -q base \
+      && g merge -q --no-ff --no-edit topic
     pool macos --scoped; check "$?" "1" "share.sh macos --scoped at once: b runs and fails"
     check "$(seq_of)" "SKIP a|run b|b-out|rc=1|SKIP c|" "…the SKIP lines unchanged, in the line's order"
     check "$(sed -n '/^=== the macOS share/,$p' "$T/out" | sed -E 's/ [0-9]+s / /' | tr '\n' '|')" \
@@ -3341,7 +3423,24 @@ FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" 
 check "$(grep -c 'a case failed above' "$T/out"):$(grep -c 'could not tell' "$T/out")" "0:1" "…as could not tell, never as a failed case"
 "$CP" "$R" --runner check --dry-run $LX > "$T/out" 2>&1; check "$?" "0" "--runner check --dry-run"
 grep -q "nothing written, nothing minted" "$T/out"; check "$?" "0" "…says what it would read"
-FAKE_SYSTEM=Linux "$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "2" "--runner check with a Mac's labels: refused"
+FAKE_SYSTEM=Linux "$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "2" "--runner check with a Mac's labels on a Linux host: refused"
+"$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "0" "--runner check, a runner Mac whose python3 imports yaml: passes"
+grep -q "python3 imports yaml" "$T/out"; check "$?" "0" "…said"
+FAKE_NO_YAML=1 "$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "2" "…its python3 unable to import yaml: refused"
+grep -q "✗ laptop-ci lacks PyYAML for the login's python3 (pip3 install --user pyyaml)" "$T/out"; check "$?" "0" "…naming the missing tool and the owner's step"
+mkdir -p "$T/ssh/pbin" "$T/ssh/brew/bin"
+printf '#!/bin/sh\nexit 1\n' > "$T/ssh/pbin/python3"
+printf '#!/bin/sh\nexit 0\n' > "$T/ssh/brew/bin/brew"
+printf '#!/bin/sh\nexit 0\n' > "$T/ssh/brew/bin/python3"
+chmod +x "$T/ssh/pbin/python3" "$T/ssh/brew/bin/brew" "$T/ssh/brew/bin/python3"
+printf '%s\n' "$T/ssh/pbin:$PATH" > "$RD/.path"
+"$CP" "$R" --runner check > "$T/out" 2>&1; check "$?" "2" "…a configured runner reads the job's frozen .path, not ssh's PATH"
+mv "$RD/.runner" "$T/runner.keep"
+CI_RUNNER_BREW="$T/ssh/brew" FAKE_NO_YAML=1 "$CP" "$R" --runner check > "$T/out" 2>&1
+check "$?" "0" "…before install (or after remove), stale .path ignored and Homebrew's prefix read ahead of ssh's PATH"
+mv "$T/runner.keep" "$RD/.runner"; rm -rf "$RD/.path" "$T/ssh/pbin" "$T/ssh/brew"
+"$CP" "$R" --runner check --dry-run > "$T/out" 2>&1; check "$?" "0" "--runner check --dry-run with a Mac's labels"
+grep -q "ask whether the login's python3 imports yaml" "$T/out"; check "$?" "0" "…says what it would read"
 mv "$T/ssh/rbin/ss" "$T/ssh/rbin/ss.off"; printf '#!/bin/sh\nexit 0\n' > "$T/ssh/rbin/ss"; chmod +x "$T/ssh/rbin/ss"; : > "$T/ssh/checkargs"
 FAKE_SYSTEM=Linux "$CP" "$R" --runner check $LX > "$T/out" 2>&1; check "$?" "2" "--runner check on a host whose ss lists no listener: refused, never a vacuous pass"
 grep -q "read no address or no listener" "$T/out"; check "$?" "0" "…saying so"
@@ -3660,6 +3759,199 @@ check "$(tail -1 "$T/out")" "returned" "the sightings' log dir unwritable: said,
 grep -q "⚠ share runners not recorded at" "$T/out"; check "$?" "0" "…in one line"
 chmod 755 "$T/ro"
 cp "$T/lanes.lx" "$LANES"; cp "$T/budgets.lx" "$BUDGETS"; mv "$T/gh/rsc.lx" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG" "$STATE"
+echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
+
+echo "the pick: a lane's share_runs_on, CI_RUNS_ON moving with the Linux share (mac-share-lane, 2026-11-06)"
+cp "$LANES" "$T/lanes.ms"; cp "$BUDGETS" "$T/budgets.ms"; cp "$T/gh/rsc.json" "$T/gh/rsc.ms"
+MSFULL='["self-hosted","macOS","laptop","browser"]'; MSSHARE='["self-hosted","macOS","mac-share"]'
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "share_runs_on": ["self-hosted", "macOS", "mac-share"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}}]}
+EOF
+cat > "$BUDGETS" <<'EOF'
+{"reserve": 0.2, "accounts": {"cci-o": {"provider": "circleci", "org_slug": "gh/acme", "month_credits": 30000}}}
+EOF
+FULLR='{"id":7,"name":"laptop","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"ARM64"},{"name":"laptop"},{"name":"browser"}]}'
+SHARER='{"id":8,"name":"laptop-ci","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"},{"name":"ARM64"},{"name":"mac-share"}]}'
+msrunners() { # msrunners both|full: the full-line runner (browser) beside the share runner (mac-share), or alone
+  case "$1" in full) echo "{\"total_count\":1,\"runners\":[$FULLR]}" ;; *) echo "{\"total_count\":2,\"runners\":[$FULLR,$SHARER]}" ;; esac > "$T/gh/runners.json"; }
+msrow() { python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; r=[x for x in r if x["variable"]=="CI_RUNS_ON"]; print(len(r), json.dumps(r[-1]["new"], separators=(",", ":")), r[-1].get("share"), r[-1]["undo"])' "$PLOG"; }
+R="$T/ms"; tworepo "$R"; msrunners both; ousage 1000 1000
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "the share on, a plain-form check.yml: picked (the landing review)"
+grep -qF "pick: mac ($MSFULL)" "$T/out"; check "$?" "0" "…runs_on, never the share labels: a push would take them too"
+grep -q "not the split form" "$T/out"; check "$?" "0" "…saying why"
+python3 - "$R/.github/workflows/check.yml" "$FULLLINE" <<'PYS'
+import re, sys
+p, line = sys.argv[1], sys.argv[2]
+t = open(p).read()
+open(p, "w").write(re.sub(r"runs-on: \$\{\{ fromJSON\(vars\.CI_RUNS_ON \|\| [^\n]*", lambda m: line, t, count=1))
+PYS
+grep -qF "vars.CI_RUNS_ON_FULL" "$R/.github/workflows/check.yml"; check "$?" "0" "…the fixture now the split form"
+"$CP" "$R" --pick > "$T/out" 2>&1; grep -qF "pick: mac ($MSFULL)" "$T/out"; check "$?" "0" "the split form, CI_RUNS_ON_FULL unset: runs_on still"
+grep -q "CI_RUNS_ON_FULL holds no label list" "$T/out"; check "$?" "0" "…saying why"
+python3 -c 'import json,sys; json.dump({"name": "CI_RUNS_ON_FULL", "value": sys.argv[2]}, open(sys.argv[1], "w"))' "$T/gh/vars/CI_RUNS_ON_FULL.json" "$MSFULL"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "the share on, the lane with a share_runs_on, both runners online: picked"
+grep -qF "pick: mac ($MSSHARE)" "$T/out"; check "$?" "0" "…the lane's share labels, the PR check running only the macOS share"
+grep -q 'share CI_LINUX_ELSEWHERE: true, stays' "$T/out"; check "$?" "0" "…the share itself stays on"
+check "$(varval)" "unset" "…without --apply nothing is written"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "--apply"
+check "$(varval)" "$MSSHARE" "…CI_RUNS_ON holds the share labels, the browser runner not asked"
+check "$(msrow)" "1 $MSSHARE True gh api -X DELETE repos/acme/demo/actions/variables/CI_RUNS_ON" "…logged as every flip is: the new labels, share on, the call that undoes it"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "a second pick: unchanged, the lane's share labels matching it"
+check "$(msrow | cut -d' ' -f1)" "1" "…and nothing more logged"
+msrunners full; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "the share on, no online runner with the share labels: exit 3, the current lane failing"
+grep -q 'lane mac: refused, no online runner labelled self-hosted, macOS, mac-share' "$T/out"; check "$?" "0" "…the lane judged as having no runner by the share labels, though the browser runner is online"
+grep -q 'no lane: every eligible lane is refused or over budget' "$T/out"; check "$?" "0" "…no lane: CI_RUNS_ON stays"
+check "$(varval)" "$MSSHARE" "…unchanged"
+msrunners both
+ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "the Linux lane's org past its reserve: the share goes off"
+grep -q 'share CI_LINUX_ELSEWHERE: true → false' "$T/out"; check "$?" "0" "…said"
+check "$(share) $(varval)" "false $MSFULL" "…and CI_RUNS_ON moved back in the same pass, the browser labels again"
+check "$(msrow)" "2 $MSFULL False gh api -X PATCH repos/acme/demo/actions/variables/CI_RUNS_ON -f name=CI_RUNS_ON -f value='$MSSHARE'" "…logged: share off, the PATCH that restores the share labels"
+msrunners full; "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "the share off, only the browser runner online: eligible by runs_on"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…unchanged: the share labels play no part while it is off"
+msrunners both; ousage 1000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+grep -q 'the share went off 0 min ago' "$T/out"; check "$?" "0" "back under budget, off moments ago: the share held off"
+check "$(share) $(varval)" "false $MSFULL" "…and CI_RUNS_ON with it"
+backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "off two hours ago: the share comes on"
+check "$(share) $(varval)" "true $MSSHARE" "…and CI_RUNS_ON moves to the share labels in the same pass"
+check "$(msrow)" "3 $MSSHARE True gh api -X PATCH repos/acme/demo/actions/variables/CI_RUNS_ON -f name=CI_RUNS_ON -f value='$MSFULL'" "…logged: share on, the PATCH that restores the full labels"
+touch "$T/gh/vars/CI_LINUX_ELSEWHERE.unread"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "the share's variable unread, CI_RUNS_ON on the share labels (the landing review)"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…the list in force kept: nothing moves on one read error"
+check "$(varval) $(msrow | cut -d' ' -f1)" "$MSSHARE 3" "…nothing written, nothing logged"
+echo "{\"total_count\":1,\"runners\":[$SHARER]}" > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "…only the share runner online: the lane judged by the list in force, no card"
+rm -f "$T/gh/vars/CI_LINUX_ELSEWHERE.unread"; msrunners both
+touch "$T/gh/vars/CI_RUNS_ON.refuse"; ousage 23000 1000; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "the share going off, CI_RUNS_ON's move off the share labels refused: exit 3"
+grep -q 'share CI_LINUX_ELSEWHERE left on: CI_RUNS_ON not moved off lane mac' "$T/out"; check "$?" "0" "…said"
+check "$(share) $(varval)" "true $MSSHARE" "…the share left on, so no pull request runs the whole line on the share runner"
+rm -f "$T/gh/vars/CI_RUNS_ON.refuse"
+echo "{\"total_count\":1,\"runners\":[$SHARER]}" > "$T/gh/runners.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "the share going off with the browser runner offline: the lane refused, exit 3"
+check "$(share) $(varval)" "false $MSFULL" "…CI_RUNS_ON moved to runs_on first all the same, before the share went off"
+check "$(msrow)" "4 $MSFULL False gh api -X PATCH repos/acme/demo/actions/variables/CI_RUNS_ON -f name=CI_RUNS_ON -f value='$MSSHARE'" "…logged as its own row, share off"
+msrunners both; ousage 1000 1000; backproj; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$(share) $(varval)" "true $MSSHARE" "back on: the share labels again"
+cp "$R/.github/ci.json" "$T/ci.ms"; printf '{"provider": "self-hosted", "check": "sh check.sh", "needs": ["macos", "browser"]}\n' > "$R/.github/ci.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "a repo whose needs name browser, the share on"
+check "$(varval)" "$MSFULL" "…runs_on, as the share labels lack browser"
+cp "$T/ci.ms" "$R/.github/ci.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$(share) $(varval)" "true $MSSHARE" "needs back to macos: the share labels again"
+ousage 23000 1000; "$CP" "$R" --pick --apply --dry-run > "$T/out" 2>&1; check "$?" "0" "a dry run of the share going off"
+check "$(grep -c 'would update variable CI_RUNS_ON:' "$T/out")" "1" "…one move of CI_RUNS_ON said, as the real run makes"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…the lanes judged after it"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":1,"created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a report of the share going off, a run queued 40 min on the share labels (the landing review)"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…the lane kept, as --apply keeps it: the move off the share labels is a flip"
+check "$(grep -c 'a check sat queued' "$T/out")" "0" "…the run queued before it never makes the lane stale"
+rm -f "$T/gh/queued.json"
+touch "$T/gh/vars/CI_LINUX_ELSEWHERE.blind"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "the share's write taken, its read-back failing: exit 3"
+rm -f "$T/gh/vars/CI_LINUX_ELSEWHERE.blind" "$T/gh/vars/CI_LINUX_ELSEWHERE.unread"
+check "$(share) $(varval)" "false $MSFULL" "…CI_RUNS_ON stays on runs_on, never moved back to the share labels"
+setvar CI_LINUX_ELSEWHERE true; touch "$T/gh/vars/CI_LINUX_ELSEWHERE.blind"; "$CP" "$R" --pick --apply > "$T/out" 2>&1
+check "$?" "3" "the same with CI_RUNS_ON already on runs_on (the share runner offline when the share came on): exit 3"
+rm -f "$T/gh/vars/CI_LINUX_ELSEWHERE.blind" "$T/gh/vars/CI_LINUX_ELSEWHERE.unread"
+check "$(share) $(varval)" "false $MSFULL" "…CI_RUNS_ON never moved onto the share labels"
+setvar CI_LINUX_ELSEWHERE true; ousage 1000 1000; rm -f "$PLOG"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":2,"created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "a run queued 40 min on runs_on while the share wants share_runs_on: not skipped as stale"
+check "$(varval)" "$MSSHARE" "…CI_RUNS_ON moves onto the online share runner"
+rm -f "$PLOG"; echo "{\"total_count\":1,\"runners\":[$SHARER]}" > "$T/gh/runners.json"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":99,"event":"schedule","created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a schedule run queued 40 min on CI_RUNS_ON_FULL while CI_RUNS_ON holds share_runs_on: not stale"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…lane mac kept"
+check "$(grep -c 'a check sat queued' "$T/out")" "0" "…not counted against CI_RUNS_ON"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":100,"event":"pull_request","created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "a pull_request run queued 40 min on share_runs_on: stale, exit 3 with no fallback lane"
+grep -q 'lane mac: skipped, a check sat queued 40 min on it' "$T/out"; check "$?" "0" "…lane mac skipped"
+rm -f "$T/gh/queued.json"; msrunners both
+touch "$T/gh/vars/CI_RUNS_ON_FULL.unread"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "CI_RUNS_ON_FULL unread while the share is on: exit 0"
+check "$(varval)" "$MSSHARE" "…the list in force stays"
+setvar CI_LINUX_ELSEWHERE false; ousage 23000 1000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "CI_RUNS_ON_FULL unread while the share is off: never read as SHARE_UNREAD"
+check "$(varval)" "$MSFULL" "…CI_RUNS_ON moves off the share labels onto runs_on"
+rm -f "$T/gh/vars/CI_RUNS_ON_FULL.unread"
+setvar CI_LINUX_ELSEWHERE true; ousage 1000 1000
+python3 -c 'import json,sys; json.dump({"name":"CI_RUNS_ON_FULL","value":"[\"\"]"},open(sys.argv[1],"w"))' "$T/gh/vars/CI_RUNS_ON_FULL.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; grep -q "CI_RUNS_ON_FULL holds no label list" "$T/out"; check "$?" "0" "CI_RUNS_ON_FULL with a blank label: rejected"
+python3 -c 'import json,sys; json.dump({"name":"CI_RUNS_ON_FULL","value":sys.argv[2]},open(sys.argv[1],"w"))' "$T/gh/vars/CI_RUNS_ON_FULL.json" "$MSFULL"
+"$CP" "$R" --pick --apply > /dev/null 2>&1
+echo true > "$T/gh/forkpr"; ousage 23000 1000
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "3" "the share going off on a repo with fork PR workflows on: exit 3"
+grep -q "share CI_LINUX_ELSEWHERE left on: CI_RUNS_ON not moved off lane mac" "$T/out"; check "$?" "0" "…refuses to move CI_RUNS_ON onto self-hosted runs_on"
+check "$(share) $(varval)" "true $MSSHARE" "…neither self-hosted runs_on nor false written"
+echo false > "$T/gh/forkpr"; ousage 1000 1000
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "share_runs_on": ["mac-share"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}}]}
+EOF
+python3 -c 'import json,sys; json.dump({"name":"CI_RUNS_ON","value":"[\"mac-share\"]"},open(sys.argv[1],"w"))' "$T/gh/vars/CI_RUNS_ON.json"
+rm -f "$PLOG"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "a 1-label share_runs_on: resolved to its lane"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…unchanged, not (none of the lanes)"
+python3 -c 'import json,time; print(json.dumps({"workflow_runs":[{"id":3,"event":"pull_request","created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(time.time()-2400))}]}))' > "$T/gh/queued.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "…a queued pull_request run marks the 1-label share_runs_on lane stale"
+grep -q 'lane mac: skipped, a check sat queued 40 min on it' "$T/out"; check "$?" "0" "…skipped by stale_lane"
+rm -f "$T/gh/queued.json"; msrunners full
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "3" "…and with its runner offline, exit 3 on cur_lane"
+cat > "$LANES" <<'EOF'
+{"lanes": [{"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "share_runs_on": ["self-hosted", "macOS", "mac-share"], "runs": ["macos"]}]}
+EOF
+python3 -c 'import json,sys; json.dump({"name":"CI_RUNS_ON","value":sys.argv[2]},open(sys.argv[1],"w"))' "$T/gh/vars/CI_RUNS_ON.json" "$MSSHARE"
+echo "{\"total_count\":1,\"runners\":[$SHARER]}" > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "no Linux share lane while CI_LINUX_ELSEWHERE is true: judged by share_runs_on"
+grep -q 'no lane runs the Linux share; left as it is' "$T/out" && grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…left as it is, share_on kept true"
+msrunners both; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "…--apply with both runners online"
+check "$(share) $(varval)" "true $MSSHARE" "…CI_RUNS_ON stays on share_runs_on while CI_LINUX_ELSEWHERE stays true"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "share_runs_on": ["self-hosted", "macOS", "mac-share"], "runs": ["macos"]},
+ {"name": "gha", "runs_on": "ubuntu-latest", "runs": ["linux", "public"], "account": "gh-u", "projects": {"acme/other": "actions"}}]}
+EOF
+echo "{\"total_count\":1,\"runners\":[$SHARER]}" > "$T/gh/runners.json"
+"$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "0" "no Linux share lane for this repo while CI_LINUX_ELSEWHERE is true: judged by share_runs_on"
+grep -q 'no lane runs the Linux share for acme/demo; left as it is' "$T/out" && grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…left as it is, share_on kept true"
+msrunners both; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "…--apply with both runners online"
+check "$(share) $(varval)" "true $MSSHARE" "…CI_RUNS_ON stays on share_runs_on"
+R2="$T/msplain"; newrepo "$R2"; "$CP" "$R2" --to self-hosted --runs-on-var CI_RUNS_ON > /dev/null 2>&1
+"$CP" "$R2" --pick > "$T/out" 2>&1; check "$(grep -c 'share labels:' "$T/out")" "0" "a repo without CI_LINUX_ELSEWHERE: no share-labels gate warning"
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}}]}
+EOF
+rm -f "$T/gh/vars/CI_RUNS_ON.json" "$PLOG"; "$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "a lane with no share_runs_on, the share on"
+check "$(varval)" "$MSFULL" "…CI_RUNS_ON is runs_on, as before"
+check "$(msrow | cut -d' ' -f1-3)" "1 $MSFULL None" "…the log row carries no share field"
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…a second pick: unchanged"
+for bad in '"mac", "runs_on": ["self-hosted", "macOS"], "share_runs_on": "mac-share", "runs": ["macos"]' \
+           '"mac", "runs_on": ["self-hosted", "macOS"], "share_runs_on": [], "runs": ["macos"]' \
+           '"mac", "runs_on": ["self-hosted", "macOS"], "share_runs_on": ["self-hosted", "macos"], "runs": ["macos"]' \
+           '"mac", "runs_on": "macos-latest", "share_runs_on": ["self-hosted", "macOS"], "runs": ["macos"]' \
+           '"mac", "runs_on": ["self-hosted", "Linux", "n"], "share_runs_on": ["self-hosted", "Linux"], "runs": ["linux"], "projects": {"acme/demo": "actions"}' \
+           '"mac", "provider": "circleci", "share_runs_on": ["self-hosted", "macOS"], "runs": ["linux"], "account": "cci-o"'; do
+  printf '{"lanes": [{"name": %s}]}\n' "$bad" > "$LANES"
+  "$CP" "$R" --pick > "$T/out" 2>&1; check "$?" "2" "a share_runs_on that is no label list, or on a lane that cannot carry one: refused ($(printf '%s' "$bad" | cut -c1-70))"
+  grep -q 'lane mac' "$T/out"; check "$?" "0" "…naming the lane"
+done
+cat > "$LANES" <<'EOF'
+{"lanes": [
+ {"name": "mac", "runs_on": ["self-hosted", "macOS", "laptop", "browser"], "share_runs_on": ["self-hosted", "macOS", "mac-share"], "runs": ["macos"]},
+ {"name": "oauth", "provider": "circleci", "runs": ["linux"], "account": "cci-o", "projects": {"acme/demo": "gh/acme/demo"}}]}
+EOF
+R="$T/mslit"; newrepo "$R"; "$CP" "$R" --to self-hosted > /dev/null 2>&1
+echo '      # the share: vars.CI_LINUX_ELSEWHERE' >> "$R/.github/workflows/check.yml"
+mkdir -p "$R/.circleci"; printf '%s\n' "$SLUG_O" > "$R/.circleci/project-slug"
+echo '          PROJECT: ${{ vars.CI_LINUX_TARGET }}' > "$R/.github/workflows/check-linux.yml"
+rm -rf "$T/gh/vars"; mkdir -p "$T/gh/vars"; setvar CI_LINUX_ELSEWHERE true; rm -f "$PLOG"
+echo '{"strict":false,"contexts":["check","ci/circleci: check-linux"],"checks":[{"context":"check","app_id":null},{"context":"ci/circleci: check-linux","app_id":-1}]}' > "$T/gh/rsc.json"
+echo true > "$T/gh/private"; echo false > "$T/gh/forkpr"; ousage 1000 1000; msrunners full
+"$CP" "$R" --pick --apply > "$T/out" 2>&1; check "$?" "0" "a literal runs-on, the share on: no variable routes the share labels"
+grep -q 'pick: mac, unchanged' "$T/out"; check "$?" "0" "…the lane judged by runs_on, as before"
+cp "$T/lanes.ms" "$LANES"; cp "$T/budgets.ms" "$BUDGETS"; cp "$T/gh/rsc.ms" "$T/gh/rsc.json"; rm -rf "$T/gh/vars"; rm -f "$PLOG" "$USAGE"
 echo '{"total_count":0,"runners":[]}' > "$T/gh/runners.json"
 
 echo "the review of 2026-10-21: the suite's own git config (15)"

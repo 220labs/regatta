@@ -189,7 +189,7 @@ if os.environ.get("STUB_DISPATCH_FAIL"):
 if a[0] == "--start":
     prompt, wt, name = a[1:4]
     sid = a[a.index("--session-id") + 1] if "--session-id" in a else a[a.index("--resume") + 1]
-    p = subprocess.Popen(["sleep", "120"], start_new_session=True)
+    p = subprocess.Popen(["sleep", "3600"], start_new_session=True)
     open(os.environ["STUB_PIDS"], "a").write("%d\n" % p.pid)
     open(os.environ["STUB_PIDS"] + ".sid", "w").write("%d\n" % os.getsid(0))   # dispatch's own session
     topic = re.sub(r"-+", "-", re.sub(r"[^A-Za-z0-9-]", "-", name)).strip("-").lower()
@@ -218,12 +218,12 @@ PY
 chmod +x "$T/orca" "$T/cbin/codex" "$T/dispatch"
 
 # one live process per registry entry and live run: `sleep`s, so pid and start time are real
-sleeper() { sleep 600 & PIDS+=($!); disown $!; }   # disowned: no "Terminated" lines at the end
+sleeper() { sleep 3600 & PIDS+=($!); disown $!; }   # disowned: no "Terminated" lines at the end
 for i in $(seq 1 18); do sleeper; done
 DEAD=$(sh -c 'echo $$')   # a pid that has exited
 P=$(printf '%s,' "${PIDS[@]}")
 REPO="$T/repo"; git init -q "$REPO"; git -C "$REPO" checkout -q -b claude/laptop/2026-10-14-fixture
-printf -- '- physical: none\n' > "$REPO/AGENTS.md"   # bin/harness run's rule, as dispatch's
+printf -- '# Test repository\n' > "$REPO/AGENTS.md"   # an ordinary contract
 
 python3 - "$HD" "$P" "$DEAD" "$REPO" <<'PY'
 import json, os, re, subprocess, sys, time
@@ -434,12 +434,9 @@ mkrepo() {
 TODAY=$(date +%Y-%m-%d)
 
 echo "run: the rules every harness shares (exit 2, nothing started)"
-mkrepo "$T/live" "- physical: a sweep"
-H run --prompt x --cwd "$T/live-wt" > /dev/null 2>"$T/err"; check "$?" 2 "a repo whose contract is not physical: none: refused"
-has "$T/err" "must say \`physical: none\`" "  saying why (dispatch's rule, which --start leaves to its caller)"
-mkrepo "$T/projects/site" "- physical: none"
-mkrepo "$T/projects/oss/lib" "- physical: none"
-mkrepo "$T/projects/overlay" "- physical: none"
+mkrepo "$T/projects/site" "# Test repository"
+mkrepo "$T/projects/oss/lib" "# Test repository"
+mkrepo "$T/projects/overlay" "# Test repository"
 # the overlay is named by a config dir's marker (B14b): the suite's, plus the marker and the core's keys
 rm -rf "$T/config-ovl"; cp -R "$T/config" "$T/config-ovl"; echo "$T/projects/overlay" > "$T/config-ovl/regatta/overlay"
 for k in guarded orca-deny log-dir; do [ -e "$T/config-ovl/regatta/$k" ] || echo "$T/$k" > "$T/config-ovl/regatta/$k"; done
@@ -498,7 +495,7 @@ H resume s-nothing --prompt x > /dev/null 2>&1; check "$?" 1 "continuing nothing
 RB=$(git -C "$REPO" symbolic-ref --short HEAD); git -C "$REPO" checkout -q -b not-claude
 H resume s-e-cancel --prompt x > /dev/null 2>"$T/err"; check "$?" 2 "continue in a directory not on a claude/* branch: refused, as run is"
 has "$T/err" "not a claude/* branch" "  saying why"
-git -C "$REPO" checkout -q "$RB"
+git -C "$REPO" checkout -q -b "$RB"
 
 echo "claude-code V5: dispatch --end, then the record's end"
 echo x > "$T/projects/site-wt/abc.txt"
@@ -514,7 +511,7 @@ has "$T/err" "no dispatch run" "  saying so"
 H stop s-busy --host buildbox > /dev/null 2>&1; check "$?" 1 "stop on a peer: refused (this Mac only)"
 
 echo "orca V1: Orca makes the worktree; the branch is named Atlas's way before any worker starts"
-mkrepo "$T/scratch" "- physical: none"
+mkrepo "$T/scratch" "# Test repository"
 : > "$STUB_ORCA_CALLS"
 STUB_ORCA_PREFIX="claude/laptop/claude-laptop-" H run --harness orca --agent claude --repo "$T/scratch" --name probe \
   --prompt "reply DONE and stop" --model opus --effort high --json > "$T/o.json" 2>"$T/err"
@@ -873,7 +870,7 @@ check "$(guarded CLAUDE_UNATTENDED)" "2 ok 2 ok ok" "  the old marker name alone
 echo "the spawn gate (confidential-reach S6's fourth landing review, item 6): a start around dispatch asks it"
 # an open repo, and a confidential scope's checkout under the projects folder the core reads (common.PROJECTS)
 S6P=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import core_path; core_path.require(); import common; print(common.PROJECTS)' "$B/../lib")
-git init -q "$S6P/s6node"; git init -q -b main "$T/s6open"; printf -- '- physical: none\n' > "$T/s6open/AGENTS.md"
+git init -q "$S6P/s6node"; git init -q -b main "$T/s6open"; printf -- '# Test repository\n' > "$T/s6open/AGENTS.md"
 git -C "$T/s6open" add -A; git -C "$T/s6open" -c user.email=t@t -c user.name=t commit -qm init
 printf '{"repos": {"s6node": {}}, "scopes": {"node": {"repos": ["s6node"], "confidential": true}}}\n' > "$T/s6-reg.json"
 cat > "$T/s6guard.py" <<'PY'
@@ -1194,7 +1191,7 @@ H run --harness codex --mode research --repo "$T/scratch" --cwd "$RR/arms/b/box/
 check "$?/$(nrec)" "2/$n0" "refused: a box with no scratch CODEX_HOME (codex never starts from the login's own)"; has "$T/err" "no scratch CODEX_HOME" "  saying why"
 # a folder under ~, in the home repo or in another repo is no council arm's box: the one rule over --cwd since S3 (the
 # core's fence.box_why; the ~, home-repo, other-repo and dot rules it replaced read what the seatbelt holds now)
-mkdir -p "$RS/h/copy"; git init -q -b main "$RS/homerepo"; printf -- '- physical: none\n' > "$RS/homerepo/AGENTS.md"; mkdir -p "$RS/homerepo/sub"
+mkdir -p "$RS/h/copy"; git init -q -b main "$RS/homerepo"; printf -- '# Test repository\n' > "$RS/homerepo/AGENTS.md"; mkdir -p "$RS/homerepo/sub"
 git init -q -b main "$RS/other"; mkdir -p "$RS/other/sub"
 for c in "$RS/h/copy" "$RS/homerepo/sub" "$RS/other/sub"; do
   H run --harness codex --mode research --repo "$T/scratch" --cwd "$c" --prompt x > /dev/null 2>"$T/err"
@@ -1516,7 +1513,7 @@ PY
 rm -rf "$RS"
 
 echo "the vendor fence: a confidential or guarded repo only on a login its tenant owns (vendor-fence, F1)"
-mkrepo "$T/projects/conf" "- physical: none"
+mkrepo "$T/projects/conf" "# Test repository"
 # an umbrella scope sorts first: a fence that took scope_of_repo's first match would read the repo open (AGENTS.md's trap)
 printf '{"repos": {}, "scopes": {"all": {"repos": ["*"]}, "conf": {"confidential": true, "repos": ["%s"]}}}\n' "$T/projects/conf" > "$T/conf.json"
 cat > "$T/account-v" <<'PY'
@@ -1596,7 +1593,7 @@ echo "the fence, live: codex sandbox under the start's permissions profile (no m
 if command -v codex > /dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
   # a home with a key in it, and a repo under it with a worktree inside the repo
   FH="$T/fhome"; mkdir -p "$FH/.ssh" "$FH/.codex" "$T/fscratch"; echo SECRET > "$FH/.ssh/id_test"
-  FR="$FH/projects/r"; git init -q -b main "$FR"; printf -- '- physical: none\n' > "$FR/AGENTS.md"
+  FR="$FH/projects/r"; git init -q -b main "$FR"; printf -- '# Test repository\n' > "$FR/AGENTS.md"
   git -C "$FR" add -A; git -C "$FR" -c user.email=t@t -c user.name=t commit -qm init
   FW="$FR/trees/w"; git -C "$FR" worktree add -q -b claude/laptop/w "$FW"
   HOME="$FH" python3 -c 'import sys, json; sys.path.insert(0, sys.argv[1]); import codex; print(json.dumps(codex.fence_profile(sys.argv[2], sys.argv[3])))' \
@@ -1610,7 +1607,7 @@ PY
   }
   export FH
   check "$(sbx cat "$FH/.ssh/id_test" | cut -d' ' -f1)" 1 "  the home folder's .ssh key unreadable under the fence"
-  check "$(sbx cat "$FW/AGENTS.md")" "0 - physical: none" "  the worktree readable"
+  check "$(sbx cat "$FW/AGENTS.md")" "0 # Test repository" "  the worktree readable"
   check "$(sbx git -C "$FW" rev-parse --abbrev-ref HEAD)" "0 claude/laptop/w" "  git runs in it"
   check "$(sbx touch "$FW/new" "$T/fscratch/new" | cut -d' ' -f1)/$(sbx touch "$FR/x" | cut -d' ' -f1)" "0/1" "  the worktree and the scratch dir writable, the checkout above read-only"
   check "$(HOME="$FH" CODEX_HOME="$FH/.codex" codex sandbox -- cat "$FH/.ssh/id_test" 2>/dev/null)" "SECRET" "  the control: without the profile the same read succeeds"

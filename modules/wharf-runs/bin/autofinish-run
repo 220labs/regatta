@@ -52,7 +52,7 @@ the start, landing() reads the branch's mode from plan.json itself (bin/autofini
 decides whether this run may merge. `ask`: every launch but a person's stops at a ready PR. A mode
 launch (`--by yolo|dnd`, or the sweep's rule M): `yolo` merges on any host bar the launcher's gates and
 the repo's `autofinish_exclude` and `in_place`, `dnd` bar the held slice (bin/autofinish's held_slice:
-money, a physical repo, a public publish, a deleted data file, `autofinish_exclude`), and a mode
+money, a public publish, a deleted data file, `autofinish_exclude`), and a mode
 lowered since holds — but a yolo launch with no mode at all in a `"merge": "auto"` repo, from a caller
 without CLAUDE_UNATTENDED, keeps that standing yes (E12). A hand-over (`--by handed`: dispatch landing a
 done `default` build; task-shape S2) is judged as a typed /finish under that design's D1-C — no slice holds
@@ -199,11 +199,12 @@ does, as any start); and the verbs:
     autofinish-run lander show [--worktree W | --repo R --branch B]   the entry, or the whole store
     autofinish-run lander hold --worktree W --head SHA --reason refinish|relaunch|round [--started]
     autofinish-run lander lift|stuck|reset --worktree W [--aside: reset's, on a store that does not parse]
-    autofinish-run lander spend reruns|rounds --worktree W          0, or STUCK_RC once the cap (2, 1) is spent
+    autofinish-run lander spend reruns|rounds --worktree W          0, or STUCK_RC once the cap (2, 1) is spent or the key is `stuck`
     autofinish-run lander armed     0 when a stop here will be moved: the relaunch gate on (autofinish's `armed`; the
                                     `landings` switch, task-shape S3's) and a tick runs on this Mac (helm's
                                     poll_tick test: the laptop, or a scope's yard), armed past its dry hours (`helm
-                                    tick --arm`: a disarmed or dry tick calls nothing); else 3, saying why
+                                    tick --arm`: a disarmed or dry tick calls nothing), and that tick roads a
+                                    lander stop (helm's `stalls_tick.LANDER_ROADS`, S3's to set); else 3, saying why
 
 `reset` is refused an unattended caller and a skipper (PRIO_UNATTENDED; exit 2): it clears a stuck ship's caps, the tick's or a person's to do. The
 counts and the state reset, the hold kept until `lift`, also when a person's start runs (`typed`, or one carrying
@@ -560,7 +561,8 @@ KEEP_CLAUDE = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
 DROP_DISPATCH = tuple(p + v for p in ("DISPATCH_", "RUN_SEED_") for v in ("LABEL", "LOG", "YEAR", "DEPTH", "BRIEF"))
 # The old peer job's markers end with the job: in the /finish session they read as an unattended caller to
 # every suite and sibling launch it runs (fourth landing review, CR 5); kept while a job loaded before the switch may run
-DROP_JOB = ("AUTOFINISH_JOB", "AUTOFINISH_CALLER_UNATTENDED")
+DROP_JOB = ("AUTOFINISH_JOB", "AUTOFINISH_CALLER_UNATTENDED", "HANDOVER_VENDOR", "HANDOVER_OWED")   # this launcher's own
+# reads: a finish session's child launch (a sibling's yolo landing) must never inherit them (S5's landing review)
 # The unattended marker's vendor-neutral name goes as the old one does (the CLAUDE* prefix): the detached
 # dispatch --start would otherwise read the caller's marker under setsid, find no run record among its
 # ancestors and refuse an unattended caller's high landing that prio_refusal allowed (force-any's review)
@@ -1404,10 +1406,10 @@ def road_stand(t, prev):
             # keel yolo's picks: taken answers never launch where the owner has not read them (yolo-veto D1); the
             # sweep's rule D skips them too — the owner's, raised once (review 3)
             return Refusal("%s's answers were taken by keel yolo: the stand road never lands them" % doc, DEAD_ROAD_RC)
-        if st.get("unanswered") and st.get("verdict") in ("too-big", "physical", "voided", "no-contract", "part-stood",
+        if st.get("unanswered") and st.get("verdict") in ("too-big", "voided", "part-stood",
                                                            "ask-mode"):
-            # keel's stand never takes these (more than ten items, a physical repo, a touch since the link, no
-            # contract, a branch in mode ask): the owner's, raised once (review 4; ask-mode, the landing review)
+            # keel's stand never takes these (more than ten items, a touch since the link, open items
+            # left by a stand, a branch in mode ask): the owner's, raised once (review 4; ask-mode, the landing review)
             return Refusal("%s reads %s with %s open: keel never stands it" % (doc, st["verdict"], st["unanswered"]),
                            DEAD_ROAD_RC)
         if st.get("unanswered"):
@@ -2023,8 +2025,9 @@ def account_pick(t, cached=False, skip=()):
 
 
 def cooling_down(cfg):
-    """The label of the row whose home is CFG when it is parked or a window of it is locked, else None. A caller's
-    login is an explicit choice over the soft ceilings, never over a lock: a panel session left on
+    """The label of the row whose home is CFG when it is parked, a window of it is locked or lighthouse's login guard
+    refuses it (`login_off`: not signed in, or signed in as another account), else None. A caller's
+    login is an explicit choice over the soft ceilings, never over a lock nor the guard: a panel session left on
     a cooling login handed every landing it launched to that login (yard-s2, 2026-10-22, the work login
     held till 11:00). The row is read by its home, not from pick's `skipped`: pick stops at the
     first eligible row and never judges the rest, and `which` names no default row (the review)."""
@@ -2040,7 +2043,8 @@ def cooling_down(cfg):
         if not isinstance(a, dict) or not a.get("home") or os.path.realpath(a["home"]) != home:
             continue
         lim = a.get("limits") if isinstance(a.get("limits"), dict) else {}
-        if a.get("enabled") is False or lim.get("locked") or str(a.get("why") or "").startswith("cooling down"):
+        if (a.get("enabled") is False or lim.get("locked") or a.get("login_off")
+                or str(a.get("why") or "").startswith("cooling down")):
             return re.sub(r"\s+", "_", str(a.get("label") or cfg))
     return None
 
@@ -2628,15 +2632,16 @@ def regatta_main():
 
 def handover_of(by, args_by, src):
     """(whether this start carries the hand-over note, the stamps dispatch's judge waived). A handed start reads the
-    judge's own word (HANDOVER_OWED: dispatch's env on the direct start, the entry's rights on a claim); a chain or
-    lander relaunch of a handed landing reads it from the stop it continues, which recorded both (`handover`, `owed`),
-    else a relaunch after a review, login or limit stop held on the very items the judge waived (the re-landing's
-    review, 2026-11-06)."""
+    judge's own word (HANDOVER_OWED: dispatch's env on the direct start, the entry's rights on a claim; HANDOVER_VENDOR
+    marks a claimed vendor yolo/dnd finish even when owed is empty); a chain or lander relaunch of a handed landing
+    reads it from the stop it continues, which recorded both (`handover`, `owed`), else a relaunch after a review,
+    login or limit stop held on the very items the judge waived (the re-landing's review, 2026-11-06)."""
     env = [x for x in os.environ.get("HANDOVER_OWED", "").split("\n") if x.strip()]
-    if by == HANDED and args_by == HANDED:
+    vendor = os.environ.get("HANDOVER_VENDOR") == "1"
+    if (by == HANDED and args_by == HANDED) or ((vendor or env) and by in ("yolo", "dnd") and args_by == by):
         return True, env
     src = src if isinstance(src, dict) else {}
-    if by in (HANDED, "lander") and (src.get("by") == HANDED or src.get("handover")):
+    if by in (HANDED, "lander", "yolo", "dnd") and (src.get("by") == HANDED or src.get("handover")):
         return True, env or [x for x in src.get("owed") or [] if isinstance(x, str)]
     return False, []
 
@@ -3408,6 +3413,9 @@ def finish_runs_here():
     pin to a host that cannot claim a finish is a deadlock: no host may take the entry, and it waits for a person (the
     node's handed landing of principal tier S4, 2026-11-04: `queue-unclaimed`, cancelled by hand and put again from a
     Mac). A queue module that will not load reads as yes: the pin as before."""
+    rows, bad = common.config_read("wharf-runs/only")
+    if rows is not None or bad:
+        return False
     try:
         dq = load_bin("dispatch-queue")
         h = dq.host_name()
@@ -3485,7 +3493,7 @@ def enqueue(t, args, by, via):
         if getattr(t, "land_by", None):
             rights["land_by"] = t.land_by
     ho, owed = getattr(t, "handover", None) or handover_of(by0, by0, None)
-    if by0 in (HANDED, "lander") and ho and owed:   # the stamps dispatch's judge waived: the claim's start has no env of the put's
+    if by0 in (HANDED, "lander", "chain") and ho and owed:   # the stamps dispatch's judge waived: the claim's start has no env of the put's
         rights["owed"] = owed
     line = ["--repo", t.primary, "--branch", t.branch, "--tip", t.tip, "--finish", json.dumps(rights, sort_keys=True),
             "--priority", args.priority or "normal", "--cwd", t.path] + (["--pin", self_host()] if pin else ["--prefer", self_host()])
@@ -3640,12 +3648,24 @@ def queued_main(argv):
         return 0
     if e.get("branch") != a.branch or not tip:
         return back("failed", "the job's branch %s is not its entry's (%s)" % (a.branch, e.get("branch")))
+    if f.get("by") == HANDED and not common.autofinish_landings():
+        return back("refused", "the landing switch is off on this Mac (bin/autofinish arm --landings)")
+    if f.get("by") in ("yolo", "dnd") and not common.autofinish_armed():
+        return back("refused", "autofinish is disarmed on this Mac (bin/autofinish arm)")
     sent = bool(f.get("from")) and str(f["from"]).lower() != self_host()
     fresh = time.time() - float(e.get("put_at") or 0) < OWN_FRESH_S   # the put's caller is still at the handover
     pinned = not sent and str(e.get("host") or "").lower() == self_host()
     wt, code, why = queued_worktree(repo, a.branch, tip, own=not sent and fresh, pinned=pinned)
     if not wt:
         return back("failed" if code in (2, 5) else "refused", why)
+    if "build_record" in e:
+        try:
+            import vendorhandover
+            vendorhandover.receive(e["build_record"], wt, a.branch, tip)
+        except ValueError as ex:
+            return back("failed", "vendor evidence is invalid (%s)" % ex)
+        except OSError as ex:
+            return back("refused", "vendor evidence was not imported (%s)" % ex)
     # claimed on the host that put it: the putting caller's own session (the entry's `by`, cold_prompt's panel) holds
     # the worktree's lock and is no refusal, as `--session` made it on the direct start — past the handover too: nothing
     # holds the lock for a queued finish now, so the panel that typed it still owns it when a slot frees later, and
@@ -3657,7 +3677,13 @@ def queued_main(argv):
         # the session's own env
         os.environ["AUTOFINISH_CALLER_UNATTENDED"] = "1"
     # a handed finish's waived stamps ride in its rights, as dispatch's HANDOVER_OWED does on the direct start
-    os.environ["HANDOVER_OWED"] = "\n".join(f.get("owed") or []) if f.get("by") in (HANDED, "lander") else ""
+    vendor_ho = "build_record" in e and f.get("by") in (HANDED, "yolo", "dnd")
+    owed_ok = f.get("by") in (HANDED, "lander", "chain") or vendor_ho
+    os.environ["HANDOVER_OWED"] = "\n".join(f.get("owed") or []) if owed_ok else ""
+    if vendor_ho:
+        os.environ["HANDOVER_VENDOR"] = "1"
+    else:
+        os.environ.pop("HANDOVER_VENDOR", None)
     try:   # a run of this worktree here that died (a disarmed host's sweep never buries one): buried first
         here = Tree(wt)
         prev = read_state(here)
@@ -4345,7 +4371,18 @@ def lander_armed():
         lander_read()
     except StoreUnreadable as e:
         return "the lander's store %s does not read (%s): no start but a person's runs here" % (lander_path(), e)
-    return tick_here()
+    return tick_here() or tick_roads()
+
+
+def tick_roads():
+    """None once helm's tick roads a lander stop (stalls_tick's `LANDER_ROADS`, which S3 sets in its own change),
+    else why not: a gate and an armed tick with no road would end a stop on ⏳ that nothing moves (S7's landing
+    review: the gate already read armed on a fleet node before S3)."""
+    try:
+        import stalls_tick
+    except Exception as e:  # noqa: BLE001 — what cannot be told is no road
+        return "helm's tick did not load (%s)" % type(e).__name__
+    return None if getattr(stalls_tick, "LANDER_ROADS", False) is True else "helm's tick has no lander roads yet (S3)"
 
 
 def lander_cmd(argv):
@@ -4406,6 +4443,9 @@ def lander_cmd(argv):
         elif a.verb == "reset":
             reset_entry(e)
         elif a.verb == "spend":
+            if e.get("state") == "stuck":
+                said.append("%s is stuck: no %s spent until reset" % (key, a.what))
+                return STUCK_RC
             n = int(e.get(a.what) or 0)
             if n >= SPEND_CAPS[a.what]:
                 said.append("%s spent on %s (%d of %d): stuck, the owner's" % (a.what, key, n, SPEND_CAPS[a.what]))

@@ -37,6 +37,9 @@ check "$(load autofinish-run 'import os; os.environ.pop("CLAUDE_CONFIG_DIR", Non
 check "$(load autofinish 'print(m.memo_status("/tmp", "x.md"), m.account("pick")[0])')" "None None" \
       "  autofinish: no keel, no D-list verdict; no account, no pick — neither raises"
 check "$(load autofinish 'print(m.default_week())')" "(False, None)" "  …and no tier_check: the week reads as not tight"
+check "$(load autofinish 'print(m._read_landing_mode("claude/x/2026-11-01-a", mode_hint="yolo"), m._read_landing_mode("claude/x/2026-11-01-a"))')" \
+      "('yolo', \"the run's mode hint\", False) ('default', 'the default', False)" \
+      "  …and no helm: _read_landing_mode keeps mode_hint or default, never unreadable"
 
 echo "G22: dispatch with no helm — its lookup (the prompt case is test_dispatch.sh's)"
 mkdir -p "$T/stub"; printf '#!/bin/sh\necho "$*" >> "%s/claude.calls"\n' "$T" > "$T/stub/claude"; chmod +x "$T/stub/claude"

@@ -76,8 +76,9 @@ class Holds:
     def _read(self):
         if not Path(self.q).exists():
             return [], [], None
+        cmd = [self.q] if os.access(self.q, os.X_OK) and not str(self.q).endswith(".py") else [sys.executable, self.q]
         try:
-            r = subprocess.run([self.q, "list", "--all", "--json"], capture_output=True, text=True, timeout=self.timeout)
+            r = subprocess.run(cmd + ["list", "--all", "--json"], capture_output=True, text=True, timeout=self.timeout)
         except (OSError, subprocess.TimeoutExpired):
             return None, [], "dispatch's queue gave no answer"
         if r.returncode != 0:
@@ -96,7 +97,7 @@ class Holds:
         bad = [b for b in d.get("bad_stores") or [] if isinstance(b, dict) and b.get("store")]
         return entries, bad or [{"store": "*"}], why
 
-    def why(self, repo, branch, here=None):
+    def why(self, repo, branch, here=None, except_session=None):
         entries, bad, why = self.read()
         if entries is None:
             return "%s: a queued step counts as there" % why
@@ -105,6 +106,8 @@ class Holds:
         for e in self._of(repo, branch):
             if e.get("state") == "ended":
                 continue   # a finish's tombstone is no next step (ended() reads it)
+            if except_session and e.get("session") == except_session:
+                continue
             if here and e.get("state") == "running" and (e.get("running_on") or "").lower() == here.lower():
                 continue
             kind = "its finish" if e.get("kind") == "finish" else "its next step"

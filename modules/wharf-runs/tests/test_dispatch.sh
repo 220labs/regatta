@@ -93,8 +93,7 @@ git checkout -q main
 git --git-dir="$T/repo/.git" send-pack "$T/origin.git" "$BR:refs/heads/$BR" "$RB:refs/heads/$RB" "main:refs/heads/claude/laptop/2026-10-02-nobrief" >/dev/null 2>&1 \
   || cp -R "$T/repo/.git/." "$T/origin.git/"
 git branch -q -D $BR $BR.copy
-# the contract dispatch requires; untracked on main, so the seed commit above never carries it
-printf -- '- physical: none\n' > AGENTS.md
+# No contract file is needed for scheduling or firing a seeded run.
 cat > "$T/launchctl" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/calls"
@@ -176,6 +175,7 @@ case "\$1" in
           over) case "\$*" in *"--overdraw --job "?*) ;; *) echo '{"account": null, "skipped": [["acct-c", "week 95% ≥ 90%"]]}'; exit 3;; esac
                 echo '{"account": "acct-c", "primary": false, "env": {"CLAUDE_CONFIG_DIR": "$HOME/.acct-c"}, "reason": "week 95% < 100% (overdraw: no login was under its bar), 5h 10% ≤ 50%; past its own bar: week 95% ≥ 90% (week ceiling)", "skipped": [["acct-a", "week 99% ≥ 70% (week ceiling)"]], "overdraw": {"account": "acct-c", "bar": "week 95% ≥ 90% (week ceiling)", "week": 95, "resets": null, "job": "x"}}';;
           never) echo '{"account": null, "skipped": [["acct-c", "extra usage on: work here may bill past the plan"], ["acct-a", "same login as acct-c (a@b)"]]}'; exit 3;;
+          guard) echo '{"account": null, "skipped": [["acct-c", "not signed in: its home holds no login"], ["acct-a", "its login cannot be checked: no logins file here"]]}'; exit 3;;
           none) echo "account: no registry" >&2; exit 4;;
           junk) echo "account: probe timed out" >&2; echo "not json"; exit 1;;
         esac;;
@@ -197,6 +197,7 @@ case "\$1" in
           fable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"max\", \"fable\": true, \"fable_week\": 37, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           nofable) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"plan\": \"pro\", \"fable\": false, \"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\"}]";;
           lends) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": {\"seven_day_resets\": $EP}, \"eligible\": true, \"why\": \"week 10%\", \"lends\": true}]";;
+          guard) echo "[{\"label\": \"\$2\", \"provider\": \"claude\", \"primary\": false, \"here\": true, \"env\": {\"CLAUDE_CONFIG_DIR\": \"$HOME/.\$2\"}, \"limits\": null, \"eligible\": false, \"why\": \"not signed in: its home holds no login\", \"login_off\": \"not signed in: its home holds no login\"}]";;
           fail) echo "account: no such label \$2" >&2; exit 1;;
         esac;;
 esac
@@ -2005,12 +2006,6 @@ git -C "$T/repo" send-pack "$T/origin.git" "main:refs/heads/claude/laptop/2026-1
 "$B/dispatch" claude/laptop/2026-10-02-stray --repo "$T/repo"
 has "$(ls "$HOME"/Library/Logs/claude-weekly/*-dispatch-stray.log)" "is not a worktree on" "a leftover directory is refused"
 
-echo "a repo that acts on the real world"
-mkdir -p "$T/phys"; printf -- '- physical: python3 test.py --physical\n' > "$T/phys/AGENTS.md"
-"$B/dispatch" $BR --repo "$T/phys" --at "$FUT 04:10" 2>/dev/null; check "$?" "2" "scheduling refused unless physical: none"
-DISPATCH_LOG="$HOME/phys.log" "$B/dispatch" $BR --repo "$T/phys"
-has "$HOME/phys.log" "must say \`physical: none\`" "a direct run refused too, said in the log"
-
 echo "missing brief"
 "$B/dispatch" claude/laptop/2026-10-02-nobrief --repo "$T/repo"
 has "$(ls "$HOME"/Library/Logs/claude-weekly/*-dispatch-nobrief.log)" "FAILED: no docs/handoff" "no brief is a failure, not a blind run"
@@ -2199,7 +2194,6 @@ echo y > "$W/work"; git -C "$W" add work; git -C "$W" commit -qm "step 2 work"
 nx > "$T/out" 2>&1; check "$?" "2" "work committed after the brief: refused, the next run would redo this step"
 has "$T/out" "work was committed after docs/handoff/2026-10-04-step.md (work)" "  naming what came after"
 "$B/dispatch" $NB --repo "$T/repo" --next --at "$FUT 04:10" 2>/dev/null; check "$?" "2" "--next with --at is refused"
-"$B/dispatch" $BR --repo "$T/phys" --next 2>/dev/null; check "$?" "2" "--next refused unless physical: none"
 git -C "$T/repo" update-ref refs/heads/claude/laptop/2026-10-04-bare main
 "$B/dispatch" claude/laptop/2026-10-04-bare --repo "$T/repo" --next 2>"$T/out"; check "$?" "2" "--next without a committed brief is refused"
 has "$T/out" "write the next step's brief there" "  saying what to write"
@@ -2467,9 +2461,6 @@ STUB_PROBE_RC=1 OB --at "@$EP" --fallback here >/dev/null 2>&1; check "$?" "1" "
 check "$(plo | wc -l | tr -d ' ')" "0" "  nothing here"
 STUB_SSH_RC=1 OB --at "@$EP" --fallback here >/dev/null 2>&1; check "$?" "1" "probe ok, then the peer's own refusal: stands, no fallback"
 check "$(plo | wc -l | tr -d ' ')" "0" "  nothing here"
-mkdir -p "$HOME/projects/live"; git -C "$HOME/projects/live" init -q; printf -- '- physical: a sweep\n' > "$HOME/projects/live/AGENTS.md"
-git -C "$HOME/projects/live" remote add origin "$T/origin.git" 2>/dev/null
-STUB_PROBE_RC=255 "$B/dispatch" $BR --repo "$HOME/projects/live" --on buildbox --at "@$EP" --fallback here > "$T/out" 2>&1; check "$?" "2" "fallen back for a repo not physical: none: refused here, as a local schedule is"
 STUB_SSH_RC=255 OB --at "@$EP" >/dev/null 2>&1; check "$?" "255" "without --fallback: no probe, the ssh failure as before"
 : > "$T/ssh.calls"
 OB --at "@$EP" --account acct-c >/dev/null 2>&1
@@ -2518,13 +2509,17 @@ sid=""; prev=""; for a in "\$@"; do [ "\$prev" = --session-id ] && sid="\$a"; pr
 mkdir -p "\$HOME/.claude/projects/t"
 if [ -n "\${YRAW:-}" ]; then printf '%s\n' "\$YRAW" > "\$HOME/.claude/projects/t/\$sid.jsonl"; else
 python3 -c 'import json, sys; print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[1]}]}}, separators=(",", ":")))' "\${YREPLY:-Built.}" > "\$HOME/.claude/projects/t/\$sid.jsonl"; fi
+[ -n "\${YAFTER:-}" ] && sid="\$sid" sh -c "\$YAFTER"
+exit "\${YEXIT:-0}"
 EOF
 cat > "$T/afrun" <<EOF
 #!/bin/sh
 [ "\$#" = 5 ] && [ -d "\$1" ] && [ "\$2" = --rule ] && [ "\$4" = --by ] || exit 2
 case "\$3" in C|L|M) ;; *) exit 2;; esac
 case "\$5" in handed|yolo|dnd|sweep) ;; *) exit 2;; esac
-echo "afrun \$*" >> "$T/af.calls"; [ -z "\${HANDOVER_OWED:-}" ] || echo "owed \$HANDOVER_OWED" >> "$T/af.calls"; echo "login \${CLAUDE_CONFIG_DIR:-unset} \${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$T/af.calls"; echo "autofinish-run: started"
+echo "afrun \$*" >> "$T/af.calls"; [ -z "\${HANDOVER_OWED:-}" ] || echo "owed \$HANDOVER_OWED" >> "$T/af.calls"; echo "login \${CLAUDE_CONFIG_DIR:-unset} \${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$T/af.calls"
+[ "\${YAFEXIT:-0}" = 0 ] || { echo "not started: stub exit \$YAFEXIT"; exit "\$YAFEXIT"; }
+echo "autofinish-run: started"
 EOF
 chmod +x "$T/yclaude" "$T/afrun"
 # origin/main, which the open-items test diffs against
@@ -2562,9 +2557,13 @@ f, home, now = sys.argv[1], sys.argv[2], float(sys.argv[3])
 json.dump({"accounts": [{"label": "claude-nr", "home": home, "primary": True, "rules": {"window_max": 50}}]}, open(f, "w"))
 json.dump({"at": now, "limits": {"five_hour": 90, "seven_day": 10, "five_hour_resets": now + 3600,
                                  "seven_day_resets": now + 3 * 86400, "locked": []}}, open(home + "/usage-probe.json", "w"))
+# signed in (lighthouse's login guard: account never picks a home with no login)
+json.dump({"oauthAccount": {"accountUuid": "u-claude-nr"}}, open(home + "/.claude.json", "w"))
+json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(home + "/.credentials.json", "w"))
 PY
-DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/noacct.json" ACCOUNT_CLAUDE=false YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-noacct.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
-has "$HOME/yolo-noacct.log" "== yolo: no launch — no account may run it (claude-nr: " "no account in the pool may run it: no launch"
+echo '{"logins": {}}' > "$T/nologins.json"   # describes no row: the primary's login is read, no address compared
+ACCOUNT_LOGINS="$T/nologins.json" DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/noacct.json" ACCOUNT_CLAUDE=false YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-noacct.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$HOME/yolo-noacct.log" "== yolo: no launch — no account may run it (claude-nr: 5h 90%" "no account in the pool may run it: no launch"
 check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called"
 : > "$T/af.calls"
 echo dirt > "$T/repo/.claude/worktrees/demo/scratch-yolo"
@@ -2589,6 +2588,9 @@ has "$HOME/yolo-next.log" "== yolo: no launch — a next step is scheduled on th
 YREPLY="Reviewers started.
 SAM, THIS SESSION IS WAITING FOR SOMETHING — the two reviewers, then dispatch's launch" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-pend.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
 has "$HOME/yolo-pend.log" "== yolo: no launch — its last reply waits on its own work" "a build that ends WAITING FOR SOMETHING on its own work: no launch"
+YREPLY="Built.
+SAM, THIS SESSION IS WAITING FOR SOMETHING — the lander's road: fix round 1 of 3" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-lander.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-lander.log" "== yolo: no launch — its last reply waits on its own work" "a build that ends on the lander's line, no ⚠: no launch beside the lander (S7's landing review)"
 newest_launch() { python3 -c 'import glob, json, os, sys; f = max(glob.glob(sys.argv[1] + "/*.json"), key=os.path.getmtime); print(json.load(open(f)).get("launch"))' "$HOME/Library/Logs/claude-weekly/run-seed-runs"; }
 check "$(newest_launch | grep -cF 'no launch — its last reply waits on its own work: ')" "1" "  the run record keeps why, for helm's card (review D1)"
 # review D3: the gate's reader crashing (a transcript entry whose message is no object) is a reason, never an empty pass
@@ -2617,6 +2619,107 @@ has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  a
 YREPLY="Built.
 SAM, THIS SESSION IS WAITING FOR SOMETHING — dispatch's yolo launch (autofinish-run --by yolo), which starts once this run ends with the tree clean" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-hand3.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
 has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  and on hookwatch-date's words (review D5)"
+# gate-asks S1 (R8): every decline yolo_launch has on main kept, one case each (config/state via autofinish landing, run-own in dispatch)
+: > "$T/af.calls"
+cat > "$T/yrec.py" <<'PY'
+import glob, json, os, sys, time
+rdir, sid, op = sys.argv[1:4]
+target = None
+for _ in range(50):
+    for f in glob.glob(os.path.join(rdir, "*.json")):
+        try:
+            d = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("session") == sid:
+            target = f
+            break
+    if target:
+        break
+    time.sleep(0.05)
+if not target:
+    sys.exit(1)
+if op == "requeue":
+    d["ending"] = "requeued from laptop (lid)"
+    json.dump(d, open(target, "w"))
+elif op == "corrupt":
+    open(target, "w").write("{torn")
+    open(sys.argv[4], "w").write(target)
+elif op == "apierr":
+    d.update(ended=int(time.time()), end_reason="idle 11 min, its last turn ended on an API error")
+    json.dump(d, open(target, "w"))
+elif op == "nonidle":
+    d.update(mode="rc", ended=int(time.time()), end_reason="ended after 8 h")
+    json.dump(d, open(target, "w"))
+elif op == "dotnext":
+    open(target + ".next", "w").close()
+    open(sys.argv[4], "w").write(target + ".next")
+PY
+YH=$HOME
+YRUNS="$HOME/Library/Logs/claude-weekly/run-seed-runs"
+YEXIT=7 YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-exit7.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-exit7.log" "== yolo: no launch — the build run ended with 7" "R8: non-zero build exit: no launch"
+YAFTER="python3 '$T/yrec.py' '$YRUNS' \"\$sid\" requeue" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-req.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-req.log" "== yolo: no launch — it was requeued (dispatch --requeue): the session that continues it lands it" "R8: requeued build end: no launch"
+git init -q --bare "$T/yolo-q.git"
+echo "$T/yolo-q.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+python3 "$B/dispatch-queue" enqueue --repo "$T/repo" --branch "$BR" --host "${DISPATCH_HOST:-laptop}" --cap 3 --launchctl "$T/launchctl" --prefix org.example.claude --jobbin "$B/dispatch" >/dev/null
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"
+YAFTER="echo '$T/yolo-q.git' > '$REGATTA_CONFIG/wharf-runs/queue-repo'" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-queued.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-queued.log" "== yolo: no launch — a next step is queued on this branch, or the queue does not read (dispatch --queue)" "R8: queued next step (autofinish landing): no launch"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo"; rm -rf "$T/yolo-q.git"; rm_own "$YH/Library/Caches/run-seed/queue"
+YAFTER="python3 '$T/yrec.py' '$YRUNS' \"\$sid\" corrupt '$T/corrupt.path'" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-badrec.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-badrec.log" "== yolo: no launch — its run record is unreadable (" "R8: unreadable run record: no launch"
+rm -f "$(cat "$T/corrupt.path" 2>/dev/null)" "$T/corrupt.path"
+YAFTER="python3 '$T/yrec.py' '$YRUNS' \"\$sid\" apierr" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-apierr.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-apierr.log" "== yolo: no launch — it ended idle on an API error, half done: idle 11 min, its last turn ended on an API error" "R8: API-error idle end: no launch"
+YAFTER="python3 '$T/yrec.py' '$YRUNS' \"\$sid\" nonidle" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-nonidle.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-nonidle.log" "== yolo: no launch — it ended by ended after 8 h, not idle after its last turn" "R8: non-idle rc end: no launch"
+YAFTER="python3 '$T/yrec.py' '$YRUNS' \"\$sid\" dotnext '$T/dotnext.path'" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-dotnext.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-dotnext.log" "== yolo: no launch — a next step is scheduled on this branch (dispatch --next)" "R8: .next marker file: no launch"
+rm -f "$(cat "$T/dotnext.path" 2>/dev/null)" "$T/dotnext.path"
+YAFTER="rm -f '$YH/.claude/projects/t/'\"\$sid.jsonl\"" YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-noreply.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-noreply.log" "== yolo: no launch — its last reply could not be read (session " "R8: unreadable transcript: no launch"
+mkdir -p "$T/acct-wt"
+python3 - "$T/wtight.json" "$T/acct-wt" "$(date +%s)" <<'PY'
+import json, sys
+f, home, now = sys.argv[1], sys.argv[2], float(sys.argv[3])
+json.dump({"accounts": [{"label": "acct-wt", "home": home, "primary": True}]}, open(f, "w"))
+json.dump({"at": now, "limits": {"five_hour": 10, "seven_day": 85, "five_hour_resets": now + 3600,
+                                 "seven_day_resets": now + 6 * 86400, "locked": []}}, open(home + "/usage-probe.json", "w"))
+# signed in (lighthouse's login guard: account never picks a home with no login)
+json.dump({"oauthAccount": {"accountUuid": "u-acct-wt"}}, open(home + "/.claude.json", "w"))
+json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(home + "/.credentials.json", "w"))
+PY
+ACCOUNT_LOGINS="$T/nologins.json" DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/wtight.json" ACCOUNT_CLAUDE=false YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-wtight.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-wtight.log" "== yolo: no launch — the week is tight (acct-wt 85% used" "R8: tight week (autofinish landing): no launch"
+# a deployed branch declines a tight week too, as main did for every mode (the landing review, 2026-11-07)
+YNODOC=1 YDEPLOY="the service" ACCOUNT_LOGINS="$T/nologins.json" DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/wtight.json" ACCOUNT_CLAUDE=false YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-wtight-live.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-wtight-live.log" "== yolo: no launch — the week is tight (acct-wt 85% used" "R8: tight week on a deployed branch: no launch"
+YGD=$(git -C "$T/repo/.claude/worktrees/demo" rev-parse --absolute-git-dir)
+YAFTER="mkdir -p '$YGD/claude'; python3 -c 'import json, os, sys; json.dump({\"branch\": sys.argv[2], \"session\": os.environ[\"sid\"], \"ended\": 1, \"outcome\": \"cap\", \"why\": \"2 findings left\", \"rounds\": [{\"round\": 5}]}, open(sys.argv[1], \"w\"))' '$YGD/claude/build-review.json' '$BR'" \
+  DISPATCH_GATE=/usr/bin/true YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-revcap.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-revcap.log" "== yolo: no launch — its review loop ended cap: 2 findings left" "R8: build-review gate stopped at cap: no launch"
+rm -f "$YGD/claude/build-review.json"
+mkdir -p "$T/repo/.claude"
+echo '{"checkpoint": true, "main": "no-such-base"}' > "$T/repo/.claude/workflow.json"
+YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-nobase.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/yolo-nobase.log" "== yolo: no launch — origin/no-such-base unreadable here" "R8: origin/<base> unreadable (autofinish landing): no launch"
+rm -f "$T/repo/.claude/workflow.json"
+check "$(wc -c < "$T/af.calls" | tr -d ' ')" "0" "  autofinish-run never called across any R8 decline"
+YPRE=$(git -C "$T/repo/.claude/worktrees/demo" rev-parse HEAD)
+YAFTER="mkdir -p .claude; echo '{\"checkpoint\": true, \"main\": \"no-such-base\"}' > .claude/workflow.json; git add -f .claude/workflow.json; git -c user.email=t@t -c user.name=t commit -qm wf" \
+  YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-wtwf.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "  <wt>/.claude/workflow.json does not steer yolo_launch away from repo's base"
+git -C "$T/repo/.claude/worktrees/demo" reset -q --hard "$YPRE"; rm -f "$T/repo/.claude/worktrees/demo/.claude/workflow.json"; : > "$T/af.calls"
+echo "$T/missing-offline.git" > "$REGATTA_CONFIG/wharf-runs/queue-repo"
+echo "writes" > "$REGATTA_CONFIG/wharf-runs/queue-mode"
+YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-qwrites.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by yolo" "R8: write-only host (queue-mode=writes) ignores offline queue-repo and launches"
+rm -f "$REGATTA_CONFIG/wharf-runs/queue-repo" "$REGATTA_CONFIG/wharf-runs/queue-mode"; : > "$T/af.calls"
+YAFEXIT=5 YMARK=yes DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/yolo-af5.log" "$B/dispatch" $BR --repo "$T/repo" --headless --yolo >/dev/null 2>&1
+check "$(newest_launch | cut -d ';' -f1)" "no launch — autofinish-run exit 5: not started: stub exit 5" "R8: autofinish-run non-zero exit records no launch in the run record"
+: > "$T/af.calls"
 : > "$T/claude.calls"
 DISPATCH_CLAUDE="$T/yclaude" YMARK=yes DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$HOME/yolo-off.log" "$B/dispatch" $BR --repo "$T/repo" --headless
 grep -q "keel yolo <the doc>" "$T/claude.calls"; check "$?" "1" "without --yolo: no gate in the prompt"
@@ -2772,6 +2875,10 @@ grep -q "DISPATCH_MODE=" "$T/env.calls"; check "$?" "1" "  …not into the sessi
 check "$(newest_rec task_mode) $(newest_rec mode_unread)" "None 1" "  …nor the record's task_mode: mode_unread marks a sent task with no mode"
 CLAUDE_REPOS_JSON="$T/torn-repos.json" DISPATCH_MODE=dnd DISPATCH_LOG="$HOME/mode-torn-hint.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
 has "$HOME/mode-torn-hint.log" "== mode dnd" "  a plist's hint comes before the scope: read whole, kept as before"
+: > "$T/af.calls"
+CLAUDE_REPOS_JSON="$T/torn-repos.json" YMARK=yes YCMD="yolo --dnd" DISPATCH_MODE=dnd DISPATCH_CLAUDE="$T/yclaude" DISPATCH_AUTOFINISH_RUN="$T/afrun" DISPATCH_LOG="$T/mode-torn-launch.log" "$B/dispatch" $BR --repo "$T/repo" --headless >/dev/null 2>&1
+has "$T/af.calls" "afrun $T/repo/.claude/worktrees/demo --rule M --by dnd" "  …and yolo_launch still launches --by dnd over a torn repos.json when DISPATCH_MODE supplies the mode"
+: > "$T/af.calls"
 # the second landing review: read_mode's own python over a helmlib from before fire_mode and torn_read
 # (a peer's, an older checkout's) reads the ship as item 5 did, not the bare hint of a crash
 mkdir -p "$T/oldhelm"
@@ -2953,9 +3060,8 @@ echo "dry run"
 "$B/dispatch" $BR --repo "$T/repo" --dry-run | grep -q "DRY RUN" && echo "  ok   dry run prints" || fail "dry run"
 # the default repo: the overlay's checkout where one is installed, else the main checkout of this clone
 PRIM="$(cd "$(git -C "${LEGACY:-$B}" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)"
-# The primary is the live checkout: its contract may refuse the run (physical: not none, since
-# bin/domains, 2026-10-06), so the proof is that the dry run or the refusal names the primary.
-"$B/dispatch" $BR --dry-run 2>&1 | grep -qE "use $PRIM/\.claude/worktrees/demo|$PRIM's contract must say" && echo "  ok   no --repo: the primary checkout, not this script's worktree" || fail "default repo"
+# The default repo resolves to the primary checkout.
+"$B/dispatch" $BR --dry-run 2>&1 | grep -qE "use $PRIM/\.claude/worktrees/demo" && echo "  ok   no --repo: the primary checkout, not this script's worktree" || fail "default repo"
 echo "--if-room (the sounding queue: the week read at fire time)"
 # the pick passes (the stub); the week is the pool's, read through the real bin/account as yolo_launch's gate reads it
 STUB_ACCT=acct-a DISPATCH_ACCOUNT="$T/acct" ACCOUNTS_FILE="$T/noacct.json" ACCOUNT_CLAUDE=false \
@@ -3024,6 +3130,11 @@ reg("idle"); out.append(int(d.idle_limit(a, dict(st, idle=None))))
 said("RELAYED TO coding-7 — D1, the cadence"); out.append(int(d.idle_limit(a, st)))
 said(d.common.PENDING_PREFIX + "the two reviewers"); out.append(int(d.idle_limit(a, st)))
 said(d.common.HANDOVER_LINE); out.append(int(d.idle_limit(a, st)))
+said(d.common.LANDER_PREFIX + "fix round 1 of 3")
+out.append(int(d.said_its_end(st, d.session_record(st))))
+out.append(int(d.idle_limit(a, st)))
+reg("busy"); out.append(int(d.said_its_end(st, d.session_record(st))))
+out.append(int(d.idle_limit(a, st))); reg("idle")
 # a build run (no `idle` of its own) on each closing line, and on none (runs-exit-when-done, 2026-10-31)
 b = dict(st, idle=None)
 said("RELAYED TO coding-7 — D1, the cadence"); out.append(int(d.idle_limit(a, b)))
@@ -3046,7 +3157,7 @@ asked("and what about the second host?"); said(d.common.WAITING_PREFIX + "D1 in 
 out.append(int(d.idle_limit(a, b))); out.append(int(d.idle_limit(a, st)))
 print(*out)
 PY2
-)" "600 60 600 60 60 600 60 60 60 3600 3600 60 3600 60" "  idle on a closing line, a --start run's (a stopped /finish) or a build's: 1 min, its slot back (the owner 2026-10-31: \"exit as soon as their work is done\"); RELAYED too, and a WAITING line; busy, WAITING FOR SOMETHING (its own work wakes it) or no closing line: as before; the hand-over line: 1 min (review D2); a build a person typed into since its start: the hour (round 1), a nudge or a hail no person's"
+)" "600 60 600 60 60 600 60 1 60 0 600 60 60 3600 3600 60 3600 60" "  closing classes end in 1 min, including lander (stuck-ships S7); busy sessions and pending work keep their idle limit; a build a person typed into keeps its warm hour"
 kill $ENDP 2>/dev/null
 sleep 300 & ENDP=$!
 check "$(env -u DISPATCH_IDLE -u DISPATCH_NEXT_IDLE python3 - "$B/dispatch-rc" "$T/lim.json" "$ENDP" <<'PY2'
@@ -5041,7 +5152,7 @@ qreset
 
 echo "S3's third landing review (docs/dispatch-queue-s3-review-2026-10-28.md): a case per fix"
 # item 2: only a login refused for a limit a reset lifts stays in the queue; any other refusal fails plainly
-for k in overage same unknown; do
+for k in overage same unknown guard; do
   python3 "$QB" enqueue --repo "$T/repo" --branch $BR --arg=--account --arg=acct-x --claim "${QC[@]}" > /dev/null
   QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
   (export DISPATCH_ACCOUNT="$T/acct" STUB_LIMITS=$k; qfire "$QP2")
@@ -5059,6 +5170,19 @@ python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/nu
 QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
 (export DISPATCH_ACCOUNT="$T/acct" STUB_ACCT=short; qfire "$QP2")
 has "$QL2" "queued again: no account may run this now — acct-c: week 95%" "  the walk with a row a reset frees: queued again"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --claim "${QC[@]}" > /dev/null
+QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
+(export DISPATCH_ACCOUNT="$T/acct" STUB_ACCT=guard; qfire "$QP2")
+has "$QL2" "queued again: no account may run this now — acct-c: not signed in" \
+  "  the walk refused by the login guard alone (host-local): queued again, never dropped (login-guard's landing)"
+qreset
+python3 "$QB" enqueue --repo "$T/repo" --branch $BR --pin laptop --claim "${QC[@]}" > /dev/null
+QP2=$(qplists "$HA" | head -1); QL2=$(qenv "$QP2" DISPATCH_LOG); : > "$QL2"
+check "$(qenv "$QP2" DISPATCH_QUEUE_HERE)" "1" "  a pinned entry's claim says so to its job (DISPATCH_QUEUE_HERE)"
+(export DISPATCH_ACCOUNT="$T/acct" STUB_ACCT=guard; qfire "$QP2")
+has "$QL2" "FAILED: no account may run this now — acct-c: not signed in" "  …pinned here, the same walk fails plainly: requeued, it would come back here every hour"
+grep -q "^queued again" "$QL2"; check "$?" "1" "  …never queued again"
 qreset
 # item 1: a --next claimed here and put back in the queue at its start reports queued, never started
 own sess-A; FIRE="queued again: the run cap (0 of 0 busy on laptop) — a host with room claims it" nx > "$T/out" 2>&1
@@ -5224,7 +5348,7 @@ class RC:
         return case in ("warm", "warmlid")
     def parked(self, s):
         return case in ("warm", "warmlid", "waiting")
-    def last_answer(self, s):
+    def last_answer(self, s, record=None):
         return "Half built.\nTier: principal-architect\nNext: the rest."
     def end_run(self, p, s, reason):
         seen["outbox"] = len(q.outbox_files())

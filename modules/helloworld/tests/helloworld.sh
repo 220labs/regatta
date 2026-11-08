@@ -325,7 +325,8 @@ has "$T/out" "names no file" "  and said"
 HELLOWORLD_WORDLIST="$T/none.txt" python3 "$B/helloworld" check "$R" > "$T/out" 2>&1
 check "$?" 2 "no private word list: refused, nothing scanned"
 has "$T/out" "no private word list" "  and said"
-git init -q -b main "$T/plain"; git -C "$T/plain" commit -q --allow-empty -m x
+git init -q -b main "$T/plain"
+git -C "$T/plain" -c user.name="Film Maker" -c user.email=maker@example.org commit -q --allow-empty -m x
 python3 "$B/helloworld" check "$T/plain" --ref main > "$T/out" 2>&1
 check "$?" 2 "a repo without .helloworld/: refused"
 has "$T/out" "has not opted in" "  and said"

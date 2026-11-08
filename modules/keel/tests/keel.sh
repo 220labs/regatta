@@ -2796,7 +2796,7 @@ echo "the reading heartbeat (crew design S6): memo-read into reads.jsonl, and sh
 has "$S/page.html" '"read": "memo-read"' "the page carries the heartbeat's event name"
 check "$(python3 -c 'import re,sys; h=open(sys.argv[1]).read(); i=h.index("if (M.emit && M.read)"); b=h[i:i+900]; print(all(t in b for t in ("isTrusted", "\"wheel\", \"keydown\", \"pointerdown\", \"touchstart\"", "visibilityState", "60000", "15000")), "scroll" in b or "pointermove" in b)' "$S/page.html")" \
       "True False" "…counting only trusted wheel, keydown, pointerdown, touchstart while visible, once a minute on a 15 s timer — no scroll, no pointermove"
-check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([v["fmt"] for k, v in d.items() if k.endswith("docs/s.md")])' "$S/state/sheep.json")" "[11]" "…and the pin is PAGE_FMT 11: an older page is redeployed with it"
+check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([v["fmt"] for k, v in d.items() if k.endswith("docs/s.md")])' "$S/state/sheep.json")" "[12]" "…and the pin is PAGE_FMT 12: an older page is redeployed with it"
 # a state of its own, so the cursors and logs above stay as the cases after them expect
 RS="$S/state-r" RM="$T/state-r"; mkdir -p "$RS"
 SMKEY=$(python3 -c 'import json,sys; print([k for k in json.load(open(sys.argv[1])) if k.endswith("docs/s.md")][0])' "$S/state/sheep.json")
@@ -2981,7 +2981,7 @@ mkdoc() {  # file, number of D-items — D10's shape, every item Reversible: yes
     for n in $(seq "$2"); do printf -- '- **D%d — Item %d?** Body.\n  - A — yes\n  - B — no\n\n  Reversible: yes\n\n  ➤ Recommended: A, pick %d\n\n  ➤ Answer:\n\n' "$n" "$n" "$n"; done
     printf '## Open feedback\n'; } > "$1"
 }
-mkrepo() {  # name, the contract's physical line ("" = no line), D-items (default 3)
+mkrepo() {  # name, an optional contract note, D-items (default 3)
   local r="$ST/$1"
   git init -q --bare "$ST/$1.git"; git init -q -b main "$r"; git -C "$r" remote add origin "$SURL$1.git"
   { printf '# %s\n\n## Session contract\n\n- check: true\n' "$1"; [ -n "$2" ] && printf '%s\n' "$2"; } > "$r/AGENTS.md"
@@ -2997,7 +2997,7 @@ try: print(json.loads(sys.argv[1])[sys.argv[2]])
 except Exception: print("error: " + sys.argv[1])' "$1" "$2"; }
 status() { mrun status --json "$ST/$1/docs/${DOC:-d.md}" 2>&1; }
 
-mkrepo none "- physical: none"
+mkrepo none "# Test repository"
 export MEMO_NOW=2026-10-02T08:00:00Z
 S=$(status none)
 check "$(field "$S" verdict)" "stands-at" "before the deadline: stands-at"
@@ -3029,7 +3029,7 @@ mrun status --json "$ST/none/docs/e.md" > "$T/s2.out" 2>&1; rc=$?
 check "$rc" "1" "a doc GitHub never showed has no link: no verdict, exit 1"
 has "$T/s2.out" "has no link" "…and says so"
 
-mkrepo big "- physical: none" 11
+mkrepo big "# Test repository" 11
 S=$(status big)
 check "$(field "$S" verdict)/$(field "$S" items)" "too-big/11" "11 D-items: too-big"
 mrun stand --by 0 "$ST/big/docs/d.md" > "$T/sb.out" 2>&1; rc=$?
@@ -3037,7 +3037,7 @@ check "$rc" "1" "…the explicit line refused too: never stands"
 mrun stand --apply "$ST/big/docs/d.md" > /dev/null 2>&1; rc=$?
 check "$rc" "1" "…and --apply refuses"
 
-mkrepo gh "- physical: none"
+mkrepo gh "# Test repository"
 git clone -q "$ST/gh.git" "$ST/gh-web" 2>/dev/null; git -C "$ST/gh-web" checkout -q claude/x
 echo "typo fixed" > "$ST/gh-web/README.md"; git -C "$ST/gh-web" add README.md
 GIT_AUTHOR_NAME=iMachine GIT_AUTHOR_EMAIL=i@m GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
@@ -3047,7 +3047,7 @@ S=$(status gh)
 check "$(field "$S" verdict)" "voided" "a commit authored iMachine and committed GitHub, on another file, only on GitHub: voided"
 case "$(field "$S" reason)" in *"a GitHub web edit"*"author iMachine"*) echo "  ok   …named as a GitHub web edit";; *) echo "  FAIL …named as a GitHub web edit: $S"; fails=$((fails+1));; esac
 
-mkrepo ghnf "- physical: none"
+mkrepo ghnf "# Test repository"
 git clone -q "$ST/ghnf.git" "$ST/ghnf-web" 2>/dev/null; git -C "$ST/ghnf-web" checkout -q claude/x
 echo "typo fixed" > "$ST/ghnf-web/README.md"; git -C "$ST/ghnf-web" add README.md
 GIT_AUTHOR_NAME=iMachine GIT_AUTHOR_EMAIL=i@m GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
@@ -3058,7 +3058,7 @@ check "$(field "$(mrun status --json --no-fetch "$ST/ghnf/docs/d.md" 2>&1)" verd
 check "$(git -C "$ST/ghnf" rev-parse origin/claude/x)" "$(git -C "$ST/ghnf" rev-parse claude/x)" "…and no remote-tracking ref moved"
 check "$(field "$(status ghnf)" verdict)" "voided" "…the plain status fetches and sees it: voided (a start's own judging)"
 
-mkrepo agent "- physical: none"
+mkrepo agent "# Test repository"
 echo "work" > "$ST/agent/x.txt"; echo "more" >> "$ST/agent/docs/d.md"; sg "$ST/agent" add -A
 scommit "$ST/agent" 2026-10-01T10:00:00Z -m "Docs: tidy" -m "Claude-Session: abc12345"
 check "$(field "$(status agent)" verdict)" "due" "a checkpoint with no prompt (the agent's own) is no touch"
@@ -3070,72 +3070,69 @@ check "$(field "$S" verdict)/$(field "$S" deadline)" "stands-at/2026-10-02T11:00
 case "$(field "$S" reason)" in *"the clock restarted at 2026-10-01 11:00 UTC (a prompt in the session"*) echo "  ok   …named as a prompt";; *) echo "  FAIL …named as a prompt: $S"; fails=$((fails+1));; esac
 check "$(field "$(MEMO_NOW=2026-10-02T11:00:01Z status agent)" verdict)" "due" "…and 24 h after the prompt, quiet, it is due"
 
-mkrepo hand "- physical: none"
+mkrepo hand "# Test repository"
 echo "Sam's note." >> "$ST/hand/docs/d.md"; sg "$ST/hand" add -A; scommit "$ST/hand" 2026-10-01T12:00:00Z -m "note"
 check "$(field "$(status hand)" verdict)" "voided" "a commit on the doc with no agent trailer (Sam's own): voided"
 
-mkrepo queued "- physical: none"
+mkrepo queued "# Test repository"
 mkdir -p "$ST/queued/.git/claude"
 printf '[{"session": "abc12345", "prompt": "hm", "ts": %s}]' "$(python3 -c 'import datetime as d; print(d.datetime(2026,10,1,12,tzinfo=d.timezone.utc).timestamp())')" > "$ST/queued/.git/claude/prompts.json"
 S=$(status queued)
 check "$(field "$S" verdict)/$(field "$S" deadline)" "stands-at/2026-10-02T12:00:00+00:00" "a prompt queued in the worktree's prompts.json after the link: the clock restarts"
 
-mkrepo edit "- physical: none"
+mkrepo edit "# Test repository"
 echo "typed here" >> "$ST/edit/docs/d.md"
 S=$(status edit)
 check "$(field "$S" verdict)/$(field "$S" deadline)" "stands-at/2026-10-03T09:00:01+00:00" "an uncommitted edit to the doc holds the clock at now + 24 h while it stays"
 
-mkrepo void "- physical: none"
+mkrepo void "# Test repository"
 mrun stand --void "$ST/void/docs/d.md" > "$T/sv.out" 2>&1
 has "$T/sv.out" "touched" "stand --void records a touch"
 check "$(field "$(status void)" verdict)" "voided" "…and the doc reads voided"
 
-mkrepo save "- physical: none"
+mkrepo save "# Test repository"
 # the touch `sheep pull --write` records for a Save from the page (tested in the sheep section)
 python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; L("m", sys.argv[1]).load_module().record_touch(sys.argv[2], "save")' "$B/keel" "$ST/save/docs/d.md"
 S=$(status save)
 check "$(field "$S" verdict)" "voided" "a form Save: voided, from the touch log alone"
 case "$(field "$S" reason)" in *"a form Save"*) echo "  ok   …named as a form Save";; *) echo "  FAIL …named as a form Save: $S"; fails=$((fails+1));; esac
 
-mkrepo phys "- physical: a sweep of the house's devices"
-mkdir -p "$ST/phys/.git/claude"
-printf '[{"session": "abc12345", "prompt": "stand it", "ts": %s}]' "$(python3 -c 'import datetime as d; print(d.datetime(2026,10,1,12,tzinfo=d.timezone.utc).timestamp())')" > "$ST/phys/.git/claude/prompts.json"
-check "$(field "$(status phys)" verdict)" "physical" "physical: not none, no Stands line: physical, past the deadline too"
-mrun stand --apply "$ST/phys/docs/d.md" > /dev/null 2>&1; rc=$?
-check "$rc" "1" "…--apply refuses"
-mrun stand --by 2 "$ST/phys/docs/d.md" > "$T/sp.out" 2>&1
+mkrepo override ""
+mkdir -p "$ST/override/.git/claude"
+printf '[{"session": "abc12345", "prompt": "stand it", "ts": %s}]' "$(python3 -c 'import datetime as d; print(d.datetime(2026,10,1,12,tzinfo=d.timezone.utc).timestamp())')" > "$ST/override/.git/claude/prompts.json"
+mrun stand --by 2 "$ST/override/docs/d.md" > "$T/sp.out" 2>&1
 has "$T/sp.out" "stands at 2026-10-02 11:00 UTC (2026-10-02T11:00:01+00:00)" "stand --by 2: two hours from now"
-check "$(sed -n 3p "$ST/phys/docs/d.md" | grep -c '^Stands: 2026-10-02T11:00:01+00:00 — set 2026-10-02T09:00:01+00:00')" "1" "…one Stands: line, under the title"
-S=$(status phys)
+check "$(sed -n 3p "$ST/override/docs/d.md" | grep -c '^Stands: 2026-10-02T11:00:01+00:00 — set 2026-10-02T09:00:01+00:00')" "1" "…one Stands: line, under the title"
+S=$(status override)
 check "$(field "$S" verdict)/$(field "$S" deadline)" "stands-at/2026-10-02T11:00:01+00:00" "…the explicit line overrides the deadline; the prompt before it is no touch"
-mrun stand --by 0 "$ST/phys/docs/d.md" > /dev/null 2>&1
-check "$(grep -c '^Stands:' "$ST/phys/docs/d.md")" "1" "stand --by 0 rewrites the line, never a second"
-check "$(field "$(status phys)" verdict)" "due" "…and the doc is due now"
-mrun stand --apply "$ST/phys/docs/d.md" > /dev/null 2>&1; rc=$?
-check "$rc/$(field "$(status phys)" verdict)" "0/stood" "with the explicit line a physical repo's doc stands"
+mrun stand --by 0 "$ST/override/docs/d.md" > /dev/null 2>&1
+check "$(grep -c '^Stands:' "$ST/override/docs/d.md")" "1" "stand --by 0 rewrites the line, never a second"
+check "$(field "$(status override)" verdict)" "due" "…and the doc is due now"
+mrun stand --apply "$ST/override/docs/d.md" > /dev/null 2>&1; rc=$?
+check "$rc/$(field "$(status override)" verdict)" "0/stood" "with the explicit line the doc stands"
 
-mkrepo physc "- physical: a real send into Messages"
-mrun stand --by 0 "$ST/physc/docs/d.md" > /dev/null 2>&1
-sg "$ST/physc" add -A; scommit "$ST/physc" 2026-10-02T09:00:30Z -m "Memo: stand d now" -m "Prompt:
+mkrepo checkpoint ""
+mrun stand --by 0 "$ST/checkpoint/docs/d.md" > /dev/null 2>&1
+sg "$ST/checkpoint" add -A; scommit "$ST/checkpoint" 2026-10-02T09:00:30Z -m "Memo: stand d now" -m "Prompt:
 > /keel stand docs/d.md --by 0" -m "Claude-Session: abc12345"
-check "$(field "$(status physc)" verdict)" "due" "the checkpoint that commits the Stands line, quoting the prompt that asked for it, is no touch"
-echo "later" > "$ST/physc/x.txt"; sg "$ST/physc" add -A
-scommit "$ST/physc" 2026-10-02T09:00:40Z -m "Work" -m "Prompt:
+check "$(field "$(status checkpoint)" verdict)" "due" "the checkpoint that commits the Stands line, quoting the prompt that asked for it, is no touch"
+echo "later" > "$ST/checkpoint/x.txt"; sg "$ST/checkpoint" add -A
+scommit "$ST/checkpoint" 2026-10-02T09:00:40Z -m "Work" -m "Prompt:
 > one more thing" -m "Claude-Session: abc12345"
-S=$(status physc)
+S=$(status checkpoint)
 check "$(field "$S" verdict)/$(field "$S" deadline)" "stands-at/2026-10-03T09:00:40+00:00" "…a prompt after it restarts the explicit line's clock too"
 
 mkrepo nocontract ""
 S=$(status nocontract)
-check "$(field "$S" verdict)" "no-contract" "no physical: line in the contract: no-contract"
+check "$(field "$S" verdict)" "due" "a contract with only check: does not hold a due doc"
 mrun stand --by 0 "$ST/nocontract/docs/d.md" > "$T/sn.out" 2>&1; rc=$?
-check "$rc" "1" "…stand refuses: never stands, by either path"
-lacks "$ST/nocontract/docs/d.md" "Stands:" "…and writes no line"
+check "$rc" "0" "…stand can set an explicit deadline"
+has "$ST/nocontract/docs/d.md" "Stands:" "…and writes its line"
 mrun stand --apply "$ST/nocontract/docs/d.md" > /dev/null 2>&1; rc=$?
-check "$rc" "1" "…nor --apply"
+check "$rc" "0" "…and --apply takes the due recommendations"
 echo "the stand sweep's apply: Reversible: yes with a bare pick only, part-stood for the rest (entry S3, D4-A)"
 # five items: D1 yes, D2 no, D3 unmarked, D4 yes with a conditional pick, D5 yes but reopened
-mkrepo mixed "- physical: none" 5
+mkrepo mixed "# Test repository" 5
 python3 - "$ST/mixed/docs/d.md" <<'PY'
 import re, sys
 p = sys.argv[1]; t = open(p).read()
@@ -3176,7 +3173,7 @@ PY
 sg "$ST/mixed" add docs; scommit "$ST/mixed" 2026-10-02T10:00:00Z -m "answers"
 check "$(field "$(status mixed)" verdict)" "stood" "Sam answers the rest: stood"
 
-mkrepo nonestand "- physical: none" 2
+mkrepo nonestand "# Test repository" 2
 sedi 's/^  Reversible: yes$/  Reversible: no/' "$ST/nonestand/docs/d.md"
 sg "$ST/nonestand" add docs; scommit "$ST/nonestand" 2026-10-01T09:00:00Z --amend -m "Design: d" -m "Claude-Session: abc12345"
 sg "$ST/nonestand" push -q -f origin claude/x 2>/dev/null
@@ -3200,8 +3197,8 @@ echo "stand --sweep: every due doc on a claude/* worktree, stood and pushed, at 
 # GitHub's owner/repo shape wants a flat name: the clones move under the sweep's root, their bare
 # "GitHub" stays where the URL rewrite finds it
 mkdir -p "$ST/sw"
-mkrepo swa "- physical: none" 2; mv "$ST/swa" "$ST/sw/a"
-mkrepo swb "- physical: none" 2; mv "$ST/swb" "$ST/sw/b"
+mkrepo swa "# Test repository" 2; mv "$ST/swa" "$ST/sw/a"
+mkrepo swb "# Test repository" 2; mv "$ST/swb" "$ST/sw/b"
 mkdir -p "$ST/sw/b/.git/claude"
 printf '{"session": "live1234", "branch": "claude/x", "seen": %s}' "$(python3 -c 'import datetime as d; print(d.datetime(2026,10,2,8,30,tzinfo=d.timezone.utc).timestamp())')" > "$ST/sw/b/.git/claude/owner.json"   # seen 30 min before MEMO_NOW
 git -C "$ST/sw/a" worktree add -q "$ST/sw/a/.claude/worktrees/w2" -b claude/w2 main 2>/dev/null
@@ -3284,18 +3281,17 @@ python3 "$B/keel" yolo "$T/y4b.md" > "$T/y4b.out"; rc=$?
 check "$rc" "3" "an item with no pick stops it"
 
 echo "yolo --dnd — D1-A: the picks bar the held classes, each held item printed for a relay (exit 4)"
-mkdir -p "$T/ydn"; git -C "$T/ydn" init -q; printf -- '- physical: none\n' > "$T/ydn/AGENTS.md"   # a physical: none repo
+mkdir -p "$T/ydn"; git -C "$T/ydn" init -q; printf -- '# Test repository\n' > "$T/ydn/AGENTS.md"
 ydoc "$T/yd0.md" yes yes A
 python3 "$B/keel" yolo "$T/yd0.md" --dnd > "$T/yd0.out"; rc=$?
-check "$rc $(grep -c "Sam's dnd" "$T/yd0.md")" "4 0" "--dnd: a doc whose repo has no physical: line holds every item, read as physical (landing review 17)"
-has "$T/yd0.out" "no \`physical:\` line" "…and says why"
+check "$rc $(grep -c "Sam's dnd" "$T/yd0.md")" "0 2" "--dnd: a doc with no repo contract takes its plain picks"
 ydoc "$T/ydn/yd1.md" yes no A
 python3 "$B/keel" yolo "$T/ydn/yd1.md" --dnd --date 2026-10-21 > "$T/yd1.out"; rc=$?
 check "$rc" "0" "--dnd: a plain Reversible: no item is taken (nothing held): exit 0"
 check "$(grep -c "Taken unattended (Sam's dnd, 2026-10-21)" "$T/ydn/yd1.md")" "2" "…written as Sam's dnd"
 check "$(python3 "$B/keel" parse "$T/ydn/yd1.md" | python3 -c 'import json,sys; print([(i["answered"], i["settled"]) for i in json.load(sys.stdin)["items"]])')" \
   "[(True, True), (True, True)]" "…settled, so dispatch's launch gate reads it past the gate"
-mkdir -p "$T/ydr"; git -C "$T/ydr" init -q; printf -- '- physical: none\n' > "$T/ydr/AGENTS.md"
+mkdir -p "$T/ydr"; git -C "$T/ydr" init -q; printf -- '# Test repository\n' > "$T/ydr/AGENTS.md"
 ydoc "$T/ydr/d.md" yes no A
 python3 - "$T/ydr/d.md" <<'PYX'
 import sys
@@ -3326,10 +3322,6 @@ has "$T/yd4.out" "not marked Reversible" "…and says why"
 ydoc "$T/ydn/yd5.md" yes yes "none until the probe runs"
 python3 "$B/keel" yolo "$T/ydn/yd5.md" --dnd > "$T/yd5.out"; rc=$?
 check "$rc $(grep -c "Sam's dnd" "$T/ydn/yd5.md")" "4 1" "--dnd: a conditional pick is held, not a stop: the rest is taken"
-mkdir -p "$T/ydp"; git -C "$T/ydp" init -q; printf -- '- physical: a sweep of the house\n' > "$T/ydp/AGENTS.md"
-ydoc "$T/ydp/d.md" yes yes A; cp "$T/ydp/d.md" "$T/ydp.orig"
-python3 "$B/keel" yolo "$T/ydp/d.md" --dnd > "$T/yd6.out"; rc=$?
-check "$rc $(cmp -s "$T/ydp/d.md" "$T/ydp.orig" && echo same)" "4 same" "--dnd in a repo whose contract is not physical: none holds every item"
 ydoc "$T/ydn/yd7.md" yes no A; cp "$T/ydn/yd7.md" "$T/yd7.orig"
 python3 "$B/keel" yolo "$T/ydn/yd7.md" --dnd --dry-run > "$T/yd7.out"; rc=$?
 check "$rc $(cmp -s "$T/ydn/yd7.md" "$T/yd7.orig" && echo same)" "0 same" "--dry-run --dnd: the verdict, nothing written"
@@ -3383,7 +3375,7 @@ export MEMO_NOW=2026-10-02T08:00:00Z
 rv() { python3 -c 'import json,sys
 try: r = json.loads(sys.argv[1])["review"]; print(r[sys.argv[2]])
 except Exception: print("error: " + sys.argv[1])' "$1" "$2"; }
-mkrepo rvu "- physical: none"
+mkrepo rvu "# Test repository"
 S=$(status rvu)
 check "$(rv "$S" word)/$(rv "$S" phrase)" "unseen/unseen 0/3, stands Fri 09:00" "a doc nobody opened: unseen, with when it stands"
 mrun status "$ST/rvu/docs/d.md" > "$T/rv1.out" 2>&1
@@ -3392,7 +3384,7 @@ echo "more context" >> "$ST/rvu/docs/d.md"; sg "$ST/rvu" add -A
 scommit "$ST/rvu" 2026-10-01T10:00:00Z -m "Docs: tidy" -m "Claude-Session: abc12345"
 check "$(rv "$(status rvu)" word)" "unseen" "an agent's checkpoint on the doc is not Sam: still unseen"
 
-mkrepo rvy "- physical: none"
+mkrepo rvy "# Test repository"
 python3 - "$ST/rvy/docs/d.md" <<'PYX'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -3410,7 +3402,7 @@ echo '{"id": "m3", "tasks": {"x": {"branch": "claude/x", "mode": "dnd"}}}' > "$P
 check "$(field "$(status rvy)" lands)" "False" "  …lowered to dnd, a yolo pick (no holds applied) does not land"
 rm -rf "$PLANS_DIR/m3"
 
-mkrepo rvm "- physical: none"
+mkrepo rvm "# Test repository"
 python3 - "$ST/rvm/docs/d.md" <<'PYX'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -3430,7 +3422,7 @@ print("yes" if fn and fn("Relayed from manager (x) (Sam's form, 2026-10-16): A")
 PYX
 )
 skip_aown() { echo "  --   skipped: $1 (helm's asklib does not read regatta/owner yet: helm's scrub)"; }
-mkrepo rvi "- physical: none"
+mkrepo rvi "# Test repository"
 python3 - "$ST/rvi/docs/d.md" <<'PYX'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -3442,7 +3434,7 @@ if [ "$AOWN" = yes ]; then
 else skip_aown "one Sam answered on the Session tab"; fi
 # review gate 2026-10-16: the test is asklib's relayed_by_owner, and it fails closed
 rvx() {  # rvx <repo> <answer line>: one item answered with that line; prints taken and the verdict
-  mkrepo "$1" "- physical: none"
+  mkrepo "$1" "# Test repository"
   python3 - "$ST/$1/docs/d.md" "$2" <<'PYX'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -3459,7 +3451,7 @@ check "$(rvx rvs 'Relayed from manager · buildbox (Session tab, Sam (signed), 2
   "  'Session tab, Sam (signed)': the source does not begin with Sam — taken"
 check "$(rvx rvb 'Relayed from manager · buildbox (Sam, 2026-10-16): A')" "3 taken" "  a bare 'Sam' names no route: taken"
 
-mkrepo rvo "- physical: none"
+mkrepo rvo "# Test repository"
 # what drain_saves writes for a `memo-open` from the page (tested in the sheep section)
 python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; L("m", sys.argv[1]).load_module().record_open(sys.argv[2])' "$B/keel" "$ST/rvo/docs/d.md"
 check "$(python3 -c 'import json,sys
@@ -3470,7 +3462,7 @@ print(len(r), sorted(r[-1]), r[-1]["doc"], r[-1]["branch"])' "$MEMO_STATE_DIR/op
 S=$(status rvo)
 check "$(rv "$S" word)/$(field "$S" verdict)" "opened/stands-at" "an open logged: opened — and an open is no touch, the doc still stands"
 
-mkrepo rvg "- physical: none"
+mkrepo rvg "# Test repository"
 git clone -q "$ST/rvg.git" "$ST/rvg-web" 2>/dev/null; git -C "$ST/rvg-web" checkout -q claude/x
 echo "a typo fixed on GitHub" >> "$ST/rvg-web/docs/d.md"; git -C "$ST/rvg-web" add docs
 GIT_AUTHOR_NAME=iMachine GIT_AUTHOR_EMAIL=i@m GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
@@ -3478,18 +3470,18 @@ GIT_AUTHOR_NAME=iMachine GIT_AUTHOR_EMAIL=i@m GIT_COMMITTER_NAME=GitHub GIT_COMM
 git -C "$ST/rvg-web" push -q origin claude/x 2>/dev/null
 check "$(rv "$(status rvg)" word)" "opened" "a GitHub web edit of the doc (committer GitHub, author iMachine), not pulled yet, nothing answered: opened"
 
-mkrepo rvp "- physical: none"
+mkrepo rvp "# Test repository"
 python3 - "$ST/rvp/docs/d.md" <<'PY'
 import sys; p = sys.argv[1]; s = open(p).read()
 open(p, "w").write(s.replace("  ➤ Answer:\n", "  ➤ Answer:\n  B — not this one\n", 1))
 PY
 S=$(status rvp)
 check "$(rv "$S" word)/$(rv "$S" answered)" "partial/1" "one of three answered (typed, not yet committed): partial 1/3"
-mkrepo rvn "- physical: none"
+mkrepo rvn "# Test repository"
 printf '\n**Sam, 2026-10-01:** why not both?\n' >> "$ST/rvn/docs/d.md"
 check "$(rv "$(status rvn)" phrase)" "partial 0/3, stands Sat 08:00" "a note and no answer: partial 0/3 (typed, uncommitted: the clock waits a day from now)"
 
-mkrepo rvr "- physical: none"
+mkrepo rvr "# Test repository"
 python3 - "$ST/rvr/docs/d.md" <<'PY'
 import sys; p = sys.argv[1]; s = open(p).read()
 open(p, "w").write(s.replace("  ➤ Answer:\n", "  ➤ Answer:\n  = recommended (accept all)\n"))
@@ -3497,10 +3489,10 @@ PY
 S=$(status rvr)
 check "$(rv "$S" phrase)/$(field "$S" verdict)" "reviewed 3/3 (accept all)/answered" "every item answered by the accept-all Save: reviewed (accept all)"
 
-mkrepo rvw "- physical: none" 11
+mkrepo rvw "# Test repository" 11
 check "$(rv "$(status rvw)" phrase)" "unseen 0/11, waits" "over ten D-items: waits beside the status"
 
-DOC=s-2026-10-01.md mkrepo rvs "- physical: none"
+DOC=s-2026-10-01.md mkrepo rvs "# Test repository"
 export MEMO_NOW=2026-10-02T09:00:01Z
 DOC=s-2026-10-01.md
 mrun stand --apply "$ST/rvs/docs/s-2026-10-01.md" > "$T/rvs.out" 2>&1; rc=$?
@@ -3520,7 +3512,7 @@ check "$(sed -n 3p "$ST/rvs/docs/s-2026-10-01.md")" "> **Record.** Current state
       "…a banner already there keeps its own text and takes the word at its end"
 unset DOC
 
-mkrepo rvt "- physical: none"
+mkrepo rvt "# Test repository"
 python3 - "$ST/rvt/docs/d.md" <<'PY'
 import sys; p = sys.argv[1]; s = open(p).read()
 s = s.replace("  ➤ Answer:\n", "  ➤ Answer:\n\n> **Taken as recommended (A)** — unanswered; say so to change.\n", 1)
@@ -3530,7 +3522,7 @@ S=$(status rvt)
 check "$(rv "$S" word)/$(rv "$S" answered)/$(rv "$S" notes)" "unseen/0/0" \
       "an agent's own reply (not Done/Applied/…) and a quote starting with the name are not Sam's: still unseen"
 
-mkrepo rvm "- physical: none"
+mkrepo rvm "# Test repository"
 R2="$ST/rvm"
 mkdir -p "$R2/docs/record"
 printf '# docs\n\nmode: dry\n\n| Topic | Chart | Records | Code |\n| --- | --- | --- | --- |\n| stand | — | [m-2026-10-01.md](m-2026-10-01.md) | `bin/x` |\n' > "$R2/docs/README.md"
@@ -4675,7 +4667,7 @@ echo "keel embark: /embark's list — the open items the sweep cannot take, by b
 E="$T/embroot"; mkdir -p "$E/a/docs" "$E/p/docs"
 for r in a p; do git init -q -b main "$E/$r"; done
 git -C "$E/p" remote add origin git@github.com:o/p.git
-printf '# P\n\n- physical: house — live\n' > "$E/p/AGENTS.md"
+printf '# P\n' > "$E/p/AGENTS.md"
 doc() { # <file> <items…>: a doc of D-items, each given as "title|reversible|pick"
   f="$1"; shift; n=0; { echo "# $(basename "$f" .md)"; echo; echo "## Decisions"; echo
     for spec in "$@"; do n=$((n+1)); IFS='|' read -r ti rv pk <<< "$spec"
@@ -4684,15 +4676,15 @@ doc() { # <file> <items…>: a doc of D-items, each given as "title|reversible|p
       echo "  ➤ Recommended: $pk"; echo; echo "  ➤ Answer:"; echo; done; } > "$f"; }
 doc "$E/a/docs/old-2026-10-01.md" "irreversible|no|A" "unmarked one||A" "either way|yes|A if the probe passes, else B" "bare pick|yes|B"
 doc "$E/a/docs/young-2026-10-14.md" "too new|no|A"
-doc "$E/p/docs/phys-2026-10-01.md" "in a physical repo|yes|A"
+doc "$E/p/docs/main-2026-10-01.md" "on the main branch|yes|A"
 for r in a p; do git -C "$E/$r" add -A; done
 GIT_AUTHOR_DATE=2026-10-01T00:00:00Z GIT_COMMITTER_DATE=2026-10-01T00:00:00Z git -c user.name=t -c user.email=t@t -C "$E/a" commit -q -m old -m "Claude-Session: x" -- docs/old-2026-10-01.md
 GIT_AUTHOR_DATE=2026-10-14T20:00:00Z GIT_COMMITTER_DATE=2026-10-14T20:00:00Z git -c user.name=t -c user.email=t@t -C "$E/a" commit -q -m young -m "Claude-Session: x"
-GIT_AUTHOR_DATE=2026-10-01T00:00:00Z GIT_COMMITTER_DATE=2026-10-01T00:00:00Z git -c user.name=t -c user.email=t@t -C "$E/p" commit -q -m phys -m "Claude-Session: x"
+GIT_AUTHOR_DATE=2026-10-01T00:00:00Z GIT_COMMITTER_DATE=2026-10-01T00:00:00Z git -c user.name=t -c user.email=t@t -C "$E/p" commit -q -m main -m "Claude-Session: x"
 MEMO_NOW=2026-10-15T00:00:00Z "$B/keel" embark --root "$E" --json > "$T/emb.json"; rc=$?
 check "$rc" "0" "embark: runs, read-only"
-check "$(python3 -c "import json; print([(r['reason'], r['id']) for r in json.load(open('$T/emb.json'))])")" "[('Reversible: no', 'D1'), ('unmarked', 'D2'), ('conditional', 'D3'), ('physical repo', 'D1'), ('no link', 'D4')]" "embark: grouped in the brief's order — an item's own reason first, then the doc's; the sweep-less repo and the physical repo each named"
-check "$(python3 -c "import json; print(sorted(set(r['doc'].rsplit('/', 1)[1] for r in json.load(open('$T/emb.json')))))")" "['old-2026-10-01.md', 'phys-2026-10-01.md']" "…a doc handed over under 72 h ago is not listed"
+check "$(python3 -c "import json; print([(r['reason'], r['id']) for r in json.load(open('$T/emb.json'))])")" "[('Reversible: no', 'D1'), ('unmarked', 'D2'), ('conditional', 'D3'), ('on main', 'D1'), ('no link', 'D4')]" "embark: grouped in the brief's order — an item's own reason first, then the doc's; docs on main and docs without a link each named"
+check "$(python3 -c "import json; print(sorted(set(r['doc'].rsplit('/', 1)[1] for r in json.load(open('$T/emb.json')))))")" "['main-2026-10-01.md', 'old-2026-10-01.md']" "…a doc handed over under 72 h ago is not listed"
 check "$(python3 -c "import json; print([r['age_h'] for r in json.load(open('$T/emb.json'))][:1])")" "[336.0]" "…ages counted from the commit that added the doc"
 MEMO_NOW=2026-10-15T00:00:00Z "$B/keel" embark --root "$E" > "$T/emb.out"
 has "$T/emb.out" "5 items in 2 docs — oldest first in each group" "embark: the heading counts items and docs"
@@ -5136,7 +5128,7 @@ check "$("$B/keel" parse "$LT/quoted.md" | python3 -c 'import json,sys; print(js
   "a Gate line below the first D-item is prose, not the doc's gate"
 
 # in a repo: status reads answered, the review reviewed, and line_plan owes no form once all is answered
-mkrepo lit "- physical: none"
+mkrepo lit "# Test repository"
 owed_course() { python3 -c 'import sys
 from importlib.machinery import SourceFileLoader
 print(SourceFileLoader("k", sys.argv[1]).load_module().line_plan(sys.argv[2])["owed"]["course"])' "$B/keel" "$1"; }

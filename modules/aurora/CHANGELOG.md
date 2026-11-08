@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Embark guidance no longer treats a repo contract as a condition for recommendation standing; the owner can still move a doc deadline with `keel stand`.
+
 - `scope-pass check --judge`: the brief judge's clean list names counts of the agent sessions, transcripts
   and tool calls that made the text and of the scan's or fence's own refusals or hits, how long those
   sessions' steps took and when they ran, a decision's letter and the names of public tools and their public

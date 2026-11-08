@@ -76,8 +76,6 @@ cat > "$T/doc.md" <<'EOF'
 ## Open feedback
 EOF
 
-# the fixture in a physical: none checkout, so its items are tiered by their own lines (a doc in no checkout holds them all)
-git -C "$T" init -q 2>/dev/null; echo "- physical: none" > "$T/AGENTS.md"
 
 echo "the seam"
 "$B/keel" build "$T/doc.md" -o "$T/page.html" > /dev/null; check "$?" "0" "the page builds"
@@ -120,19 +118,28 @@ lacks "$T/bare.html" 'id="free-D1"' "…with no words row nothing would read"
 lacks "$T/bare.html" 'id="take-D1"' "…and no Take, nor Accept all, whose guard is the component's"
 lacks "$T/bare.html" 'id="acceptall"' "…(Accept all)"
 
-# the repo's physical: line, where the doc has a checkout: a repo that acts on the real world holds every plain pick
-for c in phys none; do
-  mkdir -p "$T/$c/docs"; git -C "$T/$c" init -q 2>/dev/null; cp "$T/doc.md" "$T/$c/docs/d.md"
-  if [ "$c" = phys ]; then echo "- physical: the garage door" > "$T/$c/AGENTS.md"; else echo "- physical: none" > "$T/$c/AGENTS.md"; fi
-  "$B/keel" build "$T/$c/docs/d.md" -o "$T/$c.html" > /dev/null
-done
-check "$(grep -oE 'id="card-D[12]"[^>]*data-tier="[a-z]+" data-cls="[a-z ]*"' "$T/phys.html" | sed -E 's/.*card-(D[0-9]).*tier="([a-z]+)" data-cls="([a-z ]*)"/\1:\2:\3/' | tr '\n' ' ')" \
-  "D1:held:physical D2:held:physical " "a doc in a physical repo: its plain picks held, as dnd holds them"
-check "$(grep -oE 'id="card-D[12]"[^>]*data-tier="[a-z]+"' "$T/none.html" | sed -E 's/.*card-(D[0-9]).*tier="([a-z]+)"/\1:\2/' | tr '\n' ' ')" \
-  "D1:safe D2:irreversible " "…and in a physical: none repo, tiered by their own lines"
+# A doc with no checkout is tiered by its decision lines.
 cp "$T/doc.md" "$O/d.md"; "$B/keel" build "$O/d.md" -o "$O/d.html" > /dev/null
-check "$(grep -oE 'id="card-D[12]"[^>]*data-tier="[a-z]+" data-cls="[a-z ]*"' "$O/d.html" | sed -E 's/.*card-(D[0-9]).*tier="([a-z]+)" data-cls="([a-z ]*)"/\1:\2:\3/' | tr '\n' ' ')" \
-  "D1:held:physical D2:held:physical " "…and a doc in no checkout holds them too, as yolo --dnd does (fail-closed)"
+check "$(grep -oE 'id="card-D[12]"[^>]*data-tier="[a-z]+"' "$O/d.html" | sed -E 's/.*card-(D[0-9]).*tier="([a-z]+)"/\1:\2/' | tr '\n' ' ')" \
+  "D1:safe D2:irreversible " "a doc in no checkout uses its own reversible marks"
+check "$(python3 - "$B/keel" "$T/doc.md" <<'PY2'
+import sys
+from importlib.machinery import SourceFileLoader as L
+from unittest.mock import patch
+m = L("compat", sys.argv[1]).load_module()
+text = m.Path(sys.argv[2]).read_text()
+lines, items, _ = m.parse(text)
+with patch.object(m.Path, "read_text", side_effect=AssertionError("contract read")), \
+     patch.object(m, "git", side_effect=AssertionError("checkout read")):
+    old = m.doc_physical(m.Path("/absent/docs/d.md"))
+    print(old == "- physical: none", m.dnd_held(items[0], lines, old) is None,
+          m.dnd_held(items[0], lines, object()) is None)
+print(all(f("/absent") == "- physical: none" for f in (m.checkout_physical, m.contract_physical, m.page_physical)),
+      m.decision_tier(items[0], lines, False) == m.decision_tier(items[0], lines),
+      m.build(text, "d.md", draw=False, physical=False) == m.build(text, "d.md", draw=False))
+PY2
+)" "True True True
+True True True" "older Wharf's and helm's helpers and physical arguments stay inert, without reading a checkout or contract"
 lacks "$T/page.html" 'id="take-D4"' "no Take on a decision R refuses (the owner's own: conditional)"
 lacks "$T/page.html" 'id="take-D5"' "…nor on an unmarked one"
 has "$T/page.html" 'id="take-D1"' "…while a plain pick has it"

@@ -794,7 +794,7 @@ check "$(replayed)" "1" "the same REPORT body twice, in one body and in every bo
 check "$(echo "$out" | grep -c 'REPORT: appended to p1')" "1" "  appended once, said once"
 has "$out" "a REPORT p1 already holds: a replay, dropped" "  the copy is said to be a replay"
 check "$(cat "$T/nr")" "4" "a link that hands back only replays does not spin: one fresh body, then --replays 2 more, then the end"
-has "$out" "handed back only REPORTs heard before, 3 times in a row — re-arm it next turn" "  and the listener says why it ended"
+has "$out" "handed back only lines heard before (REPORTs, ASKs, ANSWERs), 3 times in a row — re-arm it next turn" "  and the listener says why it ended"
 check "$rc" "0" "  exit 0, as a stopped link's"
 check "$(echo "$out" | grep -c 'already holds')" "3" "  a run of replays is said once, not on every pass"
 check "$(python3 -c "import json,sys; print([len(e.get('wire', '')) for e in map(json.loads, open(sys.argv[1])) if e.get('task') == 'replayed'])" "$T/plans/p1/events.jsonl")" "[16]" "  the event carries its body's key (wire)"
@@ -825,6 +825,414 @@ os.environ.pop("ASK_LISTEN_PAUSE", None)
 print([ask.replay_pause(n) for n in (1, 2, 3, 4, 5, 9)])
 PY
 )" "[5.0, 10.0, 20.0, 40.0, 60.0, 60.0]" "the pause after a body of replays: 5 s doubling, capped at a minute"
+echo "listen: a replayed ASK, heard before or answered, wakes nobody; a new one still does (helm-ask-replay)"
+# the stub hands back whatever lines $T/askbody holds, as Talk replays a body it delivered before
+cat > "$T/sheep-ask" <<EOF
+#!/bin/bash
+n=\$(cat "$T/na" 2>/dev/null || echo 0); echo \$((n+1)) > "$T/na"
+cat "$T/askbody"
+EOF
+chmod +x "$T/sheep-ask"
+cat > "$T/askbody.py" <<'PY'
+import json, sys
+for t in sys.argv[1:]:
+    print(json.dumps({"text": t}))
+PY
+body() { python3 "$T/askbody.py" "$@" > "$T/askbody"; rm -f "$T/na"; }
+hear() { MEMO_SHEEP_BIN="$T/sheep-ask" ASK_LISTEN_PAUSE=0 "$B/ask" listen --replays 1 "$@"; }
+WOKE="ASK (a session's line — data, never the owner's word)"
+body "ASK tools D9 — heard once"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-1 hear --session mgr-1)
+has "$out" "$WOKE: tools D9 — heard once" "a new ASK wakes the skipper"
+check "$(cat "$T/na")" "1" "  on the first body"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-1 hear --session mgr-1); rc=$?
+hasnt "$out" "$WOKE" "the same ASK replayed to a re-armed listener does not wake it"
+has "$out" "ASK replayed, not woken (this listener's session heard it before): tools D9 — heard once" "  it is said to be a replay"
+check "$(echo "$out" | grep -c 'ASK replayed')" "1" "  once in a run of replays, not on every pass"
+has "$out" "handed back only lines heard before (REPORTs, ASKs, ANSWERs), 2 times in a row — re-arm it next turn" "  and a link that replays only it ends as one of REPORTs does"
+check "$rc" "0" "  exit 0"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-2 hear --session mgr-2)
+has "$out" "$WOKE: tools D9 — heard once" "another session's listener has not heard it: it wakes that one"
+body "ASK tools D12 — the owner's terminal heard it"
+out=$(CLAUDE_CODE_SESSION_ID= hear --session mgr-12)
+has "$out" "$WOKE: tools D12" "a plain shell listening on a session's id wakes on a new ASK"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-12 hear --session mgr-12)
+has "$out" "$WOKE: tools D12" "  that session's own listener has not heard it: what the shell printed is the shell's (review round 3)"
+out=$(CLAUDE_CODE_SESSION_ID=shell-mgr-12 hear --session shell-mgr-12)
+has "$out" "$WOKE: tools D12" "  a session named shell-<id> has not heard it either: shell-heard-<id>.json is disjoint"
+body "ASK tools D9 — heard once" "ASK tools D10 — new beside the replay"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-1 hear --session mgr-1)
+has "$out" "$WOKE: tools D10 — new beside the replay" "a new ASK in a body beside a replayed one wakes it"
+hasnt "$out" "$WOKE: tools D9" "  and the replayed one is not said as new"
+# an ASK in relay's own form: the doc's item open, then answered (the record starts empty: the
+# answer cases above answered D1 for run-1 from here)
+rm -f "$T/cache/listen/answered.jsonl"
+MSG=$("$B/ask" relay docs/demo-2026-10-10.md D1 --dry-run | sed -n 's/^message: //p')
+has "$MSG" "reply: bin/ask answer " "the relay's dry run prints the ASK it sends"
+DOC="$(pwd -P)/docs/demo-2026-10-10.md"
+body "$MSG"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-3 hear --session mgr-3)
+has "$out" "$WOKE: repo D1 — " "an ASK whose item is open in the run's own doc wakes the skipper"
+# the held road: the run holds its worktree, so the answer waits in its pending row and the doc reads open
+mkdir -p .git/claude; printf '{"session": "run-h", "seen": %d}' "$(date +%s)" > .git/claude/owner.json
+"$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from coding-7 --to run-1 --no-send > /dev/null
+rm .git/claude/owner.json
+out=$(CLAUDE_CODE_SESSION_ID=mgr-3b hear --session mgr-3b)
+hasnt "$out" "$WOKE" "an answer waiting in the run's pending row settles its ASK, the doc still open"
+has "$out" "(D1 answered, waiting in the run's worktree for bin/ask apply)" "  said why"
+rm -f .git/claude/pending-answers.jsonl
+out=$(CLAUDE_CODE_SESSION_ID=mgr-3c hear --session mgr-3c)
+has "$out" "$WOKE: repo D1 — " "  with no pending row the open doc decides: it wakes"
+printf 'not json \377\n{"t": 1, "item": "D9", "do' >> "$T/cache/listen/answered.jsonl"
+"$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from coding-7 --to run-1 --no-send > /dev/null 2> "$T/ans.err"; rc=$?
+has "$(cat docs/demo-2026-10-10.md)" "Relayed from coding-7" "  (the item is answered and committed)"
+check "$rc:$(cat "$T/ans.err")" "0:" "a stray non-UTF-8 line in the answered record: the answer still goes, nothing raised"
+check "$(grep -ac '^{"t": [0-9]*, "to": "run-1", "item": "D1"' "$T/cache/listen/answered.jsonl")" "1" "  its row appended whole, on a line of its own, after a stray line and a torn one"
+check "$(grep -ac '^not json' "$T/cache/listen/answered.jsonl")" "1" "  the stray line stays"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-4 hear --session mgr-4)
+hasnt "$out" "$WOKE" "an ASK replayed after its item was answered wakes no session, one that never heard it included"
+has "$out" "(D1 answered in $DOC)" "  said where: the run's own doc"
+# the run's own copy open while main's is answered (its branch forked before the answer): the own copy decides
+WT="$(pwd -P)/.claude/worktrees/wt"; mkdir -p "$WT/docs"; git show HEAD~1:docs/demo-2026-10-10.md > "$WT/docs/demo-2026-10-10.md"
+OWN=$(printf '%s' "$MSG" | sed "s#bin/ask answer [^ ]*/docs/demo-2026-10-10.md D1#bin/ask answer $WT/docs/demo-2026-10-10.md D1#")
+body "$OWN"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-5 hear --session mgr-5)
+has "$out" "$WOKE: repo D1 — " "the run's own copy open, main's answered: the run's copy decides, it wakes"
+rm -rf "$(pwd -P)/.claude"
+# the run's worktree gone since its branch landed: the main checkout's copy settles it (the answer's
+# own record set aside, so the copies speak)
+mv "$T/cache/listen/answered.jsonl" "$T/answered.saved"
+GONE=$(printf '%s' "$MSG" | sed "s#bin/ask answer [^ ]*/docs/demo-2026-10-10.md D1#bin/ask answer $(pwd -P)/.claude/worktrees/gone/docs/demo-2026-10-10.md D1#")
+has "$GONE" "/.claude/worktrees/gone/docs/demo-2026-10-10.md D1" "  (the ASK names a worktree that is gone)"
+body "$GONE"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6 hear --session mgr-6)
+hasnt "$out" "$WOKE" "an answered ASK from a worktree gone since it landed: the main checkout's copy settles it"
+has "$out" "(D1 answered in $DOC)" "  said where"
+# the ship holds the run's relay and no answered event (an answer on the Course page writes none): the copy still settles it
+"$HM" $SHIP demo --id p6 > /dev/null
+GFROM=$(printf '%s' "$GONE" | sed -n 's/.* — from: \([^ ]*\) — reply: .*/\1/p')
+cat > "$T/shipev6.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event("p6", {"task": "t6", "status": "relayed", "ask": "docs/demo-2026-10-10.md#D1", "session": sys.argv[2]})
+PY
+python3 "$T/shipev6.py" "$B" "$GFROM"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6s hear --session mgr-6s --plan p6)
+has "$out" "$WOKE: repo D1 — " "the ship's relay open, the doc answered on main: no copy shows the answer came after that relay, it wakes (review round 3)"
+# a re-hail whose ship this Mac does not hold comes from another Mac: this Mac's checkout is no copy of its doc
+body "$(printf '%s' "$GONE" | sed 's/ — reply: / — re-hailed to scope-1 at gen 2 after a hand-over — reply: /')$(printf ' --plan p-absent')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6h hear --session mgr-6h)
+has "$out" "$WOKE: repo D1 — " "a re-hail whose ship is not on this Mac, main's copy answered: it wakes (review round 3)"
+"$HM" $SHIP other --id p6u > /dev/null
+body "$(printf '%s' "$GONE" | sed 's/ — reply: / — re-hailed to scope-1 at gen 2 after a hand-over — reply: /')$(printf ' --plan p6u')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6u hear --session mgr-6u)
+has "$out" "$WOKE: repo D1 — " "  a same-named local ship with no event for the ask is not its ship: it wakes"
+"$HM" $SHIP rep --id p6r > /dev/null
+"$HM" $SHIP far --id p6f > /dev/null
+"$HM" $SHIP nosid --id p6n > /dev/null
+cat > "$T/rehail_cases.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib, skipperlib
+repo_root = sys.argv[2]
+# `helm report --ask` records repo (main checkout) and no `doc`: rehail_line falls back to repo_dir/rel
+ev = {"task": "t6", "status": "relayed", "ask": "docs/demo-2026-10-10.md#D1", "session": "run-rep",
+      "host": helmlib.host(), "repo": repo_root}
+helmlib.append_event("p6r", ev)
+st = helmlib.state("p6r")
+t = next(x for x in st["tasks"] if x["id"] == "t6")
+print(skipperlib.rehail_line("p6r", {"scope": "s", "gen": 2}, t, t["asks"][0], ev))
+# a remote run's sessionless ask reported over Talk, then answered in the ship: still foreign to this Mac's checkout
+helmlib.append_event("p6f", {"task": "t6", "status": "relayed", "ask": "docs/demo-2026-10-10.md#D1",
+                             "session": None, "host": "other-box", "repo": repo_root})
+helmlib.append_event("p6f", {"task": "t6", "answered": "docs/demo-2026-10-10.md#D1", "from": "skipper"})
+# a local sessionless run's open ask in the ship: ship_answered returns False, so main's answered copy never silences it
+helmlib.append_event("p6n", {"task": "t6", "status": "relayed", "ask": "docs/demo-2026-10-10.md#D1", "session": None})
+PY
+REP_REHAIL=$(python3 "$T/rehail_cases.py" "$B" "$(pwd -P)")
+body "$REP_REHAIL"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6p hear --session mgr-6p)
+has "$out" "$WOKE: repo D1 — " "  a re-hail from helm report --ask (doc falls back to main checkout, answered there): open in the ship, it wakes"
+body "$(printf '%s' "$REP_REHAIL" | sed 's/--to run-rep/--to ?/; s/from: run-rep/from: ?/; s/--plan p6r/--plan p6f/')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6f hear --session mgr-6f)
+has "$out" "$WOKE: repo D1 — " "  a re-hail whose ship event came from another host: this Mac's checkout is no copy of it, it wakes"
+body "$(printf '%s' "$GONE" | sed "s/--to $GFROM/--to <session>/; s/from: $GFROM/from: ?/")"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6n hear --session mgr-6n --plan p6n)
+has "$out" "$WOKE: repo D1 — " "  an open sessionless ask (<session>) in the ship, main's copy answered: it wakes"
+cat > "$T/shipev6n.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event("p6n", {"task": "t6", "answered": "docs/demo-2026-10-10.md#D1", "from": "skipper"})
+PY
+python3 "$T/shipev6n.py" "$B"
+body "$(printf '%s' "$GONE" | sed "s/--to $GFROM/--to <session>/; s/from: $GFROM/from: ?/; s/ --task / --send-only --task /")"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6n2 hear --session mgr-6n2 --plan p6n)
+has "$out" "$WOKE: repo D1 — " "  an answered sessionless event in the ship never settles another sessionless ASK: it wakes"
+body "$(printf '%s' "$MSG" | sed 's/D1 — How often the cloud composes/D1 — How often — re-hailed to scope-1/')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6t hear --session mgr-6t)
+hasnt "$out" "$WOKE" "  a relay whose D-item title mentions '— re-hailed to' still reads its own local doc"
+rm -rf "$T/plans/p6u" "$T/plans/p6r" "$T/plans/p6f" "$T/plans/p6n" "$T/rehail_cases.py" "$T/shipev6n.py"
+body "$GONE"
+has "$GONE" "D1 — How often the cloud composes — " "  (the ASK carries the item's title)"
+body "$(printf '%s' "$GONE" | sed 's/D1 — How often the cloud composes — /D1 — A new question in a revised doc — /')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6r hear --session mgr-6r)
+has "$out" "$WOKE: repo D1 — A new question" "  a D-number reused with another title: main's answered item is no copy of it, it wakes"
+body "$GONE"
+# main's file behind (open), its origin/main answered
+git update-ref refs/remotes/origin/main HEAD
+git reset -q --hard HEAD~1
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6b hear --session mgr-6b)
+hasnt "$out" "$WOKE" "main's file behind, its origin/main answered: origin/main settles it"
+has "$out" "(D1 answered in $DOC (origin/main))" "  said where"
+# the inverse: an answered file must never override origin/main, even when its doc is gone or empty
+git reset -q --hard refs/remotes/origin/main
+git update-ref refs/remotes/origin/main HEAD~1
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6d hear --session mgr-6d)
+has "$out" "$WOKE: repo D1 — " "main's file answered, origin/main open: the open item wakes it"
+: > docs/demo-2026-10-10.md
+git add docs/demo-2026-10-10.md; git commit -qm "empty the doc"
+git update-ref refs/remotes/origin/main HEAD
+git reset -q --hard HEAD~1
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6e hear --session mgr-6e)
+has "$out" "$WOKE: repo D1 — " "origin/main's doc empty, main's file still answered: it wakes"
+git rm -q docs/demo-2026-10-10.md; git commit -qm "remove the doc"
+git update-ref refs/remotes/origin/main HEAD
+git reset -q --hard HEAD~1
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6f hear --session mgr-6f)
+has "$out" "$WOKE: repo D1 — " "origin/main's doc deleted, main's file still answered: it wakes"
+git update-ref -d refs/remotes/origin/main
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6g hear --session mgr-6g)
+hasnt "$out" "$WOKE" "no origin/main ref: the answered file still settles it"
+has "$out" "(D1 answered in $DOC)" "  said where: the file"
+git reset -q --hard HEAD~1
+out=$(CLAUDE_CODE_SESSION_ID=mgr-6c hear --session mgr-6c)
+has "$out" "$WOKE: repo D1 — " "  no copy here answered, no record: it wakes"
+mv "$T/answered.saved" "$T/cache/listen/answered.jsonl"
+body "$MSG"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7 hear --session mgr-7)
+has "$out" "$WOKE: repo D1 — " "the run's own doc open here (the answer reverted): a record of an answer never overrides it"
+# --send-only: the record is the road for a run on another Mac, kept only for an answer Talk delivered
+REMOTE="ASK x D4 — far — Reversible: yes — Recommended: B — doc: x:docs/x.md#L3 — from: run-r — reply: bin/ask answer /x/docs/x.md D4 \"<text>\" --from <name> --to run-r --task t --space space-r --send-only"
+body "$REMOTE"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7a hear --session mgr-7a)
+has "$out" "$WOKE: x D4" "a run on another Mac asks: the skipper's listener wakes on it"
+SPACESHEEP_KEY=k-test "$B/ask" answer /x/docs/x.md D4 "B" --from coding-7 --to run-r --space space-r --send-only > /dev/null
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7b hear --session mgr-7b)
+hasnt "$out" "$WOKE" "an answer sent to a run on another Mac settles its replayed ASK, in a session that never heard it"
+has "$out" "(D4 answered from this Mac)" "  said why: the record"
+body "$(printf '%s' "$REMOTE" | sed 's/D4 — far — /D4 — a new question under the old number — /')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7f hear --session mgr-7f)
+has "$out" "$WOKE: x D4 — a new question" "  the same run's D4 with new text: no listener here heard it before the answer, it wakes (review round 2)"
+SPACESHEEP_KEY=k-test "$B/ask" answer /x/docs/x.md D9 "B" --from coding-7 --to run-r --space space-r --send-only > /dev/null
+body "$(printf '%s' "$REMOTE" | sed 's/ D4 / D9 /g')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7g hear --session mgr-7g)
+has "$out" "$WOKE: x D9" "  an answer recorded before any listener here heard the ASK settles nothing: it wakes"
+rm -f "$T/cache/listen/heard-mgr-7g.json"
+cat > "$T/badheard.py" <<'PY'
+import json, sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_bh", sys.argv[1] + "/ask").load_module()
+k = ask.line_key(sys.argv[2])
+Path(sys.argv[3]).write_text(json.dumps({k: False}))
+PY
+python3 "$T/badheard.py" "$B" "$(printf '%s' "$REMOTE" | sed 's/ D4 / D9 /g; s/^ASK //')" "$T/cache/listen/heard-bool.json"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7gb hear --session mgr-7gb)
+has "$out" "$WOKE: x D9" "  a JSON false in heard-*.json is no timestamp (bool is an int in Python): it wakes"
+rm -f "$T/cache/listen/heard-bool.json" "$T/badheard.py"
+OTHER_REPO="ASK z D4 — far — Reversible: yes — Recommended: B — doc: z:docs/x.md#L3 — from: run-r — reply: bin/ask answer /z/docs/x.md D4 \"<text>\" --from <name> --to run-r --task t --space space-r --send-only"
+body "$OTHER_REPO"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7z1 hear --session mgr-7z1)
+has "$out" "$WOKE: z D4" "  another repo's docs/x.md#D4 from the same session wakes first"
+SPACESHEEP_KEY=k-test "$B/ask" answer /x/docs/x.md D4 "B" --from coding-7 --to run-r --space space-r --send-only > /dev/null
+printf '{"t": %d, "to": "run-r", "item": "D4", "doc": "/x/docs/x.md"}\n' "$(date +%s)" >> "$T/cache/listen/answered.jsonl"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7z2 hear --session mgr-7z2)
+has "$out" "$WOKE: z D4" "  an answer to repo x's docs/x.md#D4 never settles repo z's docs/x.md#D4: it wakes"
+body "$(printf '%s' "$REMOTE" | sed 's/run-r/run-s/g')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7b hear --session mgr-7b)
+has "$out" "$WOKE: x D4" "  the same item from another run's session is not that answer: it wakes"
+SPACESHEEP_KEY=k-test "$B/ask" answer /y/docs/x.md D5 "B" --from coding-7 --to '<session>' --space space-r --send-only > /dev/null
+check "$(grep -ac '"item": "D5"' "$T/cache/listen/answered.jsonl")" "0" "  an answer to a run with no session id keeps no record"
+# a placeholder row from before this rule, or any writer: never matched
+printf '{"t": %d, "to": "<session>", "item": "D6", "doc": "/x/docs/x.md"}\n' "$(date +%s)" >> "$T/cache/listen/answered.jsonl"
+body "$(printf '%s' "$REMOTE" | sed 's/ D4 / D6 /g; s/--to run-r/--to <session>/; s/from: run-r/from: ?/')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7s hear --session mgr-7s)
+has "$out" "$WOKE: x D6" "  two runs with no session id are no one run: a placeholder row never settles a placeholder ASK, it wakes"
+"$B/ask" answer /x/docs/x.md D8 "B" --from coding-7 --to mgr-1 --to-account claude-a --send-only > /dev/null
+body "$(printf '%s' "$REMOTE" | sed 's/ D4 / D8 /g; s/run-r/mgr-1/g')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7c hear --session mgr-7c)
+has "$out" "$WOKE: x D8" "  a SendMessage answer (the session has still to send it) keeps no record: its ASK wakes"
+# a run on another Mac (--send-only in its reply): this Mac's main checkout is no copy of its doc
+git update-ref refs/remotes/origin/main HEAD
+"$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from coding-7 --to run-1 --no-send > /dev/null
+mv "$T/cache/listen/answered.jsonl" "$T/answered.saved"
+body "$(printf '%s' "$GONE" | sed 's/ --task / --send-only --task /')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7d hear --session mgr-7d)
+has "$out" "$WOKE: repo D1 — " "a --send-only ASK whose path happens to fit this Mac's checkout, answered here: it wakes"
+mv "$T/answered.saved" "$T/cache/listen/answered.jsonl"
+git reset -q --hard HEAD~1; git update-ref -d refs/remotes/origin/main
+# a re-hail's bare repo path never reads the listener's cwd
+body "$(printf '%s' "$MSG" | sed "s#bin/ask answer [^ ]*/docs/demo-2026-10-10.md D1#bin/ask answer docs/demo-2026-10-10.md D1#; s/run-1/run-b/g")"
+"$B/ask" answer docs/demo-2026-10-10.md D1 "A" --from coding-7 --to run-1 --no-send > /dev/null
+out=$(CLAUDE_CODE_SESSION_ID=mgr-7e hear --session mgr-7e)
+has "$out" "$WOKE: repo D1 — " "a relative doc path is no copy of the run's doc: the cwd's answered D1 does not settle it"
+git reset -q --hard HEAD~1
+cat > "$T/unsent.py" <<'PY'
+import argparse, json, sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_u", sys.argv[1] + "/ask").load_module()
+class Fake:
+    def __init__(self, verdict): self.verdict = verdict
+    def send(self, ctx, msg): return self.verdict, "stub"
+a = argparse.Namespace(to="run-u", item="D6", doc="/y/docs/y.md", to_account=None, space=None, frm="coding-7", plan=None, task=None, send_only=True)
+ask.asklib.BACKENDS["fake-down"] = Fake("unreachable")
+ask.asklib.BACKENDS["fake-up"] = Fake("sent")
+ask.send_answer(a, a.doc, "A", "fake-down", note=True)
+f = {"repo": "y", "item": "D6", "frm": "run-u", "doc": "/y/docs/y.md", "rel": "docs/y.md", "foreign": True}
+other = {"repo": "z", "item": "D6", "frm": "run-u", "doc": "/z/docs/y.md", "rel": "docs/y.md", "foreign": True}
+down = ask.answered_here(f)
+ask.send_answer(a, a.doc, "A", "fake-up", note=True)
+up, cross = ask.answered_here(f), ask.answered_here(other)
+rel_a = argparse.Namespace(to="run-u", item="D8", doc="docs/demo-2026-10-10.md", to_account=None, space=None, frm="coding-7", plan=None, task=None, send_only=True)
+ask.send_answer(rel_a, rel_a.doc, "A", "fake-up", note=True)
+last = json.loads([l for l in ask.answered_file().read_bytes().decode("utf-8", "replace").splitlines() if l.strip()][-1])
+print(down, up, cross, "abs" in last)
+PY
+check "$(python3 "$T/unsent.py" "$B" 2>&1 | tail -1)" "False True False False" "an unreachable send keeps no record; a delivered one settles its own repo only and keeps no local abs"
+# keel that will not load: the check fails, and the ASK wakes as new
+cat > "$T/keelbad.py" <<'PY'
+import os, sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_k", sys.argv[1] + "/ask").load_module()
+def boom():
+    raise ValueError("a keel mid-sync")
+ask.memo = boom
+sys.exit(ask.main(["listen", "--session", "mgr-k", "--replays", "1"]))
+PY
+body "$MSG"
+out=$(MEMO_SHEEP_BIN="$T/sheep-ask" ASK_LISTEN_PAUSE=0 CLAUDE_CODE_SESSION_ID=mgr-k python3 "$T/keelbad.py" "$B" 2>&1); rc=$?
+has "$out" "$WOKE: repo D1 — " "a replay check that raises wakes the session on the ASK"
+has "$out" "the replay check failed (ValueError: a keel mid-sync)" "  and says so"
+hasnt "$out" "Traceback" "  no traceback"
+check "$rc" "0" "  exit 0"
+# the ship holds the answer: its relayed event under the run's session, then plan_answered's event
+cat > "$T/shipev.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event("p1", {"task": "t9", "status": "relayed", "ask": "docs/x.md#D5", "session": "run-77"})
+helmlib.append_event("p1", {"task": "t9", "answered": "docs/x.md#D5", "from": "skipper"})
+PY
+python3 "$T/shipev.py" "$B"
+SHIPASK="ASK elsewhere D5 — a ship's ask — Reversible: yes — Recommended: A — doc: elsewhere:docs/x.md#L3 — from: run-77 — reply: bin/ask answer /nowhere/docs/x.md D5 \"<text>\" --from <name> --to run-77 --task t9"
+body "$SHIPASK"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-9 hear --session mgr-9 --plan p1)
+hasnt "$out" "$WOKE" "an ASK the ship holds answered wakes nobody, its doc on no disk here"
+has "$out" "(D5 answered in ship p1)" "  said why"
+body "$(printf '%s' "$SHIPASK" | sed 's/run-77/run-78/g')"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-9 hear --session mgr-9 --plan p1)
+has "$out" "$WOKE: elsewhere D5" "  the same item from another run's session is not that answer: it wakes"
+cat > "$T/shipev2.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event("p1", {"task": "t9", "status": "relayed", "ask": "docs/x.md#D5", "session": "run-78"})
+PY
+python3 "$T/shipev2.py" "$B"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-9b hear --session mgr-9b --plan p1)
+has "$out" "$WOKE: elsewhere D5" "  a relay under the same task after the answer: the earlier answer does not settle it"
+REHAIL="ASK elsewhere D5 — a ship's ask — Reversible: yes — Recommended: A — doc: elsewhere:docs/x.md — from: run-77 — re-hailed to scope-1 at gen 2 after a hand-over (asked of an earlier holder, while the yard held the ship, or with no road) — reply: /opt/regatta/modules/helm/bin/ask answer /nowhere/docs/x.md D5 \"<text>\" --from scope-1 --to run-77 --task t9 --plan p1"
+body "$REHAIL"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-10 hear --session mgr-10)
+hasnt "$out" "$WOKE" "a re-hailed ASK (skipperlib's form: no #L, the tool's path, its --plan) the ship holds answered wakes nobody"
+has "$out" "(D5 answered in ship p1)" "  its ship read from the reply's --plan"
+cat > "$T/shipev3.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import helmlib
+helmlib.append_event("p1", {"task": "t9", "status": "relayed", "ask": "docs/x.md#D5", "session": "run-77"})
+PY
+python3 "$T/shipev3.py" "$B"
+body "$SHIPASK"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-10b hear --session mgr-10b --plan p1)
+has "$out" "$WOKE: elsewhere D5" "  run-77 relays D5 again after its answer: the newest relay is open, it wakes"
+# this Mac's record of the earlier answer: the ship holds the newer, open relay, so the record never settles it
+printf '\n{"t": %d, "to": "run-77", "item": "D5", "doc": "/nowhere/docs/x.md"}\n' "$(date +%s)" >> "$T/cache/listen/answered.jsonl"
+out=$(CLAUDE_CODE_SESSION_ID=mgr-10c hear --session mgr-10c --plan p1)
+has "$out" "$WOKE: elsewhere D5" "  an answered row of the earlier relay beside the ship's open re-relay: the ship decides, it wakes"
+# a delivered answer whose ship event cannot be written: sent once, exit 0, said on stderr, never a traceback
+cat > "$T/shipfail.py" <<'PY'
+import argparse, sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_f", sys.argv[1] + "/ask").load_module()
+sent = []
+class Up:
+    def send(self, ctx, msg):
+        sent.append(msg); return "sent", "stub"
+def boom(a, doc):
+    raise IsADirectoryError("events.jsonl")
+ask.plan_answered = boom
+ask.asklib.BACKENDS["fake-up"] = Up()
+a = argparse.Namespace(to="run-f", item="D7", doc="/f/docs/f.md", to_account=None, space=None, frm="coding-7", plan=None, task=None)
+rc = ask.send_answer(a, a.doc, "A", "fake-up", note=True)
+noted = ask.answered_here({"item": "D7", "frm": "run-f", "doc": "/f/docs/f.md", "rel": "docs/f.md"})
+print("rc=%s sent=%d noted=%s" % (rc, len(sent), noted))
+PY
+out=$(python3 "$T/shipfail.py" "$B" 2>&1)
+has "$out" "rc=0 sent=1 noted=True" "a delivered answer whose ship event fails: exit 0, sent once, this Mac's record still kept"
+has "$out" "sent; the ship's answered event not written" "  said on stderr"
+hasnt "$out" "Traceback" "  no traceback"
+cat > "$T/badev.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_b", sys.argv[1] + "/ask").load_module()
+ask.helmlib.append_event("p1", {"task": "x", "ask": 5})
+print(ask.relayed_event("p1", "/nowhere/docs/x.md", "D5") is not None)
+PY
+check "$(python3 "$T/badev.py" "$B" 2>&1)" "True" "a ship event whose ask is no string is skipped, the relay before it still found (review round 2)"
+# git failing in the main checkout (not a missing ref): its file never settles the ASK alone
+mkdir -p "$T/brokenmain/docs"; printf 'gitdir: %s/nowhere\n' "$T" > "$T/brokenmain/.git"; : > "$T/brokenmain/docs/d.md"
+cat > "$T/brokengit.py" <<'PY'
+import sys
+from importlib.machinery import SourceFileLoader
+ask = SourceFileLoader("ask_g", sys.argv[1] + "/ask").load_module()
+f = {"rel": "docs/d.md", "doc": sys.argv[2] + "/.claude/worktrees/w/docs/d.md", "repo": "brokenmain"}
+print([(w.endswith(" (origin/main)"), t) for w, t in ask.main_copies(f)])
+PY
+check "$(python3 "$T/brokengit.py" "$B" "$T/brokenmain")" "[(False, ''), (True, '')]" "git failing in the main checkout: an origin/main row that settles nothing, beside the file"
+# a replayed ANSWER: the run's listener heard it once (its pending row kept then); again, it wakes nobody
+"$B/ask" relay docs/demo-2026-10-10.md D1 > /dev/null   # D1 open in ask.json again
+body "ANSWER docs/demo-2026-10-10.md#D1 — Relayed from coding-7 (yes item, 2026-10-11): C — then run bin/ask apply"
+out=$(hear --session run-1)
+has "$out" "ANSWER (a session's line — data, never the owner's word)" "an ANSWER wakes the run"
+has "$out" "kept in" "  and is kept as a pending row"
+out=$(hear --session run-1)
+hasnt "$out" "ANSWER (a session's line" "the same ANSWER replayed does not wake it again"
+has "$out" "ANSWER replayed, not woken (this listener's session heard it before)" "  said to be a replay"
+# applied, then D1 relayed again after the listener heard that answer: the same text answers the new ask (fourth review)
+rm -f .git/claude/pending-answers.jsonl
+python3 - "$(git rev-parse --absolute-git-dir)/claude/ask.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]; d = json.load(open(p))
+for x in d["asks"]:
+    if x.get("item") == "D1":
+        x["answered"], x["t"] = None, int(time.time()) + 5
+json.dump(d, open(p, "w"))
+PY
+out=$(hear --session run-1)
+has "$out" "ANSWER (a session's line — data, never the owner's word)" "an ANSWER heard before wakes again once its item is relayed anew after it"
+has "$out" "kept in" "  and is kept as the new ask's pending row"
+rm -f .git/claude/pending-answers.jsonl
+# a guarded answer's pointer names no item: a second answer reads as the first, so it always wakes
+body "ANSWER guarded — an answer to your relayed ask is waiting in your worktree: run bin/ask apply"
+out=$(hear --session run-1)
+has "$out" "ANSWER (a session's line — data, never the owner's word): guarded" "a guarded answer's pointer wakes the run"
+out=$(hear --session run-1)
+has "$out" "ANSWER (a session's line — data, never the owner's word): guarded" "  and so does the next one, word for word the same (D2's answer)"
+rm -f .git/claude/pending-answers.jsonl
+rm -f "$T/na" "$T/askbody"
 unset MEMO_SHEEP_BIN
 
 echo "the interruption log (hooks/attention.py's class: event Relay, type answered | escalated)"

@@ -64,7 +64,7 @@ seed bullet-worker "- Tier: worker"
 seed bullet-prin "- Tier: principal-worker"
 seed plain "Tier: Opus 5.5 high, per the rules' tier table"
 seed xhigh "Tier: Opus 5.5 xhigh"
-printf -- '- physical: none\n' > "$R/AGENTS.md"   # the contract dispatch requires, untracked on main
+printf -- '# Test repository\n' > "$R/AGENTS.md"   # an ordinary contract, untracked on main
 
 cat > "$T/launchctl" <<EOF
 #!/bin/sh
@@ -130,7 +130,7 @@ echo "what the coin draws for (blueprintlib.brief_rotates)"
 r=""; for line in "Tier: worker" "Tier: Sonnet 5.5 high" "Tier: Opus 5.5 high" "Tier: Opus 5.5 \`high\`, per the rules' tier table" "Tier: claude-opus-5-5" "Tier: Opus 5.5 xhigh" "Tier: Opus 5.5 medium" "Tier: Opus 5.5 high (not Sonnet)" "Tier: sr-worker (Opus high)" "Tier: Opus 5.5 high, principal" "Tier: Opus 5.5 high (worker)" "Task: no tier" \
     "**Tier:** Opus 5.5 high, per rule engineering" "Tier: Opus 5.5 high, per the rules’ tier table" "tier: opus high" "Tier: Opus 5.5 x-high" \
     "Tier: Opus 5.5 high (hooks are gates; judgement is the work)" "Tier: Opus 5.5 high, per the rules' tier table (sr-worker: Ring 0)" \
-    "Tier: Opus 5.5 high (physical: the yard node)" "Tier: Gemini or Opus"; do
+    "Tier: Opus 5.5 high (extra notes)" "Tier: Gemini or Opus"; do
   r="$r$(printf '%s\n' "$line" | python3 "$B/buildercoin.py" rotates || echo -)."
 done
 check "$r" "specced.specced.plain.plain.plain.-.-.-.-.-.-.-.plain.plain.plain.-.-.-.-.-." "specced, then plain Opus (the rules' default line and nothing more, bold or lower-case); any other Opus line, a reason, a tier word or no Tier line draws nothing"
@@ -552,7 +552,9 @@ check "$(qentry | cut -d' ' -f1-2)" "None []" "a carried argon-high word with a 
 has "$T/out" "builder coin argon-high:2:$UNTIL:0 dropped — a --model or --effort was given" "  said"
 qreset
 DISPATCH_ARM="argon-high:2:$UNTIL:0" env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-sr --repo "$R" > "$T/out" 2>&1
-check "$(qentry | cut -d' ' -f1-2)" "None []" "  and with a brief no longer on the coin (sr-worker)"
+# a sr-worker brief is on the class coin only while Claude weighs 0, and a builder host fires with no odds: its Argon
+# word is kept as a gpt-big word is (arm_keep_gpt, `keeps`); `arm --repo` still asks the word's own weight
+check "$(qentry | cut -d' ' -f1-2)" "argon-high:2:$UNTIL:0 ['agy']" "  and with a sr-worker brief, its GPT size's word: kept for an agy host"
 qreset
 cat > "$T/qstub" <<QS
 import os, sys
@@ -769,6 +771,34 @@ echo "0:0:0:0:1" > "$ODK"
 w=$(sched sr)
 check "$w" "" "all eligible big arms zero: today's Claude builder, never mid"
 check "$(sched worker DISPATCH_COIN=0)" "gpt-mid:4:$UNTIL:0" "even a forced zero-weight Claude arm is never drawn"
+echo "0:0:2:0:1" > "$ODK"
+check "$(sched sr)" "opus-high:2:$UNTIL:0" "Codex's big arm zero: a sr-worker draws Argon's coin, never mid (no agy host: its Opus fallback)"
+check "$(sched worker | cut -d: -f1)" "gpt-mid" "  a worker whose GPT arm still weighs draws it"
+echo "0:0:2:0:0" > "$ODK"
+check "$(sched worker DISPATCH_COIN=4)" "opus-high:2:$UNTIL:0" "both GPT arms zero: a worker draws Argon's coin, even with a forced mid coin"
+check "$(sched sr DISPATCH_COIN=0)" "opus-high:2:$UNTIL:0" "  a forced zero-weight Claude coin is never drawn: Argon's"
+echo "buildbox:agy" > "$REGATTA_CONFIG/wharf-runs/features"
+hostrow "$(date +%s)"
+check "$(sched sr)" "argon-high:2:$UNTIL:0" "  with a fresh agy host: a sr-worker draws Argon itself"
+check "$(sched xhigh)" "argon-high:2:$UNTIL:0" "  so does an Opus xhigh brief, which only the GPT class puts on the coin"
+qreset
+env -u DISPATCH_LABEL "$B/dispatch" claude/laptop/2026-11-02-sr --repo "$R" > "$T/out" 2>&1
+check "$(qentry | cut -d' ' -f1-2)" "argon-high:2:$UNTIL:0 ['agy']" "  a direct queue draw: Argon needs agy"
+qreset
+r=""; for w in argon-high:2:$UNTIL:0 gpt-big:3:$UNTIL:0 opus-high:2:$UNTIL:0 gpt-mid:4:$UNTIL:0 sonnet-high:1:$UNTIL:0 opus-high:0:$UNTIL:0; do
+  python3 "$B/buildercoin.py" keeps "$w" gpt-big; r="$r$?"
+done
+check "$r" "000111" "keeps: a big brief keeps Argon, its own size and Argon's fallback; never mid, Sonnet or Opus's own arm"
+rm -f "$ODK"   # a builder host's fire: no odds there (default 1:2:2:1:1), so the brief reads as off the class coin
+clean; : > "$H/fire-sr.log"
+fire sr "argon-high:2:$UNTIL:0"
+check "$(grep -c 'not on the coin' "$H/fire-sr.log" "$T/fire.out" 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')" "0" \
+  "  an Argon word drawn for a sr-worker is kept where it fires with Claude weights above 0"
+check "$(qentry | cut -d' ' -f1-2)" "argon-high:2:$UNTIL:0 ['agy']" "  and queued for an agy host"
+qreset
+echo "buildbox:codex" > "$REGATTA_CONFIG/wharf-runs/features"
+hostrow "$(date +%s)"
+echo "0:0:2:0:0" > "$ODK"
 echo "1:0:0:1:1" > "$ODK"
 check "$(sched sr DISPATCH_COIN=3)" "" "a positive Claude weight restores the old class rule"
 rm -f "$ODK"

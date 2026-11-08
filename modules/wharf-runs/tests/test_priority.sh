@@ -165,9 +165,9 @@ check "$(sed -n '/^if \[ "$prio_given" = 0 \] && \[ "$next" = 1 \]/,/^fi/p' "$B/
   "a --next with no --priority takes its own run's rank (caller-prio), never the environment's"
 
 echo "the force mark: an attended session's force needs the owner's words, spent once the dispatch lands"
-# the seeded branch a real --at needs: on origin, a brief, a repo whose contract says physical: none
+# the seeded branch a real --at needs: on origin, a brief, a repo on the worktree workflow
 git init -q --bare "$T/origin.git"; git -C "$T/repo" remote add origin "$T/origin.git" 2>/dev/null
-printf -- '- physical: none\n' > "$T/repo/AGENTS.md"; git -C "$T/repo" add AGENTS.md; git -C "$T/repo" commit -qm contract
+printf -- '# Test repository\n' > "$T/repo/AGENTS.md"; git -C "$T/repo" add AGENTS.md; git -C "$T/repo" commit -qm contract
 git -C "$T/repo" checkout -q -b "$BR-d2"; mkdir -p "$T/repo/docs/handoff"; echo brief > "$T/repo/docs/handoff/2026-10-28-d2.md"
 git -C "$T/repo" add docs; git -C "$T/repo" commit -qm seed; git -C "$T/repo" push -q origin "$BR-d2" main 2>/dev/null; git -C "$T/repo" checkout -q main
 CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=s-att "$B/dispatch" "$BR-d2" --repo "$T/repo" --priority force --dry-run > "$T/out" 2> "$T/err"; check "$?" "2" "an attended session with no force mark: refused"

@@ -45,7 +45,7 @@ export CLAUDE_CONFIG_DIR="$HOME/.claude"   # kept for the session: it names the 
 git init -q --bare "$T/origin.git"
 git init -q -b main "$T/repo"; R="$T/repo"
 git -C "$R" config user.email t@t; git -C "$R" config user.name t
-printf -- '- check: `true` — prose after the command, as a repo may have it\n- physical: none\n' > "$R/AGENTS.md"
+printf -- '- check: `true` — prose after the command, as a repo may have it\n' > "$R/AGENTS.md"
 git -C "$R" add AGENTS.md; git -C "$R" commit -qm init
 git -C "$R" remote add origin https://github.com/test/repo.git
 git -C "$R" config url."$T/origin.git".insteadOf https://github.com/test/repo.git
@@ -593,7 +593,7 @@ mkdir -p "$HOME/.acct-c"
 # (a deny list on acct-c until deny-drift, 2026-11-03: tenancy routes, nothing bans)
 pool() {
   python3 - "$T/accounts.json" "$HOME" "$@" <<'EOF'
-import json, sys, time
+import json, os, sys, time
 f, home, held, i5, d5 = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
 reg = {"accounts": [
     {"label": "acct-c", "home": home + "/.acct-c", "rules": {"window_max": 50}},
@@ -603,12 +603,29 @@ if held:
     reg["tenants"] = {"own": {"repos": held}}
 json.dump(reg, open(f, "w"))
 now = time.time()
+# each home signed in (lighthouse's login guard: account never picks a home with no login), by uuid alone: the
+# logins file describes no row, so no e-mail is compared and the primary is judged as before
+for d in (home + "/.acct-c", home + "/.claude"):
+    cj = home + "/.claude.json" if d == home + "/.claude" else d + "/.claude.json"
+    try:   # merged in: the file keeps what trust-projects wrote there
+        cur = json.load(open(cj))
+    except (OSError, ValueError):
+        cur = {}
+    cur = cur if isinstance(cur, dict) else {}
+    cur["oauthAccount"] = {"accountUuid": "u-" + d.rsplit("/", 1)[1].strip(".")}
+    # and the suite's repo trusted there: with no .claude.json, dispatch-rc's `trusted` read "can't tell" as trusted
+    repo = os.path.join(os.path.dirname(home), "repo")
+    for r in {repo, os.path.realpath(repo)}:
+        cur.setdefault("projects", {}).setdefault(r, {})["hasTrustDialogAccepted"] = True
+    json.dump(cur, open(cj, "w"))
+    json.dump({"claudeAiOauth": {"accessToken": "t"}}, open(d + "/.credentials.json", "w"))
 for d, fh in ((home + "/.acct-c", i5), (home + "/.claude", d5)):
     json.dump({"at": now, "limits": {"five_hour": fh, "seven_day": 6, "five_hour_resets": now + 3600,
                                      "seven_day_resets": now + 86400, "locked": []}}, open(d + "/usage-probe.json", "w"))
 EOF
 }
-export ACCOUNTS_FILE="$T/accounts.json" ACCOUNT_CLAUDE=false
+echo '{"logins": {}}' > "$T/logins.json"
+export ACCOUNTS_FILE="$T/accounts.json" ACCOUNT_CLAUDE=false ACCOUNT_LOGINS="$T/logins.json"
 # the sweep's launchd job: no login of its own in the env
 afp() { env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=caller "$B/autofinish-run" "$W" "$@"; }
 # afl <dir> <token> …: a caller with these login variables ("" leaves one out)
@@ -646,6 +663,12 @@ check "$rc" "0" "a caller on the default login, cooling down, behind an eligible
 ended
 check "$(field account)" "acct-c" "  is not kept either: its row is read by its home, not from pick's skipped"
 has "$AFLOG" "acct-a is cooling down, so picked" "  the log line names the default row"
+next_tip "pool: explicit, not signed in"; pool '[]' 10 10
+python3 -c 'import json,sys; f=sys.argv[1] + "/.claude.json"; d=json.load(open(f)); d.pop("oauthAccount"); json.dump(d, open(f, "w"))' "$HOME/.acct-c"
+STUB_REPLY="$T/stop.txt" afl "$HOME/.acct-c" "" --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a caller whose own login the login guard refuses (not signed in)"
+ended
+check "$(field account)" "acct-a" "  is not kept: the pick moves it, as off a lock (the build review, 2026-11-08)"
+grep -q '^CLAUDE_CONFIG_DIR=' "$T/claude.env"; check "$?" "1" "  the default dir: CLAUDE_CONFIG_DIR unset"
 next_tip "pool: explicit, parked"; pool '[]' 10 10
 python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["accounts"][0]["enabled"]=False; json.dump(d, open(f, "w"))' "$T/accounts.json"
 STUB_REPLY="$T/stop.txt" afl "$HOME/.acct-c" "" --rule A --by sweep > "$T/out" 2>&1; check "$?" "0" "a caller on a parked row (enabled: false)"
@@ -1012,7 +1035,7 @@ modefix dnd
 af --dry --by dnd > "$T/out" 2>&1; check "$?" "0" "mode dnd, --by dnd --dry"
 has "$T/out" '"eff_mode": "dnd"' "  autofinish.json records the mode landing() judged it by (follow-ups item 4)"
 has "$T/out" '"land_mode": "dnd"' "  …and the branch's mode it read, which bin/pr names beside the mode now (follow-ups' landing review, item 8)"
-has "$T/out" "mode dnd: may merge" "  plain work in a physical: none repo lands under dnd"
+has "$T/out" "mode dnd: may merge" "  plain work lands under dnd without a contract field"
 has "$T/out" "/finish\ $BR\ --unattended\ --dnd --session-id" "  /finish is told --dnd"
 af --dry --by yolo > "$T/out" 2>&1
 has "$T/out" "mode dnd: may merge" "  a yolo launch of a ship lowered to dnd is judged by dnd's slice"
@@ -1729,7 +1752,7 @@ echo "a second repo, its own origin: the origin gate's fixture (the peer road's 
 git init -q --bare "$T/land.git"
 L="$HOME/projects/land"; git init -q -b main "$L"
 git -C "$L" config user.email t@t; git -C "$L" config user.name t
-printf -- '- check: `true`\n- physical: none\n' > "$L/AGENTS.md"; git -C "$L" add AGENTS.md; git -C "$L" commit -qm init
+printf -- '- check: `true`\n' > "$L/AGENTS.md"; git -C "$L" add AGENTS.md; git -C "$L" commit -qm init
 git -C "$L" remote add origin https://github.com/test/land.git
 git -C "$L" config url."$T/land.git".insteadOf https://github.com/test/land.git
 LB=claude/laptop/2026-10-22-land; LW="$L/.claude/worktrees/land"

@@ -86,7 +86,7 @@ PY
 
 # the home repo: a contract, a named file, two commits on main and one on a branch
 H="$T/projects/site"; mkdir -p "$H/docs"
-printf '# site\n\n- physical: none\n' > "$H/AGENTS.md"
+printf '# site\n\n' > "$H/AGENTS.md"
 printf 'the design note\nsecond line\n' > "$H/docs/note.md"
 mkdir -p "$H/bin"; printf '#!/bin/sh\n' > "$H/bin/tool"; chmod +x "$H/bin/tool"
 git -C "$H" init -q -b main && git -C "$H" add -A && git -C "$H" commit -qm one
@@ -566,13 +566,13 @@ echo "the seatbelt: what an arm cannot reach"
 STUB_CLAUDE=ssh STUB_SSH="$HD/.ssh/id_test" C run --home "$H" --brief "$T/brief.md" --arms opus > /dev/null 2>&1; check "$?" 1 "a CLI that opens the login's .ssh fails its arm"
 R=$(lastrun); check "$(jget "$R/run.json" '"PermissionError" in d["arms"]["opus"]["why"]')/$(grep -rl KEY-THAT-STAYS-HOME "$R" | wc -l | tr -d ' ')" "True/0" \
   "  the kernel refused the read: the key is nowhere in the run dir"
-H6="$T/projects/links"; mkdir -p "$H6"; printf -- '- physical: none\n' > "$H6/AGENTS.md"; echo OUTSIDE-SECRET > "$T/outside.txt"
+H6="$T/projects/links"; mkdir -p "$H6"; printf -- '# Test repository\n' > "$H6/AGENTS.md"; echo OUTSIDE-SECRET > "$T/outside.txt"
 ln -s "$T/outside.txt" "$H6/out"; printf '@%s\n' "$T/outside.txt" > "$H6/CLAUDE.md"
 git -C "$H6" init -q -b main && git -C "$H6" add -A && git -C "$H6" commit -qm one
 STUB_READS="out:$T/outside.txt" C run --home "$H6" --brief "$T/brief.md" --arms opus > /dev/null 2>&1; R=$(lastrun)
 check "$(stub "$R/arms/opus/claude.jsonl" 'sorted(d["reads"].values())')" "['PermissionError', 'PermissionError']" \
   "a copy's link out and a CLAUDE.md @ import of a path outside: both refused by the kernel (16, 17)"
-H7="$T/projects/envs"; mkdir -p "$H7"; printf -- '- physical: none\n' > "$H7/AGENTS.md"; echo K=v > "$H7/.env"
+H7="$T/projects/envs"; mkdir -p "$H7"; printf -- '# Test repository\n' > "$H7/AGENTS.md"; echo K=v > "$H7/.env"
 git -C "$H7" init -q -b main && git -C "$H7" add -A && git -C "$H7" commit -qm one; : > "$CALLS"
 C run --home "$H7" --brief "$T/brief.md" --arms opus,antigravity > /dev/null 2>&1; check "$?" 1 "a commit holding an env file: every arm refused"
 R=$(lastrun); check "$(jget "$R/run.json" '[("secrets guard" in d["arms"][a]["why"] and ".env" in d["arms"][a]["why"]) for a in ("opus", "antigravity")]')" "[True, True]" \
@@ -593,7 +593,7 @@ rm -f "$REGATTA_CONFIG/regatta/guarded"
 check "$(jget "$R/run.json" '[(a, d["arms"][a]["state"], "tenant owns" in (d["arms"][a].get("why") or "")) for a in ("opus", "codex", "antigravity")]')" \
   "[('opus', 'ok', False), ('codex', 'refused', True), ('antigravity', 'refused', True)]" \
   "  a guarded home on a login its tenant does not own: the Codex and Gemini arms refused, quote or not; Claude's runs"
-HV="$T/projects/vault"; mkdir -p "$HV"; printf -- '- physical: none\n' > "$HV/AGENTS.md"
+HV="$T/projects/vault"; mkdir -p "$HV"; printf -- '# Test repository\n' > "$HV/AGENTS.md"
 git -C "$HV" init -q -b main && git -C "$HV" add -A && git -C "$HV" commit -qm one
 cp "$CLAUDE_REPOS_JSON" "$T/repos.keep"
 python3 -c 'import json,sys; d = json.load(open(sys.argv[1])); d["repos"]["vault"] = {}; d["scopes"]["vlt"] = {"file": "v.code-workspace", "repos": ["vault"], "confidential": True}; json.dump(d, open(sys.argv[1], "w"))' "$CLAUDE_REPOS_JSON"
@@ -683,7 +683,7 @@ has "$T/receipt3.md" "| usage not reported by codex exec review |" "  the Receip
 R=$(lastrun); check "$(jget "$R/run.json" '(d["arms"]["codex"]["f7"]["withdrawn"]["ok"], d["arms"]["codex"]["f7"]["at_first_tool"])')" "(True, [])" \
   "  its login withdrawn at its first vendor request too (F7)"
 H3="$T/projects/fresh"; mkdir -p "$H3"; git -C "$H3" init -q -b main && git -C "$H3" commit -q --allow-empty -m root
-git -C "$H3" checkout -qb feature && printf -- '- physical: none\n' > "$H3/AGENTS.md" && git -C "$H3" add -A && git -C "$H3" commit -qm first
+git -C "$H3" checkout -qb feature && printf -- '# Test repository\n' > "$H3/AGENTS.md" && git -C "$H3" add -A && git -C "$H3" commit -qm first
 C review --home "$H3" --base main --head feature > /dev/null 2>"$T/err"; check "$?" 0 "a merge base with an empty tree: reviewed, not a traceback"
 
 echo "unattended: the Codex arm bounded by harness"
@@ -710,7 +710,7 @@ dl = float(a[a.index("--deadline") + 1]); print(a[a.index("--timeout") + 1], 595
 fi
 
 echo "a link named for a vendor's folder leaves no copy (the fourth landing review, finding 11)"
-HL="$T/projects/vlinks"; mkdir -p "$HL/conf" "$HL/codexconf"; printf -- '- physical: none\n' > "$HL/AGENTS.md"
+HL="$T/projects/vlinks"; mkdir -p "$HL/conf" "$HL/codexconf"; printf -- '# Test repository\n' > "$HL/AGENTS.md"
 echo '{"hooks": {}}' > "$HL/conf/settings.json"; echo 'model = "x"' > "$HL/codexconf/config.toml"
 ln -s conf "$HL/.claude"; ln -s codexconf "$HL/.codex"
 git -C "$HL" init -q -b main && git -C "$HL" add -A && git -C "$HL" commit -qm one
@@ -763,7 +763,7 @@ echo '{"repos": {"site": {}}, "scopes": {"work": {"file": "w.code-workspace", "r
 C run --home "$H" --brief "$T/brief.md" > /dev/null 2>"$T/err"; check "$?" 2 "a confidential scope's repo: refused for every arm"
 has "$T/err" "confidential" "  saying why"
 mkdir -p "$H/private"; cp "$T/brief.md" "$H/private/brief.md"
-H2="$T/projects/other"; mkdir -p "$H2"; printf -- '- physical: none\n' > "$H2/AGENTS.md"; git -C "$H2" init -q -b main && git -C "$H2" add -A && git -C "$H2" commit -qm one
+H2="$T/projects/other"; mkdir -p "$H2"; printf -- '# Test repository\n' > "$H2/AGENTS.md"; git -C "$H2" init -q -b main && git -C "$H2" add -A && git -C "$H2" commit -qm one
 C run --home "$H2" --brief "$H/private/brief.md" --arms opus > /dev/null 2>"$T/err"; check "$?" 2 "a brief in a confidential scope's repo: refused, whatever the home"
 mkdir -p "$T/projects/grp/app"; git -C "$T/projects/grp/app" init -q -b main; cp "$T/brief.md" "$T/projects/grp/app/brief.md"
 echo '{"repos": {"site": {}, "grp": {}}, "scopes": {"work": {"file": "w.code-workspace", "repos": ["site"]}, "g": {"file": "g.code-workspace", "repos": ["grp"], "confidential": true}}}' > "$CLAUDE_REPOS_JSON"
@@ -938,7 +938,7 @@ echo "S2: git writes the copy"
 # a tree with what a hand-built copy got wrong: an export-ignore path, an export-subst file, a .gitignore'd tracked
 # file, a link, a 2 MB blob, a file an eol attribute would rewrite, and the copy's own config for the arms' CLIs
 H5="$T/projects/attrs"; mkdir -p "$H5/docs" "$H5/.codex" "$H5/.agents/skills/x" "$H5/sub/.gemini" "$H5/.claude/agents"
-printf -- '- physical: none\n' > "$H5/AGENTS.md"
+printf -- '# Test repository\n' > "$H5/AGENTS.md"
 printf 'held.txt export-ignore\nsubst.txt export-subst\ncrlf.txt text eol=crlf\n' > "$H5/.gitattributes"; printf 'ignored.txt\n' > "$H5/.gitignore"
 echo one > "$H5/held.txt"; printf '$Format:%%H$\n' > "$H5/subst.txt"; echo one > "$H5/ignored.txt"; printf 'a\nb\n' > "$H5/crlf.txt"
 echo doc > "$H5/docs/x.md"; ln -s docs/x.md "$H5/ln"
@@ -982,7 +982,7 @@ check "$(council_py 'e = c.box_git_env(); print([(e["GIT_CONFIG_KEY_%d" % i], e[
 # the paths git refuses to write: a `.GIT` folder (HFS) and a `GIT~1` name (NTFS), built with mktree as no checkout would
 H8="$T/projects/dotgit"; mkdir -p "$H8"; git -C "$H8" init -q -b main
 gb=$(echo hook | git -C "$H8" hash-object -w --stdin); gi=$(printf '100644 blob %s\tx\n' "$gb" | git -C "$H8" mktree)
-gh=$(printf '040000 tree %s\thooks\n' "$gi" | git -C "$H8" mktree); ga=$(printf -- '- physical: none\n' | git -C "$H8" hash-object -w --stdin)
+gh=$(printf '040000 tree %s\thooks\n' "$gi" | git -C "$H8" mktree); ga=$(printf -- '# Test repository\n' | git -C "$H8" hash-object -w --stdin)
 git -C "$H8" update-ref refs/heads/main "$(printf '040000 tree %s\t.GIT\n100644 blob %s\tAGENTS.md\n' "$gh" "$ga" | git -C "$H8" mktree | xargs git -C "$H8" commit-tree -m hfs)"
 git -C "$H8" update-ref refs/heads/ntfs "$(printf '040000 tree %s\tGIT~1\n100644 blob %s\tAGENTS.md\n' "$gh" "$ga" | git -C "$H8" mktree | xargs git -C "$H8" commit-tree -m ntfs)"
 for ref in main ntfs; do
@@ -1011,7 +1011,7 @@ if [ -n "$FENCE" ]; then
   check "$(jget "$R/run.json" 'd["arms"]["codex"]["stripped"]')" "['.agents/skills/x/SKILL.md', '.claude/settings.local.json', '.codex/config.toml', 'sub/.gemini/settings.json']" \
     "  named in its record"
   # the review's repo keeps the merge base's tree in .git: an env file only the base holds is judged too (finding 4)
-  H9="$T/projects/baseenv"; mkdir -p "$H9"; printf -- '- physical: none\n' > "$H9/AGENTS.md"; echo K=v > "$H9/.env"
+  H9="$T/projects/baseenv"; mkdir -p "$H9"; printf -- '# Test repository\n' > "$H9/AGENTS.md"; echo K=v > "$H9/.env"
   git -C "$H9" init -q -b main && git -C "$H9" add -A && git -C "$H9" commit -qm one
   git -C "$H9" checkout -qb feat && git -C "$H9" rm -q .env && git -C "$H9" commit -qm two && git -C "$H9" checkout -q main
   : > "$CALLS"; C review --home "$H9" --base main --head feat > /dev/null 2>&1; check "$?" 1 "a review whose merge base holds an env file the head removed: refused"

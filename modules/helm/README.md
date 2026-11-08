@@ -92,7 +92,10 @@ Or `claude plugin install helm@regatta` for the session face.
   column). Absent, the owner alone.
 - Hosts: the core's `regatta/laptop` (the ask poll's bell and its sweep run there; the default
   banner row) and `wharf-runs/ssh` (`<host>:<ssh alias>`: the peers stalls reads, and the hosts
-  given a build box's run cap). `helm send` reaches a yard that is a named node's peer, and every
+  given a build box's run cap). Stalls also reads builder users' `regatta/fleet-ssh` rows
+  (`antigravity@<host>`, `codex@<host>`, and `@localhost` only for this Mac's own `<host>-<vendor>` rows);
+  the launcher record supplies their last reply and end, with no Claude transcript or registry required.
+  `helm send` reaches a yard that is a named node's peer, and every
   confidential send's yard, by `wharf-runs/nodes/<name>/ssh` alone (through wharf-runs' orca-host),
   never `wharf-runs/ssh`.
   Talk's peer relays and live-run reminders share hail's message peers through wharf-runs' shared message reader:

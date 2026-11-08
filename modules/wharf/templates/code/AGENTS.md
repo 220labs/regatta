@@ -14,7 +14,6 @@ repeated here — they load from the shared rules folder in every session. -->
 - check: `{{COMMAND}}` — the read-only command every session must see pass before calling
   work done. Safe at any hour; touches nothing live.
 - live: none — git is the only state. <!-- or: what runs deployed code, and the drift command -->
-- physical: none <!-- or: a heavier sweep that acts on the real world; the owner runs it -->
 - learnings: project rules and traps → this file; long-form reasoning → `docs/`;
   anything true beyond this project → `/promote`.
 - open-items: `TODO.md`

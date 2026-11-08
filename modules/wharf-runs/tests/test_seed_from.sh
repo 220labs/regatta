@@ -32,7 +32,7 @@ repo() {  # repo <name> [workflow]: a git repo on main; with workflow, on the wo
 }
 repo node-knowledge workflow; repo sec workflow; repo other-conf workflow; repo vlt workflow; repo tenantrepo workflow
 repo demo workflow
-printf -- '- physical: none\n' > "$P/demo/AGENTS.md"; git -C "$P/demo" add -A; git -C "$P/demo" commit -qm contract
+printf -- '# Test repository\n' > "$P/demo/AGENTS.md"; git -C "$P/demo" add -A; git -C "$P/demo" commit -qm contract
 git init -q --bare "$T/origin.git"; git -C "$P/demo" remote add origin "$T/origin.git"; git -C "$P/demo" push -q origin main
 printf '# the node'"'"'s own names\nPLUMWORD\n' > "$P/node-knowledge/.claude/words.txt"
 cat > "$CLAUDE_REPOS_JSON" <<'EOF'
@@ -179,13 +179,19 @@ check "$(cd "$P/demo" && python3 -c 'import sys; from importlib.machinery import
 check "$(cd "$P/demo" && python3 -c 'import sys; from importlib.machinery import SourceFileLoader as L; m = L("pk", sys.argv[1]).load_module(); from pathlib import Path; print(m.branch_origin(Path(sys.argv[2]), {"name": "main", "local": True}))' "$B/pickup" "$P/demo")" "None" \
   "  a branch with no .review has none"
 rm "$P/demo/AGENTS.md"; git -C "$P/demo" commit -qam "no contract"
+cp "$P/demo/.claude/workflow.json" "$T/demo-workflow.json"
+printf '{"checkpoint": false}\n' > "$P/demo/.claude/workflow.json"
 mark; check "$(S eta --from node --repo "$P/demo" --file "$T/clean.md")" 1 "a repo dispatch does not take: refused before any write (its seed could never start)"
 has "$T/out" "dispatch does not take demo" "  saying so"
 check "$(wc -l < "$T/claude.calls" | tr -d ' ') $(nothing eta)" "0 none" "  no judge, nothing written"
-printf -- '- physical: none\n' > "$P/demo/AGENTS.md"; git -C "$P/demo" add -A; git -C "$P/demo" commit -qm contract
+cp "$T/demo-workflow.json" "$P/demo/.claude/workflow.json"
+mark; check "$(S eta --from node --repo "$P/demo" --file "$T/clean.md" --no-start)" 0 "the workflow restored with no contract file: seeded"
+check "$(wc -l < "$T/claude.calls" | tr -d ' ')" 1 "  the contract-free seed still passes the brief judge"
+has "$T/out" "--next --repo $P/demo --origin $NM" "  its start line keeps the origin marker"
+printf -- '# Test repository\n' > "$P/demo/AGENTS.md"; git -C "$P/demo" add -A; git -C "$P/demo" commit -qm contract
 
 echo "the landing re-review's refusals"
-repo acme-portal workflow; printf -- '- physical: none\n' > "$P/acme-portal/AGENTS.md"
+repo acme-portal workflow; printf -- '# Test repository\n' > "$P/acme-portal/AGENTS.md"
 sed 's/"else": {"repos": \["other-conf"\]/"else": {"repos": ["other-conf", "acme-*"]/' "$CLAUDE_REPOS_JSON" > "$T/glob.json"
 mark; check "$(CLAUDE_REPOS_JSON="$T/glob.json" S iota --from node --repo "$P/acme-portal" --file "$T/clean.md")" 1 "an unregistered repo a confidential glob takes: refused"
 has "$T/out" "acme-portal is in confidential scope else" "  naming the scope"
@@ -214,7 +220,7 @@ has "$T/msg" "Seeded-By: demo/" "  Seeded-By names the repo it runs in, no marke
 # a confidential repo's own page: the lookout seeds beside its branch in that repo, in its scope
 git -C "$P/sec" checkout -q -b "$RB"; echo work > "$P/sec/work.txt"; git -C "$P/sec" add work.txt
 git -C "$P/sec" commit -qm "the run's work"; git -C "$P/sec" checkout -q main
-printf -- '- physical: none\n' > "$P/sec/AGENTS.md"; git -C "$P/sec" add -A; git -C "$P/sec" commit -qm contract
+printf -- '# Test repository\n' > "$P/sec/AGENTS.md"; git -C "$P/sec" add -A; git -C "$P/sec" commit -qm contract
 check "$(CWD="$P/sec" S lookin --file "$T/look.md" --beside "$RB" --repo "$P/sec" --no-start)" 0 "the lookout's seed in a confidential repo, run there: seeded within its scope"
 check "$(git -C "$P/sec" rev-parse "claude/laptop/$TODAY-lookin^")" "$(git -C "$P/sec" rev-parse "$RB")" "  off that run's tip"
 # the cwd keel no longer inherits: a pass started inside a confidential scope, seeding an open repo

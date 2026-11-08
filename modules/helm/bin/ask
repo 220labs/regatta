@@ -52,7 +52,15 @@ the RELAYED line (docs/session-asks-2026-10-09.md R2–R6, B3).
         unprefixed line. Run it as the session's own background shell (a hook's process wakes nobody).
         A REPORT the plan holds already is a replay, never a second event (said in the first body of a
         run of them); a body with nothing new pauses the loop (5 s doubling to 60 s), and one more than
-        --replays (30) of them in a row ends it.
+        --replays (30) of them in a row ends it. An ASK is a replay too, said and never woken on, when
+        this session's listener printed it before (kept 30 days under the cache dir's listen/) or its
+        item is answered: in the run's own doc when that is on this Mac (an answer waiting in its
+        pending row counts), and only where it is not, in the ship after the run's own relay (an open
+        newer relay there wakes); where the ship holds no relay of it, by an answer this Mac committed or delivered after a listener
+        here heard that ASK; else in the main checkout's copy (its newest, origin/main over the file,
+        same title; never for a --send-only run, whose path is another Mac's). An ANSWER this
+        session's listener printed before is a replay as well, bar a guarded answer's pointer. Any
+        other line wakes it, and so does an ASK whose check fails.
         Inside a session, --session must be that session's own id (stray-manager M1 b).
     ask poll [--dry-run] [--repos DIR...]
         the laptop's bell (R6): fetch each repo's claude/* branches into a cache mirror, find D-items
@@ -88,6 +96,7 @@ import argparse
 import datetime as dt
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -602,7 +611,9 @@ def relayed_event(plan, doc, item):
     if not plan:
         return None
     for e in reversed(helmlib.events(plan)):
-        rel, _, did = (e.get("ask") or "").rpartition("#")
+        if not isinstance(e.get("ask"), str):
+            continue   # a REPORT over Talk keeps its fields as they came
+        rel, _, did = e["ask"].rpartition("#")
         if did == item and rel and e.get("task") and (str(doc) == rel or str(doc).endswith("/" + rel)):
             return e
     return None
@@ -823,8 +834,7 @@ def cmd_answer(a):
             raise SystemExit("ask: %s is in a guarded repo: its answer never rides Talk, and from this Mac "
                              "nothing else can carry it — answer where the doc is" % a.doc)
         log_answer(a, a.doc)
-        plan_answered(a, a.doc)
-        return send_answer(a, a.doc, line, road)
+        return send_answer(a, a.doc, line, road, note=True)
     doc = Path(a.doc).resolve()
     if not doc.is_file():
         # finding 6 of the second review: a relay from another Mac names that Mac's path
@@ -858,6 +868,8 @@ def cmd_answer(a):
         print("committed")
     log_answer(a, rel)
     plan_answered(a, rel)
+    if not a.no_commit:
+        note_answered(a)
     if a.no_send:
         return 0
     if not road:
@@ -1162,7 +1174,10 @@ def log_answer(a, rel, run_session=None, cwd=None):
 APPLY_HINT = " — then run bin/ask apply"
 
 
-def send_answer(a, rel, line, road, guarded=False, pending=False):
+DELIVERED = ("sent",)   # Talk's; skipperlib's DELIVERED
+
+
+def send_answer(a, rel, line, road, guarded=False, pending=False, note=False):
     """The ANSWER line through the road answer_road found — straight to that backend: relay()'s
     skipper check reads the run as a skipper and would refuse a run on another Mac. A guarded
     run's answer goes over Talk as a pointer only (K6): the text is in the pending row or the
@@ -1175,6 +1190,18 @@ def send_answer(a, rel, line, road, guarded=False, pending=False):
     verdict, detail = asklib.BACKENDS[road].send(answer_ctx(a), msg)
     print("message: %s" % msg)  # the SendMessage road is the session's own call: it needs the text
     print("sent back: backend %s · verdict %s · %s" % (road, verdict, detail))
+    if note and verdict not in ("unreachable", "none"):
+        # --send-only (helm-ask-replay): the ship's `answered` for any answer that went or that the session
+        # sends itself (SendMessage); this Mac's record only for one Talk delivered (before plan_answered,
+        # so a ship write that fails never drops it). An unreachable send leaves the ask open in the ship.
+        if verdict in DELIVERED:
+            note_answered(a, local=False)
+        try:
+            plan_answered(a, a.doc)
+        except Exception as e:  # noqa: BLE001 — the answer went already: a retry would send it twice (review rounds 1-2)
+            print("sent; the ship's answered event not written (%s)" % e, file=sys.stderr)
+    elif note:
+        print("not delivered (%s): the ship keeps the ask open" % verdict)
     return 0
 
 
@@ -1289,6 +1316,385 @@ def replay_pause(n):
     return min(60.0, 5.0 * 2 ** min(n - 1, 4)) * max(scale, 0.0)
 
 
+# ---------------------------------------------------------------------------- a replayed ASK (helm-ask-replay)
+# Talk hands back an ASK it delivered days ago as it does a REPORT, and a skipper's re-armed listener
+# returned at once on two ASKs both answered and landed (#262's, #263's; 2026-10-31). An ASK no longer
+# wakes the session when this listener's session has printed it before, or when its item is answered.
+# Where the run's own doc is on this Mac, that copy decides (an answer waiting in its pending row
+# counts); only where it is not do the other roads speak: the ship's `answered` event after the run's
+# own relay (an open newer relay wakes); where the ship holds no relay of it, an answer this Mac sent after a listener here heard
+# that ASK; else a copy in the repo's main checkout. Anything else wakes
+# it, as before: an ASK this side cannot judge, or cannot judge without an error, is never dropped.
+
+ASK_HEAD_RE = re.compile(r"(\S+) (D\d+) — ")
+ASK_TITLE_RE = re.compile(r"\S+ D\d+ — (.*?) — Reversible: ", re.S)
+# what relay (`<session>`) and a re-hail (`?`) write for a run with no session id — a Codex or Antigravity
+# child's, whose adapter strips it: two such runs are no one run, so the record never matches on them
+NO_SESSION = ("", "<session>", "?")
+ASK_DOC_RE = re.compile(r".* — doc: [^:\s]+:(\S+?)(?:#L\d+)? — ", re.S)
+ASK_FROM_RE = re.compile(r".* — from: (\S+)", re.S)
+# relay's `bin/ask answer …`, a re-hail's `<tool path> answer …` (skipperlib.rehail_line), `regatta ask answer`
+ASK_REPLY_RE = re.compile(r".* — reply: .*?ask answer (.+?) (D\d+) \"<text>\"(.*)$", re.S)
+# skipperlib.rehail_line puts `— re-hailed to …` between `— from:` and the final `— reply:` (never in a title)
+REHAIL_RE = re.compile(r" — from: \S+(?: page \S+)? — re-hailed to (?:(?! — (?:from|reply): ).)* — reply: (?:(?! — reply: ).)*$", re.S)
+HEARD_DAYS = 30
+_SETTLED = {}   # this body's verdicts (cleared at each receive), so a body is judged once per pass
+
+
+def _ts(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def listen_dir():
+    return cache_dir() / "listen"
+
+
+def line_key(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def heard_file(session):
+    shell = isinstance(session, tuple)
+    sid = session[1] if shell else session
+    clean = re.sub(r"[^A-Za-z0-9._-]", "_", sid or "-")[:80] or "-"
+    return listen_dir() / ("%s-%s.json" % ("shell-heard" if shell else "heard", clean))
+
+
+def heard_keys(session):
+    """{key: t} of the lines this session's listener woke on, within HEARD_DAYS; {} when unreadable
+    (the line then wakes it)."""
+    try:
+        d = json.loads(heard_file(session).read_text())
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {k: t for k, t in d.items() if _ts(t) and now - t < HEARD_DAYS * 86400} \
+        if isinstance(d, dict) else {}
+
+
+def remember_heard(session, texts):
+    """The ASK and ANSWER lines a listener printed (woke on), kept per listening session for HEARD_DAYS.
+    Never raises: a record that cannot be written costs one more wake, never the wake itself."""
+    if not texts:
+        return
+    try:
+        keep = heard_keys(session)
+        now = int(time.time())
+        keep.update({line_key(x): now for x in texts})
+        p = heard_file(session)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".%d.tmp" % os.getpid())
+        tmp.write_text(json.dumps(keep, sort_keys=True))
+        tmp.replace(p)
+    except OSError as e:
+        print("ask listen: the heard record not written (%s)" % e, file=sys.stderr)
+
+
+def parse_ask(rest):
+    """{repo, item, rel, frm, doc, plan} from an ASK line's rest (cmd_relay's text or a re-hail's), or
+    None when the line is not in that form (a hand-sent `ASK tools D2 — …` has no reply hint: judged by
+    its key alone)."""
+    h, r = ASK_HEAD_RE.match(rest), ASK_REPLY_RE.match(rest)
+    if not h or not r or r.group(2) != h.group(2):
+        return None
+    d, f = ASK_DOC_RE.match(rest), ASK_FROM_RE.match(rest)
+    to = re.search(r" --to (\S+)", r.group(3))
+    plan = re.search(r" --plan (\S+)", r.group(3))
+    return {"repo": h.group(1), "item": h.group(2), "doc": r.group(1), "rel": d.group(1) if d else None,
+            "frm": (to.group(1) if to else None) or (f.group(1) if f else None),
+            "plan": plan.group(1) if plan else None,
+            "title": (lambda t: " ".join(t.group(1).split()) if t else None)(ASK_TITLE_RE.match(rest)),
+            # relay adds --send-only for a run on another Mac: its path names that Mac's disk, never this one's
+            "foreign": bool(re.search(r" --send-only(?:\s|$)", r.group(3)))}
+
+
+def answered_file():
+    return listen_dir() / "answered.jsonl"
+
+
+def note_answered(a, local=True):
+    """cmd_answer's record of an answer this Mac committed or delivered over Talk (never one whose send
+    was unreachable, nor a SendMessage the session has still to make), for the listener's replay check: the run's session (--to), the item, the doc as given
+    and, when committed here, as resolved here (never resolved under --send-only, against an unrelated cwd).
+    Appended whole with O_APPEND, as add_pending's rows are, so two answers at once
+    both keep theirs (a read-filter-replace lost one); answered_here skips rows older than HEARD_DAYS, and
+    the file grows one short line per answer. Never raises."""
+    if (getattr(a, "to", None) or "") in NO_SESSION:
+        return   # no run to match it to: its replays wake (answered_here matches a real session only)
+    row = {"t": int(time.time()), "to": a.to, "item": a.item, "doc": str(a.doc)}
+    if local and not getattr(a, "send_only", False):
+        try:
+            row["abs"] = str(Path(a.doc).resolve())
+        except (OSError, RuntimeError):
+            pass
+    try:
+        p = answered_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # ensure_ascii: a path argv decoded with surrogates (a non-UTF-8 name) still writes, escaped; the
+        # leading newline keeps a torn last line (a short write) from swallowing this row — a blank is skipped
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, ("\n" + json.dumps(row) + "\n").encode())
+        finally:
+            os.close(fd)
+    except (OSError, ValueError) as e:
+        print("ask: the answered record not written (%s)" % e, file=sys.stderr)
+
+
+def first_heard(rest):
+    """When a listener on this Mac, any session's or a plain shell's, first woke on this exact ASK text, or None."""
+    k, ts = line_key(rest), []
+    try:
+        d = listen_dir()
+        files = list(d.glob("heard-*.json")) + list(d.glob("shell-heard-*.json"))
+    except OSError:
+        return None
+    for p in files:
+        try:
+            row = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(row, dict) and _ts(row.get(k)):
+            ts.append(row[k])
+    return min(ts) if ts else None
+
+
+def _same_doc(r, f):
+    """Whether an answered.jsonl row R names the same doc as parsed ASK F (without matching another repo's
+    copy of the same relative path)."""
+    doc, full = r.get("doc"), r.get("abs")
+    docs = set()
+    if isinstance(full, str):
+        docs.add(full)
+        if isinstance(doc, str) and Path(doc).is_absolute():
+            docs.add(doc)
+    elif isinstance(doc, str):
+        docs.add(doc)
+    fdocs = {f["doc"]}
+    if not f.get("foreign") and Path(f["doc"]).is_absolute():
+        try:
+            fdocs.add(str(Path(f["doc"]).resolve()))
+        except (OSError, RuntimeError):
+            pass
+    if fdocs & docs:
+        return True
+    rel, repo = f.get("rel"), f.get("repo")
+    if not rel:
+        return False
+    if rel in docs:
+        return True
+    if not repo:
+        return any(d.endswith("/" + rel) for d in docs)
+    if repo == "?":
+        return False
+    pat = re.compile(r"(?:^|/)%s(?:/\.claude/worktrees/[^/]+)?/%s$" % (re.escape(repo), re.escape(rel)))
+    return any(bool(pat.search(d)) for d in docs)
+
+
+def answered_here(f, rest=None):
+    """An `ask answer` on this Mac settled this ASK's item: the same item, the same run session (a real
+    id on both sides: a row or an ASK with none, or a placeholder, never matches), and the same doc —
+    by its path, or by its repo path in that repo (an answer typed with the run's doc relative to a checkout). With
+    `rest`, the ASK's text, the row settles it only when a listener here woke on that same text at or
+    before the answer (review round 2): a new question under a reused D-number is new text, so it wakes.
+    The limit: a --send-only run's word-for-word re-relay of an item this Mac answered (the answer never
+    applied) carries nothing that orders it after the answer, so it stays quiet up to HEARD_DAYS."""
+    if (f.get("frm") or "") in NO_SESSION:
+        return False
+    heard = first_heard(rest) if rest is not None else None
+    if rest is not None and heard is None:
+        return False
+    try:
+        # a stray byte costs its own line, never the whole record
+        lines = answered_file().read_bytes().decode("utf-8", "replace").splitlines()
+    except (OSError, ValueError):
+        return False
+    for x in lines:
+        try:
+            r = json.loads(x)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("item") != f["item"] or not _ts(r.get("t")) \
+                or time.time() - r["t"] >= HEARD_DAYS * 86400:
+            continue
+        if (r.get("to") or "") in NO_SESSION or r.get("to") != f["frm"]:
+            continue
+        if _same_doc(r, f) and (heard is None or heard <= r["t"]):
+            return True
+    return False
+
+
+def ship_answered(plan, f):
+    """The ship holds an `answered` event for this ASK's ref after the newest relayed event of the
+    ASK's own run session, under that event's task (plan_answered's). An answer to an earlier relay of
+    the same item never settles a later one. A run with no session id (NO_SESSION) never settles by an
+    `answered` event (two such runs share one placeholder), while its open relay in the ship still
+    returns False so a stale copy on main never silences it. None where the ship holds no matching relay."""
+    if not plan or not f.get("rel") or not f.get("frm") or not helmlib.load_plan(plan):
+        return None
+    ref = "%s#%s" % (f["rel"], f["item"])
+    no_sid = (f.get("frm") or "") in NO_SESSION
+    task = None
+    for e in helmlib.events(plan):
+        if e.get("ask") == ref and e.get("task") \
+                and (e.get("session") in (None, *NO_SESSION) if no_sid else e.get("session") == f["frm"]):
+            task, done = e["task"], False
+        elif task and e.get("answered") == ref and e.get("task") == task:
+            done = True
+    return None if not task or (no_sid and done) else done
+
+
+def read_text(p):
+    try:
+        return p.read_text() if p.is_file() else None
+    except (OSError, ValueError):   # ValueError: a file that is not UTF-8
+        return None
+
+
+def main_copies(f):
+    """The repo's main checkout's copies of the doc, as (where, text): its file and its origin/main —
+    for a run whose worktree is not on this Mac (gone since the branch landed). The checkout is the one
+    the worktree path names, else the one clone of that name (two of one name: neither). An origin/main
+    ref with no readable doc still has a row (empty text), so a stale file never settles that ASK."""
+    rel = f.get("rel")
+    if not rel:
+        return []
+    s, mains = f["doc"], []
+    i = s.find("/.claude/worktrees/")
+    if i > 0:
+        mains.append(Path(s[:i]))   # a path absent here (another host's layout) reads nothing: it wakes
+    else:
+        try:
+            named = [Path(p) for p in helmlib._common().cloned_repos() if Path(p).name == f["repo"]]
+        except Exception:  # noqa: BLE001 — no core here: no clone to read
+            named = []
+        if len(named) == 1:
+            mains = named
+    out = []
+    for m in mains:
+        text = read_text(m / rel)
+        if text is not None:
+            out.append((str(m / rel), text))
+        if (m / ".git").exists():
+            r = subprocess.run(["git", "-C", str(m), "rev-parse", "--verify", "--quiet",
+                                "refs/remotes/origin/main"], capture_output=True, text=True)
+            head = r.stdout.strip()
+            if r.returncode and r.returncode != 1:
+                # git failed (exit 1 alone is "no such ref"): a row that settles nothing, never the file
+                out.append(("%s (origin/main)" % (m / rel), ""))
+            elif head:
+                # Resolve the ref first: a deleted/empty doc or a failed read is no permission to fall
+                # back to the file. Read this same tip even if a fetch moves the ref between the calls.
+                text = git(m, "show", "%s:%s" % (head, rel), check=False)
+                out.append(("%s (origin/main)" % (m / rel), text))
+    return out
+
+
+def item_answered(m, text, item, title=None):
+    """True, False (the item is there, open), or None (no such item, or the copy will not parse). With
+    `title`, an item whose title differs is no copy of this question (a D-number reused in a revised doc):
+    None."""
+    try:
+        _, items, _ = m.parse(text)
+    except (Exception, SystemExit):  # noqa: BLE001 — a malformed copy says nothing
+        return None
+    it = next((i for i in items if i.get("id") == item), None)
+    if it is None or (title is not None and " ".join(str(it.get("title") or "").split()) != title):
+        return None
+    return bool((it.get("answer") or "").strip())
+
+
+def pending_for(doc, item):
+    """The run's worktree holds a pending answer for this item (cmd_answer's held road)."""
+    try:
+        top = repo_top(doc)
+        rel = doc.resolve().relative_to(top.resolve()).as_posix()
+        rows = pending_file(top).read_text().splitlines()
+    except (OSError, ValueError, SystemExit):
+        return False
+    for x in rows:
+        try:
+            r = json.loads(x)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("item") == item and r.get("rel") == rel:
+            return True
+    return False
+
+
+def ask_settled(rest, session, plan):
+    """Why this ASK is a replay that wakes nobody, or None (it wakes the session). The limit, as
+    wire_key's: the ASK carries no timestamp, so a run that relays the same open item again, word for
+    word, reads to a session that printed it as heard — it says nothing that session was not told."""
+    if line_key(rest) in heard_keys(session):
+        return "this listener's session heard it before"
+    f = parse_ask(rest)
+    if not f:
+        return None
+    pid = f.get("plan") or plan
+    ck = (rest, pid)
+    if ck in _SETTLED:
+        return _SETTLED[ck]
+    own_doc = True
+    if REHAIL_RE.search(rest):
+        # a re-hail is sent from the ship's Mac and copies the first relay's flags (no --send-only when that
+        # skipper was the run's neighbour, or when `helm report --ask` recorded none, whose doc falls back to
+        # repo_dir/rel — the main checkout, never the run's worktree)
+        ref = "%s#%s" % (f["rel"], f["item"]) if f.get("rel") else None
+        no_sid = (f.get("frm") or "") in NO_SESSION
+        all_ev = [e for e in (helmlib.events(pid) if pid and ref and helmlib.load_plan(pid) else ())
+                  if e.get("ask") == ref and e.get("task")]
+        revs = [e for e in all_ev
+                if (e.get("session") in (None, *NO_SESSION) if no_sid else e.get("session") == f.get("frm"))]
+        ev_host = (revs[-1].get("host") if revs else None) or (all_ev[-1].get("host") if all_ev else None)
+        if not revs or (ev_host and ev_host != helmlib.host()):
+            f["foreign"] = True
+        own_doc = any(e.get("doc") == f["doc"] for e in all_ev)
+    _keel = []
+
+    def m():
+        if not _keel:
+            _keel.append(memo())
+        return _keel[0]
+    own = Path(f["doc"])
+    # the run's own copy, when it is on this Mac: an absolute path (a re-hail's bare repo path would read
+    # the listener's cwd) of a run on this Mac (a --send-only run's path is another disk's), never a
+    # re-hail's fallback to the main checkout
+    text = None if f["foreign"] or not own_doc or not own.is_absolute() else read_text(own)
+    if text is not None:   # the run's own copy is here: it decides
+        got = item_answered(m(), text, f["item"])
+        if got:
+            why = "%s answered in %s" % (f["item"], own)
+        elif got is False and pending_for(own, f["item"]):
+            why = "%s answered, waiting in the run's worktree for bin/ask apply" % f["item"]
+        else:
+            return None
+    elif (shipped := ship_answered(pid, f)):
+        why = "%s answered in ship %s" % (f["item"], pid)
+    elif shipped is None and answered_here(f, rest):
+        # The ship, where it holds this run's relay, is ordered against it: its open newer relay vetoes this
+        # Mac's record of an earlier answer (review round 1).
+        why = "%s answered from this Mac" % f["item"]
+    elif shipped is False:
+        # the ship holds the run's newer relay, open: no copy can show its answer came after that relay, so
+        # it wakes (review round 3); an answer on the Course page wakes each listening session once
+        return None
+    elif f["foreign"]:
+        return None   # a run on another Mac: this Mac's checkout is no copy of its doc
+    else:
+        # the newest copy alone (origin/main where there is one: a primary checkout's file may lag it),
+        # and only for the same question: its title as the ASK carries it (a guarded ASK's never matches)
+        copies = main_copies(f)
+        newest = [c for c in copies if c[0].endswith(" (origin/main)")] or copies
+        why = next(("%s answered in %s" % (f["item"], where) for where, t in newest
+                    if f.get("title") and item_answered(m(), t, f["item"], f["title"])), None)
+        if not why:
+            return None
+    _SETTLED[ck] = why
+    return why
+
+
 CHAT_LABEL = ("CHAT (unverified — the account owner or any keyed session; confirm in this session's own "
               "chat before acting)")
 
@@ -1323,6 +1729,27 @@ def take_answer(rest):
     return add_pending(top, key, item, line, "skipper")
 
 
+def reasked_after(rest, stamp):
+    """An ANSWER heard before still answers a new ask when this worktree relayed its item again after the
+    listener printed it: an open ask.json row for that rel#item whose relay `t` is newer than the heard stamp
+    (the landing's fourth review: an applied answer, its doc reverted and the item re-relayed, then the same
+    answer text on the same day read as a replay, and take_answer never kept it). Read as take_answer reads it;
+    anything it cannot read is no re-ask, so the line stays a replay."""
+    m = re.match(r"(.+?)#(D\d+) — ", rest, re.S)
+    if not m:
+        return False
+    rel, item = m.groups()
+    try:
+        top = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+        doc = Path(rel) if Path(rel).is_absolute() else top / rel
+        key = doc.resolve().relative_to(top.resolve()).as_posix()
+    except (SystemExit, ValueError, OSError, RuntimeError):
+        return False
+    return any(x.get("rel") == key and x.get("item") == item and not x.get("answered")
+               and _ts(x.get("t")) and x["t"] > stamp
+               for x in read_asks(top).get("asks", []) if isinstance(x, dict))
+
+
 def cmd_listen(a):
     b = asklib.BACKENDS["talk"]
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -1334,9 +1761,15 @@ def cmd_listen(a):
               % (a.session, me))
         return 2
     ctx = {"session": a.session or me}
+    plan = a.plan or helmlib.env("ship") or ctx["session"]  # append_report's order, for ship_answered
+    # a plain shell listening on a session's id keeps a heard record of its own (`shell-heard-<id>.json`,
+    # disjoint from any session's `heard-<id>.json`): what the owner's terminal printed never reads as heard
+    # by that session's own listener (review round 3)
+    heard_id = ctx["session"] if me else ("shell", ctx["session"] or "")
     stops = replays = 0
     while True:
         msgs = b.receive(ctx)
+        _SETTLED.clear()   # a body is judged once; a later body sees the state as it is then (review round 2)
         if msgs is None:
             print("ask listen: no Talk CLI, or listen failed — nothing listens (K10)")
             return 1
@@ -1347,6 +1780,7 @@ def cmd_listen(a):
                 return 0
             continue  # K10: the link lasts a day; re-arm
         wake = fresh = False
+        asks = []
         for msg in msgs:  # every line of the body (finding 13): a second message is never dropped
             kind, rest = asklib.classify(msg.get("text") or "")
             if kind == "REPORT":
@@ -1355,6 +1789,29 @@ def cmd_listen(a):
                 if appended or not replays or not line.endswith("a replay, dropped"):  # a replay is not said again once a run of them has begun; any other drop always is
                     print("REPORT: %s" % line, flush=True)
                 continue
+            if kind in ("ASK", "ANSWER"):
+                # helm-ask-replay: an ASK heard before, or whose item is answered, is a replay — said
+                # in the first body of a run of them, as a REPORT's is, and it wakes nobody; an ANSWER
+                # this session printed before too (a fixed-form one was kept as a pending row then). A check that
+                # fails wakes the session: an ASK this side cannot judge is never dropped.
+                try:
+                    if kind == "ASK":
+                        why = ask_settled(rest, heard_id, plan)
+                    elif rest.startswith("guarded "):
+                        why = None   # a guarded answer's pointer names no item: two answers read alike, so it always wakes
+                    else:
+                        stamp = heard_keys(heard_id).get(line_key(rest))
+                        why = "this listener's session heard it before" \
+                            if stamp is not None and not reasked_after(rest, stamp) else None
+                except (Exception, SystemExit) as e:  # noqa: BLE001
+                    print("ask listen: the replay check failed (%s: %s) — woken as a new %s"
+                          % (type(e).__name__, str(e)[:120], kind), file=sys.stderr)
+                    why = None
+                if why:
+                    if not replays:
+                        print("%s replayed, not woken (%s): %s" % (kind, why, rest[:160]), flush=True)
+                    continue
+                asks.append(rest)
             wake = True
             if kind == "CHAT":
                 # K13: anyone holding the key sends an unprefixed line; it is never an answer to a
@@ -1367,15 +1824,16 @@ def cmd_listen(a):
                 if p:
                     print("  kept in %s — run `%s/bin/ask apply` to write and commit it" % (p, HERE.parent))
         if wake:
+            remember_heard(heard_id, asks)
             return 0
         if fresh:
             replays = 0
             continue
-        # a body of REPORTs heard before (or dropped): the link replays rather than waits, so a
-        # pause, and after --replays of them in a row the listener ends rather than spins
+        # a body of REPORTs, ASKs and ANSWERs heard before (or dropped): the link replays rather than waits,
+        # so a pause, and after --replays of them in a row the listener ends rather than spins
         replays += 1
         if replays > a.replays:
-            print("ask listen: the listen link handed back only REPORTs heard before, %d times in a row — "
+            print("ask listen: the listen link handed back only lines heard before (REPORTs, ASKs, ANSWERs), %d times in a row — "
                   "re-arm it next turn" % replays)
             return 0
         time.sleep(replay_pause(replays))

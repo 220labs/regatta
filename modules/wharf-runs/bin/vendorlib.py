@@ -86,7 +86,7 @@ def scope_named(name, text):
     return n in t if len(n) >= 5 else re.search(r"(?<![a-z])" + re.escape(n), t) is not None
 
 
-def fence(wt, cli, origin="", text=None, paths=False):
+def fence(wt, cli, origin="", text=None, paths=False, text_limit=MESSAGE_CAP):
     primary = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
     if origin or os.environ.get("DISPATCH_ORIGIN_MARK"):
         raise Held("an origin marker: no vendor build")
@@ -97,9 +97,8 @@ def fence(wt, cli, origin="", text=None, paths=False):
     if why:
         raise Held("vendor fence: %s" % why)
     harness = _harness()
-    why = harness.physical_ok(str(primary))
-    if why or harness.public_repo(str(primary)):
-        raise Held(why or "a public repo: no vendor build")
+    if harness.public_repo(str(primary)):
+        raise Held("a public repo: no vendor build")
     tracked = git(wt, "ls-files").splitlines()
     topic = common.branch_topic(git(wt, "branch", "--show-current"))
     if not topic:
@@ -107,7 +106,7 @@ def fence(wt, cli, origin="", text=None, paths=False):
     if any(Path(p).parent == Path("docs/handoff") and p.endswith(".review")
            and common.branch_topic(Path(p).stem) == topic for p in tracked):
         raise Held("an origin marker in a reviewed brief: no vendor build")
-    # The hook-trust / permission bypass a turn passes must trust regatta's handler alone: a project's own .codex/ or
+    # The hook-trust / permission bypass trusts only regatta's handler and optional sheep-gated reporting: a project's own .codex/ or
     # .gemini/ (hooks or config the builder could write in one turn and the next would load) never reaches a vendor turn.
     for dot in (".codex", ".gemini"):
         if git(wt, "ls-files", "--", dot) or git(wt, "status", "--porcelain", "--ignored", "--", dot):
@@ -116,8 +115,8 @@ def fence(wt, cli, origin="", text=None, paths=False):
     if paths and f.leave_paths(str(wt)):
         raise Held("vendor fence: checkout holds a protected path")
     if text is not None:
-        if len(text.encode("utf-8")) > MESSAGE_CAP:
-            raise Refused("vendor message exceeds 64 KB")   # the design's `failed`: nothing was sent, a retry may do better
+        if len(text.encode("utf-8")) > text_limit:
+            raise Refused("vendor message exceeds %d KB" % (text_limit // 1024))   # the design's `failed`: nothing was sent, a retry may do better
         if f.leave_text(text):
             raise Held("vendor verdict holds a credential shape")
         reg, bad = common.read_registry()
@@ -172,7 +171,7 @@ def preflight(cli, model=None, effort="high", wt=None, review=False):
 
 
 def codex_guards():
-    """Only the known regatta handler is trusted headlessly. A builder home
+    """Only the known regatta handler and sheep-gated reporting are trusted headlessly. A builder home
     with a missing, disabled, changed or foreign PreToolUse handler is not ready.
     """
     tool = common.tool("vendor-hooks")
@@ -185,8 +184,20 @@ def codex_guards():
         path = Path(codex._codex_home()) / "hooks.json"
         cfg = json.loads(path.read_text())
         want = [{"matcher": "", "hooks": [vh.handler("codex")]}]
-        if cfg.get("hooks") != {"PreToolUse": want}:   # no other event: the turn's bypass trusts every hook here
-            return "codex builder needs regatta's guards alone (vendor-hooks apply)"
+        guards_only = {"hooks": {"PreToolUse": want}}
+        if not agybuild.builder_hooks_ok("codex", {"hooks": cfg.get("hooks")}, guards_only):
+            return "codex builder needs regatta's guards alone or with sheep gate reporting (vendor-hooks apply, then sheep gate)"
+        # A sheep gate refused over an ungated notify still leaves its hooks.json written, which the check above
+        # trusts: the notify itself is judged by keel's own reader, and a reporting home whose reader will not
+        # load refuses (a guards-only home keeps main's road).
+        try:
+            notify = agybuild._sheep().codex_notify(path)
+        except Exception:
+            if {"hooks": cfg.get("hooks")} != guards_only:
+                return "codex builder's reporting does not read (keel's sheep will not load)"
+            notify = False
+        if notify:
+            return "codex builder's config.toml runs sessionpipe's notify ungated (remove it, then sheep gate)"
     except (OSError, ValueError, AttributeError, TypeError):
         return "codex builder guards do not read (vendor-hooks apply)"
     return None
@@ -221,6 +232,8 @@ def vendor_home(cli, wt):
     try:
         with agybuild.home(wt) if cli == "antigravity" else contextlib.nullcontext(None) as home:
             yield home
+    except agybuild.Held as ex:
+        raise Tainted(str(ex)) from ex
     except agybuild.Error as ex:
         raise Refused(str(ex)) from ex
 
